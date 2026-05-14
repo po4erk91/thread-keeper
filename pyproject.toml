@@ -8,6 +8,16 @@ version = "0.2.0"
 description = "Persistent working memory across agentic CLI sessions — CLI-agnostic adapter for Claude Code, Codex, Gemini, and Copilot."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
+license = { text = "MIT" }
+readme = "README.md"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.scripts]
 # After `pip install -e .` (or `pip install threadkeeper`), the user gets

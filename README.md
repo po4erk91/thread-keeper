@@ -1,8 +1,14 @@
 # thread-keeper
 
-A local MCP server that keeps my working memory between conversations in
-**Claude Code**. The brief format is dense, with structural tags and opaque
-IDs — optimized for Claude, not for human reading.
+[![tests](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml/badge.svg)](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CLIs](https://img.shields.io/badge/CLIs-Claude%20Code%20%7C%20Codex%20%7C%20Gemini%20%7C%20Copilot-green)](#)
+
+A local MCP server that keeps working memory between conversations across
+**Claude Code, OpenAI Codex, Google Gemini, and GitHub Copilot CLIs**. The
+brief format is dense, with structural tags and opaque IDs — optimized for
+agent consumption, not for human reading.
 
 Under the hood: a single sqlite file, optional embeddings, a set of daemons
 for process health / spawn budget / search proxy / shadow-review, and

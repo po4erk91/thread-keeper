@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor (config.py uses tomllib + dict[str,...]).
+        # 3.13 is current. 3.12 sits in between.
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: "pip"
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          # Editable install picks up [project.scripts] entrypoint.
+          pip install -e .
+          # Test deps. Skip semantic-search heavy stack (sentence-
+          # transformers, torch) — runs as headless ingest in CI with
+          # NO_EMBEDDINGS=1 so the FTS path is exercised instead.
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        env:
+          THREADKEEPER_NO_EMBEDDINGS: "1"
+          THREADKEEPER_INGEST_INTERVAL_S: "0"
+          THREADKEEPER_SHADOW_REVIEW_INTERVAL_S: "0"
+          THREADKEEPER_SPAWN_BUDGET_POLL_S: "0"
+          THREADKEEPER_SEARCH_PROXY_POLL_S: "0"
+        run: |
+          python -m pytest -q --tb=short
