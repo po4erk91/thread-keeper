@@ -26,11 +26,12 @@ thread-keeper is the substrate underneath:
 - **One memory store** — threads, notes, verbatim quotes, dialectic claims
   about you. Survives session, restart, CLI swap.
 - **One learning loop (hermes-style)** — closed threads with rich content
-  spawn a background reviewer that materializes lessons into
-  `~/.claude/skills/*/SKILL.md`. Currently consumed by Claude Code only;
-  other CLIs see thread-keeper's protocol via their per-user instructions
-  file but don't auto-load directory-style skills. CLI-agnostic learnings
-  output is [tracked](https://github.com/po4erk91/thread-keeper/issues/7).
+  spawn a background reviewer that appends lessons to
+  `~/.threadkeeper/lessons.md`. Every CLI's per-user instructions file
+  references this path, so the same procedural knowledge surfaces in
+  Claude Code, Codex, Gemini, and Copilot. Claude-specific
+  `~/.claude/skills/*/SKILL.md` is an optional secondary output when
+  frontmatter auto-triggering adds value.
 - **Cross-session signaling** — broadcast / whisper / inbox / wait between
   concurrent sessions across different CLIs.
 
@@ -98,18 +99,18 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
-### Learning loop (hermes-style, currently Claude-side)
+### Learning loop (hermes-style)
 
-Two loops feed `~/.claude/skills/`. **The output is read only by Claude
-Code today** — Codex / Gemini / Copilot don't have an equivalent
-directory-of-skills loader. CLI-agnostic learnings output is
-[issue #7](https://github.com/po4erk91/thread-keeper/issues/7).
+Two loops feed `~/.threadkeeper/lessons.md` — a CLI-agnostic store that
+every supported CLI's managed instructions block points at:
 
 - **Auto-review on close_thread** — when a closed thread is rich
   (≥5 notes, ≥2 insight/move), `close_thread` itself spawns a slim child
-  with `SKILL_REVIEW_PROMPT` + the thread's notes. The child decides
-  whether to write a skill, calls `skill_manage`, then
-  `mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
+  with `SKILL_REVIEW_PROMPT` + the thread's notes. The child appends a
+  lesson via `lesson_append`, optionally mirrors to
+  `~/.claude/skills/<name>/SKILL.md` for Claude-frontmatter
+  auto-triggering, then closes with `mark_skill_materialized`. Opt in
+  with `THREADKEEPER_AUTO_REVIEW=1`.
 - **Shadow-review daemon** — every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S`
   seconds (default off; 15 min recommended), scans the diff of
   `dialog_messages` since the last cursor across **all** CLIs. If the

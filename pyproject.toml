@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.2.0"
+version = "0.3.0"
 description = "Persistent working memory across agentic CLI sessions — CLI-agnostic adapter for Claude Code, Codex, Gemini, and Copilot."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
