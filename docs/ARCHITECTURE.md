@@ -1,0 +1,457 @@
+# Architecture (current state, May 2026)
+
+thread-keeper is a local MCP server that holds working memory across Claude
+conversations. The target client is **Claude Code** (CLI, VS Code extension);
+Desktop also works through the same MCP protocol, but the primary environment
+is Code, because only there are the jsonl transcripts and hooks.
+
+One process per session, shared SQLite in WAL mode — multiple windows can
+read-write the same database simultaneously. One state file:
+`~/.threadkeeper/db.sqlite`.
+
+## Package map
+
+```
+threadkeeper/
+├── _mcp.py            FastMCP singleton (shared @mcp.tool registrar)
+├── server.py          entry point: import all tools/ → mcp.run() (stdio)
+├── config.py          env-driven constants (DB_PATH, embed model, budgets, …)
+├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
+├── identity.py        per-process session + self-cid + daemon launchers
+├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
+├── embeddings.py      sentence-transformers (optional), cosine search
+├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
+├── brief.py           render_brief() / render_context() — main digest
+├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
+├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
+├── process_health.py  orphan-detection (ppid + heartbeat)
+├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
+├── search_proxy.py    daemon: serves search_via_parent from slim children
+├── spawn_budget.py    daemon: measures subtree RSS, admission control
+├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
+└── tools/             @mcp.tool() — each file = group
+    ├── threads.py     open/note/close/idle, brief, context, search, …
+    ├── peers.py       broadcast/whisper/ask/respond/wait/inbox/live_status
+    ├── spawn.py       spawn/tournament/tasks/budget/task_kill/task_logs
+    ├── skills.py      skill_manage/skill_record/skill_list/curator/review_thread
+    ├── dialectic.py   claim/evidence/review/synthesis/supersede
+    ├── core_memory.py set/get/list/remove (Letta-tier RAM)
+    ├── shadow_review.py shadow_review_run/status
+    ├── process_health.py mp_health/mp_cleanup
+    ├── probes.py      register/run/record/reliability_for/weak_spots
+    ├── distill.py     distill/vote/pending/export
+    ├── extract.py     extract_recent/review/accept/reject candidates
+    ├── concepts.py    register/list/expand
+    ├── graph.py       link/unlink (+ neighbors from correlation.py)
+    ├── pickup.py      pickup_candidates/claim/release
+    ├── dialog.py      dialog_search/open_dialog_window/ingest
+    ├── invariants.py, missed_spawns.py, consolidate.py, correlation.py,
+    ├── style.py, session.py, …
+```
+
+Launch: `python -m threadkeeper.server`. Stdio-MCP, no ports.
+The legacy monolith `server.py` at the repo root was removed in May 2026 — the
+runtime is fully on the package.
+
+## Storage layers
+
+The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
+
+1. **threads + notes** — the main state machine of working memory.
+   Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
+   `close_thread` records the outcome; `idle_thread` freezes it, and the next
+   note automatically reactivates it.
+
+2. **core_memory** — Letta-style RAM tier. High-priority lines that ALWAYS
+   appear in the brief regardless of relevance. Flat key/priority/content;
+   tier-policy (what to evict, how to promote/demote) is not yet implemented.
+
+3. **dialog_messages + dialog_fts (+ dialog_vec)** — full conversation
+   transcripts, pulled live from `~/.claude/projects/**/*.jsonl`.
+   Used by `peers()`, `brief()`, `search()`, `dialog_search()` and the
+   shadow-review daemon.
+
+4. **events + cursors + presence + signals** — live channel: every mutating
+   action writes an event, each session has a cursor, and `live_status()`
+   counts `live=N` by cursor delta. Signals — broadcast/whisper/
+   search_request/search_response between parallel windows.
+
+5. **skill_usage** — telemetry for `~/.claude/skills/*/SKILL.md`. Fields:
+   `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
+   (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
+   background_review vs shadow_review). This is the input for the curator.
+
+6. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
+   model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
+   confidence; brief() renders medium+high grouped by domain.
+
+In addition: `probe_results`/`reliability`, `concepts`, `edges`,
+`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
+`shadow_review_pass` (as event.kind).
+
+## Identity and self-cid
+
+The conversation identifier is `conversation_id` (stem from jsonl). Resolvers:
+
+1. `THREADKEEPER_FORCE_CID` env — used by spawn() for children; sets the cid
+   directly, without guessing.
+2. **ppid walk** — recursively `ps -p $pid -o ppid,command`, looking for
+   `claude … --resume/--session-id <uuid>` in one of 12 ancestors. Stable,
+   doesn't flap; cached forever per-process.
+3. Fallback: latest-mtime jsonl. Flaps when several windows are active in
+   parallel.
+
+`_session_id` is a different thing: per-process `s_{pid}_{hex}`, never reliable
+as window-identity (a single MCP process can multiplex several Desktop
+windows). The regression of the snapshot bug (`from identity import _session_id`
+created a local None snapshot in 7 files) was closed in May 2026 — all callers
+read via `identity._session_id` attr-access, pinned by the test
+`test_brief_ctx_line_carries_live_session_id`.
+
+## Daemons inside the parent process
+
+`identity._ensure_session()` brings up background threads on first call.
+All daemon threads are cheap (ticks 0.5–15 s), no-op when env-knobs disable them:
+
+- **background_ingester** (`ingest._start_background_ingester`) — ticks every
+  `INGEST_INTERVAL_S` (default 3 s), reads fresh jsonl chunks, tops up
+  dialog_messages/_fts and backfills NULL-embeddings on notes.
+- **search_proxy** — serves `search_via_parent` from slim children via
+  signals (see below).
+- **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
+  the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
+  closes dead ones.
+- **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
+  `~/.claude/skills/*/SKILL.md`, bumps `last_patched_at` if the file was
+  changed outside `skill_manage`.
+- **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
+  scans a dialog window and, if needed, spawns a slim-child evaluator.
+
+The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
++ many readers without blocking.
+
+## Spawn architecture
+
+`spawn(prompt, slim=True, role=…, visible=False, …)` brings up a child
+Claude session via a `claude -p <prompt>` subprocess. **Architectural principle:
+children are hands, not heads.** The parent (the only thread-keeper with full
+state and embeddings) plans and makes decisions; spawned children are
+light-executors. Trigger: **N≥2 modular independent units, ≥5 min each**.
+
+### Slim vs full child
+
+`slim=True` (default):
+- a temporary `slim-mcp-<task_id>.json` contains only the `thread-keeper`
+  section, passed as `--mcp-config <file> --strict-mcp-config`;
+- the child does NOT load other MCPs (`context7`, `figma`, …);
+- `THREADKEEPER_NO_EMBEDDINGS=1` → child doesn't load PyTorch/transformers;
+- on-disk size ~400–500 MB RSS instead of ~1.3 GB for full;
+- semantic search is delegated to the parent via `search_via_parent`.
+
+`slim=False` is set explicitly when the child genuinely needs another MCP
+(e.g. `context7` for library documentation).
+
+### Search proxy (search_via_parent)
+
+```
+child:  search_via_parent("similar past lessons")
+         → INSERT signals(kind='search_request', to_cid=parent_cid, content=JSON)
+parent: search_proxy daemon catches the signal, executes cosine/RRF search,
+         writes the response: INSERT signals(kind='search_response', to_cid=child_cid, …)
+child:  reads the response signal, formats the lines
+```
+
+The daemon lives in every thread-keeper process, but processes requests
+**only if `SEMANTIC_AVAILABLE=True`**. For light children it is a no-op.
+The parent's cid is resolved via `tasks.parent_cid WHERE spawned_cid=self_cid`;
+if no parent is found — the request goes broadcast to any peer with embeddings.
+
+### Spawn budget (RSS cap)
+
+`spawn_budget.py` enforces a cap on the **combined RSS of all running spawned
+children** (the parent itself is not counted). Default 3 GB.
+
+- `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
+  tasks (NULL = conservative full-estimate placeholder), refuses if the new
+  child would push past the cap. ERR carries the exact numbers + how-to-override.
+- After admission, INSERT into `tasks` writes an initial estimate
+  (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
+- Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
+
+Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
+(runtime override, not persisted). Visible spawns (Terminal.app, pid=0) aren't
+tracked — their RSS column stays at the estimate.
+
+## Learning loop
+
+The cycle of materializing skills from closed threads. Two paths to the same point:
+
+### 1. close_thread → auto-review (foreground-triggered)
+
+When a rich thread is closed (≥5 notes, ≥2 insight/move) `close_thread` itself
+spawns a review-fork via `review_thread(mode='auto')`:
+
+```
+close_thread → nudges.auto_review_should_fire()? → spawn(slim, role=reviewer,
+   write_origin='background_review',
+   prompt=SKILL_REVIEW_PROMPT + dump of all notes) → child writes the skill via
+   skill_manage(action=create|patch|...) → child calls
+   mark_skill_materialized(thread_id) → skill_hint in the brief goes away
+```
+
+`AUTO_REVIEW_ENABLED=1` — env flag (default off). There's also
+`auto_review_trigger(force=True)` — manual hot-button for when the agent wants
+to materialize without an explicit thread_id (combined mode: walks all pending
+rich threads).
+
+### 2. Shadow-review daemon (cross-session)
+
+Foreground Claude is an unreliable narrator: sometimes it doesn't close threads,
+or doesn't open them at all. Shadow-review closes that gap.
+
+```
+every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
+1. _last_shadow_ts(): high-water mark from events.kind='shadow_review_pass'.target
+2. _collect_window(): pull dialog_messages WHERE created_at > max(cursor, now-WINDOW_S)
+   — ALL sessions, not just our own.
+3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
+4. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
+   allowed_tools = skill_manage + skill_list + mark_skill_materialized.
+5. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
+   calls skill_manage. Otherwise prints `SKIP: <reason>`.
+6. Write events.kind='shadow_review_pass' with new high_water_ts.
+```
+
+Dedupe — via a cursor in `events.target` (timestamp of the last evaluated
+message). Idempotent: a repeated tick will not re-evaluate what it has already
+seen. SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
+false positives (false negatives are "cheaper").
+
+Manual hook: `shadow_review_run(force=True)`, observability:
+`shadow_review_status()`.
+
+## Skills system
+
+`~/.claude/skills/<name>/SKILL.md` — the root. Optional subfolders
+`references/`, `templates/`, `scripts/`, `assets/`.
+
+- **skill_manage(action, …)** — a single atomic tool. Actions:
+  `create | edit | patch | write_file | remove_file | delete`.
+  Frontmatter validator: `name` regex + ≤64 chars, `description` ≤1024 chars,
+  total ≤100k chars. `write_file/remove_file` are restricted to subfolders
+  `references|templates|scripts|assets` with path-traversal blocking.
+  `patch` revalidates the result before writing.
+
+- **skill_record(name, kind)** — manual bump of `use_count/view_count/patch_count`.
+
+- **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
+  from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
+  the curator gets real numbers without the agent being required to call
+  `skill_record` manually. The `skill_watcher` daemon catches external edits
+  to `SKILL.md` (Edit/Write directly, not through skill_manage).
+
+- **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
+  (`foreground` default | `background_review` | `shadow_review`) is written to
+  `sessions.write_origin` and proxied into `skill_usage.created_by_origin`.
+
+- **curator_run(stale_after_days, archive_after_days, dry_run=True)** —
+  background cleanup of stale agent-created skills. Never touches `foreground`
+  or `pinned=1`. On apply, physically archives into `.archive/<name>`.
+
+- **mark_skill_materialized(thread_id, skill_path)** — writes a `move`-note
+  + event, kills the `skill_hint` for the thread.
+
+- **review_prompts.py** — MEMORY/SKILL/COMBINED/SHADOW + a shared ANTI_CAPTURE
+  section (do-NOT-capture: env failures, negative tool claims, transient
+  errors, one-off narratives). Defense against hardening noise into rules.
+
+Compat: frontmatter shape + folder layout match agentskills.io.
+
+## Dialectic user model
+
+`tools/dialectic.py` — Honcho-inspired discrete claims. Each claim is a separate
+proposition with a domain (`style`/`workflow`/`values`/`context`/`skills`/`other`);
+evidence accumulates, confidence via smoothed ratio:
+`(support − contradict) / (support + contradict + 3)`.
+
+- Smoothing 3 prevents jumping into `high` after a single supporting note:
+  3 supports → medium (0.5), 5 supports → high (0.625).
+- A heavy contradict knocks back to `disputed`.
+- `dialectic_supersede(old, new, reason)` — versioning of claims.
+- `dialectic_synthesis(domain)` — text-render `support` vs `contradict`.
+- `brief()` renders the `user_model (dialectic)` section with medium+high,
+  groups by domain, ★ — high, · — medium.
+
+## Hooks (Claude Code settings.json)
+
+`~/.threadkeeper/hooks/` — three shell wrappers, wired into
+`~/.claude/settings.json`:
+
+- **SessionStart → mp-brief.sh** — at the start of every session injects
+  `brief()` + `context()` into the system prompt. Additionally prints status
+  `thread-keeper: ok threads_open=N closed_recent=M live_peers=K`.
+  This removes the need to call `brief()` manually every time — the new Claude
+  sees it right away.
+
+- **PostToolUse → mp-status.sh** (matcher `mcp__thread-keeper__.*`) — short
+  human-readable markers for mutating calls:
+  `🧵 opened: <thread>`, `✅ closed: <thread>`, `📝 +insight`,
+  `🎯 skill materialized`, etc. Read-only tools (`search`, `brief`, `peers`)
+  are deliberately silent, not to add noise.
+
+- **UserPromptSubmit → inbox-check.sh** — before every user turn checks the
+  inbox for fresh signals (broadcast/whisper/ask) from other windows and
+  inlines them.
+
+## Process health
+
+`process_health.py` + `tools/process_health.py`:
+
+Orphan-MCP-server detection = ALL of:
+1. Process command contains `threadkeeper.server` (is this our process).
+2. Parent gone (ppid == 1/launchd OR ppid does not exist).
+3. No signs of life: heartbeat in `presence` older than `STALE_HEARTBEAT_S`,
+   OR the corresponding session was not found.
+
+Tools:
+- `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
+- `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
+  so we don't accidentally kill an active mcp on a false-positive classification.
+
+The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
+`mcp.run()`) is closed; 265+ green tests.
+
+## sqlite-vec (HNSW) and Python fallback
+
+`db.py` tries to load the sqlite-vec extension on the first get_db():
+
+- **Available** (`_VEC_AVAILABLE=True`): virtual tables `notes_vec`, `dialog_vec`
+  on vec0 are created. KNN ~10× faster than Python-side cosine.
+  Backfill via `_backfill_vec_tables` pulls in existing embedding BLOBs.
+
+- **Not available**: fallback to legacy Python-side cosine — `_cosine_search`
+  reads the entire `notes.embedding BLOB` into memory, computes the dot product.
+  Works, but doesn't scale past ~50k notes.
+
+Optional — not needed for basic functionality. Embeddings themselves are stored
+as BLOB in `notes.embedding` regardless of vec0 availability.
+
+## MCP tools (82 total)
+
+Compact grouping by module. Full signatures are in the code; `_mcp.py`
+auto-generates JSON-Schema from annotations.
+
+| Module | N | Tools |
+|---|---|---|
+| threads | 12 | open_thread, note, close_thread, idle_thread, brief, context, search, compost, verbatim_user, evolve_format, evolve_review, auto_review_trigger, mark_skill_materialized |
+| peers | 11 | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
+| spawn | 7 | spawn, tournament, tasks, task_logs, task_kill, spawn_budget_status, spawn_budget_set |
+| skills | 5 | skill_manage, skill_record, skill_list, curator_run, review_thread |
+| dialectic | 5 | dialectic_claim, dialectic_evidence, dialectic_review, dialectic_synthesis, dialectic_supersede |
+| probes | 5 | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
+| core_memory | 4 | core_set, core_get, core_list, core_remove |
+| extract | 4 | extract_recent, review_candidates, accept_candidate, reject_candidate |
+| distill | 4 | distill, vote_distill, pending_distillates, export_distillates |
+| dialog | 3 | dialog_search, open_dialog_window, ingest |
+| concepts | 3 | register_concept, list_concepts, expand_concept |
+| graph | 3 | link, unlink, (+ neighbors from correlation.py) |
+| pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
+| shadow_review | 2 | shadow_review_run, shadow_review_status |
+| style | 2 | style_set, tag_signal |
+| process_health | 2 | mp_health, mp_cleanup |
+| correlation | 2 | neighbors, task_thread |
+| consolidate | 1 | consolidate |
+| invariants | 1 | find_invariants |
+| missed_spawns | 1 | find_missed_spawns |
+| session | 1 | session_end |
+
+Each @mcp.tool() is a synchronous Python function; FastMCP wraps it in
+JSON-Schema automatically from type annotations. One process — one mcp
+instance (`threadkeeper._mcp.mcp`).
+
+## Tests
+
+```
+tests/
+├── conftest.py                fresh_mp fixture: tmp DB, isolated env,
+│                              re-import of the package per-test
+├── test_tools_smoke.py        parametrized: every @mcp.tool() callable
+├── test_identity.py           snapshot-bug regressions + ctx-line carries session_id
+├── test_threads.py            lifecycle: open → note → close → idle revival
+├── test_core_memory.py        Letta-tier: set/get/list/remove + brief surfacing
+├── test_spawn_budget.py       admission control + daemon polling
+├── test_search_proxy.py       request/response signal roundtrip
+├── test_dialectic.py          smoothed-ratio confidence
+├── test_skills.py             skill_manage frontmatter validation + curator
+├── test_shadow_review.py      cursor advance + min_chars gate + idempotency
+├── test_process_health.py     orphan detection with/without heartbeat
+└── …
+```
+
+Run: `.venv/bin/python -m pytest tests/ -q`. Currently 282 tests (1 skipped),
+all green. Smoke parametrization automatically picks up any new tools without
+having to add tests.
+
+## Env knobs (config.py)
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | jsonl for ingest |
+| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills root |
+| `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
+| `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
+| `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |
+| `THREADKEEPER_AUTO_REVIEW` | off | enable auto-review on close_thread |
+| `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
+| `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
+| `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
+| `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
+| `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
+| `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
+| `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
+| `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
+| `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |
+| `THREADKEEPER_WRITE_ORIGIN` | foreground | provenance tag for curator |
+| `THREADKEEPER_FORCE_CID` | — | test-only / spawn-injected cid override |
+| `THREADKEEPER_SELF_CID_TTL_S` | 5 | mtime-fallback cache TTL |
+
+## Behavioral nudges (active push)
+
+`brief.py` + `nudges.py` contain sections that don't write data but push the
+agent in the right direction:
+
+- **spawn_hint** — a one-line reminder when conditions suggest parallel
+  decomposition (≥3 active threads with no live children; ≥3 idle; cue-word
+  "in parallel / while you / in the background" in the last user message). Not
+  shown if there is already a live child. Why: spawn has existed for a while,
+  but agents read the tool list as a catalog — not as a primitive. The trigger
+  turns "the option exists" into "the moment to apply it".
+
+- **skill_hint** — when there is a rich pending closed thread + the counter
+  has crossed `SKILL_NUDGE_INTERVAL`. 2× → ⚠️ demanding.
+
+- **memory_nudge** — turn counter: session events (open_thread, close_thread,
+  note:insight/move, core_set, verbatim_user, concept_register, distill) since
+  the last memory_save. Crossing `MEMORY_NUDGE_INTERVAL` → soft;
+  2× → ⚠️ demanding.
+
+Pattern for future nudges: short section, compact format, explicit
+"→ consider X" line. Fire only when the not-doing-it cost > the brief
+real-estate cost.
+
+## What is NOT done
+
+- No authentication / access control (see ROADMAP.md).
+- No federation: one database file, one machine.
+- Heavily Claude-Code-specific: ppid walk, jsonl parser, settings.json hooks,
+  ~/.claude.json as MCP-config template.
+- Extraction heuristics are simple regexes; no ML quality classifier.
+- No hot-config reload: changing an env-knob requires restarting the MCP
+  process.
+- MCP-native `sampling/createMessage` (a native hermes-style fork without
+  pay-per-use tokens) is not yet implemented in Claude Code
+  (anthropics/claude-code#1785). spawn-subprocess is the fallback, slim-config
+  brings the cost down to acceptable.

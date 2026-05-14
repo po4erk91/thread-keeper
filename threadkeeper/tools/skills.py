@@ -1,0 +1,676 @@
+"""Claude-skills lifecycle: create/edit/patch/delete + usage telemetry +
+curator + background-review fork.
+
+Bridges thread-keeper (working memory across sessions) and Claude's
+~/.claude/skills/ store (procedural memory). The Learning loop:
+
+    rich thread closes → brief() surfaces skill_hint nudge →
+    agent calls review_thread(...) → spawned child reads notes,
+    writes/patches a skill via skill_manage(), calls
+    mark_skill_materialized() → nudge clears
+
+Telemetry sidecar lives in DB table skill_usage (created in db.py). Curator
+archives stale agent-created skills; foreground/user-authored ones are
+never auto-touched.
+
+Validator enforces the agentskills.io-compatible frontmatter shape:
+- starts with '---' at byte 0
+- closes with '\\n---\\n' before body
+- name field present, ≤64 chars, matching ^[a-z0-9][a-z0-9._-]*$
+- description field present, ≤1024 chars
+- total SKILL.md ≤100_000 chars
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import sqlite3
+import time
+from pathlib import Path
+from typing import Optional
+
+from .._mcp import mcp
+from ..config import CLAUDE_SKILLS_DIR, WRITE_ORIGIN
+from ..db import get_db
+from ..helpers import q
+from .. import identity
+from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..review_prompts import (
+    MEMORY_REVIEW_PROMPT, SKILL_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT,
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Validator
+# ──────────────────────────────────────────────────────────────────────────
+
+MAX_NAME_LENGTH = 64
+MAX_DESCRIPTION_LENGTH = 1024
+MAX_SKILL_CONTENT_CHARS = 100_000
+MAX_SKILL_FILE_BYTES = 1_048_576  # 1 MiB
+
+_VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_FRONTMATTER_FIELD_RE = re.compile(
+    r"^(name|description):\s*(.+?)\s*$", re.MULTILINE
+)
+
+ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+
+
+def _validate_name(name: str) -> Optional[str]:
+    if not name:
+        return "name is required"
+    if len(name) > MAX_NAME_LENGTH:
+        return f"name exceeds {MAX_NAME_LENGTH} chars"
+    if not _VALID_NAME_RE.match(name):
+        return (
+            f"invalid name '{name}' — use lowercase letters, numbers, "
+            f"hyphens, dots, underscores; must start with letter or digit"
+        )
+    return None
+
+
+def _parse_frontmatter(body: str) -> tuple[Optional[dict], Optional[str]]:
+    """Extract name and description from leading --- ... --- block.
+
+    Returns (fields, error). Minimal — handles single-line scalars only.
+    A SKILL.md with multi-line YAML values won't parse here; for our use
+    case (name + description) that's fine.
+    """
+    if not body.startswith("---"):
+        return None, "frontmatter must start with '---' at byte 0"
+    m = re.search(r"\n---\s*\n", body[3:])
+    if not m:
+        return None, "frontmatter missing closing '\\n---\\n'"
+    front = body[3:m.start() + 3]
+    fields: dict[str, str] = {}
+    for fm in _FRONTMATTER_FIELD_RE.finditer(front):
+        fields[fm.group(1)] = fm.group(2).strip('"').strip("'")
+    if "name" not in fields:
+        return None, "frontmatter missing 'name' field"
+    if "description" not in fields:
+        return None, "frontmatter missing 'description' field"
+    # Body after closing must be non-empty.
+    rest = body[3 + m.end():].strip()
+    if not rest:
+        return None, "skill body empty after frontmatter"
+    return fields, None
+
+
+def _validate_skill_md(content: str, expected_name: str) -> Optional[str]:
+    if len(content) > MAX_SKILL_CONTENT_CHARS:
+        return (
+            f"SKILL.md exceeds {MAX_SKILL_CONTENT_CHARS} chars "
+            f"(have {len(content)})"
+        )
+    fields, err = _parse_frontmatter(content)
+    if err:
+        return err
+    assert fields is not None  # for type checker
+    name = fields["name"]
+    if name != expected_name:
+        return (
+            f"frontmatter name '{name}' does not match directory name "
+            f"'{expected_name}'"
+        )
+    if err := _validate_name(name):
+        return err
+    desc = fields["description"]
+    if len(desc) > MAX_DESCRIPTION_LENGTH:
+        return (
+            f"description exceeds {MAX_DESCRIPTION_LENGTH} chars "
+            f"(have {len(desc)})"
+        )
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Path helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+def _skill_dir(name: str) -> Path:
+    return CLAUDE_SKILLS_DIR / name
+
+
+def _skill_md_path(name: str) -> Path:
+    return _skill_dir(name) / "SKILL.md"
+
+
+def _archive_dir() -> Path:
+    return CLAUDE_SKILLS_DIR / ".archive"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Telemetry
+# ──────────────────────────────────────────────────────────────────────────
+
+def _record_event(name: str, kind: str) -> None:
+    """Bump skill_usage counters/timestamps. Inserts a row if missing.
+
+    `kind`: 'create' | 'use' | 'view' | 'patch'. Unknown kinds are ignored.
+    """
+    conn = get_db()
+    now = int(time.time())
+    cid = _detect_self_cid()
+    if kind == "create":
+        conn.execute(
+            "INSERT INTO skill_usage (name, created_at, created_by_cid, "
+            "created_by_origin, state) VALUES (?,?,?,?, 'active') "
+            "ON CONFLICT(name) DO NOTHING",
+            (name, now, cid, WRITE_ORIGIN),
+        )
+        conn.commit()
+        return
+    # ensure row exists for upserts that aren't 'create'
+    conn.execute(
+        "INSERT INTO skill_usage (name, created_at, created_by_cid, "
+        "created_by_origin, state) VALUES (?,?,?,?,'active') "
+        "ON CONFLICT(name) DO NOTHING",
+        (name, now, cid, WRITE_ORIGIN),
+    )
+    if kind == "view":
+        conn.execute(
+            "UPDATE skill_usage SET last_viewed_at=?, view_count=view_count+1, "
+            "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
+            "WHERE name=?",
+            (now, name),
+        )
+    elif kind == "use":
+        conn.execute(
+            "UPDATE skill_usage SET last_used_at=?, use_count=use_count+1, "
+            "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
+            "WHERE name=?",
+            (now, name),
+        )
+    elif kind == "patch":
+        conn.execute(
+            "UPDATE skill_usage SET last_patched_at=?, "
+            "patch_count=patch_count+1, "
+            "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
+            "WHERE name=?",
+            (now, name),
+        )
+    conn.commit()
+
+
+@mcp.tool()
+def skill_record(name: str, kind: str = "use") -> str:
+    """Record usage telemetry for a Claude skill.
+
+    `kind`: 'use' (skill was invoked), 'view' (SKILL.md was read), 'patch'
+    (SKILL.md was edited). The curator uses these timestamps to decide what
+    to archive."""
+    name = name.strip()
+    if err := _validate_name(name):
+        return f"ERR {err}"
+    if kind not in {"use", "view", "patch", "create"}:
+        return f"ERR invalid_kind={kind} (use|view|patch|create)"
+    _record_event(name, kind)
+    return "ok"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# skill_manage
+# ──────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def skill_manage(action: str,
+                 name: str = "",
+                 content: str = "",
+                 old_string: str = "",
+                 new_string: str = "",
+                 sub_path: str = "",
+                 description: str = "") -> str:
+    """Create, edit, patch, or delete Claude skills under ~/.claude/skills/.
+
+    Atomic write with frontmatter validation before disk hits.
+
+    Actions:
+      create      — write a brand-new skill. Requires `name` + `description`
+                    + `content` (the body markdown WITHOUT frontmatter; the
+                    tool prepends a valid frontmatter block).
+                    Pass full `content` starting with '---' to skip the
+                    auto-frontmatter and supply your own.
+      edit        — overwrite SKILL.md wholesale. Requires `name` + `content`
+                    (full file including frontmatter).
+      patch       — find/replace within SKILL.md. Requires `name`,
+                    `old_string`, `new_string`. Result revalidated.
+      write_file  — add a support file. Requires `name`, `sub_path` (must
+                    start with references/, templates/, scripts/, or assets/),
+                    `content`.
+      remove_file — remove a support file under one of the allowed subdirs.
+                    Requires `name`, `sub_path`.
+      delete      — remove a skill entirely. Pinned skills (in skill_usage)
+                    are refused.
+    """
+    action = action.strip()
+    name = name.strip()
+    if action != "delete" and (err := _validate_name(name)):
+        return f"ERR {err}"
+    if action == "create":
+        return _action_create(name, content, description)
+    if action == "edit":
+        return _action_edit(name, content)
+    if action == "patch":
+        return _action_patch(name, old_string, new_string)
+    if action == "write_file":
+        return _action_write_file(name, sub_path, content)
+    if action == "remove_file":
+        return _action_remove_file(name, sub_path)
+    if action == "delete":
+        if err := _validate_name(name):
+            return f"ERR {err}"
+        return _action_delete(name)
+    return (
+        f"ERR unknown_action={action} "
+        "(create|edit|patch|write_file|remove_file|delete)"
+    )
+
+
+def _action_create(name: str, content: str, description: str) -> str:
+    sdir = _skill_dir(name)
+    md = _skill_md_path(name)
+    if md.exists():
+        return f"ERR skill_exists={name}"
+    if content and content.startswith("---"):
+        body = content
+    else:
+        if not description.strip():
+            return "ERR description_required when content lacks frontmatter"
+        if not content.strip():
+            return "ERR content_required (body markdown after frontmatter)"
+        body = (
+            f"---\n"
+            f"name: {name}\n"
+            f"description: {description.strip()}\n"
+            f"---\n\n"
+            f"{content.strip()}\n"
+        )
+    if err := _validate_skill_md(body, name):
+        return f"ERR validate_failed: {err}"
+    sdir.mkdir(parents=True, exist_ok=True)
+    md.write_text(body, encoding="utf-8")
+    _record_event(name, "create")
+    conn = get_db()
+    _ensure_session(conn)
+    _emit(conn, "skill_create", target=name, summary=str(md))
+    conn.commit()
+    return f"ok path={md}"
+
+
+def _action_edit(name: str, content: str) -> str:
+    md = _skill_md_path(name)
+    if not md.exists():
+        return f"ERR skill_not_found={name}"
+    if err := _validate_skill_md(content, name):
+        return f"ERR validate_failed: {err}"
+    md.write_text(content, encoding="utf-8")
+    _record_event(name, "patch")
+    conn = get_db()
+    _ensure_session(conn)
+    _emit(conn, "skill_edit", target=name, summary=str(md))
+    conn.commit()
+    return f"ok path={md}"
+
+
+def _action_patch(name: str, old_string: str, new_string: str) -> str:
+    md = _skill_md_path(name)
+    if not md.exists():
+        return f"ERR skill_not_found={name}"
+    if not old_string:
+        return "ERR old_string_required"
+    cur = md.read_text(encoding="utf-8")
+    if old_string not in cur:
+        return "ERR old_string_not_found"
+    if cur.count(old_string) > 1:
+        return (
+            f"ERR old_string_ambiguous (appears "
+            f"{cur.count(old_string)}× — make it unique)"
+        )
+    updated = cur.replace(old_string, new_string, 1)
+    if err := _validate_skill_md(updated, name):
+        return f"ERR validate_failed_after_patch: {err}"
+    md.write_text(updated, encoding="utf-8")
+    _record_event(name, "patch")
+    conn = get_db()
+    _ensure_session(conn)
+    _emit(conn, "skill_patch", target=name)
+    conn.commit()
+    return "ok"
+
+
+def _action_write_file(name: str, sub_path: str, content: str) -> str:
+    sdir = _skill_dir(name)
+    if not sdir.exists():
+        return f"ERR skill_not_found={name}"
+    sub_path = sub_path.strip().lstrip("/")
+    if "/" not in sub_path:
+        return (
+            "ERR sub_path_must_be_under_allowed_subdir "
+            f"({', '.join(sorted(ALLOWED_SUBDIRS))}/)"
+        )
+    top, _ = sub_path.split("/", 1)
+    if top not in ALLOWED_SUBDIRS:
+        return (
+            f"ERR subdir_not_allowed={top} "
+            f"(allowed: {', '.join(sorted(ALLOWED_SUBDIRS))})"
+        )
+    if ".." in sub_path.split("/"):
+        return "ERR path_traversal_blocked"
+    if len(content.encode("utf-8")) > MAX_SKILL_FILE_BYTES:
+        return f"ERR file_exceeds_{MAX_SKILL_FILE_BYTES}_bytes"
+    target = sdir / sub_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    _record_event(name, "patch")
+    conn = get_db()
+    _ensure_session(conn)
+    _emit(conn, "skill_write_file", target=name, summary=sub_path)
+    conn.commit()
+    return f"ok path={target}"
+
+
+def _action_remove_file(name: str, sub_path: str) -> str:
+    sdir = _skill_dir(name)
+    if not sdir.exists():
+        return f"ERR skill_not_found={name}"
+    sub_path = sub_path.strip().lstrip("/")
+    if "/" not in sub_path:
+        return "ERR sub_path_must_be_under_allowed_subdir"
+    top, _ = sub_path.split("/", 1)
+    if top not in ALLOWED_SUBDIRS:
+        return f"ERR subdir_not_allowed={top}"
+    if ".." in sub_path.split("/"):
+        return "ERR path_traversal_blocked"
+    target = sdir / sub_path
+    if not target.exists():
+        return f"ERR file_not_found={sub_path}"
+    target.unlink()
+    _record_event(name, "patch")
+    return "ok"
+
+
+def _action_delete(name: str) -> str:
+    conn = get_db()
+    _ensure_session(conn)
+    row = conn.execute(
+        "SELECT pinned FROM skill_usage WHERE name=?", (name,)
+    ).fetchone()
+    if row and row["pinned"]:
+        return (
+            f"ERR pinned={name} (unpin via UPDATE skill_usage SET pinned=0 "
+            "first)"
+        )
+    sdir = _skill_dir(name)
+    if not sdir.exists():
+        return f"ERR skill_not_found={name}"
+    shutil.rmtree(sdir)
+    conn.execute("DELETE FROM skill_usage WHERE name=?", (name,))
+    _emit(conn, "skill_delete", target=name)
+    conn.commit()
+    return "ok"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# skill_list
+# ──────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def skill_list(include_archived: bool = False) -> str:
+    """List Claude skills with telemetry. Format:
+        <name> origin=<foreground|background_review> state=<active|stale|archived>
+            uses=N views=N patches=N pinned=0/1 last_active=<age>
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    if include_archived:
+        rows = conn.execute(
+            "SELECT * FROM skill_usage ORDER BY name"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM skill_usage WHERE state != 'archived' "
+            "ORDER BY state, name"
+        ).fetchall()
+    if not rows:
+        return "no_skills_tracked"
+    now = int(time.time())
+    out: list[str] = []
+    for r in rows:
+        last = max(
+            r["last_used_at"] or 0,
+            r["last_viewed_at"] or 0,
+            r["last_patched_at"] or 0,
+            r["created_at"],
+        )
+        age_s = now - last
+        if age_s < 3600:
+            age = f"{age_s // 60}m"
+        elif age_s < 86400:
+            age = f"{age_s // 3600}h"
+        else:
+            age = f"{age_s // 86400}d"
+        out.append(
+            f"{r['name']} origin={r['created_by_origin']} "
+            f"state={r['state']} uses={r['use_count']} "
+            f"views={r['view_count']} patches={r['patch_count']} "
+            f"pinned={r['pinned']} last_active={age}_ago"
+        )
+    return "\n".join(out)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Curator
+# ──────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def curator_run(stale_after_days: int = 30,
+                archive_after_days: int = 90,
+                dry_run: bool = True) -> str:
+    """Move stale agent-created skills to archive.
+
+    Lifecycle:
+      active  → stale     when last activity > stale_after_days
+      stale   → archived  when last activity > archive_after_days
+                          (also moves directory to ~/.claude/skills/.archive/)
+
+    NEVER touches:
+      • foreground (user-authored) skills — provenance check
+      • pinned skills — opt-out flag
+      • skills with no `created_by_origin` set (unknown provenance — be safe)
+
+    `dry_run=True` (default) reports what would change without writing.
+    Set False to apply."""
+    conn = get_db()
+    _ensure_session(conn)
+    now = int(time.time())
+    stale_thresh = now - stale_after_days * 86400
+    archive_thresh = now - archive_after_days * 86400
+
+    rows = conn.execute(
+        "SELECT * FROM skill_usage "
+        "WHERE created_by_origin='background_review' AND pinned=0"
+    ).fetchall()
+
+    plan: list[dict] = []
+    for r in rows:
+        last_activity = max(
+            r["last_used_at"] or 0,
+            r["last_viewed_at"] or 0,
+            r["last_patched_at"] or 0,
+            r["created_at"],
+        )
+        cur_state = r["state"]
+        if cur_state == "active" and last_activity < stale_thresh:
+            plan.append({
+                "name": r["name"], "from": "active", "to": "stale",
+                "last": last_activity,
+            })
+        elif cur_state == "stale" and last_activity < archive_thresh:
+            plan.append({
+                "name": r["name"], "from": "stale", "to": "archived",
+                "last": last_activity,
+            })
+
+    if not plan:
+        return "nothing_to_do"
+
+    lines = [f"plan n={len(plan)} dry_run={dry_run}"]
+    for p in plan:
+        age = (now - p["last"]) // 86400
+        lines.append(f"  {p['name']}: {p['from']} → {p['to']} (last {age}d ago)")
+
+    if dry_run:
+        return "\n".join(lines)
+
+    # Apply.
+    arch = _archive_dir()
+    arch.mkdir(parents=True, exist_ok=True)
+    for p in plan:
+        conn.execute(
+            "UPDATE skill_usage SET state=? WHERE name=?",
+            (p["to"], p["name"]),
+        )
+        if p["to"] == "archived":
+            src = _skill_dir(p["name"])
+            if src.exists():
+                dst = arch / p["name"]
+                if dst.exists():
+                    # collide — keep both with timestamp suffix
+                    dst = arch / f"{p['name']}_{now}"
+                shutil.move(str(src), str(dst))
+        _emit(conn, "curator_transition", target=p["name"],
+              summary=f"{p['from']}→{p['to']}")
+    conn.commit()
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# review_thread — auto background fork
+# ──────────────────────────────────────────────────────────────────────────
+
+def _thread_notes_dump(conn, thread_id: str) -> str:
+    """Build a compact text dump of all notes + outcome for a thread."""
+    t = conn.execute(
+        "SELECT question, outcome, state FROM threads WHERE id=?",
+        (thread_id,),
+    ).fetchone()
+    if not t:
+        return ""
+    notes = conn.execute(
+        "SELECT kind, content, created_at FROM notes "
+        "WHERE thread_id=? ORDER BY created_at",
+        (thread_id,),
+    ).fetchall()
+    lines = [
+        f"Thread question: {t['question']}",
+        f"Thread state: {t['state']}",
+        f"Thread outcome: {t['outcome'] or '(none yet)'}",
+        f"Notes ({len(notes)}):",
+    ]
+    for n in notes:
+        snip = n["content"][:400].replace("\n", " ")
+        lines.append(f"  [{n['kind']}] {snip}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def review_thread(thread_id: str,
+                  focus: str = "combined",
+                  mode: str = "auto") -> str:
+    """Spawn a background review of a closed thread to extract memory/skills.
+
+    Equivalent of hermes-agent's _spawn_background_review: a separate Claude
+    process reads the thread's notes and writes back via memory/skill tools.
+
+    `focus`: 'memory' | 'skills' | 'combined' (default). Picks the review
+        prompt.
+    `mode`:
+        'auto'   — spawn an invisible background child with the review
+                   prompt + thread notes. Returns the spawn task_id. Child's
+                   write-origin is set to 'background_review' so curator
+                   can later prune what it produces.
+        'inline' — return the full prompt + notes context as a string; the
+                   foreground agent processes it in the current turn.
+    """
+    thread_id = thread_id.strip()
+    conn = get_db()
+    _ensure_session(conn)
+    if not conn.execute(
+        "SELECT 1 FROM threads WHERE id=?", (thread_id,)
+    ).fetchone():
+        return f"ERR thread_not_found={thread_id}"
+
+    focus = focus.strip().lower()
+    if focus == "memory":
+        base_prompt = MEMORY_REVIEW_PROMPT
+    elif focus in {"skill", "skills"}:
+        base_prompt = SKILL_REVIEW_PROMPT
+    elif focus in {"combined", "both", ""}:
+        base_prompt = COMBINED_REVIEW_PROMPT
+    else:
+        return f"ERR invalid_focus={focus} (memory|skills|combined)"
+
+    notes_dump = _thread_notes_dump(conn, thread_id)
+    full_prompt = (
+        f"You are reviewing closed thread {thread_id}.\n\n"
+        f"{notes_dump}\n\n"
+        f"---\n\n"
+        f"{base_prompt}\n\n"
+        f"When you write any skill, finish with "
+        f"mark_skill_materialized(thread_id='{thread_id}', skill_path=...) "
+        f"so the brief's skill_hint clears."
+    )
+
+    if mode == "inline":
+        return full_prompt
+
+    if mode != "auto":
+        return f"ERR invalid_mode={mode} (auto|inline)"
+
+    # Spawn an invisible background fork. Reuse spawn() — runtime import
+    # avoids a circular import on package load. slim=True loads ONLY
+    # thread-keeper MCP for the child (no context7/figma/etc) — review
+    # work doesn't need any of those, and it cuts startup RAM dramatically.
+    from .spawn import spawn  # type: ignore
+    result = spawn(
+        prompt=full_prompt,
+        visible=False,
+        capture_output=True,
+        permission_mode="auto",
+        role="archivist",
+        write_origin="background_review",
+        slim=True,
+        extra_allowed_tools=(
+            "mcp__thread-keeper__skill_manage,"
+            "mcp__thread-keeper__skill_record,"
+            "mcp__thread-keeper__mark_skill_materialized,"
+            "mcp__thread-keeper__skill_list,"
+            "Edit,Read,Write"
+        ),
+    )
+    # The spawned child IS an application of the ai-memory-learning-loop
+    # skill (review prompt = that skill's procedure baked in). The child
+    # won't invoke Skill(...) explicitly, so bump the counter here so
+    # `uses` reflects how many times the loop actually fired in the wild.
+    now = int(time.time())
+    try:
+        conn.execute(
+            "INSERT INTO skill_usage "
+            "(name, created_at, created_by_origin) "
+            "VALUES (?, ?, 'background_review') "
+            "ON CONFLICT(name) DO NOTHING",
+            ("ai-memory-learning-loop", now),
+        )
+        conn.execute(
+            "UPDATE skill_usage "
+            "SET last_used_at=?, use_count=use_count+1 "
+            "WHERE name=?",
+            (now, "ai-memory-learning-loop"),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # skill_usage missing on this conn
+    return result

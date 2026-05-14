@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "threadkeeper"
+version = "0.2.0"
+description = "Persistent working memory across agentic CLI sessions — CLI-agnostic adapter for Claude Code, Codex, Gemini, and Copilot."
+requires-python = ">=3.11"
+authors = [{ name = "thread-keeper contributors" }]
+
+[project.scripts]
+# After `pip install -e .` (or `pip install threadkeeper`), the user gets
+# `thread-keeper-setup` directly on PATH. Equivalent to
+# `python -m threadkeeper._setup`.
+thread-keeper-setup = "threadkeeper._setup:main"
+
+[tool.setuptools.packages.find]
+include = ["threadkeeper*"]
+exclude = ["tests*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests >1s (semantic embed warmup, file scan)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

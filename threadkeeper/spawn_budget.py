@@ -1,0 +1,246 @@
+"""RSS budget enforcement for spawned children.
+
+Cap on combined RSS of all running spawned children. The parent process
+itself is not counted (we don't constrain the user's main agent). Default
+budget is `SPAWN_BUDGET_MB` (3072 MB).
+
+Flow:
+  spawn() pre-flight:
+    estimate child RSS (slim → SPAWN_ESTIMATE_SLIM_MB, else FULL)
+    check_budget(conn, new_kb) returns ("ok"|"refused", message)
+    if refused → spawn() returns ERR + reason
+    else → INSERT tasks row with rss_kb = estimate, then proceed
+
+  background daemon (start_budget_daemon):
+    every SPAWN_BUDGET_POLL_S seconds, walk running tasks, compute real
+    RSS of each process tree via `ps`, write back into tasks.rss_kb.
+    Tasks that have ended → no update (their rss_kb stays as last seen
+    but they're filtered out by ended_at IS NOT NULL anyway).
+
+  spawn_budget_status() (MCP):
+    "budget=N MB used=N MB free=N MB | per_task..."
+
+Set SPAWN_BUDGET_MB=0 to disable enforcement entirely.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import threading
+import time
+from typing import Optional, Tuple
+
+from .config import (
+    SPAWN_BUDGET_MB,
+    SPAWN_ESTIMATE_SLIM_MB,
+    SPAWN_ESTIMATE_FULL_MB,
+    SPAWN_BUDGET_POLL_S,
+)
+from .db import get_db
+from .helpers import alive
+
+logger = logging.getLogger(__name__)
+
+_started = False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Estimates
+# ─────────────────────────────────────────────────────────────────────
+
+def estimate_child_rss_kb(slim: bool) -> int:
+    """Initial RSS guess for a not-yet-running child, used by admission
+    control. Real value replaces this within `SPAWN_BUDGET_POLL_S`."""
+    mb = SPAWN_ESTIMATE_SLIM_MB if slim else SPAWN_ESTIMATE_FULL_MB
+    return int(mb) * 1024
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Tree walker — sum RSS of pid and all its descendants via `ps`
+# ─────────────────────────────────────────────────────────────────────
+
+def _ps_pairs() -> list[tuple[int, int]]:
+    """Snapshot of (pid, ppid) for every process visible to `ps`."""
+    try:
+        r = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,ppid="],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    out: list[tuple[int, int]] = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            out.append((int(parts[0]), int(parts[1])))
+        except ValueError:
+            continue
+    return out
+
+
+def _rss_for_pids(pids: list[int]) -> int:
+    """Sum RSS (KB) for the given pids via `ps`. Missing pids contribute 0."""
+    if not pids:
+        return 0
+    try:
+        r = subprocess.run(
+            ["ps", "-o", "pid=,rss="] + ["-p"] + [str(p) for p in pids],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0
+    total = 0
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            total += int(parts[1])
+        except ValueError:
+            continue
+    return total
+
+
+def measure_tree_rss_kb(root_pid: int) -> Optional[int]:
+    """Walk descendants of root_pid and return summed RSS in KB.
+    Returns None when the root is gone (so caller can leave the row alone)."""
+    if root_pid is None or root_pid <= 0:
+        return None
+    pairs = _ps_pairs()
+    if not pairs:
+        return None
+    # Bail when the root isn't visible — process ended.
+    root_alive = any(pid == root_pid for pid, _ in pairs)
+    if not root_alive:
+        return None
+    # BFS descendants
+    children_by_parent: dict[int, list[int]] = {}
+    for pid, ppid in pairs:
+        children_by_parent.setdefault(ppid, []).append(pid)
+    tree = [root_pid]
+    frontier = [root_pid]
+    while frontier:
+        nxt: list[int] = []
+        for p in frontier:
+            for kid in children_by_parent.get(p, ()):
+                tree.append(kid)
+                nxt.append(kid)
+        frontier = nxt
+    return _rss_for_pids(tree)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Budget check
+# ─────────────────────────────────────────────────────────────────────
+
+def _running_tasks_rss(conn) -> int:
+    """Sum rss_kb across tasks that are not ended. NULL rss_kb means we
+    haven't measured yet — assume the FULL estimate as a conservative
+    placeholder, otherwise a spawn flood could squeeze past the cap before
+    the daemon catches up."""
+    rows = conn.execute(
+        "SELECT rss_kb FROM tasks WHERE ended_at IS NULL"
+    ).fetchall()
+    total = 0
+    fallback_kb = SPAWN_ESTIMATE_FULL_MB * 1024
+    for r in rows:
+        total += (r["rss_kb"] if r["rss_kb"] is not None else fallback_kb)
+    return total
+
+
+def check_budget(conn, new_child_kb: int) -> Tuple[bool, str]:
+    """Decide whether spawning a child of `new_child_kb` would breach the
+    budget. Returns (ok, message). When SPAWN_BUDGET_MB=0, always ok."""
+    if SPAWN_BUDGET_MB <= 0:
+        return True, "budget_disabled"
+    budget_kb = SPAWN_BUDGET_MB * 1024
+    current = _running_tasks_rss(conn)
+    projected = current + new_child_kb
+    if projected > budget_kb:
+        cur_mb = current // 1024
+        new_mb = new_child_kb // 1024
+        proj_mb = projected // 1024
+        return False, (
+            f"budget_exceeded: running_subagents={cur_mb}MB + "
+            f"new_child={new_mb}MB = {proj_mb}MB > "
+            f"limit={SPAWN_BUDGET_MB}MB. Wait for a child to finish, "
+            f"raise THREADKEEPER_SPAWN_BUDGET_MB, or use task_kill()."
+        )
+    return True, (
+        f"ok: current={current // 1024}MB + new={new_child_kb // 1024}MB "
+        f"≤ {SPAWN_BUDGET_MB}MB"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Daemon — refresh real RSS values
+# ─────────────────────────────────────────────────────────────────────
+
+def _refresh_all_running(conn) -> int:
+    """Sweep running tasks, update rss_kb with real measurement. Tasks
+    whose pid is invalid (0 / visible spawn) are skipped — their RSS
+    can't be tracked from here. Returns number of rows updated."""
+    rows = conn.execute(
+        "SELECT id, pid, spawned_cid FROM tasks "
+        "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 100"
+    ).fetchall()
+    now = int(time.time())
+    updated = 0
+    for r in rows:
+        pid = r["pid"]
+        if not pid or pid <= 0:
+            continue  # visible spawns — Terminal-launched, pid not tracked
+        if not alive(pid):
+            # Process gone — mark ended, leave rss_kb as last-known.
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            continue
+        rss = measure_tree_rss_kb(pid)
+        if rss is None:
+            continue
+        conn.execute(
+            "UPDATE tasks SET rss_kb=?, rss_updated_at=? WHERE id=?",
+            (rss, now, r["id"]),
+        )
+        updated += 1
+    if updated:
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    return updated
+
+
+def _daemon_loop() -> None:
+    while True:
+        try:
+            conn = get_db()
+            try:
+                _refresh_all_running(conn)
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("spawn_budget daemon tick failed", exc_info=True)
+        time.sleep(SPAWN_BUDGET_POLL_S)
+
+
+def start_budget_daemon() -> None:
+    """Idempotent — call from _ensure_session lazily."""
+    global _started
+    if _started:
+        return
+    if SPAWN_BUDGET_POLL_S <= 0:
+        return
+    if SPAWN_BUDGET_MB <= 0:
+        return  # budget disabled, no need to track
+    t = threading.Thread(
+        target=_daemon_loop, name="spawn_budget", daemon=True,
+    )
+    t.start()
+    _started = True

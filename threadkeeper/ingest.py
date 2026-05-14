@@ -1,0 +1,507 @@
+"""Live ingestion of Claude Code jsonl transcripts into dialog_messages/_fts.
+Background daemon ticks every INGEST_INTERVAL_S; brief() can also call _ingest_recent_only directly."""
+from __future__ import annotations
+
+import json as _json
+import os
+import sqlite3
+import threading
+import time
+from datetime import datetime as _dt
+from pathlib import Path
+from typing import Optional
+
+from .config import (
+    INGEST_CAP_PER_CALL,
+    INGEST_INTERVAL_S,
+    INGEST_RECENT_WINDOW_S,
+    SEMANTIC_AVAILABLE,
+)
+from .db import get_db
+from .embeddings import _embed
+
+_ingest_thread: Optional[threading.Thread] = None
+_ingest_lock = threading.Lock()
+_ingest_interval_s = INGEST_INTERVAL_S
+_ingest_recent_window_s = INGEST_RECENT_WINDOW_S
+
+
+def _backfill_dialog_fts_if_empty(conn: sqlite3.Connection) -> None:
+    """Populate dialog_fts from dialog_messages on first start (or after a
+    schema add when most rows are already in dialog_messages but not in FTS).
+
+    Compares row counts: if dialog_fts is meaningfully behind dialog_messages,
+    backfill the gap (uuids missing from fts). Idempotent — only inserts
+    rows whose uuid isn't already in dialog_fts. Roughly 5-10s for 100k
+    records on a laptop — one-time cost."""
+    try:
+        msg_cnt = conn.execute(
+            "SELECT COUNT(*) c FROM dialog_messages"
+        ).fetchone()["c"]
+        fts_cnt = conn.execute(
+            "SELECT COUNT(*) c FROM dialog_fts"
+        ).fetchone()["c"]
+    except sqlite3.OperationalError:
+        return
+    if fts_cnt >= msg_cnt - 5:
+        # close enough — newly-arrived rows fill via INSERT trigger in _ingest_file
+        conn.execute(
+            "INSERT INTO style (key, value, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            ("fts_backfilled", str(fts_cnt), int(time.time())),
+        )
+        conn.commit()
+        return
+    # backfill rows present in dialog_messages but missing from dialog_fts
+    missing = conn.execute(
+        "SELECT d.uuid, d.content FROM dialog_messages d "
+        "LEFT JOIN dialog_fts f ON f.uuid = d.uuid "
+        "WHERE f.uuid IS NULL"
+    ).fetchall()
+    batch: list[tuple[str, str]] = []
+    added = 0
+    for r in missing:
+        batch.append((r["uuid"], r["content"]))
+        if len(batch) >= 5000:
+            conn.executemany(
+                "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
+                batch,
+            )
+            conn.commit()
+            added += len(batch)
+            batch = []
+    if batch:
+        conn.executemany(
+            "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
+            batch,
+        )
+        added += len(batch)
+    final_cnt = conn.execute(
+        "SELECT COUNT(*) c FROM dialog_fts"
+    ).fetchone()["c"]
+    conn.execute(
+        "INSERT INTO style (key, value, updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+        "updated_at=excluded.updated_at",
+        ("fts_backfilled", f"{final_cnt}+{added}", int(time.time())),
+    )
+    conn.commit()
+
+
+def _parse_ts(ts: str) -> int:
+    try:
+        return int(_dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return int(time.time())
+
+
+def _scan_message_for_skill_use(msg: dict) -> list[str]:
+    """Return Skill tool_use invocations found in a single message dict.
+    Handles both flat and nested content arrays; accepts either 'skill' or
+    'name' key inside the tool_use input payload. Returns [] for non-
+    matching messages.
+    """
+    found: list[str] = []
+
+    def _walk(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "tool_use" and node.get("name") == "Skill":
+            inp = node.get("input") or {}
+            if isinstance(inp, dict):
+                val = inp.get("skill") or inp.get("name")
+                if isinstance(val, str) and val:
+                    found.append(val)
+        # Recurse into anything that might wrap further content blocks.
+        for v in node.values():
+            if isinstance(v, (list, dict)):
+                _walk(v)
+
+    _walk(msg)
+    return found
+
+
+def _extract_text(msg: dict) -> str:
+    """Pull searchable text from a message; skip tool_use args, cap tool_results."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        t = block.get("type")
+        if t == "text":
+            parts.append(block.get("text", ""))
+        elif t == "thinking":
+            parts.append(f"[thinking] {block.get('thinking', '')}")
+        elif t == "tool_result":
+            tr = block.get("content", "")
+            if isinstance(tr, list):
+                tr = " ".join(b.get("text", "") for b in tr if isinstance(b, dict))
+            if isinstance(tr, str) and tr:
+                parts.append(f"[tool_result] {tr[:800]}")
+        # tool_use blocks deliberately skipped (noisy for semantic search)
+    return "\n".join(p for p in parts if p)
+
+
+def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
+                 adapter=None) -> int:
+    """Incrementally ingest one transcript file from the given adapter.
+    Returns number of new messages added.
+
+    When `adapter` is None (legacy callers), the Claude Code adapter is
+    used so the function's old contract still holds.
+
+    Strategy: skip the file entirely if mtime hasn't advanced past
+    ingest_state.last_mtime. Otherwise use `adapter.iter_messages(fp)`
+    to enumerate normalized messages and dedup via dialog_messages.uuid.
+    """
+    if adapter is None:
+        from .adapters import _CLAUDE_CODE as _claude_default  # type: ignore
+        adapter = _claude_default
+    if not fp.exists():
+        return 0
+    stat = fp.stat()
+    mtime = int(stat.st_mtime)
+    state = conn.execute(
+        "SELECT last_mtime FROM ingest_state WHERE file_path=?", (str(fp),)
+    ).fetchone()
+    last_mtime = state["last_mtime"] if state else 0
+    if mtime <= last_mtime:
+        return 0
+    added = 0
+    try:
+        for nm in adapter.iter_messages(fp):
+            if added >= max_msgs:
+                break
+            if not nm.uuid:
+                continue
+            if conn.execute(
+                "SELECT 1 FROM dialog_messages WHERE uuid=?", (nm.uuid,)
+            ).fetchone():
+                continue
+            # Skill scan first — runs even for tool-only assistant turns
+            # whose text body would fail the >=10 char filter below.
+            if nm.role == "assistant":
+                for skill_name in _scan_message_for_skill_use(nm.raw):
+                    try:
+                        conn.execute(
+                            "INSERT INTO skill_usage "
+                            "(name, created_at, created_by_origin) "
+                            "VALUES (?, ?, 'foreground') "
+                            "ON CONFLICT(name) DO NOTHING",
+                            (skill_name, nm.created_at),
+                        )
+                        conn.execute(
+                            "UPDATE skill_usage "
+                            "SET last_used_at=?, use_count=use_count+1 "
+                            "WHERE name=? AND (last_used_at IS NULL "
+                            "OR last_used_at < ?)",
+                            (nm.created_at, skill_name, nm.created_at),
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # skill_usage missing on this conn
+            text = nm.content
+            if not text or len(text) < 10:
+                continue
+            emb = _embed(text[:2000]) if SEMANTIC_AVAILABLE else None
+            conn.execute(
+                "INSERT INTO dialog_messages (uuid, source, project, session_id, "
+                "role, content, model, created_at, embedding) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (nm.uuid, adapter.name, adapter.project_label(fp),
+                 nm.session_id, nm.role, text,
+                 nm.model, nm.created_at, emb)
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
+                    (nm.uuid, text),
+                )
+            except sqlite3.OperationalError:
+                pass
+            if emb is not None:
+                try:
+                    from .embeddings import _vec_upsert_dialog
+                    _vec_upsert_dialog(conn, nm.uuid, emb)
+                except Exception:
+                    pass
+            added += 1
+    except OSError:
+        return added
+    conn.execute(
+        "INSERT INTO ingest_state (file_path, last_size, last_mtime, ingested_at, msg_count) "
+        "VALUES (?,?,?,?,?) "
+        "ON CONFLICT(file_path) DO UPDATE SET "
+        "  last_size=excluded.last_size, last_mtime=excluded.last_mtime, "
+        "  ingested_at=excluded.ingested_at, msg_count=ingest_state.msg_count+excluded.msg_count",
+        (str(fp), stat.st_size, mtime, int(time.time()), added)
+    )
+    return added
+
+
+def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[int, int]:
+    """Iterate every installed CLI adapter, incrementally ingest each
+    transcript file. Returns (new_msgs, files_seen) across ALL adapters."""
+    from .adapters import installed_adapters
+    total = 0
+    files_seen = 0
+    for adapter in installed_adapters():
+        files = adapter.transcript_files()
+        files_seen += len(files)
+        files = sorted(
+            files,
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True,
+        )
+        for fp in files:
+            if total >= max_msgs:
+                break
+            total += _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+    conn.commit()
+    return (total, files_seen)
+
+
+def _ingest_recent_only(conn: sqlite3.Connection,
+                        max_msgs: int = 200,
+                        max_age_s: int = 600) -> tuple[int, int]:
+    """Live-mode ingest: only transcript files modified within `max_age_s`,
+    across ALL installed CLI adapters.
+
+    Commits after EACH file so the background tick doesn't hold a long
+    write lock — multi-writer contention (parent + children + ingester)
+    deadlocks fast otherwise."""
+    from .adapters import installed_adapters
+    cutoff = time.time() - max_age_s
+    fresh: list[tuple[float, Path, object]] = []
+    for adapter in installed_adapters():
+        for p in adapter.transcript_files():
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            if m > cutoff:
+                fresh.append((m, p, adapter))
+    fresh.sort(key=lambda x: x[0], reverse=True)
+    total = 0
+    for _, fp, adapter in fresh:
+        if total >= max_msgs:
+            break
+        added = _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+        total += added
+        if added:
+            try:
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+    return (total, len(fresh))
+
+
+def _backfill_skill_usage_from_jsonls(conn: sqlite3.Connection) -> int:
+    """One-shot historical scan across every installed adapter. Finds
+    assistant messages with tool_use(name='Skill') blocks and bumps
+    skill_usage counters. Idempotent — the UPDATE guard on last_used_at
+    prevents double-counting.
+
+    Skill-tool semantics are Claude-specific in practice (other CLIs
+    don't emit `tool_use name='Skill'` blocks), but the scanner is
+    defensive and silently returns [] on unmatched payload shapes —
+    so iterating all adapters is safe.
+
+    Returns the number of (skill_name, message) pairs processed.
+    """
+    from .adapters import installed_adapters
+    processed = 0
+    for adapter in installed_adapters():
+        for fp in adapter.transcript_files():
+            try:
+                for nm in adapter.iter_messages(fp):
+                    if nm.role != "assistant":
+                        continue
+                    skills = _scan_message_for_skill_use(nm.raw)
+                    if not skills:
+                        continue
+                    for skill_name in skills:
+                        try:
+                            conn.execute(
+                                "INSERT INTO skill_usage "
+                                "(name, created_at, created_by_origin) "
+                                "VALUES (?, ?, 'foreground') "
+                                "ON CONFLICT(name) DO NOTHING",
+                                (skill_name, nm.created_at),
+                            )
+                            conn.execute(
+                                "UPDATE skill_usage "
+                                "SET last_used_at=?, use_count=use_count+1 "
+                                "WHERE name=? AND (last_used_at IS NULL "
+                                "OR last_used_at < ?)",
+                                (nm.created_at, skill_name, nm.created_at),
+                            )
+                            processed += 1
+                        except sqlite3.OperationalError:
+                            pass
+            except OSError:
+                continue
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    return processed
+
+
+def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
+    """Embed up to `max_n` notes whose embedding column is NULL, and mirror
+    every newly-embedded blob into notes_vec.
+
+    Light spawned children (NO_EMBEDDINGS=1) write notes with embedding=NULL
+    because they don't carry the model. A parent process with embeddings
+    available catches them up here so semantic search isn't permanently
+    blind to those notes. No-op when this process doesn't have embeddings.
+    Returns the number of rows updated.
+    """
+    from .config import SEMANTIC_AVAILABLE
+    if not SEMANTIC_AVAILABLE:
+        return 0
+    try:
+        rows = conn.execute(
+            "SELECT id, content FROM notes "
+            "WHERE embedding IS NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (max_n,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    from .embeddings import _embed, _vec_upsert_note
+    updated = 0
+    for r in rows:
+        try:
+            emb = _embed(r["content"])
+        except Exception:
+            continue
+        if emb is None:
+            continue
+        try:
+            conn.execute(
+                "UPDATE notes SET embedding=? WHERE id=?",
+                (emb, r["id"]),
+            )
+            _vec_upsert_note(conn, r["id"], emb)
+            updated += 1
+        except sqlite3.OperationalError:
+            continue
+    if updated:
+        try:
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    return updated
+
+
+def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[int, int]:
+    """One-shot migration: mirror existing notes.embedding and
+    dialog_messages.embedding BLOBs into notes_vec / dialog_vec.
+
+    Idempotent — `INSERT OR REPLACE` won't duplicate. Returns
+    (notes_inserted, dialog_inserted). Called from the background ingester
+    tick; bails fast when there's nothing to do.
+    """
+    from .config import SEMANTIC_AVAILABLE
+    from .db import vec_available
+    if not SEMANTIC_AVAILABLE or not vec_available():
+        return (0, 0)
+    from .embeddings import _vec_upsert_note, _vec_upsert_dialog
+    n_notes = 0
+    n_dialog = 0
+    try:
+        # Notes that have embedding but aren't yet in notes_vec.
+        rows = conn.execute(
+            "SELECT n.id, n.embedding FROM notes n "
+            "LEFT JOIN notes_vec v ON v.id = n.id "
+            "WHERE n.embedding IS NOT NULL AND v.id IS NULL "
+            "LIMIT ?",
+            (batch,),
+        ).fetchall()
+        for r in rows:
+            _vec_upsert_note(conn, r["id"], r["embedding"])
+            n_notes += 1
+    except sqlite3.OperationalError:
+        pass
+    try:
+        # Dialog messages with embedding but no dialog_vec_map row → need
+        # mirroring. (We check via the map because dialog_vec is keyed
+        # by rowid, not uuid.)
+        rows = conn.execute(
+            "SELECT d.uuid, d.embedding FROM dialog_messages d "
+            "LEFT JOIN dialog_vec_map m ON m.uuid = d.uuid "
+            "WHERE d.embedding IS NOT NULL AND m.uuid IS NULL "
+            "LIMIT ?",
+            (batch,),
+        ).fetchall()
+        for r in rows:
+            _vec_upsert_dialog(conn, r["uuid"], r["embedding"])
+            n_dialog += 1
+    except sqlite3.OperationalError:
+        pass
+    if n_notes or n_dialog:
+        try:
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    return (n_notes, n_dialog)
+
+
+def _start_background_ingester() -> None:
+    """Start a daemon thread that incrementally ingests recently-modified jsonl
+    files. Idempotent: subsequent calls are no-ops. Daemon=True so it dies with
+    the process; no shutdown handshake needed."""
+    global _ingest_thread
+    if _ingest_thread is not None and _ingest_thread.is_alive():
+        return
+    if _ingest_interval_s <= 0:
+        return  # disabled via env
+
+    def _loop() -> None:
+        while True:
+            time.sleep(_ingest_interval_s)
+            try:
+                if not _ingest_lock.acquire(blocking=False):
+                    continue  # another tick still running, skip
+                try:
+                    bg_conn = get_db()
+                    try:
+                        _ingest_recent_only(
+                            bg_conn,
+                            max_msgs=200,
+                            max_age_s=_ingest_recent_window_s,
+                        )
+                        # Embedding backfill: light children write notes
+                        # with embedding=NULL (NO_EMBEDDINGS=1). Parent
+                        # processes with SEMANTIC_AVAILABLE catch them up
+                        # asynchronously so semantic search recovers
+                        # without blocking the child.
+                        _backfill_note_embeddings(bg_conn, max_n=20)
+                        # vec0 backfill: mirror legacy BLOB embeddings
+                        # into the vec0 virtual tables in batches so the
+                        # sub-linear index gradually warms up.
+                        _backfill_vec_tables(bg_conn, batch=500)
+                    finally:
+                        bg_conn.close()
+                finally:
+                    _ingest_lock.release()
+            except Exception:
+                pass  # never crash the daemon
+
+    _ingest_thread = threading.Thread(
+        target=_loop, name="thread-keeper-live-ingest", daemon=True
+    )
+    _ingest_thread.start()

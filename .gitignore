@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local config / runtime state (must never land in git)
+*.bak
+*.bak.*
+.bak.*
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# Local-only test artifacts
+tests/__pycache__/
+/test-results/
+/coverage/

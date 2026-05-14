@@ -1,0 +1,376 @@
+"""CLI adapter contract tests.
+
+For each adapter we verify:
+  * is_installed() honors the file/exec presence heuristic
+  * register_mcp_server creates/updates the right config file
+  * iter_messages parses synthetic transcripts into NormalizedMessage
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+
+
+def _bootstrap(tmp_path, monkeypatch):
+    env = {
+        "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
+        "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
+        "THREADKEEPER_INGEST_INTERVAL_S": "0",
+        "THREADKEEPER_INGEST_CAP": "0",
+        "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",
+        "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
+        "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
+        "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+    import threadkeeper.server  # noqa: F401
+    from threadkeeper import db
+    from threadkeeper.adapters import (
+        ADAPTERS, installed_adapters,
+        claude_code as cc_mod,
+        codex as codex_mod,
+        gemini as gem_mod,
+        copilot as cop_mod,
+    )
+    return {
+        "db": db,
+        "ADAPTERS": ADAPTERS,
+        "installed_adapters": installed_adapters,
+        "claude": cc_mod.ADAPTER,
+        "codex": codex_mod.ADAPTER,
+        "gemini": gem_mod.ADAPTER,
+        "copilot": cop_mod.ADAPTER,
+    }
+
+
+# ---------------------------------------------------------------------
+# Registry shape
+# ---------------------------------------------------------------------
+
+def test_registry_lists_four_adapters(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    names = {a.name for a in pkg["ADAPTERS"]}
+    assert names == {"claude-code", "codex", "gemini", "copilot"}
+
+
+# ---------------------------------------------------------------------
+# Claude Code: round-trip MCP register + parse
+# ---------------------------------------------------------------------
+
+def test_claude_register_mcp_writes_config(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    cfg = fake_home / ".claude.json"
+    monkeypatch.setattr(pkg["claude"], "config_path", cfg)
+
+    result = pkg["claude"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "add" in result or "update" in result
+    body = json.loads(cfg.read_text())
+    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
+
+    # Idempotency
+    result2 = pkg["claude"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "already current" in result2
+
+
+def test_claude_iter_messages_parses_jsonl(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fp = tmp_path / "claude_session.jsonl"
+    fp.write_text(
+        json.dumps({
+            "uuid": "c-1",
+            "type": "assistant",
+            "timestamp": "2026-05-14T10:00:00Z",
+            "sessionId": "sess-a",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus",
+                "content": [{"type": "text", "text": "hello world"}],
+            },
+        }) + "\n"
+        + json.dumps({
+            "uuid": "c-2",
+            "type": "user",
+            "timestamp": "2026-05-14T10:00:01Z",
+            "sessionId": "sess-a",
+            "message": {"role": "user", "content": "hi back"},
+        }) + "\n"
+    )
+    msgs = list(pkg["claude"].iter_messages(fp))
+    assert [m.uuid for m in msgs] == ["c-1", "c-2"]
+    assert msgs[0].content == "hello world"
+    assert msgs[0].role == "assistant"
+    assert msgs[1].content == "hi back"
+    assert msgs[1].role == "user"
+
+
+# ---------------------------------------------------------------------
+# Codex
+# ---------------------------------------------------------------------
+
+def test_codex_register_mcp_writes_toml(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(pkg["codex"], "config_path", cfg)
+    result = pkg["codex"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "config.toml" in result
+    body = cfg.read_text()
+    assert "[mcp_servers.thread-keeper]" in body
+    assert '"/opt/python"' in body
+    assert "[mcp_servers.thread-keeper.env]" in body
+    assert '"/repo"' in body
+
+
+def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"
+    fp.write_text("\n".join([
+        json.dumps({"timestamp": "2026-05-14T10:00:00Z", "type": "session_meta",
+                    "payload": {"id": "sess-x", "cwd": "/x"}}),
+        json.dumps({"timestamp": "2026-05-14T10:00:01Z", "type": "response_item",
+                    "payload": {"type": "message", "role": "developer", "id": "dev-1",
+                                "content": [{"type": "input_text", "text": "internal"}]}}),
+        json.dumps({"timestamp": "2026-05-14T10:00:02Z", "type": "response_item",
+                    "payload": {"type": "message", "role": "user", "id": "u-1",
+                                "content": [{"type": "input_text", "text": "hi"}]}}),
+        json.dumps({"timestamp": "2026-05-14T10:00:03Z", "type": "response_item",
+                    "payload": {"type": "message", "role": "assistant", "id": "a-1",
+                                "model": "gpt-5", "content": [{"type": "output_text",
+                                                                "text": "hello"}]}}),
+    ]) + "\n")
+    msgs = list(pkg["codex"].iter_messages(fp))
+    assert [m.uuid for m in msgs] == ["u-1", "a-1"]
+    assert msgs[0].session_id == "sess-x"
+    assert msgs[1].model == "gpt-5"
+    assert msgs[1].content == "hello"
+
+
+# ---------------------------------------------------------------------
+# Gemini
+# ---------------------------------------------------------------------
+
+def test_gemini_register_mcp_writes_settings_json(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "settings.json"
+    monkeypatch.setattr(pkg["gemini"], "config_path", cfg)
+    result = pkg["gemini"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    body = json.loads(cfg.read_text())
+    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
+    assert body["mcpServers"]["thread-keeper"]["env"]["PYTHONPATH"] == "/repo"
+
+
+def test_gemini_iter_messages_normalizes_types(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fp = tmp_path / "session-2026-05-14T10-00-id.jsonl"
+    fp.write_text("\n".join([
+        json.dumps({"sessionId": "g-sess", "projectHash": "abc",
+                    "startTime": "2026-05-14T10:00:00Z"}),
+        json.dumps({"id": "g-info", "timestamp": "2026-05-14T10:00:01Z",
+                    "type": "info", "content": "warmup"}),  # skipped
+        json.dumps({"id": "g-u", "timestamp": "2026-05-14T10:00:02Z",
+                    "type": "user", "content": "hi gemini"}),
+        json.dumps({"id": "g-a", "timestamp": "2026-05-14T10:00:03Z",
+                    "type": "model", "content": "hi back"}),
+    ]) + "\n")
+    msgs = list(pkg["gemini"].iter_messages(fp))
+    assert [m.uuid for m in msgs] == ["g-u", "g-a"]
+    assert msgs[1].role == "assistant"  # "model" → "assistant"
+    assert msgs[0].session_id == "g-sess"
+
+
+# ---------------------------------------------------------------------
+# Copilot
+# ---------------------------------------------------------------------
+
+def test_copilot_register_mcp_uses_mcpServers_key(tmp_path, monkeypatch):
+    """Copilot v1.0.43+ requires `mcpServers` (not `servers`). Earlier
+    bundles documented `servers`; the validator now rejects that."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp-config.json"
+    monkeypatch.setattr(pkg["copilot"], "config_path", cfg)
+    pkg["copilot"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    body = json.loads(cfg.read_text())
+    assert "mcpServers" in body
+    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
+
+
+def test_copilot_register_mcp_migrates_legacy_servers_key(tmp_path, monkeypatch):
+    """Existing config with legacy `servers` key must be migrated to
+    `mcpServers` (so Copilot's validator stops rejecting the file) and
+    the legacy entries preserved."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp-config.json"
+    cfg.write_text(json.dumps({
+        "servers": {
+            "ghost-ai": {"command": "ghost-ai", "args": []},
+        }
+    }))
+    monkeypatch.setattr(pkg["copilot"], "config_path", cfg)
+    result = pkg["copilot"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={},
+    )
+    assert "migrated" in result
+    body = json.loads(cfg.read_text())
+    assert "servers" not in body  # legacy key removed
+    assert "mcpServers" in body
+    assert "ghost-ai" in body["mcpServers"]
+    assert "thread-keeper" in body["mcpServers"]
+
+
+# ---------------------------------------------------------------------
+# Hooks: shared Claude-style format used by claude-code, gemini, copilot
+# ---------------------------------------------------------------------
+
+def _specs():
+    return [
+        {"event": "SessionStart", "command": "/tk/brief.sh", "matcher": ""},
+        {"event": "PostToolUse", "command": "/tk/status.sh",
+         "matcher": "mcp__thread-keeper__.*"},
+    ]
+
+
+def test_claude_register_hooks_writes_settings_json(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    sp = tmp_path / "settings.json"
+    monkeypatch.setattr(pkg["claude"], "_settings_path", sp)
+    assert pkg["claude"].hooks_supported()
+    result = pkg["claude"].register_hooks(_specs())
+    assert "updated" in result
+    body = json.loads(sp.read_text())
+    assert body["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "/tk/brief.sh"
+    assert body["hooks"]["PostToolUse"][0]["matcher"] == "mcp__thread-keeper__.*"
+    # Idempotency
+    assert "already current" in pkg["claude"].register_hooks(_specs())
+
+
+def test_gemini_register_hooks_writes_settings_json(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    sp = tmp_path / "gemini-settings.json"
+    monkeypatch.setattr(pkg["gemini"], "config_path", sp)
+    assert pkg["gemini"].hooks_supported()
+    pkg["gemini"].register_hooks(_specs())
+    body = json.loads(sp.read_text())
+    assert "SessionStart" in body["hooks"]
+
+
+def test_copilot_register_hooks_writes_hooks_json(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    hp = tmp_path / "hooks.json"
+    monkeypatch.setattr(pkg["copilot"], "_hooks_path", hp)
+    assert pkg["copilot"].hooks_supported()
+    pkg["copilot"].register_hooks(_specs())
+    body = json.loads(hp.read_text())
+    # Copilot expects hooks under a top-level "hooks" key in this file
+    # (same as Claude's settings.json shape).
+    assert "hooks" in body
+    assert "SessionStart" in body["hooks"]
+
+
+def test_codex_hooks_not_supported(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["codex"].hooks_supported() is False
+    result = pkg["codex"].register_hooks(_specs())
+    assert "unsupported" in result
+
+
+def test_register_hooks_preserves_existing_user_blocks(tmp_path, monkeypatch):
+    """A pre-existing user-defined hook in the same event must NOT be
+    clobbered — adapter appends our entry alongside."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "/user/own.sh"}]}
+            ]
+        }
+    }))
+    monkeypatch.setattr(pkg["claude"], "_settings_path", sp)
+    pkg["claude"].register_hooks([
+        {"event": "SessionStart", "command": "/tk/brief.sh", "matcher": ""},
+    ])
+    body = json.loads(sp.read_text())
+    cmds = [b["hooks"][0]["command"] for b in body["hooks"]["SessionStart"]]
+    assert "/user/own.sh" in cmds
+    assert "/tk/brief.sh" in cmds
+
+
+def test_copilot_iter_messages_splits_turns(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    # Build a minimal session-store.db with one session and two turns
+    db_path = tmp_path / "session-store.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, host_type TEXT,
+            branch TEXT, summary TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            turn_index INTEGER NOT NULL,
+            user_message TEXT,
+            assistant_response TEXT,
+            timestamp TEXT
+        );
+    """)
+    conn.execute("INSERT INTO sessions(id,cwd) VALUES (?,?)", ("s1", "/x"))
+    conn.execute(
+        "INSERT INTO turns(session_id,turn_index,user_message,"
+        "assistant_response,timestamp) VALUES (?,?,?,?,?)",
+        ("s1", 0, "hello", "hi there", "2026-05-14 10:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO turns(session_id,turn_index,user_message,"
+        "assistant_response,timestamp) VALUES (?,?,?,?,?)",
+        ("s1", 1, "do X", "done", "2026-05-14 10:00:01"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(pkg["copilot"], "session_db", db_path)
+
+    msgs = list(pkg["copilot"].iter_messages(db_path))
+    # 2 turns × 2 (user + assistant) = 4 normalized messages
+    assert len(msgs) == 4
+    assert msgs[0].role == "user" and msgs[0].content == "hello"
+    assert msgs[1].role == "assistant" and msgs[1].content == "hi there"
+    assert msgs[2].role == "user" and msgs[2].content == "do X"
+    assert msgs[3].role == "assistant" and msgs[3].content == "done"
