@@ -31,14 +31,18 @@ jobs:
           python -m pip install --upgrade pip
           # Editable install picks up [project.scripts] entrypoint.
           pip install -e .
-          # Test deps. Skip semantic-search heavy stack (sentence-
-          # transformers, torch) — runs as headless ingest in CI with
-          # NO_EMBEDDINGS=1 so the FTS path is exercised instead.
+          # Semantic deps are required: a handful of tests
+          # (test_delegated_search, test_vec_search) assert on actual
+          # cosine search behavior and don't have a skip-when-missing
+          # guard. sentence-transformers pulls torch + numpy + sqlite-
+          # vec — ~500MB but cached between runs.
+          pip install -r requirements-semantic.txt
           pip install -r requirements-dev.txt
 
       - name: Run pytest
         env:
-          THREADKEEPER_NO_EMBEDDINGS: "1"
+          # Background daemons are forced off; tests need a quiet
+          # process. Embeddings stay ON so semantic tests pass.
           THREADKEEPER_INGEST_INTERVAL_S: "0"
           THREADKEEPER_SHADOW_REVIEW_INTERVAL_S: "0"
           THREADKEEPER_SPAWN_BUDGET_POLL_S: "0"
