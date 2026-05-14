@@ -644,6 +644,8 @@ def review_thread(thread_id: str,
         write_origin="background_review",
         slim=True,
         extra_allowed_tools=(
+            "mcp__thread-keeper__lesson_append,"
+            "mcp__thread-keeper__lesson_list,"
             "mcp__thread-keeper__skill_manage,"
             "mcp__thread-keeper__skill_record,"
             "mcp__thread-keeper__mark_skill_materialized,"

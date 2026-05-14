@@ -71,11 +71,15 @@ PROCEDURE
 1. Read the dialog window below.
 2. If nothing class-level emerges → output exactly `SKIP: <one-line reason>` and stop.
 3. If class-level learning is present:
-   a. Decide PATCH existing skill vs CREATE new umbrella vs ADD reference file.
-   b. Call `mcp__thread-keeper__skill_manage(action=..., name=..., ...)`.
-      - Naming: lowercase-hyphens, describes a CLASS of task, not the incident.
-      - PATCH preferred when a relevant skill already exists.
-   c. Output `MATERIALIZED: <skill_name> (<action>)` on success.
+   a. PRIMARY: call `mcp__thread-keeper__lesson_append(title, body, summary, source='shadow')`
+      to write into ~/.threadkeeper/lessons.md (shared by every CLI).
+      - title: lowercase-hyphens slug describing a CLASS of task, not the incident
+      - body: markdown rationale + procedure
+      - summary: optional one-line TL;DR
+   b. OPTIONAL: also call `mcp__thread-keeper__skill_manage(...)` to mirror
+      under ~/.claude/skills/ when Claude-specific frontmatter
+      auto-triggering adds value beyond the lesson alone.
+   c. Output `MATERIALIZED: <slug>` on success.
 
 CONSTRAINTS
 - Be conservative. False negatives (skipping) cost nothing; false
@@ -216,6 +220,8 @@ def run_shadow_pass(force: bool = False) -> str:
             write_origin="shadow_review",
             slim=True,
             extra_allowed_tools=(
+                "mcp__thread-keeper__lesson_append,"
+                "mcp__thread-keeper__lesson_list,"
                 "mcp__thread-keeper__skill_manage,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__mark_skill_materialized,"

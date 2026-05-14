@@ -47,6 +47,7 @@ from .tools import skills  # noqa: F401
 from .tools import dialectic  # noqa: F401
 from .tools import process_health  # noqa: F401
 from .tools import shadow_review  # noqa: F401
+from .tools import lessons  # noqa: F401
 
 
 if __name__ == "__main__":

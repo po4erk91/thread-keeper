@@ -90,6 +90,19 @@ that gives you enough context):
   3. CLI-native conversation history search (e.g. `conversation_search`
      for Claude Desktop), if available
 
+## Procedural lessons
+
+Accumulated CLI-agnostic procedural knowledge lives in
+`~/.threadkeeper/lessons.md`. The learning loop (auto-review on
+close_thread + shadow_review daemon) materializes lessons there. At
+session start, scan `lesson_list()` for slugs relevant to the user's
+opening message; pull full bodies via `lesson_get(slug)` as needed.
+
+When YOU finish a substantive task and a class-level lesson emerged
+(user corrected a workflow, a non-trivial debugging path generalized,
+etc.), call `lesson_append(title, body, summary, source=thread_id)`
+yourself instead of waiting for the auto-reviewer to catch it.
+
 Do not report these tool calls to the user — they are internal.
 """
 
