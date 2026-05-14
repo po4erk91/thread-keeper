@@ -27,8 +27,10 @@ thread-keeper is the substrate underneath:
   about you. Survives session, restart, CLI swap.
 - **One learning loop (hermes-style)** — closed threads with rich content
   spawn a background reviewer that materializes lessons into
-  `~/.claude/skills/`. Skills then load in every CLI that respects the
-  Claude skills convention (all four supported CLIs do).
+  `~/.claude/skills/*/SKILL.md`. Currently consumed by Claude Code only;
+  other CLIs see thread-keeper's protocol via their per-user instructions
+  file but don't auto-load directory-style skills. CLI-agnostic learnings
+  output is [tracked](https://github.com/po4erk91/thread-keeper/issues/7).
 - **Cross-session signaling** — broadcast / whisper / inbox / wait between
   concurrent sessions across different CLIs.
 
@@ -96,9 +98,12 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
-### Learning loop (hermes-style)
+### Learning loop (hermes-style, currently Claude-side)
 
-Two loops feed `~/.claude/skills/`:
+Two loops feed `~/.claude/skills/`. **The output is read only by Claude
+Code today** — Codex / Gemini / Copilot don't have an equivalent
+directory-of-skills loader. CLI-agnostic learnings output is
+[issue #7](https://github.com/po4erk91/thread-keeper/issues/7).
 
 - **Auto-review on close_thread** — when a closed thread is rich
   (≥5 notes, ≥2 insight/move), `close_thread` itself spawns a slim child
