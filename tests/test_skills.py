@@ -493,7 +493,9 @@ def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
     rev = _tool(skills_pkg, "review_thread")
     out = rev(thread_id=tid, focus="skills", mode="inline")
 
-    assert "RECENTLY ACTIVE SKILLS" in out
+    # Section header is the literal marker — distinct from the in-prose
+    # reference to "RECENTLY ACTIVE SKILLS block" inside the rubric text
+    assert "RECENTLY ACTIVE SKILLS (prefer PATCH/extend over CREATE" in out
     assert "ios-testing-recovery" in out
     assert "plaid-network-flake" in out
     # Ancient skill (outside 14-day default window) should NOT appear
@@ -504,6 +506,86 @@ def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
     assert 0 < ios_idx < plaid_idx
     # The rubric Q4 is reachable from the prompt
     assert "Q4." in out
+
+
+def test_skill_record_outcome_emits_skill_outcome_event(skills_pkg):
+    """skill_record(name, kind='use', outcome='wrong') writes an
+    events.kind='skill_outcome' row so curator can spot false positives.
+    Empty outcome stays silent (backwards compat)."""
+    sr = _tool(skills_pkg, "skill_record")
+    # No outcome → no event row
+    assert sr(name="some-skill", kind="use") == "ok"
+    conn = skills_pkg["db"].get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='skill_outcome'"
+    ).fetchone()[0]
+    assert n == 0
+    # With outcome → exactly one event row, summary == outcome
+    assert sr(name="some-skill", kind="use", outcome="wrong") == "ok"
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind='skill_outcome' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["target"] == "some-skill"
+    assert row["summary"] == "wrong"
+    # Invalid outcome → reject
+    assert sr(name="some-skill", outcome="kinda").startswith("ERR invalid_outcome")
+
+
+def test_skill_manage_mirrors_skill_across_detected_clis(
+    skills_pkg, monkeypatch,
+):
+    """skill_manage(create) must write SKILL.md not only to the canonical
+    ~/.claude/skills/ but also to every detected CLI's skills_dir() —
+    so one materialization reaches Claude AND Codex at once."""
+    # Pin two mirror targets that we own (in tmp_path) so the test is
+    # hermetic — don't touch the developer's ~/.codex/ or ~/.threadkeeper/.
+    mirror_codex = skills_pkg["tmp"] / "fake_codex_skills"
+    mirror_canonical = skills_pkg["tmp"] / "fake_canonical_skills"
+
+    from threadkeeper.tools import skills as st
+
+    def fake_mirror_targets(name):
+        return [mirror_codex / name, mirror_canonical / name]
+
+    monkeypatch.setattr(st, "_mirror_targets", fake_mirror_targets)
+
+    sm = _tool(skills_pkg, "skill_manage")
+    result = sm(
+        action="create",
+        name="mirrored-skill",
+        description="Use when testing the mirror.",
+        content="# Body",
+    )
+    assert result.startswith("ok path=")
+    # Canonical landed
+    canonical = skills_pkg["skills_root"] / "mirrored-skill" / "SKILL.md"
+    assert canonical.exists()
+    # Mirrors landed
+    assert (mirror_codex / "mirrored-skill" / "SKILL.md").exists()
+    assert (mirror_canonical / "mirrored-skill" / "SKILL.md").exists()
+    # Mirror content identical to canonical
+    assert (mirror_codex / "mirrored-skill" / "SKILL.md").read_text() == \
+        canonical.read_text()
+
+
+def test_skill_manage_delete_removes_mirrors(skills_pkg, monkeypatch):
+    """delete must propagate to every mirror target — otherwise stale
+    SKILL.md files keep auto-triggering in Codex / canonical store."""
+    mirror_dir = skills_pkg["tmp"] / "fake_codex_skills"
+    from threadkeeper.tools import skills as st
+
+    def fake_mirror_targets(name):
+        return [mirror_dir / name]
+
+    monkeypatch.setattr(st, "_mirror_targets", fake_mirror_targets)
+
+    sm = _tool(skills_pkg, "skill_manage")
+    sm(action="create", name="will-be-deleted",
+       description="Use for the test.", content="# body")
+    assert (mirror_dir / "will-be-deleted" / "SKILL.md").exists()
+    assert sm(action="delete", name="will-be-deleted") == "ok"
+    assert not (mirror_dir / "will-be-deleted").exists()
 
 
 def test_review_thread_inline_skips_block_when_no_recent_skills(skills_pkg):
@@ -518,7 +600,8 @@ def test_review_thread_inline_skips_block_when_no_recent_skills(skills_pkg):
 
     rev = _tool(skills_pkg, "review_thread")
     out = rev(thread_id=tid, focus="skills", mode="inline")
-    assert "RECENTLY ACTIVE SKILLS" not in out
+    # Header block absent — only the rubric body reference remains
+    assert "RECENTLY ACTIVE SKILLS (prefer PATCH/extend over CREATE" not in out
 
 
 def test_review_thread_rejects_bad_focus(skills_pkg):

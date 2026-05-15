@@ -63,6 +63,15 @@ class ClaudeCodeAdapter(CLIAdapter):
         # editor preferences. Each entry under "hooks" is keyed by event
         # name (SessionStart, PostToolUse, ...).
         self._settings_path = Path("~/.claude/settings.json").expanduser()
+        # Claude auto-discovers SKILL.md files under this directory via
+        # frontmatter description scanning at session start. The canonical
+        # Anthropic skills format.
+        self._skills_dir = Path(
+            os.environ.get("CLAUDE_SKILLS_DIR", "~/.claude/skills")
+        ).expanduser()
+
+    def skills_dir(self):
+        return self._skills_dir
 
     def instructions_path(self):
         return self._instructions

@@ -44,6 +44,7 @@ from .config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
+    CURATOR_DESTRUCTIVE,
 )
 from .db import get_db
 from . import identity, lessons
@@ -88,9 +89,18 @@ recently-active skill):
       reason: <one line on why they overlap>
 
   PRUNE — entry is one-off incident narrative, env-specific transient,
-  or superseded by a newer entry. Format:
+  superseded by a newer entry, or a **FALSE POSITIVE** (auto-created
+  by the background-review loop but never validated by actual use).
+  Specifically flag as PRUNE:
+    • origin=background_review AND use_count=0 AND patches=0 AND
+      created >14 days ago → strong false-positive signal: nobody ever
+      consulted it, and the agent that created it never came back to
+      refine it.
+    • SKILL_OUTCOME signals (in the events table) marking the skill
+      as 'wrong' more often than 'helped' → user-judgment override.
+  Format:
     PRUNE: <slug>
-      reason: <one line>
+      reason: <one line; note "false_positive" if from the criteria above>
 
 INVENTORY ORDERING — entries marked [PROTECTED] are pinned or
 foreground-authored. NEVER suggest PATCH/CONSOLIDATE/PRUNE on those —
@@ -112,15 +122,12 @@ CLOSE with the literal line `CURATOR_PASS_COMPLETE` so the parent
 process knows the run finished cleanly.
 
 CONSTRAINTS:
-- Do NOT call lesson_append, skill_manage with action in {create,patch,
-  delete,write_file}, or any destructive tool. You are advisory in
-  Phase 1. The user reviews your REPORT.md and applies changes
-  manually.
 - Do NOT cite internal IDs (T-codes, cids, task IDs) in the REPORT.md.
   Plain prose for the human reader.
 - If the inventory is genuinely fine (no patches/consolidations/prunes
   warranted), still write a REPORT.md that says so — the trail matters
   even when nothing changes.
+- {DESTRUCTIVE_CLAUSE}
 
 INVENTORY
 =========
@@ -284,8 +291,45 @@ def run_curator_pass(force: bool = False) -> str:
     # Ensure reports dir exists before the child tries to Write into it.
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Phase-1 default: advisory-only. CURATOR_DESTRUCTIVE=1 promotes
+    # the child to "apply your own recommendations directly" mode and
+    # widens the allowed-tools list to include skill_manage + lesson_append.
+    if CURATOR_DESTRUCTIVE:
+        destructive_clause = (
+            "DESTRUCTIVE MODE ENABLED. After writing the REPORT.md you "
+            "MAY apply your own PATCH / PRUNE / CONSOLIDATE recommendations "
+            "directly via skill_manage(action='patch'|'delete'|'write_file') "
+            "and lesson_append(...). Always cross-check against the "
+            "[PROTECTED] marker — never touch protected entries even in "
+            "destructive mode. Apply changes ONLY after the REPORT.md is "
+            "written (audit trail first, mutation second)."
+        )
+        allowed_tools = (
+            "mcp__thread-keeper__lesson_list,"
+            "mcp__thread-keeper__lesson_get,"
+            "mcp__thread-keeper__lesson_append,"
+            "mcp__thread-keeper__skill_list,"
+            "mcp__thread-keeper__skill_manage,"
+            "Read,Write"
+        )
+    else:
+        destructive_clause = (
+            "ADVISORY MODE. Do NOT call lesson_append, skill_manage with "
+            "action in {create,patch,delete,write_file}, or any other "
+            "destructive tool. Your output is the REPORT.md ONLY — the "
+            "human reviews and applies changes manually. Flip "
+            "THREADKEEPER_CURATOR_DESTRUCTIVE=1 in env when ready to let "
+            "the curator apply its own recommendations."
+        )
+        allowed_tools = (
+            "mcp__thread-keeper__lesson_list,"
+            "mcp__thread-keeper__lesson_get,"
+            "mcp__thread-keeper__skill_list,"
+            "Read,Write"
+        )
+
     full_prompt = (
-        CURATOR_PROMPT
+        CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
         + inventory
         + "\n\n"
         + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
@@ -303,12 +347,7 @@ def run_curator_pass(force: bool = False) -> str:
             role="curator",
             write_origin="curator",
             slim=True,
-            extra_allowed_tools=(
-                "mcp__thread-keeper__lesson_list,"
-                "mcp__thread-keeper__lesson_get,"
-                "mcp__thread-keeper__skill_list,"
-                "Read,Write"
-            ),
+            extra_allowed_tools=allowed_tools,
         )
     except Exception as e:
         _record_curator_pass(conn, now, f"spawn_error: {e}")

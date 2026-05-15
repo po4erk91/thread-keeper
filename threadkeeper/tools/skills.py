@@ -143,6 +143,74 @@ def _archive_dir() -> Path:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Multi-mirror — propagate SKILL.md across every detected CLI's skills/
+# directory so a single skill_manage call reaches Claude AND Codex AND
+# the canonical ~/.threadkeeper/skills/ fallback at once. Best-effort:
+# per-mirror failures are logged but don't fail the canonical write.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _mirror_targets(name: str) -> list[Path]:
+    """Per-CLI skill directories that should hold a copy of <name>.
+
+    Always includes the canonical ~/.threadkeeper/skills/<name>/ fallback
+    (consumed by lessons.md-style scans from CLIs without a native
+    skills/ loader). Plus every installed adapter whose skills_dir() is
+    distinct from CLAUDE_SKILLS_DIR (the canonical write target)."""
+    from ..adapters import installed_adapters
+    from ..config import DB_PATH
+
+    targets: list[Path] = []
+    seen: set[Path] = {CLAUDE_SKILLS_DIR.resolve()}
+    # CLI-native skills/ dirs from each installed adapter.
+    for a in installed_adapters():
+        sd = a.skills_dir()
+        if sd is None:
+            continue
+        sd_r = sd.resolve() if sd.exists() else sd
+        if sd_r in seen:
+            continue
+        seen.add(sd_r)
+        targets.append(sd / name)
+    # Canonical thread-keeper-side mirror (always written, used as the
+    # source of truth for restore / curator audit / non-skills CLIs).
+    tk_canonical = (DB_PATH.parent / "skills").resolve()
+    if tk_canonical not in seen:
+        targets.append((DB_PATH.parent / "skills") / name)
+    return targets
+
+
+def _mirror_skill_dir(name: str) -> None:
+    """Copy CLAUDE_SKILLS_DIR/<name>/ → every mirror target (recursive).
+    Pre-existing mirror is replaced atomically. Best-effort per target."""
+    import shutil as _sh
+    src = _skill_dir(name)
+    if not src.exists():
+        return
+    for dst in _mirror_targets(name):
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                _sh.rmtree(dst)
+            _sh.copytree(src, dst)
+        except Exception:
+            # Per-mirror failure (permission denied / disk full / etc.)
+            # doesn't fail the canonical write. The user can re-sync
+            # later via re-running skill_manage.
+            pass
+
+
+def _unmirror_skill(name: str) -> None:
+    """Remove <name>/ from every mirror target. Best-effort per target."""
+    import shutil as _sh
+    for dst in _mirror_targets(name):
+        try:
+            if dst.exists():
+                _sh.rmtree(dst)
+        except Exception:
+            pass
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Telemetry
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -195,19 +263,51 @@ def _record_event(name: str, kind: str) -> None:
     conn.commit()
 
 
+_VALID_OUTCOMES: set[str] = {"helped", "partial", "wrong"}
+
+
 @mcp.tool()
-def skill_record(name: str, kind: str = "use") -> str:
+def skill_record(name: str, kind: str = "use", outcome: str = "") -> str:
     """Record usage telemetry for a Claude skill.
 
-    `kind`: 'use' (skill was invoked), 'view' (SKILL.md was read), 'patch'
-    (SKILL.md was edited). The curator uses these timestamps to decide what
-    to archive."""
+    `kind`: 'use' | 'view' | 'patch' | 'create'. Bumps the corresponding
+    counter + timestamp in skill_usage. The curator reads these to decide
+    what to archive.
+
+    `outcome` (optional, meaningful with kind='use'): 'helped' | 'partial'
+    | 'wrong'. When set, also emits an `events.kind='skill_outcome'` row
+    so the curator can identify skills that fire often but consistently
+    give 'wrong' verdicts — those are false-positive candidates to PRUNE.
+
+    The 'wrong' outcome is the primary signal an agent has to say "I
+    consulted this skill, it didn't actually apply / was misleading;
+    please patch or delete next curator pass." Don't be shy about
+    marking 'wrong' — better a curated library than a polluted one.
+    """
     name = name.strip()
     if err := _validate_name(name):
         return f"ERR {err}"
     if kind not in {"use", "view", "patch", "create"}:
         return f"ERR invalid_kind={kind} (use|view|patch|create)"
+    outcome = outcome.strip().lower()
+    if outcome and outcome not in _VALID_OUTCOMES:
+        return f"ERR invalid_outcome={outcome} ({'|'.join(sorted(_VALID_OUTCOMES))})"
     _record_event(name, kind)
+    # Emit a per-invocation event row so the brief's consulted_skills
+    # section (and any later analytics) can see per-session activity,
+    # not just cumulative counters. _action_create / _action_patch /
+    # _action_edit already emit their own skill_* events; skill_record
+    # only adds events for kinds those don't cover (view + use).
+    if kind in {"view", "use"}:
+        conn = get_db()
+        _ensure_session(conn)
+        _emit(conn, f"skill_{kind}", target=name)
+        conn.commit()
+    if outcome:
+        conn = get_db()
+        _ensure_session(conn)
+        _emit(conn, "skill_outcome", target=name, summary=outcome)
+        conn.commit()
     return "ok"
 
 
@@ -297,6 +397,7 @@ def _action_create(name: str, content: str, description: str) -> str:
     _ensure_session(conn)
     _emit(conn, "skill_create", target=name, summary=str(md))
     conn.commit()
+    _mirror_skill_dir(name)
     return f"ok path={md}"
 
 
@@ -312,6 +413,7 @@ def _action_edit(name: str, content: str) -> str:
     _ensure_session(conn)
     _emit(conn, "skill_edit", target=name, summary=str(md))
     conn.commit()
+    _mirror_skill_dir(name)
     return f"ok path={md}"
 
 
@@ -338,6 +440,7 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     _ensure_session(conn)
     _emit(conn, "skill_patch", target=name)
     conn.commit()
+    _mirror_skill_dir(name)
     return "ok"
 
 
@@ -369,6 +472,7 @@ def _action_write_file(name: str, sub_path: str, content: str) -> str:
     _ensure_session(conn)
     _emit(conn, "skill_write_file", target=name, summary=sub_path)
     conn.commit()
+    _mirror_skill_dir(name)
     return f"ok path={target}"
 
 
@@ -389,6 +493,7 @@ def _action_remove_file(name: str, sub_path: str) -> str:
         return f"ERR file_not_found={sub_path}"
     target.unlink()
     _record_event(name, "patch")
+    _mirror_skill_dir(name)
     return "ok"
 
 
@@ -407,6 +512,7 @@ def _action_delete(name: str) -> str:
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
     shutil.rmtree(sdir)
+    _unmirror_skill(name)
     conn.execute("DELETE FROM skill_usage WHERE name=?", (name,))
     _emit(conn, "skill_delete", target=name)
     conn.commit()

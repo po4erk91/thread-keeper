@@ -436,6 +436,66 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         out.append("")
         out.append(sk_nudge)
 
+    # ── consulted_skills (this session) ───────────────────────────────────
+    # Surface which skills the agent actually invoked / viewed in the
+    # current session, plus any user-judgment outcomes ('helped' /
+    # 'partial' / 'wrong'). Drives the patch-loop: if a recently-
+    # consulted skill turned out 'wrong', the agent should PATCH it
+    # before forgetting context, not next session.
+    try:
+        sess = identity._session_id or ""
+        consulted = conn.execute(
+            "SELECT target, kind, summary FROM events "
+            "WHERE session_id = ? "
+            "  AND kind IN ('skill_view', 'skill_use', 'skill_patch', "
+            "               'skill_create', 'skill_outcome') "
+            "ORDER BY created_at ASC",
+            (sess,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        consulted = []
+    if consulted:
+        # Group by skill name, collect kinds + outcomes.
+        per_skill: dict[str, dict] = {}
+        for r in consulted:
+            tgt = r["target"] or "?"
+            slot = per_skill.setdefault(
+                tgt, {"used": 0, "viewed": 0, "patched": 0, "created": 0,
+                       "outcomes": []},
+            )
+            kind = r["kind"]
+            if kind == "skill_use":
+                slot["used"] += 1
+            elif kind == "skill_view":
+                slot["viewed"] += 1
+            elif kind == "skill_patch":
+                slot["patched"] += 1
+            elif kind == "skill_create":
+                slot["created"] += 1
+            elif kind == "skill_outcome" and r["summary"]:
+                slot["outcomes"].append(r["summary"])
+        out.append("")
+        out.append("consulted_skills")
+        for tgt in sorted(per_skill.keys()):
+            s = per_skill[tgt]
+            parts: list[str] = []
+            if s["created"]:
+                parts.append(f"created×{s['created']}")
+            if s["viewed"]:
+                parts.append(f"viewed×{s['viewed']}")
+            if s["used"]:
+                parts.append(f"used×{s['used']}")
+            if s["patched"]:
+                parts.append(f"patched×{s['patched']}")
+            if s["outcomes"]:
+                # Compact outcome tally
+                tally: dict[str, int] = {}
+                for o in s["outcomes"]:
+                    tally[o] = tally.get(o, 0) + 1
+                for o, n in tally.items():
+                    parts.append(f"{o}×{n}")
+            out.append(f"  {tgt}: {' '.join(parts)}")
+
     # ── style ─────────────────────────────────────────────────────────────
     style_rows = conn.execute("SELECT key, value FROM style").fetchall()
     if style_rows:

@@ -13,6 +13,7 @@ We pick `type=response_item` and `payload.type=message` as turns.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from datetime import datetime
@@ -135,6 +136,16 @@ class CodexAdapter(CLIAdapter):
         # home-level fallback so it's always present even outside a
         # project tree.
         self._instructions = Path("~/.codex/AGENTS.md").expanduser()
+        # Codex auto-discovers skills under $CODEX_HOME/skills/ — same
+        # Anthropic-style SKILL.md format Claude uses. Multi-mirror in
+        # skill_manage propagates SKILL.md here so the same skill is
+        # available in Codex's own session.
+        self._skills_dir = Path(
+            os.environ.get("CODEX_HOME", "~/.codex")
+        ).expanduser() / "skills"
+
+    def skills_dir(self):
+        return self._skills_dir
 
     def instructions_path(self):
         return self._instructions

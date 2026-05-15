@@ -113,8 +113,12 @@ parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
 ### Learning loop (hermes-style)
 
-Three loops feed `~/.threadkeeper/lessons.md` — a CLI-agnostic store
-that every supported CLI's managed instructions block points at:
+Three loops materialize knowledge into Anthropic-style Skill files
+(`SKILL.md` under each detected CLI's skills directory — Claude's
+`~/.claude/skills/`, Codex's `~/.codex/skills/`, plus the canonical
+`~/.threadkeeper/skills/` mirror) with a CLI-agnostic
+`~/.threadkeeper/lessons.md` fallback for CLIs that don't auto-trigger
+on the Skill format (Gemini / Copilot / bare MCP clients):
 
 - **Auto-review on close_thread** — when a closed thread is rich
   (≥5 notes, ≥2 insight/move), `close_thread` spawns a slim child with
@@ -177,6 +181,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 30 | transcript ingest tick (s) |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |

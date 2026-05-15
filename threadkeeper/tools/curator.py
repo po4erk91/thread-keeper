@@ -31,6 +31,7 @@ from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
+    CURATOR_DESTRUCTIVE,
 )
 
 
@@ -75,9 +76,11 @@ def curator_review_status() -> str:
     floor = _last_curator_ts(conn)
     now = int(time.time())
     age_s = (now - floor) if floor else None
+    mode = "destructive" if CURATOR_DESTRUCTIVE else "advisory"
     lines = [
         f"interval_s={CURATOR_INTERVAL_S:.0f} "
         f"min_lessons={CURATOR_MIN_LESSONS} "
+        f"mode={mode} "
         f"reports_dir={CURATOR_REPORTS_DIR}",
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",

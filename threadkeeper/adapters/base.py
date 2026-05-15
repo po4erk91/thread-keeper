@@ -113,6 +113,24 @@ class CLIAdapter(ABC):
         only supports per-repo instructions)."""
         return None
 
+    def skills_dir(self) -> Optional[Path]:
+        """Root directory under which this CLI auto-discovers Skill.md
+        files (Anthropic-style skill format: YAML frontmatter +
+        description-based auto-trigger). Examples:
+
+            Claude (Code/Desktop/IDE) → ~/.claude/skills/
+            Codex (CLI/desktop)       → ~/.codex/skills/
+
+        Return None when the CLI doesn't natively consume Skills
+        (Gemini, Copilot, generic MCP clients) — those fall back to
+        the CLI-agnostic ~/.threadkeeper/lessons.md store.
+
+        Multi-mirror writes in skill_manage use this to propagate one
+        SKILL.md across every native skills-store on the machine so a
+        single materialization reaches every detected CLI.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Hooks (optional)
     # ------------------------------------------------------------------

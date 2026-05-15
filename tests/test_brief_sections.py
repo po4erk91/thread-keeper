@@ -117,6 +117,35 @@ def test_skill_nudge_surfaces_when_rich_closed_present(mp_with_cid, monkeypatch)
     assert "review_thread" in txt or "skill_manage" in txt
 
 
+def test_consulted_skills_surfaces_when_session_records_skill_events(
+    mp_with_cid, monkeypatch,
+):
+    """brief() must surface a `consulted_skills` block listing skills
+    invoked / viewed / patched in the current session, plus any
+    user-judgment outcomes. Drives the patch-loop in the next turn."""
+    pkg = mp_with_cid(_FAKE_CID)
+    sr = _tool(pkg, "skill_record")
+    sr(name="payout-flow-debug", kind="view")
+    sr(name="payout-flow-debug", kind="use", outcome="helped")
+    sr(name="wda-recovery", kind="use", outcome="wrong")
+    sr(name="wda-recovery", kind="use", outcome="wrong")
+    txt = _brief_text(pkg)
+    assert "consulted_skills" in txt
+    assert "payout-flow-debug" in txt
+    assert "wda-recovery" in txt
+    assert "viewed×1" in txt
+    assert "helped×1" in txt
+    assert "wrong×2" in txt
+
+
+def test_consulted_skills_silent_without_events(mp_with_cid):
+    """Empty section in fresh-session case — no consulted_skills line
+    when no skill_record events present."""
+    pkg = mp_with_cid(_FAKE_CID)
+    txt = _brief_text(pkg)
+    assert "consulted_skills" not in txt
+
+
 def test_skill_nudge_silent_after_materialization(mp_with_cid, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_SKILL_NUDGE_INTERVAL", "3")
     pkg = mp_with_cid(_FAKE_CID)

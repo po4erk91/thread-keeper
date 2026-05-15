@@ -185,3 +185,11 @@ CURATOR_REPORTS_DIR: Path = Path(
         str(DB_PATH.parent / "curator"),
     )
 ).expanduser()
+# When TRUE, curator-child gets write-mode tools (skill_manage delete/
+# patch + lesson_append) and is instructed to apply its own PRUNE /
+# PATCH / CONSOLIDATE recommendations directly, not just report them.
+# Default OFF — Phase 1 is advisory-only, user reviews REPORT.md and
+# applies manually. Flip to "1" once you trust the curator's verdicts.
+CURATOR_DESTRUCTIVE: bool = bool(
+    os.environ.get("THREADKEEPER_CURATOR_DESTRUCTIVE", "")
+)
