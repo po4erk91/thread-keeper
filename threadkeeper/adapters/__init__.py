@@ -16,11 +16,20 @@ from __future__ import annotations
 
 from .base import CLIAdapter, NormalizedMessage
 from .claude_code import ADAPTER as _CLAUDE_CODE
+from .claude_desktop import ADAPTER as _CLAUDE_DESKTOP
 from .codex import ADAPTER as _CODEX
 from .gemini import ADAPTER as _GEMINI
 from .copilot import ADAPTER as _COPILOT
+from .vscode import ADAPTER as _VSCODE
 
-ADAPTERS: list[CLIAdapter] = [_CLAUDE_CODE, _CODEX, _GEMINI, _COPILOT]
+ADAPTERS: list[CLIAdapter] = [
+    _CLAUDE_CODE,
+    _CLAUDE_DESKTOP,
+    _CODEX,
+    _GEMINI,
+    _COPILOT,
+    _VSCODE,
+]
 
 
 def installed_adapters() -> list[CLIAdapter]:

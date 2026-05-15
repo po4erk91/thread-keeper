@@ -3,12 +3,12 @@
 [![tests](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml/badge.svg)](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CLIs](https://img.shields.io/badge/CLIs-Claude%20Code%20%7C%20Codex%20%7C%20Gemini%20%7C%20Copilot-green)](#multi-cli-integration)
+[![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Gemini%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
 
 A local MCP server that holds **persistent working memory across agentic CLI
-sessions** — Claude Code, OpenAI Codex, Google Gemini, and GitHub Copilot
-share one SQLite store, one set of threads, one learning loop, one user
-model.
+sessions** — Claude Code, Claude Desktop, OpenAI Codex (CLI + desktop),
+Google Gemini, GitHub Copilot, and every MCP-aware VS Code extension share
+one SQLite store, one set of threads, one learning loop, one user model.
 
 The brief format is dense — structural tags, opaque IDs, ~6 KB per
 session-start injection. Optimized for agent consumption, not human reading.
@@ -49,11 +49,13 @@ thread-keeper-setup                          # auto-registers in every detected 
 ```
 
 That's it. `thread-keeper-setup` is idempotent: it detects which of
-Claude Code / Codex / Gemini / Copilot you have installed, registers the
-MCP server in each one's config, copies hooks to `~/.threadkeeper/hooks/`,
-and writes a managed instructions block into each CLI's per-user
-instructions file (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md` /
-`copilot-instructions.md`).
+Claude Code / Claude Desktop / Codex / Gemini / Copilot / VS Code you
+have installed, registers the MCP server in each one's config, copies
+hooks to `~/.threadkeeper/hooks/`, and writes a managed instructions
+block into each CLI's per-user instructions file (`CLAUDE.md` /
+`AGENTS.md` / `GEMINI.md` / `copilot-instructions.md` — Claude Desktop
+and VS Code have no global instructions file, so that step is skipped
+for them).
 
 Restart your CLI of choice. The SessionStart hook injects a brief on
 first message; no manual `brief()` call required.
@@ -71,13 +73,23 @@ thread-keeper-setup --dry-run
 | CLI | MCP config | Instructions file | Hooks | Transcripts ingested |
 |---|---|---|---|---|
 | Claude Code | `~/.claude.json` `mcpServers` | `~/.claude/CLAUDE.md` | `~/.claude/settings.json` `hooks` | `~/.claude/projects/**/*.jsonl` |
-| Codex | `~/.codex/config.toml` `[mcp_servers]` | `~/.codex/AGENTS.md` | not supported by the CLI | `~/.codex/sessions/**/rollout-*.jsonl` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` `mcpServers` (macOS); `%APPDATA%\Claude\…` (Win); `~/.config/Claude/…` (Linux) | none (GUI-only) | not supported by the app | none — chats live in Electron IndexedDB |
+| Codex (CLI + desktop) | `~/.codex/config.toml` `[mcp_servers]` (shared between CLI and `Codex.app`) | `~/.codex/AGENTS.md` | not supported | `~/.codex/sessions/**/rollout-*.jsonl` |
 | Gemini | `~/.gemini/settings.json` `mcpServers` | `~/.gemini/GEMINI.md` | `~/.gemini/settings.json` `hooks` | `~/.gemini/tmp/<user>/chats/session-*.jsonl` |
 | Copilot | `~/.copilot/mcp-config.json` `mcpServers` | `~/.copilot/copilot-instructions.md` | `~/.copilot/hooks.json` | `~/.copilot/session-store.db` (sqlite) |
+| VS Code | `~/Library/Application Support/Code/User/mcp.json` `servers` (macOS); `%APPDATA%\Code\User\mcp.json` (Win); `~/.config/Code/User/mcp.json` (Linux) | none (per-workspace only) | not supported | none — extensions own their history |
 
-All four CLIs read transcripts into the same `dialog_messages` table with
-a `source` tag, so `dialog_search()` finds matches regardless of where the
-conversation happened.
+Every CLI that produces parseable transcripts feeds the same
+`dialog_messages` table with a `source` tag, so `dialog_search()` finds
+matches regardless of where the conversation happened. Claude Desktop
+and the VS Code adapter are the exceptions — MCP registration only;
+their chats don't reach the table for now (Electron IndexedDB on the
+Claude Desktop side; per-extension stores on the VS Code side).
+
+VS Code's user-level `mcp.json` is the central host that **every
+MCP-aware VS Code extension** consumes — GitHub Copilot Chat, the
+Anthropic Claude IDE plugin, the OpenAI Codex IDE plugin, Continue,
+Cline, … — so a single registration there reaches all of them at once.
 
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -211,9 +223,11 @@ threadkeeper/
 ├── i18n.py               # 10 locales of regex + prompt bundles
 ├── adapters/             # one file per supported CLI
 │   ├── claude_code.py
+│   ├── claude_desktop.py
 │   ├── codex.py
 │   ├── gemini.py
-│   └── copilot.py
+│   ├── copilot.py
+│   └── vscode.py
 └── tools/                # @mcp.tool entries — 83 of them
     ├── threads.py
     ├── peers.py

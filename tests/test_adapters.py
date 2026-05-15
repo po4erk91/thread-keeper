@@ -37,18 +37,22 @@ def _bootstrap(tmp_path, monkeypatch):
     from threadkeeper.adapters import (
         ADAPTERS, installed_adapters,
         claude_code as cc_mod,
+        claude_desktop as cd_mod,
         codex as codex_mod,
         gemini as gem_mod,
         copilot as cop_mod,
+        vscode as vsc_mod,
     )
     return {
         "db": db,
         "ADAPTERS": ADAPTERS,
         "installed_adapters": installed_adapters,
         "claude": cc_mod.ADAPTER,
+        "claude_desktop": cd_mod.ADAPTER,
         "codex": codex_mod.ADAPTER,
         "gemini": gem_mod.ADAPTER,
         "copilot": cop_mod.ADAPTER,
+        "vscode": vsc_mod.ADAPTER,
     }
 
 
@@ -56,10 +60,13 @@ def _bootstrap(tmp_path, monkeypatch):
 # Registry shape
 # ---------------------------------------------------------------------
 
-def test_registry_lists_four_adapters(tmp_path, monkeypatch):
+def test_registry_lists_six_adapters(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     names = {a.name for a in pkg["ADAPTERS"]}
-    assert names == {"claude-code", "codex", "gemini", "copilot"}
+    assert names == {
+        "claude-code", "claude-desktop", "codex", "gemini", "copilot",
+        "vscode",
+    }
 
 
 # ---------------------------------------------------------------------
@@ -122,6 +129,179 @@ def test_claude_iter_messages_parses_jsonl(tmp_path, monkeypatch):
     assert msgs[0].role == "assistant"
     assert msgs[1].content == "hi back"
     assert msgs[1].role == "user"
+
+
+# ---------------------------------------------------------------------
+# Claude Desktop — Electron app, separate config from Claude Code CLI
+# ---------------------------------------------------------------------
+
+def test_claude_desktop_register_mcp_writes_config(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "Application Support" / "Claude" / "claude_desktop_config.json"
+    monkeypatch.setattr(pkg["claude_desktop"], "config_path", cfg)
+
+    result = pkg["claude_desktop"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "add" in result or "update" in result
+    body = json.loads(cfg.read_text())
+    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
+    assert body["mcpServers"]["thread-keeper"]["env"]["PYTHONPATH"] == "/repo"
+
+    # Idempotency
+    result2 = pkg["claude_desktop"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "already current" in result2
+
+
+def test_claude_desktop_preserves_other_servers_and_preferences(
+    tmp_path, monkeypatch,
+):
+    """A live Claude Desktop config typically holds other MCP entries +
+    GUI preferences. Registration must merge in place without touching
+    sibling keys."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {"ghost-ai": {"command": "ghost-ai"}},
+        "preferences": {"sidebarMode": "epitaxy"},
+    }))
+    monkeypatch.setattr(pkg["claude_desktop"], "config_path", cfg)
+    pkg["claude_desktop"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={},
+    )
+    body = json.loads(cfg.read_text())
+    assert "ghost-ai" in body["mcpServers"]
+    assert "thread-keeper" in body["mcpServers"]
+    assert body["preferences"]["sidebarMode"] == "epitaxy"
+
+
+def test_claude_desktop_no_transcripts_no_hooks(tmp_path, monkeypatch):
+    """Adapter intentionally skips transcript ingest (Electron IndexedDB
+    is fragile to parse on disk) and has no hook mechanism."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["claude_desktop"].transcript_files() == []
+    assert list(pkg["claude_desktop"].iter_messages(tmp_path / "x")) == []
+    assert pkg["claude_desktop"].hooks_supported() is False
+    assert pkg["claude_desktop"].instructions_path() is None
+
+
+def test_claude_desktop_unregister_removes_entry(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {
+            "thread-keeper": {"command": "/opt/python", "args": []},
+            "ghost-ai": {"command": "ghost-ai"},
+        }
+    }))
+    monkeypatch.setattr(pkg["claude_desktop"], "config_path", cfg)
+    msg = pkg["claude_desktop"].unregister_mcp_server("thread-keeper")
+    assert "removed" in msg
+    body = json.loads(cfg.read_text())
+    assert "thread-keeper" not in body["mcpServers"]
+    assert "ghost-ai" in body["mcpServers"]  # sibling preserved
+
+
+# ---------------------------------------------------------------------
+# VS Code — user-level mcp.json shared by every MCP-aware extension
+# (Copilot Chat, Claude IDE, Codex IDE, Continue, …)
+# ---------------------------------------------------------------------
+
+def test_vscode_register_mcp_uses_servers_key_with_type_stdio(
+    tmp_path, monkeypatch,
+):
+    """VS Code's schema chose `servers` (not `mcpServers`) and requires
+    a per-entry `type` field — extensions reject entries without it."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "Code" / "User" / "mcp.json"
+    monkeypatch.setattr(pkg["vscode"], "config_path", cfg)
+
+    result = pkg["vscode"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "add" in result or "update" in result
+    body = json.loads(cfg.read_text())
+    assert "servers" in body  # not "mcpServers"
+    entry = body["servers"]["thread-keeper"]
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "/opt/python"
+    assert entry["args"] == ["-m", "threadkeeper.server"]
+    assert entry["env"] == {"PYTHONPATH": "/repo"}
+
+    # Idempotency
+    result2 = pkg["vscode"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    assert "already current" in result2
+
+
+def test_vscode_preserves_inputs_and_sibling_servers(tmp_path, monkeypatch):
+    """A real VS Code mcp.json typically carries `inputs` (for secret
+    prompts) and other servers (Copilot's GitHub MCP, Sonar, …). Our
+    write must merge in place."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({
+        "inputs": [
+            {"id": "Authorization", "type": "promptString", "password": True}
+        ],
+        "servers": {
+            "sonarqube": {"command": "docker", "args": ["run"], "type": "stdio"}
+        },
+    }))
+    monkeypatch.setattr(pkg["vscode"], "config_path", cfg)
+    pkg["vscode"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={},
+    )
+    body = json.loads(cfg.read_text())
+    assert body["inputs"][0]["id"] == "Authorization"
+    assert "sonarqube" in body["servers"]
+    assert "thread-keeper" in body["servers"]
+
+
+def test_vscode_no_transcripts_no_hooks(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["vscode"].transcript_files() == []
+    assert list(pkg["vscode"].iter_messages(tmp_path / "x")) == []
+    assert pkg["vscode"].hooks_supported() is False
+    assert pkg["vscode"].instructions_path() is None
+
+
+def test_vscode_unregister_removes_entry(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({
+        "servers": {
+            "thread-keeper": {"command": "/opt/python", "args": [], "type": "stdio"},
+            "sonarqube": {"command": "docker", "args": ["run"], "type": "stdio"},
+        }
+    }))
+    monkeypatch.setattr(pkg["vscode"], "config_path", cfg)
+    msg = pkg["vscode"].unregister_mcp_server("thread-keeper")
+    assert "removed" in msg
+    body = json.loads(cfg.read_text())
+    assert "thread-keeper" not in body["servers"]
+    assert "sonarqube" in body["servers"]
 
 
 # ---------------------------------------------------------------------
