@@ -457,6 +457,70 @@ def test_review_thread_rejects_unknown_thread(skills_pkg):
     assert result.startswith("ERR thread_not_found")
 
 
+def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
+    """Active-update bias (Hermes Agent v0.12 pattern): the review fork
+    should see a list of skills the parent has recently touched so it
+    prefers PATCHing existing skills (Q4 of the rubric) over creating
+    new ones that overlap."""
+    import time as _t
+    conn = skills_pkg["db"].get_db()
+    now = int(_t.time())
+    # Seed skill_usage with three skills of varying recency.
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, last_used_at, "
+        " use_count, state) "
+        "VALUES "
+        "  ('ios-testing-recovery', ?, 'foreground', ?, 7, 'active'),"
+        "  ('plaid-network-flake', ?, 'foreground', ?, 3, 'active'),"
+        "  ('ancient-skill', ?, 'foreground', ?, 1, 'active')",
+        (now - 86400, now - 3600,        # 1d old, used 1h ago
+         now - 172800, now - 7200,       # 2d old, used 2h ago
+         now - 90 * 86400, now - 60 * 86400),  # ancient
+    )
+    conn.commit()
+
+    open_t = _tool(skills_pkg, "open_thread")
+    note = _tool(skills_pkg, "note")
+    close = _tool(skills_pkg, "close_thread")
+    tid = open_t(question="rich thread to review")
+    note(thread_id=tid, content="user said: always reset wifi proxy "
+         "before WDA start", kind="insight")
+    note(thread_id=tid, content="captured the recovery pattern",
+         kind="move")
+    close(thread_id=tid, outcome="ready")
+
+    rev = _tool(skills_pkg, "review_thread")
+    out = rev(thread_id=tid, focus="skills", mode="inline")
+
+    assert "RECENTLY ACTIVE SKILLS" in out
+    assert "ios-testing-recovery" in out
+    assert "plaid-network-flake" in out
+    # Ancient skill (outside 14-day default window) should NOT appear
+    assert "ancient-skill" not in out
+    # Most recent is listed first
+    ios_idx = out.find("ios-testing-recovery")
+    plaid_idx = out.find("plaid-network-flake")
+    assert 0 < ios_idx < plaid_idx
+    # The rubric Q4 is reachable from the prompt
+    assert "Q4." in out
+
+
+def test_review_thread_inline_skips_block_when_no_recent_skills(skills_pkg):
+    """Fresh-install case: empty skill_usage → no RECENTLY ACTIVE
+    SKILLS section in the prompt at all (don't show empty header)."""
+    open_t = _tool(skills_pkg, "open_thread")
+    note = _tool(skills_pkg, "note")
+    close = _tool(skills_pkg, "close_thread")
+    tid = open_t(question="thread for fresh-install case")
+    note(thread_id=tid, content="some insight", kind="insight")
+    close(thread_id=tid, outcome="done")
+
+    rev = _tool(skills_pkg, "review_thread")
+    out = rev(thread_id=tid, focus="skills", mode="inline")
+    assert "RECENTLY ACTIVE SKILLS" not in out
+
+
 def test_review_thread_rejects_bad_focus(skills_pkg):
     open_t = _tool(skills_pkg, "open_thread")
     tid = open_t(question="x")

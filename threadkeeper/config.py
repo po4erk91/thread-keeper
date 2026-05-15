@@ -160,3 +160,28 @@ SHADOW_REVIEW_WINDOW_S: int = int(
 SHADOW_REVIEW_MIN_CHARS: int = int(
     os.environ.get("THREADKEEPER_SHADOW_REVIEW_MIN_CHARS", "500")
 )
+
+# Curator daemon. Periodic LLM-driven audit of the existing
+# lessons.md + ~/.claude/skills/ library — grades, suggests
+# consolidation/patches/prunes, writes a per-run REPORT.md. Where
+# shadow_review LOOKS FOR NEW class-level learning every few minutes,
+# the Curator REVIEWS THE STORE every few days. Inspired by Hermes
+# Agent v0.12's `hermes curator` cron agent. 0 disables (default —
+# opt in via env). Recommended: 604800 (7 days).
+CURATOR_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_CURATOR_INTERVAL_S", "0")
+)
+# Don't bother curating a tiny library; below this lessons-count there's
+# nothing meaningful to consolidate.
+CURATOR_MIN_LESSONS: int = int(
+    os.environ.get("THREADKEEPER_CURATOR_MIN_LESSONS", "3")
+)
+# Where the Curator writes its REPORT-<isodate>.md per run. One file
+# per pass; latest is the canonical one to read. Anchored to DB_PATH's
+# parent so a custom THREADKEEPER_DB co-locates its curator reports.
+CURATOR_REPORTS_DIR: Path = Path(
+    os.environ.get(
+        "THREADKEEPER_CURATOR_REPORTS_DIR",
+        str(DB_PATH.parent / "curator"),
+    )
+).expanduser()

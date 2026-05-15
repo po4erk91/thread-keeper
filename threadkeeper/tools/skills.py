@@ -462,6 +462,72 @@ def skill_list(include_archived: bool = False) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Active-update bias — feed the review fork a list of recently-touched
+# skills so it can PATCH existing umbrellas instead of creating new ones
+# that overlap. Hermes Agent v0.12 calls this "active-update bias".
+# ──────────────────────────────────────────────────────────────────────────
+
+def _fmt_age(now: int, ts: int) -> str:
+    """Compact relative timestamp ("3h", "2d", "30m")."""
+    if not ts:
+        return "?"
+    delta = max(0, now - ts)
+    if delta < 60:
+        return f"{delta}s"
+    if delta < 3600:
+        return f"{delta // 60}m"
+    if delta < 86400:
+        return f"{delta // 3600}h"
+    return f"{delta // 86400}d"
+
+
+def _recent_active_skills_dump(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    window_days: int = 14,
+) -> str:
+    """Return a markdown-ish block listing recently-touched skills, or
+    empty string when the window is empty.
+
+    "Touched" = use_count, view_count, or patch_count incremented within
+    the window. Sorted by most-recent activity desc.
+    """
+    now = int(time.time())
+    cutoff = now - window_days * 86400
+    try:
+        rows = conn.execute(
+            "SELECT name, use_count, view_count, patch_count, pinned, "
+            "       MAX("
+            "         COALESCE(last_used_at, 0), "
+            "         COALESCE(last_viewed_at, 0), "
+            "         COALESCE(last_patched_at, 0)"
+            "       ) AS last_active "
+            "FROM skill_usage "
+            "WHERE state='active' "
+            "  AND last_active > ? "
+            "ORDER BY last_active DESC "
+            "LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return ""
+    if not rows:
+        return ""
+    lines = [
+        "RECENTLY ACTIVE SKILLS (prefer PATCH/extend over CREATE — see Q4):",
+    ]
+    for r in rows:
+        pin = " pinned" if r["pinned"] else ""
+        lines.append(
+            f"  - {r['name']} "
+            f"(uses={r['use_count']} views={r['view_count']} "
+            f"patches={r['patch_count']}{pin}, "
+            f"last_active={_fmt_age(now, r['last_active'])}_ago)"
+        )
+    return "\n".join(lines) + "\n\n"
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Curator
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -614,9 +680,15 @@ def review_thread(thread_id: str,
         return f"ERR invalid_focus={focus} (memory|skills|combined)"
 
     notes_dump = _thread_notes_dump(conn, thread_id)
+    # Active-update bias (Hermes Agent v0.12 pattern): inject the list
+    # of skills the parent has touched recently so the fork prefers
+    # PATCHing an existing skill over creating a new one — see Q4 in
+    # the rubric. Falls back to empty when the library is fresh.
+    recent_skills_dump = _recent_active_skills_dump(conn)
     full_prompt = (
         f"You are reviewing closed thread {thread_id}.\n\n"
         f"{notes_dump}\n\n"
+        f"{recent_skills_dump}"
         f"---\n\n"
         f"{base_prompt}\n\n"
         f"When you write any skill, finish with "

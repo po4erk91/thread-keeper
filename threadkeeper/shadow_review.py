@@ -47,6 +47,7 @@ _started = False
 # the class-vs-incident decision rubric inline so the child doesn't need
 # to (and can't, in slim mode) load the ai-memory-learning-loop skill.
 from .i18n import SHADOW_CLASS_SIGNAL_EXAMPLES
+from .review_prompts import POSITIVE_EXAMPLES
 
 SHADOW_REVIEW_PROMPT = f"""\
 You are a SHADOW LEARNING OBSERVER for thread-keeper. You read a slice
@@ -59,13 +60,19 @@ CLASS-LEVEL signals (materialize):
 - a debugging insight that generalizes beyond the specific bug
 - a workflow rule the user stated as policy
 - a corrected misunderstanding (existing skill is wrong/incomplete)
+- a recovery / cleanup procedure for flaky infra (the FIX outlives the
+  incident even when the symptom was env-specific)
 
 NOT class-level (skip):
 - one-off task descriptions
-- environment-specific fixes ("install pip", "wrong dir")
-- session-transient confusion
+- session-transient confusion that resolved itself
 - the user asking what something is
 - you complimenting yourself or summarizing what just happened
+- GENUINELY transient env errors with no durable rule ("rebooted, fixed",
+  "wrong dir, fixed"). NOTE: this is narrower than it sounds — see the
+  POSITIVE_EXAMPLES block below before defaulting to SKIP.
+
+{POSITIVE_EXAMPLES}
 
 PROCEDURE
 1. Read the dialog window below.
@@ -140,27 +147,96 @@ def _record_shadow_pass(conn: sqlite3.Connection,
         logger.debug("shadow: failed to record pass", exc_info=True)
 
 
+# Opening lines of every prompt we ourselves inject into a spawned
+# child. When a child writes its conversation to ~/.claude/projects/
+# the parent ingests it back into dialog_messages — without this filter
+# the next shadow pass picks up its OWN prior child's reasoning as the
+# "recent dialog" and SKIPs ("dialog window contains only shadow-observer
+# task framing"). Also catches the close_thread auto-review child whose
+# prompt is built around "You are reviewing closed thread <T-code>".
+#
+# Match is on the FIRST 80 chars of the very first user message of a
+# session, so we exclude every message of that session (not just the
+# prompt itself — slim children's broadcasts, tool_results, and SKIP
+# verdicts also pollute the window).
+_INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
+    "You are a SHADOW LEARNING OBSERVER",
+    "You are reviewing closed thread",
+)
+
+
+# Lines starting with these markers carry no semantic signal for
+# class-level learning — they're verbose adapter-side renderings of
+# tool_use / tool_result blocks (file dumps, shell output, search
+# results). Inspired by Hermes Agent v0.12's review-fork upgrade that
+# excludes prior-turn tool messages from the review summary so the
+# fork sees a clean context. We keep `[thinking]` blocks — those ARE
+# signal (chain-of-thought often contains the rule being learned).
+_NOISE_LINE_PREFIXES: tuple[str, ...] = (
+    "[tool_result]",
+    "[tool_call]",
+    "[tool_use]",
+)
+
+
+def _strip_tool_noise(text: str) -> str:
+    """Drop adapter-prefixed tool_result / tool_call lines from a message.
+
+    Returns the cleaned text. If every line in the message was a tool
+    artifact, returns the empty string — caller can decide to skip the
+    row entirely (zero-information content).
+    """
+    if not text:
+        return text
+    # Fast path: no markers → no work
+    if not any(p in text for p in _NOISE_LINE_PREFIXES):
+        return text
+    kept: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if any(stripped.startswith(p) for p in _NOISE_LINE_PREFIXES):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip("\n")
+
+
 def _collect_window(conn: sqlite3.Connection,
                     floor_ts: int,
                     window_s: int) -> tuple[str, int, int]:
-    """Pull dialog messages newer than max(floor_ts, now-window_s).
+    """Pull dialog messages newer than max(floor_ts, now-window_s),
+    excluding any session whose opening user prompt is one of our own
+    internal spawn prompts (shadow-observer or close_thread reviewer).
 
     Returns (dump_text, high_water_ts, char_count).
       - dump_text: human-readable rendering ready for the shadow prompt
       - high_water_ts: largest created_at seen (== floor for next tick)
       - char_count: total visible char length (input to MIN_CHARS guard)
 
-    Mixes all active sessions — that's the point. The shadow agent's
-    review pool is global, not session-scoped.
+    Mixes all NON-internal active sessions — that's the point. The
+    shadow agent's review pool is global across the user's real
+    conversations, not the chatter of internal review children.
     """
     now = int(time.time())
     cutoff = max(floor_ts, now - max(1, window_s))
+    # Per-prefix `substr(content,1,N) = ?` is friendlier to SQLite's
+    # planner than chained `LIKE 'X%' OR LIKE 'Y%'` (no LIKE_PATTERN
+    # compile, exact prefix bytewise). N = max prefix length.
+    prefix_clauses = " OR ".join(
+        ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
+    )
+    prefix_params: list = []
+    for p in _INTERNAL_PROMPT_PREFIXES:
+        prefix_params.extend([len(p), p])
     rows = conn.execute(
         "SELECT role, content, created_at, session_id "
         "FROM dialog_messages "
         "WHERE created_at > ? "
+        "  AND session_id NOT IN ("
+        "    SELECT DISTINCT session_id FROM dialog_messages "
+        f"    WHERE role = 'user' AND ({prefix_clauses})"
+        "  ) "
         "ORDER BY created_at ASC",
-        (cutoff,),
+        (cutoff, *prefix_params),
     ).fetchall()
     if not rows:
         return ("", cutoff, 0)
@@ -168,9 +244,14 @@ def _collect_window(conn: sqlite3.Connection,
     char_count = 0
     high_water = cutoff
     for r in rows:
-        body = r["content"] or ""
-        # Cap each turn at 1.5KB so a single noisy tool_result doesn't
-        # blow the prompt budget. Most class-level signals are short.
+        body = _strip_tool_noise(r["content"] or "")
+        if not body:
+            # Whole turn was tool noise — skip but still advance the
+            # cursor (we don't want to re-evaluate this row next pass).
+            high_water = max(high_water, int(r["created_at"]))
+            continue
+        # Cap each turn at 1.5KB so a single noisy block doesn't blow
+        # the prompt budget. Most class-level signals are short.
         if len(body) > 1500:
             body = body[:1500] + "…"
         char_count += len(body)

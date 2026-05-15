@@ -113,22 +113,37 @@ parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
 ### Learning loop (hermes-style)
 
-Two loops feed `~/.threadkeeper/lessons.md` — a CLI-agnostic store that
-every supported CLI's managed instructions block points at:
+Three loops feed `~/.threadkeeper/lessons.md` — a CLI-agnostic store
+that every supported CLI's managed instructions block points at:
 
 - **Auto-review on close_thread** — when a closed thread is rich
-  (≥5 notes, ≥2 insight/move), `close_thread` itself spawns a slim child
-  with `SKILL_REVIEW_PROMPT` + the thread's notes. The child appends a
+  (≥5 notes, ≥2 insight/move), `close_thread` spawns a slim child with
+  `SKILL_REVIEW_PROMPT` + the thread's notes. The prompt is rubric-form
+  (Q1–Q5 yes/no) with explicit positive examples for incident-vs-rule
+  classification. The fork also receives a "recently active skills"
+  block so it prefers PATCHing existing umbrellas over creating new
+  ones (Hermes Agent v0.12's *active-update bias*). Child appends a
   lesson via `lesson_append`, optionally mirrors to
-  `~/.claude/skills/<name>/SKILL.md` for Claude-frontmatter
-  auto-triggering, then closes with `mark_skill_materialized`. Opt in
-  with `THREADKEEPER_AUTO_REVIEW=1`.
+  `~/.claude/skills/<name>/SKILL.md`, then closes with
+  `mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
 - **Shadow-review daemon** — every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S`
   seconds (default off; 15 min recommended), scans the diff of
-  `dialog_messages` since the last cursor across **all** CLIs. If the
-  window has ≥500 chars of meaningful content, spawns a slim observer
-  child that decides on class-level learning autonomously. Idempotent
-  through `events.kind='shadow_review_pass'`.
+  `dialog_messages` since the last cursor across **all** CLIs. The
+  window filters internal review-child sessions (no self-pollution)
+  and strips adapter `[tool_result]` / `[tool_call]` noise — Hermes
+  v0.12's "clean context" rule. If ≥500 chars of meaningful signal
+  remain, spawns a slim observer child that decides on class-level
+  learning. Idempotent through `events.kind='shadow_review_pass'`.
+- **Autonomous Curator** — every `THREADKEEPER_CURATOR_INTERVAL_S`
+  seconds (default off; 7 days recommended), spawns a slim child that
+  reviews the EXISTING `lessons.md` + `skill_usage` inventory and
+  writes `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP /
+  PATCH / CONSOLIDATE / PRUNE recommendations. Pinned and
+  foreground-authored entries are marked `[PROTECTED]` in the
+  inventory so the curator never proposes destructive changes against
+  them. Phase 1 is advisory-only — user reviews the REPORT and
+  applies changes manually. Inspired by Hermes Agent v0.12's
+  `hermes curator` cron agent.
 
 ### Dialectic user model
 
@@ -160,6 +175,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 30 | transcript ingest tick (s) |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |

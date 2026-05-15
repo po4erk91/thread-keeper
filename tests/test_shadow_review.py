@@ -46,15 +46,15 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", min_chars="50"):
     return {"db": db, "shadow_review": shadow_review, "identity": identity}
 
 
-def _seed_dialog(conn, role, content, ts):
+def _seed_dialog(conn, role, content, ts, session_id="sess-x"):
     """Direct INSERT into dialog_messages — bypasses ingest for unit-test
     speed. Uses unique uuid based on timestamp+role to avoid collisions."""
     uid = f"u-{ts}-{role}-{abs(hash(content)) % 100000}"
     conn.execute(
         "INSERT INTO dialog_messages (uuid, source, project, session_id, "
         "role, content, model, created_at) "
-        "VALUES (?, 'claude-code', 'p1', 'sess-x', ?, ?, ?, ?)",
-        (uid, role, content, "test-model", ts),
+        "VALUES (?, 'claude-code', 'p1', ?, ?, ?, ?, ?)",
+        (uid, session_id, role, content, "test-model", ts),
     )
 
 
@@ -98,6 +98,94 @@ def test_collect_window_skips_messages_before_floor(tmp_path, monkeypatch):
     assert "fresh message" in dump
     assert "old message" not in dump
     assert hw == now - 10
+
+
+def test_collect_window_excludes_shadow_observer_sessions(
+    tmp_path, monkeypatch,
+):
+    """The most expensive failure mode of the v0.3 shadow loop was that
+    spawned shadow children's own conversations were re-ingested, so the
+    next pass saw only its own prior reasoning and SKIPped 60%+ of ticks.
+    Sessions whose opening user prompt starts with the shadow-observer
+    or close-thread-reviewer marker are excluded from the window."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    # Real user dialog — should appear
+    _seed_dialog(conn, "user", "fix flaky network in WDA", now - 30,
+                 session_id="real-sess")
+    _seed_dialog(conn, "assistant", "On each WDA start, read networksetup; "
+                 "if proxy 127.0.0.1 detected, reset before continuing.",
+                 now - 25, session_id="real-sess")
+    # Shadow observer child's session — first user message starts with the
+    # internal marker. ALL of its messages (including its own assistant
+    # response) must be excluded, not just the prompt message.
+    _seed_dialog(conn, "user",
+                 "You are a SHADOW LEARNING OBSERVER for thread-keeper. "
+                 "You read a slice of recent…", now - 20,
+                 session_id="shadow-sess-1")
+    _seed_dialog(conn, "assistant", "SKIP: env-specific E2E debugging",
+                 now - 19, session_id="shadow-sess-1")
+    # close_thread reviewer child — different marker, same treatment
+    _seed_dialog(conn, "user",
+                 "You are reviewing closed thread T123. Thread notes:…",
+                 now - 15, session_id="review-sess-2")
+    _seed_dialog(conn, "assistant", "Nothing to save.",
+                 now - 14, session_id="review-sess-2")
+    conn.commit()
+
+    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    assert "flaky network in WDA" in dump
+    assert "WDA start, read networksetup" in dump
+    assert "SHADOW LEARNING OBSERVER" not in dump
+    assert "SKIP:" not in dump
+    assert "reviewing closed thread" not in dump
+    assert "Nothing to save." not in dump
+    # Sanity: char_count reflects only the real-session bytes
+    assert n_chars > 0
+    assert n_chars < 500  # would be much larger if pollution leaked through
+
+
+def test_collect_window_strips_tool_results_keeps_thinking(
+    tmp_path, monkeypatch,
+):
+    """Tool_result / tool_call adapter-prefixed lines are verbose
+    file-dump / shell-output renderings without semantic signal for
+    class-level learning. Strip them. Keep [thinking] (chain-of-thought
+    often contains the rule being learned)."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    _seed_dialog(conn, "assistant", (
+        "Found the root cause: WDA crashes when launchd Wi-Fi proxy "
+        "lingers.\n"
+        "[thinking] I'll verify by reading networksetup before WDA "
+        "start.\n"
+        "[tool_result] 100 lines of networksetup output here\n"
+        "Decision: always read networksetup and reset 127.0.0.1 proxy "
+        "before launching WDA."
+    ), now - 30, session_id="real")
+    # Pure-noise row should disappear entirely
+    _seed_dialog(conn, "assistant",
+                 "[tool_result] another 200 lines of grep output\n"
+                 "[tool_call] Read(file=/tmp/x.log)",
+                 now - 25, session_id="real")
+    conn.commit()
+
+    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    # Tool results stripped
+    assert "[tool_result]" not in dump
+    assert "[tool_call]" not in dump
+    assert "100 lines of networksetup" not in dump
+    assert "another 200 lines" not in dump
+    # Thinking and plain text preserved
+    assert "[thinking]" in dump
+    assert "networksetup before WDA start" in dump
+    assert "always read networksetup" in dump
+    assert "WDA crashes when launchd" in dump
+    # Pure-noise row left no trace
+    assert "Read(file=/tmp/x.log)" not in dump
+    assert n_chars > 0
 
 
 def test_collect_window_caps_long_messages(tmp_path, monkeypatch):

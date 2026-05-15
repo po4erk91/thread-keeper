@@ -134,6 +134,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             shadow_review.start_shadow_daemon()
         except Exception:
             pass
+        try:
+            from . import curator
+            curator.start_curator_daemon()
+        except Exception:
+            pass
     return _session_id
 
 
