@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "threadkeeper"
 version = "0.4.0"
-description = "Persistent working memory across agentic CLI sessions — CLI-agnostic MCP server for Claude Code/Desktop, Codex, Gemini, Copilot, VS Code."
+description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini, Copilot, VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
 license = { text = "MIT" }

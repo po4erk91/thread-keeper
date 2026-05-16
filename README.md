@@ -3,12 +3,19 @@
 [![tests](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml/badge.svg)](https://github.com/po4erk91/thread-keeper/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/threadkeeper.svg)](https://pypi.org/project/threadkeeper/)
 [![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Gemini%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
 
-A local MCP server that holds **persistent working memory across agentic CLI
-sessions** — Claude Code, Claude Desktop, OpenAI Codex (CLI + desktop),
-Google Gemini, GitHub Copilot, and every MCP-aware VS Code extension share
-one SQLite store, one set of threads, one learning loop, one user model.
+**Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini,
+Copilot, and VS Code.** Cross-session memory, self-improving skill
+loops, and inter-agent signaling — one local MCP server turns parallel
+agent instances into a coordinated multi-agent system instead of N
+isolated chats.
+
+Every connected client (Claude Code, Claude Desktop, Codex CLI +
+desktop, Gemini, Copilot, every MCP-aware VS Code extension) shares
+one SQLite store, one set of threads, one user model, and one learning
+loop that improves the skill library autonomously over time.
 
 The brief format is dense — structural tags, opaque IDs, ~6 KB per
 session-start injection. Optimized for agent consumption, not human reading.
@@ -17,23 +24,34 @@ session-start injection. Optimized for agent consumption, not human reading.
 
 ## Why
 
-Today every agent CLI starts cold. Context dies at session boundaries.
-Skills you taught Claude don't transfer to Codex. Threads you closed in
-yesterday's Gemini chat are invisible to today's Copilot.
+Every agent CLI starts cold. Context dies at session boundaries.
+Skills you taught Claude don't transfer to Codex. Threads you closed
+in yesterday's Gemini chat are invisible to today's Copilot. Parallel
+agent instances running the same task don't know about each other and
+duplicate work or step on each other's writes.
 
-thread-keeper is the substrate underneath:
+thread-keeper is the substrate underneath. Three things that together
+make it more than a memory store:
 
-- **One memory store** — threads, notes, verbatim quotes, dialectic claims
-  about you. Survives session, restart, CLI swap.
-- **One learning loop (hermes-style)** — closed threads with rich content
-  spawn a background reviewer that appends lessons to
-  `~/.threadkeeper/lessons.md`. Every CLI's per-user instructions file
-  references this path, so the same procedural knowledge surfaces in
-  Claude Code, Codex, Gemini, and Copilot. Claude-specific
-  `~/.claude/skills/*/SKILL.md` is an optional secondary output when
-  frontmatter auto-triggering adds value.
-- **Cross-session signaling** — broadcast / whisper / inbox / wait between
-  concurrent sessions across different CLIs.
+- **Collective memory** — threads, notes, verbatim quotes, dialectic
+  claims about you. Survives session, restart, CLI swap. One agent
+  records, every other agent (any CLI) reads. The brief injected at
+  session start gives a new agent everything the previous one knew.
+- **Multi-agent coordination** — `spawn` primitive launches child
+  agents in parallel, each gets a self_cid + sees the same memory.
+  `broadcast` / `whisper` / `inbox` / `wait` / `ask` / `respond` let
+  concurrent sessions signal each other across CLIs. Parent /
+  children / sibling agents become a coordinated swarm, not isolated
+  chats.
+- **Self-improving skill library** — four autonomous background loops
+  (auto-review on thread close, shadow-review daemon, extract
+  harvester, weekly Curator) materialize class-level skills as the
+  agents work. Hermes Agent v0.12 pattern adapted to multi-CLI:
+  SKILL.md is the primary write target and gets mirrored to every
+  detected CLI's skills directory simultaneously
+  (`~/.claude/skills/`, `~/.codex/skills/`, `~/.threadkeeper/skills/`),
+  with lessons.md as a fallback for CLIs without a native skills
+  loader.
 
 ---
 
