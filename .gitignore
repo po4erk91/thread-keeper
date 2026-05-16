@@ -27,6 +27,19 @@ env/
 *.bak.*
 .bak.*
 
+# Per-CLI runtime / per-user state — see skill
+# 'never-commit-cli-runtime-dirs'. These directories hold session
+# locks, scheduled task state, hook caches, settings.local.json,
+# personal conversation history. Per-user, per-machine — never
+# commit.
+.claude/
+.codex/
+.gemini/
+.copilot/
+.threadkeeper/
+.cursor/
+.windsurf/
+
 # pytest / coverage
 .pytest_cache/
 .coverage
