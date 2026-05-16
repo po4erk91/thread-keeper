@@ -73,6 +73,32 @@ class ClaudeCodeAdapter(CLIAdapter):
     def skills_dir(self):
         return self._skills_dir
 
+    def supports_spawn(self) -> bool:
+        return True
+
+    def spawn_argv(self, prompt, *, model="", permission_mode="auto",
+                   extra_allowed_tools="", mcp_config_path=None):
+        """Construct `claude -p` argv. Tool list is the canonical
+        thread-keeper allowlist plus any caller-supplied extras."""
+        import shutil
+        claude_bin = (os.environ.get("CLAUDE_CODE_EXECPATH")
+                      or shutil.which("claude"))
+        if not claude_bin:
+            return None
+        argv = [claude_bin, "-p", prompt,
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+                "--permission-mode", permission_mode]
+        if extra_allowed_tools:
+            argv += ["--allowedTools", extra_allowed_tools]
+        if model:
+            argv += ["--model", model]
+        if mcp_config_path:
+            argv += ["--mcp-config", str(mcp_config_path),
+                     "--strict-mcp-config"]
+        return argv
+
     def instructions_path(self):
         return self._instructions
 

@@ -113,6 +113,31 @@ class CLIAdapter(ABC):
         only supports per-repo instructions)."""
         return None
 
+    # ------------------------------------------------------------------
+    # Spawn — per-CLI headless invocation
+    # ------------------------------------------------------------------
+    def supports_spawn(self) -> bool:
+        """True iff this CLI can be spawned non-interactively from a
+        thread-keeper daemon. Implies a working headless invocation
+        (`claude -p` / `codex exec` / `gemini -p` / `copilot -p`) AND
+        a way to inject our MCP server config so the spawned child
+        can call back into thread-keeper. Default: False (loops will
+        gracefully skip this CLI)."""
+        return False
+
+    def spawn_argv(self, prompt: str, *,
+                   model: str = "",
+                   permission_mode: str = "auto",
+                   extra_allowed_tools: str = "",
+                   mcp_config_path: Optional[Path] = None,
+                   ) -> Optional[list[str]]:
+        """Construct the argv list to launch a non-interactive child of
+        this CLI with the given prompt. Returns None when the adapter
+        doesn't support spawn (caller should skip).
+
+        Default returns None — concrete adapters override."""
+        return None
+
     def skills_dir(self) -> Optional[Path]:
         """Root directory under which this CLI auto-discovers Skill.md
         files (Anthropic-style skill format: YAML frontmatter +

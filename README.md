@@ -360,6 +360,48 @@ Persist them via `~/.claude/settings.json`'s `env` block (Claude Code) or
 the equivalent env section in each CLI's config. Hot-config reload is
 [tracked](https://github.com/po4erk91/thread-keeper/issues/2).
 
+### Per-loop agent dispatch
+
+By default every learning-loop spawn runs through the same CLI that
+hosts thread-keeper — Opus-session ⇒ Opus spawn, Codex-session ⇒
+Codex spawn, etc. Detection: process-tree walk at startup, cached for
+the server lifetime. The MCP tool `spawn_status()` shows the live
+resolution table.
+
+Override per role via `~/.threadkeeper/spawn.toml`:
+
+```toml
+[default]
+agent = "auto"     # "auto" = use active CLI (default)
+
+[loops]
+# Force specific roles to specific CLIs regardless of active host
+shadow_observer    = "claude"   # heaviest reasoning → keep on Claude
+curator            = "codex"    # weekly audit → Codex is fine
+candidate_reviewer = "auto"     # follow active CLI
+archivist          = "claude"   # close_thread auto-review
+extract            = "auto"     # this one is local (no spawn)
+
+[models]
+# Optional per-CLI model pin — overrides each CLI's own default
+claude = "opus"
+codex  = "gpt-5.4"
+gemini = "gemini-2.5-pro"
+```
+
+Or via env (highest priority, overrides the TOML):
+
+```bash
+export THREADKEEPER_SPAWN_DEFAULT=codex                 # global default
+export THREADKEEPER_SPAWN_LOOP_CURATOR=gemini           # per-role
+export THREADKEEPER_SPAWN_MODEL_CLAUDE=opus             # per-CLI model
+export THREADKEEPER_ACTIVE_CLI=claude                   # force detection
+```
+
+Adapters without headless support (Claude Desktop, VS Code) can't be
+spawn targets — `spawn_status()` reports them as "no adapter" and any
+override pointing at them falls back to the next priority level.
+
 ---
 
 ## Storage

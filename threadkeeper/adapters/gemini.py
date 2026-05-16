@@ -59,6 +59,22 @@ class GeminiAdapter(CLIAdapter):
     def instructions_path(self):
         return self._instructions
 
+    def supports_spawn(self) -> bool:
+        return True
+
+    def spawn_argv(self, prompt, *, model="", permission_mode="auto",
+                   extra_allowed_tools="", mcp_config_path=None):
+        """Gemini non-interactive: `gemini -p <prompt> [--model X]`.
+        Gemini auto-discovers MCP servers from ~/.gemini/settings.json
+        — no per-invocation MCP config injection."""
+        bin_path = shutil.which("gemini")
+        if not bin_path:
+            return None
+        argv = [bin_path, "-p", prompt]
+        if model:
+            argv += ["--model", model]
+        return argv
+
     def hooks_supported(self) -> bool:
         return True
 

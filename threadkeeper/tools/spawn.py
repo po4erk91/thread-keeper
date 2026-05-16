@@ -370,17 +370,51 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             )
     if append_system:
         sys_extra += "\n\n" + append_system
-    cmd = [
-        bin_, "-p", prompt,
-        "--session-id", child_cid,
-        "--append-system-prompt", sys_extra,
-    ]
-    if permission_mode:
-        cmd += ["--permission-mode", permission_mode]
-    # Default allowlist: thread-keeper tools so the child can actually report
-    # back via broadcast/whisper without auto-mode classifier blocking. Users
-    # extend via extra_allowed_tools (e.g. for Bash/Edit/etc).
-    default_allow = [
+    # Resolve which CLI agent should run this child. Claude is the
+    # historical default and the only path with full MCP-config
+    # injection + session-id + append-system-prompt translation; for
+    # codex/gemini/copilot we take a simpler path via the adapter's
+    # spawn_argv that builds basic argv only.
+    from .. import spawn_config as _sc, identity as _id
+    chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())
+    chosen_model = model or _sc.resolve_model(chosen_cli)
+    if chosen_cli != "claude":
+        from ..adapters import get_adapter
+        _ad = get_adapter(chosen_cli)
+        if _ad is None or not _ad.supports_spawn():
+            return f"ERR spawn_unsupported cli={chosen_cli}"
+        # Compress system-prompt extras + main prompt into one string —
+        # non-Claude CLIs have no per-invocation --append-system-prompt.
+        full_prompt = (sys_extra + "\n\n---\n\n" + prompt
+                       if sys_extra else prompt)
+        cmd = _ad.spawn_argv(
+            full_prompt,
+            model=chosen_model,
+            permission_mode=permission_mode,
+            extra_allowed_tools=extra_allowed_tools,
+        )
+        if not cmd:
+            return f"ERR spawn_failed cli={chosen_cli} reason=binary_not_found"
+    else:
+        cmd = [
+            bin_, "-p", prompt,
+            "--session-id", child_cid,
+            "--append-system-prompt", sys_extra,
+        ]
+    # Everything below is Claude-flavour argv flags. Non-claude
+    # adapters built their full argv via spawn_argv() above and skip
+    # all of this. (When chosen_cli != "claude", `cmd` already
+    # contains the full argv list ready for subprocess.Popen.)
+    if chosen_cli != "claude":
+        task_id = "tk_" + secrets.token_hex(3)
+        slim_cfg = None  # non-claude CLIs read MCP from their global config
+    else:
+        if permission_mode:
+            cmd += ["--permission-mode", permission_mode]
+        # Default allowlist: thread-keeper tools so the child can actually
+        # report back via broadcast/whisper without auto-mode classifier
+        # blocking. Users extend via extra_allowed_tools.
+        _claude_default_allow = [
         "mcp__thread-keeper__broadcast",
         "mcp__thread-keeper__whisper",
         "mcp__thread-keeper__inbox",
@@ -431,25 +465,28 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         "mcp__thread-keeper__skill_record",
         "mcp__thread-keeper__skill_list",
         "mcp__thread-keeper__curator_run",
-        "mcp__thread-keeper__search_via_parent",
-    ]
-    extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-    allow = default_allow + extra_list
-    cmd += ["--allowedTools"] + allow
-    if model:
-        cmd += ["--model", model]
-    if effort:
-        cmd += ["--effort", effort]
-    task_id = "tk_" + secrets.token_hex(3)
-    # slim=True: load ONLY thread-keeper MCP server. Skips context7, figma,
-    # stitch and every other MCP from ~/.claude.json — typically a 4-6× RAM
-    # reduction and a 10-30s faster cold start. Use for review/curation
-    # children that only need thread-keeper DB access (no Bash/Edit beyond
-    # what claude provides as built-ins, no external API integrations).
-    if slim:
-        slim_cfg = _build_slim_mcp_config(task_id)
-        if slim_cfg is not None:
-            cmd += ["--mcp-config", str(slim_cfg), "--strict-mcp-config"]
+            "mcp__thread-keeper__search_via_parent",
+        ]
+        extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
+        allow = _claude_default_allow + extra_list
+        cmd += ["--allowedTools"] + allow
+        if chosen_model:
+            cmd += ["--model", chosen_model]
+        if effort:
+            cmd += ["--effort", effort]
+        task_id = "tk_" + secrets.token_hex(3)
+        slim_cfg = None
+        # slim=True: load ONLY thread-keeper MCP server. Skips context7,
+        # figma, stitch and every other MCP from ~/.claude.json —
+        # typically a 4-6× RAM reduction and a 10-30s faster cold start.
+        # Use for review/curation children that only need thread-keeper
+        # DB access (no Bash/Edit beyond claude built-ins, no external
+        # API integrations).
+        if slim:
+            slim_cfg = _build_slim_mcp_config(task_id)
+            if slim_cfg is not None:
+                cmd += ["--mcp-config", str(slim_cfg),
+                        "--strict-mcp-config"]
     log_path: Optional[Path] = None
     TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
     if capture_output and not visible:
@@ -844,6 +881,50 @@ def spawn_budget_set(limit_mb: int) -> str:
 
 
 @mcp.tool()
+@mcp.tool()
+def spawn_status() -> str:
+    """Show which CLI thread-keeper detected as its host, and which CLI
+    each spawn role resolves to (after env + file overrides). Use to
+    sanity-check spawn config when you want loops to fire through a
+    specific agent.
+
+    Resolution priority (highest first):
+      • THREADKEEPER_SPAWN_LOOP_<ROLE>=<cli>
+      • ~/.threadkeeper/spawn.toml [loops] override
+      • THREADKEEPER_SPAWN_DEFAULT=<cli>
+      • [default] agent in the toml
+      • active CLI detected at startup
+      • final fallback: claude
+
+    Manual model pinning:
+      • THREADKEEPER_SPAWN_MODEL_<CLI>=<model>
+      • [models].<cli> in the toml
+    """
+    from .. import spawn_config as _sc, identity as _id
+    from ..adapters import get_adapter
+    active = _id.active_cli()
+    lines = [
+        f"active_cli={active or '(none detected)'}",
+        "",
+        "per-role resolution:",
+        _sc.summary_table(active),
+        "",
+        "spawn capability by CLI:",
+    ]
+    for cli in _sc.SUPPORTED_CLIS:
+        adapter = get_adapter(cli)
+        if not adapter:
+            lines.append(f"  {cli:<8} no adapter")
+            continue
+        argv = adapter.spawn_argv("test", model="")
+        if argv is None:
+            lines.append(f"  {cli:<8} not on PATH")
+        else:
+            bin_short = argv[0].split("/")[-1]
+            lines.append(f"  {cli:<8} ok bin={bin_short}")
+    return "\n".join(lines)
+
+
 def task_kill(task_id: str, force: bool = False) -> str:
     """Stop a spawned task. SIGTERM by default; force=True sends SIGKILL."""
     conn = get_db()

@@ -157,6 +157,90 @@ _UUID_RE = re.compile(
 )
 
 
+# Which CLI process is hosting this thread-keeper instance. Set once
+# at startup by _detect_active_cli() walking the process tree. Used by
+# spawn_config.resolve_agent() as the auto-fallback when no manual
+# per-role override is present. Values: 'claude' / 'codex' / 'gemini' /
+# 'copilot' / None (no recognised host detected).
+_active_cli: Optional[str] = None
+
+
+# Binary-name aliases per CLI. Match is case-insensitive on the
+# basename of the parent process command. Claude / Codex have
+# Electron-app variants (capitalised, no extension) in addition to
+# the lowercase CLI binary.
+_CLI_BINARIES = {
+    "claude":  (("claude", "claude-code"),   "Claude Code / Claude Desktop"),
+    "codex":   (("codex",),                   "OpenAI Codex CLI / desktop"),
+    "gemini":  (("gemini",),                  "Google Gemini CLI"),
+    "copilot": (("copilot",),                 "GitHub Copilot CLI"),
+}
+
+
+def _detect_active_cli() -> Optional[str]:
+    """Walk up the process tree until we find a known CLI binary
+    (claude / codex / gemini / copilot). Returns the short name
+    ('claude' etc.), or None if no recognised host.
+
+    Identical strategy to _resolve_self_cid_via_ppid — `ps -p $pid -o
+    ppid=,command=` repeatedly until we hit a match or run out of
+    ancestors. Bounded to 12 levels. Override for tests via
+    THREADKEEPER_ACTIVE_CLI env var.
+    """
+    override = os.environ.get("THREADKEEPER_ACTIVE_CLI", "").strip().lower()
+    if override in _CLI_BINARIES:
+        return override
+    try:
+        pid = os.getpid()
+    except OSError:
+        return None
+    for _ in range(12):
+        try:
+            r = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid=,command="],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        line = (r.stdout or "").strip()
+        if not line:
+            return None
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            return None
+        try:
+            ppid = int(parts[0])
+        except ValueError:
+            return None
+        cmd = parts[1]
+        # Match the binary name as the first whitespace-separated
+        # token's basename — guards against false matches on flag
+        # values like "--prompt 'claude ...'". Lower-cased for the
+        # Electron-app variants (Claude, Codex) that capitalise the
+        # binary name on macOS.
+        first = cmd.split(None, 1)[0]
+        basename = os.path.basename(first.strip('"\'')).lower()
+        for cli_name, (aliases, _) in _CLI_BINARIES.items():
+            for alias in aliases:
+                if (basename == alias
+                        or basename.startswith(alias + ".")):
+                    return cli_name
+        if ppid <= 1:
+            return None
+        pid = ppid
+    return None
+
+
+def active_cli() -> Optional[str]:
+    """Cached accessor — detects once, returns same answer for the
+    process lifetime. Exposed so spawn-dispatch + the startup
+    validator can ask 'what CLI is hosting us?'"""
+    global _active_cli
+    if _active_cli is None:
+        _active_cli = _detect_active_cli()
+    return _active_cli
+
+
 def _resolve_self_cid_via_ppid() -> Optional[str]:
     """Walk up the process tree until we find a claude CLI invocation with
     --resume/--session-id <uuid>. That uuid IS this conversation's id, with

@@ -147,6 +147,24 @@ class CodexAdapter(CLIAdapter):
     def skills_dir(self):
         return self._skills_dir
 
+    def supports_spawn(self) -> bool:
+        return True
+
+    def spawn_argv(self, prompt, *, model="", permission_mode="auto",
+                   extra_allowed_tools="", mcp_config_path=None):
+        """Codex non-interactive: `codex exec [-m MODEL] <prompt>`.
+        Codex reads MCP servers from ~/.codex/config.toml which the
+        thread-keeper-setup installer already wires up — no
+        per-invocation MCP config file needed."""
+        bin_path = shutil.which("codex")
+        if not bin_path:
+            return None
+        argv = [bin_path, "exec"]
+        if model:
+            argv += ["-m", model]
+        argv.append(prompt)
+        return argv
+
     def instructions_path(self):
         return self._instructions
 

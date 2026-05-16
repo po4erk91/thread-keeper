@@ -68,6 +68,22 @@ class CopilotAdapter(CLIAdapter):
     def instructions_path(self):
         return self._instructions
 
+    def supports_spawn(self) -> bool:
+        return True
+
+    def spawn_argv(self, prompt, *, model="", permission_mode="auto",
+                   extra_allowed_tools="", mcp_config_path=None):
+        """Copilot non-interactive: `copilot -p <prompt> [--model X]`.
+        Copilot reads MCP servers from ~/.copilot/mcp-config.json which
+        the thread-keeper-setup installer wires up."""
+        bin_path = shutil.which("copilot")
+        if not bin_path:
+            return None
+        argv = [bin_path, "-p", prompt]
+        if model:
+            argv += ["--model", model]
+        return argv
+
     def hooks_supported(self) -> bool:
         return True
 

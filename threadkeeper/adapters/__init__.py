@@ -37,4 +37,29 @@ def installed_adapters() -> list[CLIAdapter]:
     return [a for a in ADAPTERS if a.is_installed()]
 
 
-__all__ = ["CLIAdapter", "NormalizedMessage", "ADAPTERS", "installed_adapters"]
+def get_adapter(name: str) -> CLIAdapter | None:
+    """Lookup adapter by short name ('claude' / 'codex' / 'gemini' /
+    'copilot' / 'claude-desktop' / 'vscode'). Returns None on unknown
+    name. Used by spawn() dispatcher and the startup validator."""
+    aliases = {
+        "claude": "claude-code",      # short name for the spawn adapter
+        "claude-code": "claude-code",
+        "claude-desktop": "claude-desktop",
+        "codex": "codex",
+        "gemini": "gemini",
+        "copilot": "copilot",
+        "vscode": "vscode",
+    }
+    canonical = aliases.get(name.strip().lower())
+    if not canonical:
+        return None
+    for a in ADAPTERS:
+        if a.name == canonical:
+            return a
+    return None
+
+
+__all__ = [
+    "CLIAdapter", "NormalizedMessage", "ADAPTERS",
+    "installed_adapters", "get_adapter",
+]
