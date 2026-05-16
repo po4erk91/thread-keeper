@@ -214,3 +214,21 @@ EXTRACT_INTERVAL_S: float = float(
 EXTRACT_WINDOW_MIN: int = int(
     os.environ.get("THREADKEEPER_EXTRACT_WINDOW_MIN", "30")
 )
+
+# Candidate-reviewer daemon — periodically consumes the pending queue
+# extract_daemon builds up, spawns an LLM child to decide per
+# candidate: SKILL.create / SKILL.patch / NOTE / VERBATIM / REJECT.
+# Closes the loop between heuristic extract and SKILL.md
+# materialization that previously only happened via close_thread
+# auto-review (which agents rarely trigger). 0 disables (default —
+# opt in). Recommended: 3600 (hourly) — extract typically adds
+# ~10 candidates/h with the daemon's 30-min window, hourly review
+# keeps the queue from backing up.
+CANDIDATE_REVIEW_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S", "0")
+)
+# Minimum pending candidates before the daemon engages — below this
+# floor there's not enough signal to justify spawning an Opus child.
+CANDIDATE_REVIEW_MIN: int = int(
+    os.environ.get("THREADKEEPER_CANDIDATE_REVIEW_MIN", "3")
+)

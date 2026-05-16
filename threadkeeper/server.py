@@ -49,6 +49,7 @@ from .tools import process_health  # noqa: F401
 from .tools import shadow_review  # noqa: F401
 from .tools import lessons  # noqa: F401
 from .tools import curator  # noqa: F401
+from .tools import candidate_reviewer  # noqa: F401
 
 
 if __name__ == "__main__":

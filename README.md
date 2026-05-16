@@ -157,7 +157,7 @@ parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
 ### Learning loop (hermes-style)
 
-Four loops materialize knowledge into Anthropic-style Skill files
+Five loops materialize knowledge into Anthropic-style Skill files
 (`SKILL.md` under each detected CLI's skills directory — Claude's
 `~/.claude/skills/`, Codex's `~/.codex/skills/`, plus the canonical
 `~/.threadkeeper/skills/` mirror) with a CLI-agnostic
@@ -187,13 +187,21 @@ on the Skill format (Gemini / Copilot / bare MCP clients):
   with heuristic matchers (locale-aware "I want / next time / always"
   patterns, headers + insight markers, bullet regularities, paraphrase
   clusters via cosine ≥ 0.80) and enqueues candidates in
-  `extract_candidates.status='pending'` for the agent to review via
-  `review_candidates()` / `accept_candidate()`. The same self-pollution
+  `extract_candidates.status='pending'`. The same self-pollution
   filter as shadow_review excludes internal review-child sessions.
   Where shadow extracts CLASS-LEVEL durable rules, extract harvests
-  PER-INCIDENT decision-shaped utterances — sidesteps the empirical
-  problem that agents focused on their primary task don't call
-  `note()` / `verbatim_user()` on their own.
+  PER-INCIDENT decision-shaped utterances.
+- **Candidate-reviewer daemon** — every
+  `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` seconds (default off;
+  1 h recommended), consumes the pending queue extract built up.
+  Spawns an LLM child that decides per candidate or per coherent
+  cluster: SKILL.create / SKILL.patch (active-update bias toward
+  recently-touched skills) / SKILL.write_file as references/ sub-file
+  / NOTE (with thread_id) / VERBATIM / REJECT. Closes the gap
+  between heuristic harvest and SKILL.md materialization — previously
+  pending candidates accumulated indefinitely waiting for an agent to
+  call `accept_candidate()` manually, which audit showed agents rarely
+  do.
 - **Autonomous Curator** — every `THREADKEEPER_CURATOR_INTERVAL_S`
   seconds (default off; 7 days recommended), spawns a slim child that
   reviews the EXISTING `lessons.md` + `skill_usage` inventory and
@@ -237,6 +245,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
+| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |

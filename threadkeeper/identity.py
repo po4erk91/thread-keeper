@@ -144,6 +144,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             extract_daemon.start_extract_daemon()
         except Exception:
             pass
+        try:
+            from . import candidate_reviewer
+            candidate_reviewer.start_candidate_reviewer_daemon()
+        except Exception:
+            pass
     return _session_id
 
 
