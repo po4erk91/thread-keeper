@@ -49,6 +49,65 @@ remains a live question.
 
 ## Open
 
+**More IDE / agent adapters — Cursor, Windsurf, JetBrains, Zed, etc.**
+Current registry covers six clients (Claude Code / Claude Desktop /
+Codex CLI + desktop / Gemini / Copilot / VS Code). The MCP ecosystem
+is wider:
+
+- **Cursor** — AI-first VS Code fork, has its own MCP config at
+  `~/.cursor/mcp.json`. Schema close to VS Code's but a separate file.
+- **Windsurf** — Codeium's editor, MCP support via
+  `~/.codeium/windsurf/mcp_config.json` (subject to change between
+  versions).
+- **JetBrains** (WebStorm / IntelliJ / PyCharm / etc.) — MCP plugin
+  available; config typically per-IDE in the plugin's settings XML or
+  a sidecar JSON.
+- **Zed** — native MCP host, config in `~/.config/zed/settings.json`
+  under `experimental.mcp_servers`.
+- **Continue** — uses `~/.continue/config.json`.
+- **Aider** — no native MCP yet (file-based config + CLI flags);
+  revisit when MCP support ships.
+
+Each adapter follows the existing pattern (`threadkeeper/adapters/<name>.py`
+implementing `CLIAdapter`). Mechanically straightforward; the work is
+chasing each tool's config conventions and keeping up with their
+schema churn. Scope: S per adapter, ongoing. Triage by user demand —
+don't pre-build adapters for tools no one runs.
+
+**Multi-user / remote deployment** (re-opens former Phase 4 ACL +
+Phase 5 federation). Today thread-keeper is single-user / single-
+machine by design; the SQLite store lives at
+`~/.threadkeeper/db.sqlite` and every adapter assumes local file
+paths. Move to a hosted topology where N users connect their CLIs to
+one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
+
+- **HTTP / SSE transport.** FastMCP already supports
+  `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
+  Scope: S.
+- **Per-user auth.** Bearer token in `Authorization` header on every
+  MCP call. Token → user_id binding stored in a new `users` table.
+  Scope: M.
+- **Row-level isolation.** Every existing table (threads, notes,
+  dialog_messages, skill_usage, ...) gains a `user_id` column;
+  queries filter by the authenticated session's user. Migration is
+  the painful part — existing single-user data assigned to a default
+  user. Scope: M-L.
+- **ACL: what's shared vs private.** Some data is private per user
+  (verbatim_user, personal threads); some is shared infrastructure
+  (skills, lessons, dialectic about a common subject). Need a sharing
+  model — explicit `share_with` field, or roles, or scopes
+  (`private` / `team` / `global`). Open design question. Scope: L.
+- **Cloud deployment playbook.** Containerise, document AWS / Fly.io /
+  Railway recipes, secrets handling, backups. Scope: M.
+- **Cost / threat model.** Hosted means one bad client can flood the
+  server; rate limiting + abuse mitigation become real concerns.
+  Scope: M.
+
+Total scope: XL. Decision-needed up front: are we building a SaaS
+posture (multi-tenant hosted with paid plans) or a self-host enabler
+(team installs their own instance behind Tailscale)? The two paths
+diverge on auth, abuse-handling, and what we put in the docs.
+
 **Portability (former Phase 1).** Originally planned to extract
 `IdentityProvider` / `TranscriptSource` interfaces for other stacks.
 Counter-argument: the target client is Claude Code, the rest is YAGNI.
@@ -68,14 +127,14 @@ sentence-transformers similarity scorer plus a classifier, bootstrap from
 the current ledger. But: review_candidates is not actively used yet,
 first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 
-**ACL (former Phase 4).** Single-user machine, everything shared. Not
-critical. Drop from roadmap — don't do until a multi-user scenario
-appears. Scope: L.
+**ACL (former Phase 4).** Folded into the "Multi-user / remote
+deployment" item above — see the ACL sub-bullet there.
 
-**Federation / sync (former Phase 5).** Cross-machine memory. Expensive
-(CRDT, encryption, transport), benefit not proven. Currently work happens
-from a single laptop, other machines observe via the `dialog_search`
-index. Drop. Scope: XL.
+**Federation / sync (former Phase 5).** Subsumed by the
+"Multi-user / remote deployment" item above. Hosted multi-tenant
+deployment is the more concrete need; cross-machine CRDT-based sync
+between independent installs is a strictly harder problem and
+probably never the right answer here.
 
 **Hot-config reload.** `settings.json` and env require server restart.
 Ideally — pickup without restarting daemons. Scope: S (env via periodic
