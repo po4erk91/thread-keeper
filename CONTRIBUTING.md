@@ -124,3 +124,109 @@ python -m threadkeeper._setup --dry-run           # setup is idempotent
 
 If any of these report something unexpected on a clean checkout, that's
 a bug — please open an issue or a PR.
+
+## Pull request workflow
+
+### Scope
+
+One PR = one logical change. Don't bundle a new adapter with a
+prompt-tuning fix with a README rewrite — split them. Reviewers will
+ask you to anyway, and split-after is more work than split-before.
+
+Rough size guidance:
+
+- **Small** (1 file, <50 lines) — fix a typo, add a missing classifier,
+  bump a constant. No discussion needed, ship it.
+- **Medium** (2–5 files, <300 lines) — new MCP tool, new env knob, new
+  test, prompt change. Standard PR; description + checklist + tests.
+- **Large** (>300 lines or >5 files) — new adapter, new daemon, new
+  schema migration, refactor across modules. Open as **Draft** first
+  with a short design note in the PR description, get feedback on the
+  shape before grinding through the implementation.
+
+### Commit messages
+
+We use Conventional Commits Lite — `<type>: <imperative summary>`:
+
+| Type       | When to use                                                    |
+|------------|----------------------------------------------------------------|
+| `feat`     | New user-visible capability (MCP tool, adapter, daemon, knob)  |
+| `fix`      | Behavior bug fix                                               |
+| `refactor` | Internal restructure with no user-visible change               |
+| `test`     | Test-only addition or rework                                   |
+| `docs`     | README / CONTRIBUTING / inline-docstring changes               |
+| `chore`    | Repo hygiene (templates, .gitignore, scaffolding)              |
+| `ci`       | CI / release pipeline                                          |
+| `deps`     | Dependency bump                                                |
+
+Summary line is imperative and ≤72 chars. Body is optional and explains
+*why* + non-obvious consequences. Example:
+
+```
+feat: extract daemon — auto-harvest decision-shaped utterances
+
+Closes the agent-doesn't-call-note() gap by harvesting from
+dialog_messages instead. Same scaffolding as shadow_review + curator
+(cursor in events.kind='extract_pass', SEMANTIC_AVAILABLE guard).
+```
+
+### Branch names
+
+`<type>/<short-slug>` where type matches the commit prefix. Examples:
+
+- `feat/add-jetbrains-adapter`
+- `fix/shadow-review-cursor-off-by-one`
+- `docs/clarify-curator-destructive-mode`
+- `ci/dependabot-grouping`
+
+Forks: same convention on your fork.
+
+### Linking issues
+
+If the PR closes an issue, put `Closes #N` (or `Fixes #N`) in the
+PR description — GitHub auto-closes the issue on merge.
+
+For partial work that doesn't close yet: `Refs #N` so the issue tracks
+the PR in its sidebar without auto-closing.
+
+### Draft vs ready
+
+Open as **Draft** when:
+
+- you want early design feedback
+- CI is still red and you're iterating
+- the PR depends on another PR landing first
+
+Switch to **Ready for review** when CI is green and the diff is what
+you want the reviewer to see. Re-running CI after a forced-push counts
+as a fresh review surface — re-request review if you got one already.
+
+### Merge strategy
+
+Branch protection requires linear history — no merge commits.
+Maintainer will choose between:
+
+- **Squash and merge** (default) — collapses the PR into one commit on
+  main, rewriting the message to a clean Conventional Commits form.
+  Use when the per-commit history is just "wip / fix lint / address
+  review feedback" — noise the main branch doesn't need.
+- **Rebase and merge** — keeps each commit as-is. Use only when every
+  commit is independently meaningful, well-messaged, and the PR is
+  small enough to read commit-by-commit. Rare.
+
+Contributors don't need to pre-squash — the maintainer does it at
+merge time. Just keep your branch rebased on `main` so the merge stays
+fast-forward-able (branch protection has `strict=true`).
+
+### After merge
+
+- Delete your branch (GitHub offers a button) — keeps the fork tidy.
+- If you got merged and want credit on the changelog: thanks, you're
+  already on it. The Releases page picks up commit authors.
+
+### Stale PRs
+
+A PR with no activity for 30 days and red CI gets a polite ping from
+the maintainer asking if it's still alive. After 60 days idle it
+gets closed with `stale` label and a link to re-open if the
+contributor returns.
