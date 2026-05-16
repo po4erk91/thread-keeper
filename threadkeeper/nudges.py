@@ -1,7 +1,9 @@
-"""Counter-driven nudge logic. Inspired by hermes-agent's
-memory_nudge_interval / skill_nudge_interval — when N mutating events
-have passed in this session since the last 'save event' (memory or skill),
-surface an active nudge in brief() asking the agent to consolidate.
+"""Counter-driven nudge logic.
+
+`memory_nudge_interval` / `skill_nudge_interval` env knobs — when N
+mutating events have passed in this session since the last 'save
+event' (memory or skill), surface an active nudge in brief() asking
+the agent to consolidate.
 
 Unlike spawn_hint and skill_hint (passive observation of state), these
 nudges are turn-counter-driven: every mutating tool emits an event, the

@@ -1,9 +1,9 @@
 """brief() skill_hint nudge — fires when a recently-closed thread is rich
 enough to be worth materializing as a Claude skill under ~/.claude/skills/.
 
-Inspired by hermes-agent's Learning loop: after complex tasks, the agent
-should turn distilled insights into reusable skills, not let them sit only
-in notes. The nudge surfaces the moment.
+After complex tasks, the agent should turn distilled insights into
+reusable skills, not let them sit only in notes. The nudge surfaces
+the moment.
 
 Trigger:
 - thread state = 'closed', closed within last 24h

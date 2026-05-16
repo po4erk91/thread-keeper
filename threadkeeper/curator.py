@@ -1,8 +1,7 @@
 """Autonomous Curator — periodic library audit & consolidation.
 
-Inspired by Hermes Agent v0.12's `hermes curator` cron agent. Where
-shadow_review LOOKS FOR NEW class-level learning every few minutes,
-the Curator REVIEWS THE STORE every few days:
+Where shadow_review LOOKS FOR NEW class-level learning every few
+minutes, the Curator REVIEWS THE STORE every few days:
 
   1. Daemon thread wakes every CURATOR_INTERVAL_S seconds (0 = off).
   2. Collects inventory: every lesson slug + every recently-touched
@@ -12,7 +11,7 @@ the Curator REVIEWS THE STORE every few days:
      PRUNE, and writes REPORT-<isodate>.md under CURATOR_REPORTS_DIR.
   5. Parent records `curator_pass` event with high-water timestamp.
 
-Design choices borrowed from Hermes:
+Design choices:
 
   • **Class-first / rubric-based output** — child uses an explicit
     decision matrix (see CURATOR_PROMPT) rather than free-form grading.
@@ -29,8 +28,7 @@ Design choices borrowed from Hermes:
 
 Why this exists: shadow_review accumulates lessons over weeks. Without
 periodic curation, the library grows unbounded with overlapping,
-duplicate, or stale content — the same failure mode that pushed
-Hermes to add their Curator in v0.12.
+duplicate, or stale content.
 """
 
 from __future__ import annotations

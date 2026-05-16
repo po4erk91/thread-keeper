@@ -570,7 +570,7 @@ def skill_list(include_archived: bool = False) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 # Active-update bias — feed the review fork a list of recently-touched
 # skills so it can PATCH existing umbrellas instead of creating new ones
-# that overlap. Hermes Agent v0.12 calls this "active-update bias".
+# that overlap.
 # ──────────────────────────────────────────────────────────────────────────
 
 def _fmt_age(now: int, ts: int) -> str:
@@ -754,8 +754,8 @@ def review_thread(thread_id: str,
                   mode: str = "auto") -> str:
     """Spawn a background review of a closed thread to extract memory/skills.
 
-    Equivalent of hermes-agent's _spawn_background_review: a separate Claude
-    process reads the thread's notes and writes back via memory/skill tools.
+    Spawns a separate Claude process that reads the thread's notes and
+    writes back via memory/skill tools.
 
     `focus`: 'memory' | 'skills' | 'combined' (default). Picks the review
         prompt.
@@ -786,10 +786,10 @@ def review_thread(thread_id: str,
         return f"ERR invalid_focus={focus} (memory|skills|combined)"
 
     notes_dump = _thread_notes_dump(conn, thread_id)
-    # Active-update bias (Hermes Agent v0.12 pattern): inject the list
-    # of skills the parent has touched recently so the fork prefers
-    # PATCHing an existing skill over creating a new one — see Q4 in
-    # the rubric. Falls back to empty when the library is fresh.
+    # Active-update bias: inject the list of skills the parent has
+    # touched recently so the fork prefers PATCHing an existing skill
+    # over creating a new one — see Q4 in the rubric. Falls back to
+    # empty when the library is fresh.
     recent_skills_dump = _recent_active_skills_dump(conn)
     full_prompt = (
         f"You are reviewing closed thread {thread_id}.\n\n"

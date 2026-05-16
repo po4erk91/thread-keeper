@@ -451,7 +451,7 @@ real-estate cost.
 - Extraction heuristics are simple regexes; no ML quality classifier.
 - No hot-config reload: changing an env-knob requires restarting the MCP
   process.
-- MCP-native `sampling/createMessage` (a native hermes-style fork without
+- MCP-native `sampling/createMessage` (a native review fork without
   pay-per-use tokens) is not yet implemented in Claude Code
   (anthropics/claude-code#1785). spawn-subprocess is the fallback, slim-config
   brings the cost down to acceptable.

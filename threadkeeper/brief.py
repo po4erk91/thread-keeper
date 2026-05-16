@@ -339,8 +339,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         out.append(mem_nudge)
 
     # ── skill_hint ────────────────────────────────────────────────────────
-    # Behavioral nudge inspired by hermes-agent's Learning loop: after a rich
-    # thread closes, the lessons inside it (insights + repeated moves) should
+    # Behavioral nudge: after a rich thread closes, the lessons inside
+    # it (insights + repeated moves) should
     # be materialized as a reusable Claude skill under ~/.claude/skills/,
     # not just sit in notes. Trigger only on threads recently closed AND
     # rich enough to be worth a class-level skill — never on one-off chatter.

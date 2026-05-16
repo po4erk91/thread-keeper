@@ -168,10 +168,10 @@ _INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
 # Lines starting with these markers carry no semantic signal for
 # class-level learning — they're verbose adapter-side renderings of
 # tool_use / tool_result blocks (file dumps, shell output, search
-# results). Inspired by Hermes Agent v0.12's review-fork upgrade that
-# excludes prior-turn tool messages from the review summary so the
-# fork sees a clean context. We keep `[thinking]` blocks — those ARE
-# signal (chain-of-thought often contains the rule being learned).
+# results). The "clean context" rule: exclude prior-turn tool messages
+# from the review summary so the fork sees a clean context. We keep
+# `[thinking]` blocks — those ARE signal (chain-of-thought often
+# contains the rule being learned).
 _NOISE_LINE_PREFIXES: tuple[str, ...] = (
     "[tool_result]",
     "[tool_call]",

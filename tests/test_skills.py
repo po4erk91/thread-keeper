@@ -396,7 +396,7 @@ def test_review_thread_inline_returns_prompt_with_notes(skills_pkg):
 def test_review_thread_auto_bumps_learning_loop_counter(skills_pkg, monkeypatch):
     """Auto-mode spawns a learning child — record that as a use of the
     ai-memory-learning-loop skill so the counter reflects how many times
-    the hermes-style loop actually fired.
+    the learning loop actually fired.
 
     Pin AUTO_REVIEW_ENABLED=False so close_thread doesn't ALSO trigger an
     auto-review (which would double the count). We're testing the bump
@@ -458,10 +458,9 @@ def test_review_thread_rejects_unknown_thread(skills_pkg):
 
 
 def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
-    """Active-update bias (Hermes Agent v0.12 pattern): the review fork
-    should see a list of skills the parent has recently touched so it
-    prefers PATCHing existing skills (Q4 of the rubric) over creating
-    new ones that overlap."""
+    """Active-update bias: the review fork should see a list of skills
+    the parent has recently touched so it prefers PATCHing existing
+    skills (Q4 of the rubric) over creating new ones that overlap."""
     import time as _t
     conn = skills_pkg["db"].get_db()
     now = int(_t.time())

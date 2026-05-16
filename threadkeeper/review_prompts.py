@@ -1,8 +1,9 @@
 """Self-improvement review prompts.
 
-Adapted from hermes-agent's MEMORY_REVIEW_PROMPT / SKILL_REVIEW_PROMPT
-constants. The "do NOT capture" list is the part that prevents auto-curation
-from harming itself by hardening transient failures into permanent rules.
+`MEMORY_REVIEW_PROMPT` / `SKILL_REVIEW_PROMPT` drive the spawned review
+fork. The "do NOT capture" list is the part that prevents
+auto-curation from harming itself by hardening transient failures into
+permanent rules.
 
 Used by:
 - review_thread(mode='auto') — spawned background child receives one of these
@@ -11,12 +12,12 @@ Used by:
   processes it in the current turn.
 """
 
-# Rubric-form opener for the review prompts. Hermes Agent v0.12 switched
-# its review fork from free-form "should this update memory/skills?" to
-# rubric-based grading — that change halved their false-negative rate on
-# substantive incidents. We mirror the pattern: 5 yes/no questions, each
-# with a concrete action attached. "Nothing to save." is allowed ONLY
-# when all five answers are No.
+# Rubric-form opener for the review prompts. The review fork uses
+# rubric-based grading rather than free-form "should this update
+# memory/skills?" — empirically halves the false-negative rate on
+# substantive incidents. 5 yes/no questions, each with a concrete
+# action attached. "Nothing to save." is allowed ONLY when all five
+# answers are No.
 RUBRIC_QUESTIONS = (
     "RUBRIC — answer each question. ANY \"YES\" answer requires action; "
     "only ALL-\"NO\" allows the \"Nothing to save.\" stop.\n\n"

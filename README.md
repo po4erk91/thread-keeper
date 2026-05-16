@@ -46,7 +46,7 @@ make it more than a memory store:
 - **Self-improving skill library** — four autonomous background loops
   (auto-review on thread close, shadow-review daemon, extract
   harvester, weekly Curator) materialize class-level skills as the
-  agents work. Hermes Agent v0.12 pattern adapted to multi-CLI:
+  agents work. Adapted to multi-CLI:
   SKILL.md is the primary write target and gets mirrored to every
   detected CLI's skills directory simultaneously
   (`~/.claude/skills/`, `~/.codex/skills/`, `~/.threadkeeper/skills/`),
@@ -155,7 +155,7 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
-### Learning loop (hermes-style)
+### Learning loops
 
 Five loops materialize knowledge into Anthropic-style Skill files
 (`SKILL.md` under each detected CLI's skills directory — Claude's
@@ -170,7 +170,7 @@ on the Skill format (Gemini / Copilot / bare MCP clients):
   (Q1–Q5 yes/no) with explicit positive examples for incident-vs-rule
   classification. The fork also receives a "recently active skills"
   block so it prefers PATCHing existing umbrellas over creating new
-  ones (Hermes Agent v0.12's *active-update bias*). Child appends a
+  ones (*active-update bias*). Child appends a
   lesson via `lesson_append`, optionally mirrors to
   `~/.claude/skills/<name>/SKILL.md`, then closes with
   `mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
@@ -178,8 +178,8 @@ on the Skill format (Gemini / Copilot / bare MCP clients):
   seconds (default off; 15 min recommended), scans the diff of
   `dialog_messages` since the last cursor across **all** CLIs. The
   window filters internal review-child sessions (no self-pollution)
-  and strips adapter `[tool_result]` / `[tool_call]` noise — Hermes
-  v0.12's "clean context" rule. If ≥500 chars of meaningful signal
+  and strips adapter `[tool_result]` / `[tool_call]` noise (the
+  "clean context" rule). If ≥500 chars of meaningful signal
   remain, spawns a slim observer child that decides on class-level
   learning. Idempotent through `events.kind='shadow_review_pass'`.
 - **Extract daemon** — every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds
@@ -210,8 +210,7 @@ on the Skill format (Gemini / Copilot / bare MCP clients):
   foreground-authored entries are marked `[PROTECTED]` in the
   inventory so the curator never proposes destructive changes against
   them. Phase 1 is advisory-only — user reviews the REPORT and
-  applies changes manually. Inspired by Hermes Agent v0.12's
-  `hermes curator` cron agent.
+  applies changes manually.
 
 ### Dialectic user model
 

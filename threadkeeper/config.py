@@ -165,8 +165,7 @@ SHADOW_REVIEW_MIN_CHARS: int = int(
 # lessons.md + ~/.claude/skills/ library — grades, suggests
 # consolidation/patches/prunes, writes a per-run REPORT.md. Where
 # shadow_review LOOKS FOR NEW class-level learning every few minutes,
-# the Curator REVIEWS THE STORE every few days. Inspired by Hermes
-# Agent v0.12's `hermes curator` cron agent. 0 disables (default —
+# the Curator REVIEWS THE STORE every few days. 0 disables (default —
 # opt in via env). Recommended: 604800 (7 days).
 CURATOR_INTERVAL_S: float = float(
     os.environ.get("THREADKEEPER_CURATOR_INTERVAL_S", "0")
