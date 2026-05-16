@@ -1,0 +1,57 @@
+name: pr-title
+
+# Enforces Conventional Commits format on PR titles. The squash-merge
+# strategy uses the PR title as the final commit message on main, so
+# the title becomes part of the changelog history — worth a 30-second
+# guard against `update stuff` and `wip` slipping through.
+#
+# Allowed types match the table in CONTRIBUTING.md → Pull request
+# workflow → Commit messages. Add new ones here AND there together.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            refactor
+            test
+            docs
+            chore
+            ci
+            deps
+            perf
+            build
+            revert
+          # Imperative summary; no leading capital, no trailing period
+          subjectPattern: ^[a-z].+[^.]$
+          subjectPatternError: |
+            PR title subject is missing or malformed. Expected:
+              <type>: <imperative summary in lowercase, no trailing period>
+
+            Examples:
+              feat: add jetbrains adapter
+              fix: shadow review cursor off-by-one in single-message window
+              docs: clarify curator destructive mode
+
+            Allowed types: feat, fix, refactor, test, docs, chore, ci,
+            deps, perf, build, revert.
+          requireScope: false
+          # Don't validate the body — title is the merge commit on
+          # squash, the body is free-form.
+          validateSingleCommit: false

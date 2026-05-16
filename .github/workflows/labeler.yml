@@ -1,0 +1,22 @@
+name: labeler
+
+# Auto-label PRs based on the paths they touch. Config in
+# .github/labeler.yml. Idempotent — re-runs replace the auto-applied
+# labels each time the PR is updated.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true

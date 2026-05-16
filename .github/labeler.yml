@@ -1,0 +1,55 @@
+# Auto-label PRs based on which files they touch. Used by
+# .github/workflows/labeler.yml on every pull_request event.
+
+adapter:
+  - changed-files:
+      - any-glob-to-any-file:
+          - threadkeeper/adapters/**
+
+mcp-tool:
+  - changed-files:
+      - any-glob-to-any-file:
+          - threadkeeper/tools/**
+
+i18n:
+  - changed-files:
+      - any-glob-to-any-file:
+          - threadkeeper/i18n.py
+          - tests/test_i18n_multilang.py
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - docs/**
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - .github/dependabot.yml
+
+installer:
+  - changed-files:
+      - any-glob-to-any-file:
+          - install.sh
+          - threadkeeper/_setup.py
+          - scripts/hooks/**
+
+learning-loop:
+  - changed-files:
+      - any-glob-to-any-file:
+          - threadkeeper/shadow_review.py
+          - threadkeeper/curator.py
+          - threadkeeper/extract_daemon.py
+          - threadkeeper/review_prompts.py
