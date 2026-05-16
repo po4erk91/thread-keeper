@@ -29,15 +29,13 @@ jobs:
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          # Editable install picks up [project.scripts] entrypoint.
-          pip install -e .
-          # Semantic deps are required: a handful of tests
-          # (test_delegated_search, test_vec_search) assert on actual
-          # cosine search behavior and don't have a skip-when-missing
-          # guard. sentence-transformers pulls torch + numpy + sqlite-
-          # vec — ~500MB but cached between runs.
-          pip install -r requirements-semantic.txt
-          pip install -r requirements-dev.txt
+          # Editable install with both optional-dep groups. semantic is
+          # required: a handful of tests (test_delegated_search,
+          # test_vec_search) assert on actual cosine search behavior and
+          # don't have a skip-when-missing guard. sentence-transformers
+          # pulls torch + numpy + sqlite-vec — ~500MB but cached between
+          # runs via the pip cache action above.
+          pip install -e '.[semantic,dev]'
 
       - name: Run pytest
         env:

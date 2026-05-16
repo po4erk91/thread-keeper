@@ -39,26 +39,52 @@ thread-keeper is the substrate underneath:
 
 ## Quickstart
 
+The shortest path — **PyPI + pipx** (recommended):
+
 ```bash
-git clone https://github.com/po4erk91/thread-keeper ~/thread-keeper
-cd ~/thread-keeper
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-pip install -r requirements-semantic.txt    # optional, recommended
-thread-keeper-setup                          # auto-registers in every detected CLI
+pipx install 'threadkeeper[semantic]' && thread-keeper-setup
 ```
 
-That's it. `thread-keeper-setup` is idempotent: it detects which of
-Claude Code / Claude Desktop / Codex / Gemini / Copilot / VS Code you
-have installed, registers the MCP server in each one's config, copies
-hooks to `~/.threadkeeper/hooks/`, and writes a managed instructions
-block into each CLI's per-user instructions file (`CLAUDE.md` /
-`AGENTS.md` / `GEMINI.md` / `copilot-instructions.md` — Claude Desktop
-and VS Code have no global instructions file, so that step is skipped
-for them).
+`thread-keeper-setup` detects every CLI you have installed (Claude
+Code / Claude Desktop / Codex CLI + desktop / Gemini / Copilot / VS
+Code), registers the MCP server in each one's config, copies hooks to
+`~/.threadkeeper/hooks/`, and writes a managed instructions block into
+each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
+`GEMINI.md` / `copilot-instructions.md` — Claude Desktop and VS Code
+have no global instructions file, so that step is skipped for them).
 
 Restart your CLI of choice. The SessionStart hook injects a brief on
 first message; no manual `brief()` call required.
+
+### Alternative installs
+
+If you don't have `pipx` and don't want to install it:
+
+```bash
+# uv (Rust-fast Python tool runner) — no clone, single binary on PATH
+uv tool install 'threadkeeper[semantic]' && thread-keeper-setup
+
+# Plain pip into a venv
+python3 -m venv ~/.threadkeeper-venv
+~/.threadkeeper-venv/bin/pip install 'threadkeeper[semantic]'
+~/.threadkeeper-venv/bin/thread-keeper-setup
+```
+
+For development (editable install from a git checkout) or to track the
+bleeding edge:
+
+```bash
+# One-liner installer — clones to ~/thread-keeper, makes a venv,
+# editable-installs, wires every detected CLI. Idempotent — re-run to
+# update (it git-pulls + reinstalls).
+curl -fsSL https://raw.githubusercontent.com/po4erk91/thread-keeper/main/install.sh | bash -s -- --semantic
+
+# Or fully manual
+git clone https://github.com/po4erk91/thread-keeper ~/thread-keeper
+cd ~/thread-keeper && python3 -m venv .venv
+.venv/bin/pip install -e '.[semantic]'
+.venv/bin/thread-keeper-setup
+```
 
 To preview without writing anything:
 
@@ -235,11 +261,11 @@ parse failures. Read-only with respect to live state.
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e '.[semantic,dev]'
 python -m pytest
 ```
 
-358 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
+412 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
 the suite on every push and PR.
 
 ---

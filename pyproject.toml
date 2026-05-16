@@ -4,25 +4,55 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.3.0"
-description = "Persistent working memory across agentic CLI sessions — CLI-agnostic adapter for Claude Code, Codex, Gemini, and Copilot."
+version = "0.4.0"
+description = "Persistent working memory across agentic CLI sessions — CLI-agnostic MCP server for Claude Code/Desktop, Codex, Gemini, Copilot, VS Code."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
 license = { text = "MIT" }
 readme = "README.md"
+keywords = [
+    "mcp", "model-context-protocol", "claude", "codex", "gemini",
+    "copilot", "memory", "agents", "self-improving", "skills",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+# Semantic cross-language search + sub-linear vector index. Recommended
+# for any real use — without it, dialog_search falls back to FTS5 only.
+semantic = [
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
+    "sqlite-vec>=0.1.9",
+]
+# Test runner + coverage.
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/po4erk91/thread-keeper"
+Repository    = "https://github.com/po4erk91/thread-keeper"
+Issues        = "https://github.com/po4erk91/thread-keeper/issues"
+Documentation = "https://github.com/po4erk91/thread-keeper#readme"
+Changelog     = "https://github.com/po4erk91/thread-keeper/releases"
 
 [project.scripts]
-# After `pip install -e .` (or `pip install threadkeeper`), the user gets
-# `thread-keeper-setup` directly on PATH. Equivalent to
-# `python -m threadkeeper._setup`.
+# After `pip install threadkeeper`, the user gets `thread-keeper-setup`
+# directly on PATH. Equivalent to `python -m threadkeeper._setup`.
 thread-keeper-setup = "threadkeeper._setup:main"
 
 [tool.setuptools.packages.find]

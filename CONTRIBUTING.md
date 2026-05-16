@@ -37,8 +37,7 @@ threadkeeper/            # the package
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e .
-pip install -r requirements-dev.txt
+pip install -e '.[semantic,dev]'
 python -m pytest
 ```
 
