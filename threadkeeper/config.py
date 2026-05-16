@@ -193,3 +193,24 @@ CURATOR_REPORTS_DIR: Path = Path(
 CURATOR_DESTRUCTIVE: bool = bool(
     os.environ.get("THREADKEEPER_CURATOR_DESTRUCTIVE", "")
 )
+
+# Extract daemon. Periodically scans dialog_messages for heuristic
+# candidates (note / concept / distill / verbatim) via extract_recent()
+# and enqueues them under extract_candidates.status='pending'. Where
+# shadow_review extracts CLASS-LEVEL durable rules, extract harvests
+# PER-INCIDENT decision-shaped utterances ("let's use X", "next time
+# we should Y", insight markers, bullet-listed regularities). Agent's
+# subsequent review_candidates() / accept_candidate() materializes the
+# survivors into notes/concepts/distills.
+# 0 disables (default — opt in via env). Recommended: 600 (every 10
+# min) — extract is cheap, just regex + cosine clustering on the
+# already-ingested dialog window.
+EXTRACT_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_EXTRACT_INTERVAL_S", "0")
+)
+# Sliding window of dialog history each extract pass considers, in
+# minutes. Defaults align with the typical agent-task duration so a
+# whole task's worth of decisions gets harvested at once.
+EXTRACT_WINDOW_MIN: int = int(
+    os.environ.get("THREADKEEPER_EXTRACT_WINDOW_MIN", "30")
+)

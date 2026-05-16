@@ -33,6 +33,56 @@ _BULLET_RE = _re_extract.compile(
 )
 
 
+# Message-level noise filter (complements session-level
+# _INTERNAL_PROMPT_PREFIXES). These prefixes appear in INDIVIDUAL
+# messages of otherwise-valid sessions — context-compaction summaries
+# from Anthropic CLI, subagent task prompts, SKILL.md injections, and
+# `[Request interrupted by user for tool use]` service markers. None
+# of them are user-intent signals; all of them were polluting extract
+# candidates in the first calibration pass (2026-05-16 audit, 13
+# candidates → ~25% precision; ~half of misses were these patterns).
+_NOISE_CONTENT_PREFIXES: tuple[str, ...] = (
+    "This session is being continued from a previous conversation",
+    "Base directory for this skill:",
+    "In the repo at /",
+    "[Request interrupted by user",
+    # Generic subagent/spawn role prompts. Subagents and `claude -p`
+    # children commonly open with one of these. They're never user-
+    # intent signals — they're task framing injected by the parent.
+    "You are the ",
+    "You are a ",
+    "You are an ",
+    "Research task",
+    "Design task",
+    "Context:",
+)
+
+
+# Verbatim-specific minimum length. The global 30-char floor is too
+# permissive for "I want X"-style user_want matches — short fragments
+# like "[Request interrupted by user for tool use]" (39 chars) and
+# CLI metadata strings sneak through. 50 chars is the empirical
+# threshold below which user_want matches are almost always noise.
+_VERBATIM_MIN_LEN = 50
+
+
+def _is_log_content(text: str) -> bool:
+    """Heuristic: high density of pass/fail/checkmark glyphs → this is
+    a test runner / CI log output, not natural-language signal.
+
+    Returns True if marker count ≥ 3 in the first 2KB of content. Logs
+    from Detox / Maestro / mocha / pytest etc. trigger user_want false
+    matches on lines like "✓ runFixture:registerUser → $ahmed (2.0s)"
+    and entire blocks dump into a single dialog_message turn.
+    """
+    if len(text) < 100:
+        return False
+    sample = text[:2000]
+    markers = ("✓", "✗", "[OK]", "[FAIL]", "PASS", "FAIL", "skipped",
+               "runFixture:")
+    return sum(sample.count(m) for m in markers) >= 3
+
+
 def _candidate_exists(conn, source_uuid, content):
     if source_uuid:
         if conn.execute(
@@ -74,14 +124,41 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     _ensure_session(conn)
     now = int(time.time())
     cutoff = now - max(1, int(window_min)) * 60
+    # Exclude our own internal-prompted child sessions (shadow_review
+    # observer + close_thread auto-reviewer + curator) — otherwise their
+    # promp text becomes extract candidates, the same self-pollution
+    # we fixed in shadow_review._collect_window.
+    from ..shadow_review import _INTERNAL_PROMPT_PREFIXES
+    # Session-level filter — drop entire sessions started by our own
+    # spawn prompts.
+    sess_prefix_clauses = " OR ".join(
+        ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
+    )
+    sess_prefix_params: list = []
+    for p in _INTERNAL_PROMPT_PREFIXES:
+        sess_prefix_params.extend([len(p), p])
+    # Message-level filter — drop individual noise messages (compaction
+    # summaries, SKILL injections, subagent prompts) inside otherwise
+    # valid sessions. SQL LIKE with '%' suffix on user-controlled prefix
+    # is safe: each pattern is a literal in source code, not user input.
+    msg_noise_clauses = " AND ".join(
+        [f"content NOT LIKE ?"] * len(_NOISE_CONTENT_PREFIXES)
+    )
+    msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
     rows = conn.execute(
         "SELECT uuid, role, content, session_id, created_at, embedding "
         "FROM dialog_messages WHERE created_at >= ? "
         "AND role IN ('user','assistant') "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
+        f"AND {msg_noise_clauses} "
         "AND length(content) >= 30 "
+        "AND session_id NOT IN ("
+        "  SELECT DISTINCT session_id FROM dialog_messages "
+        f"  WHERE role = 'user' AND ({sess_prefix_clauses})"
+        ") "
         "ORDER BY created_at ASC LIMIT ?",
-        (cutoff, max(10, int(max_messages))),
+        (cutoff, *msg_noise_params, *sess_prefix_params,
+         max(10, int(max_messages))),
     ).fetchall()
     if not rows:
         return f"no_dialog window={window_min}m"
@@ -91,7 +168,13 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         uuid, cid, content, role = (
             r["uuid"], r["session_id"], r["content"], r["role"]
         )
-        if role == "user" and _WANT_RE.search(content):
+        # Test-runner / CI log dumps trigger user_want false matches on
+        # log labels like "Earnings Withdrawal → ✓ runFixture:…"
+        if _is_log_content(content):
+            skipped += 1
+            continue
+        if (role == "user" and _WANT_RE.search(content)
+                and len(content) >= _VERBATIM_MIN_LEN):
             res = _enqueue(conn, "verbatim", uuid, cid, content[:2000],
                            "H1 user_want pattern")
             if res:

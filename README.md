@@ -113,7 +113,7 @@ parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
 ### Learning loop (hermes-style)
 
-Three loops materialize knowledge into Anthropic-style Skill files
+Four loops materialize knowledge into Anthropic-style Skill files
 (`SKILL.md` under each detected CLI's skills directory — Claude's
 `~/.claude/skills/`, Codex's `~/.codex/skills/`, plus the canonical
 `~/.threadkeeper/skills/` mirror) with a CLI-agnostic
@@ -138,6 +138,18 @@ on the Skill format (Gemini / Copilot / bare MCP clients):
   v0.12's "clean context" rule. If ≥500 chars of meaningful signal
   remain, spawns a slim observer child that decides on class-level
   learning. Idempotent through `events.kind='shadow_review_pass'`.
+- **Extract daemon** — every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds
+  (default off; 10 min recommended), scans recent `dialog_messages`
+  with heuristic matchers (locale-aware "I want / next time / always"
+  patterns, headers + insight markers, bullet regularities, paraphrase
+  clusters via cosine ≥ 0.80) and enqueues candidates in
+  `extract_candidates.status='pending'` for the agent to review via
+  `review_candidates()` / `accept_candidate()`. The same self-pollution
+  filter as shadow_review excludes internal review-child sessions.
+  Where shadow extracts CLASS-LEVEL durable rules, extract harvests
+  PER-INCIDENT decision-shaped utterances — sidesteps the empirical
+  problem that agents focused on their primary task don't call
+  `note()` / `verbatim_user()` on their own.
 - **Autonomous Curator** — every `THREADKEEPER_CURATOR_INTERVAL_S`
   seconds (default off; 7 days recommended), spawns a slim child that
   reviews the EXISTING `lessons.md` + `skill_usage` inventory and
@@ -179,6 +191,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
+| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
+| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |

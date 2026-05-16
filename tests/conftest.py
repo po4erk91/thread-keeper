@@ -30,6 +30,8 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",     # disable spawn_budget daemon
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",     # disable search_proxy daemon
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",  # disable shadow daemon
+        "THREADKEEPER_CURATOR_INTERVAL_S": "0",       # disable curator daemon
+        "THREADKEEPER_EXTRACT_INTERVAL_S": "0",       # disable extract daemon
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",

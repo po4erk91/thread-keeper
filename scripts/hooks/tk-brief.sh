@@ -98,23 +98,23 @@ CONTEXT_BODY=$(printf '%s\n' "$OUTPUT" | awk -F'\t' '
   inblock { print }
 ')
 
-# Emit hook protocol JSON. Two safety measures for clients with stricter
-# parsers (Claude VS Code extension trips on `Unhandled case: [object
-# Object]` when given both top-level systemMessage AND hookSpecificOutput):
+# Emit hook protocol JSON.
 #
-#   1. Output ONLY `hookSpecificOutput.additionalContext` (the
-#      important payload). The cosmetic status line is folded into the
-#      same additionalContext as a first line so no information is lost
-#      and no extra top-level fields confuse the client.
-#   2. Cap the total payload at 32 KB. A full brief in a chatty week can
-#      exceed 100 KB and some extensions choke on huge injections.
+#   1. `hookSpecificOutput.additionalContext` — full brief into model
+#      context (invisible to user, drives behavior). The status line is
+#      folded in as a first line so no info is lost.
+#   2. `systemMessage` — short, user-visible chip in chat ("🧵
+#      thread-keeper: 8 threads open, 0 live peers"). Signals keeper IS
+#      alive on every new session — without it the user sees a normal
+#      chat with no indication that memory is loaded. Toggle off by
+#      setting THREADKEEPER_VISIBLE_STATUS="" if it breaks any client.
+#   3. 32 KB cap on additionalContext — picky UI parsers choke on huge
+#      injections.
 python3 -c '
-import json, sys
+import json, os, sys
 status = sys.argv[1]
 ctx = sys.argv[2]
 combined = (f"[{status}]\n\n" if status else "") + ctx
-# 32 KB cap — large enough for any realistic brief, small enough to
-# stay inside picky UI parser limits. Truncate at codepoint boundary.
 MAX = 32 * 1024
 if len(combined) > MAX:
     combined = combined[:MAX] + "\n…[truncated by tk-brief hook]"
@@ -124,5 +124,10 @@ out = {
         "additionalContext": combined,
     }
 }
+# User-visible chip — opt-out via env var. Prefix with 🧵 so it reads
+# as a thread-keeper signal at a glance.
+visible = os.environ.get("THREADKEEPER_VISIBLE_STATUS", "1")
+if visible and status:
+    out["systemMessage"] = "🧵 " + status
 print(json.dumps(out))
 ' "$STATUS_LINE" "$CONTEXT_BODY"
