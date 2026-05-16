@@ -1,0 +1,90 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please fill in the
+        fields below so the issue is actionable.
+
+  - type: input
+    id: version
+    attributes:
+      label: thread-keeper version
+      description: |
+        Run `pip show threadkeeper | grep Version` (or check the commit
+        hash if installed from source).
+      placeholder: "0.4.0 / commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cli
+    attributes:
+      label: Which CLI / client?
+      multiple: true
+      options:
+        - Claude Code (CLI)
+        - Claude Desktop
+        - Codex CLI
+        - Codex Desktop
+        - Gemini
+        - Copilot
+        - VS Code extension
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS + Python version
+      placeholder: "macOS 15.1 / Python 3.13.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Exact commands or actions. Include the MCP tool call (if any),
+        the env vars set, and the output you saw.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Anything from `~/.threadkeeper/`, `gh run view <id>`, or the
+        CLI's own logs. Trim to the relevant bit.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+        - label: I'm on a supported Python version (3.11, 3.12, 3.13)
+          required: true

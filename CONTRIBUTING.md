@@ -2,6 +2,14 @@
 
 Quick map of the project so new patches land cleanly.
 
+- By participating you agree to follow the
+  [Code of Conduct](CODE_OF_CONDUCT.md).
+- Found a security-sensitive issue? Please report it via the
+  process in [SECURITY.md](SECURITY.md), not a public issue.
+- For questions and design discussion use
+  [Discussions](https://github.com/po4erk91/thread-keeper/discussions);
+  bug reports and feature proposals go through the issue templates.
+
 ## Project layout
 
 ```
@@ -20,9 +28,11 @@ threadkeeper/            # the package
 ├── adapters/            # one file per CLI
 │   ├── base.py          # CLIAdapter ABC + NormalizedMessage
 │   ├── claude_code.py
+│   ├── claude_desktop.py
 │   ├── codex.py
 │   ├── gemini.py
 │   ├── copilot.py
+│   ├── vscode.py
 │   └── _hook_helpers.py
 └── tools/               # @mcp.tool entries
     ├── threads.py       # brief, note, open_thread, close_thread, ...
@@ -107,7 +117,7 @@ Currently shipped: en, zh, hi, es, pt, fr, de, ar, ru, ja
 ## Verification before PR
 
 ```bash
-python -m pytest                                  # 358+ tests should pass
+python -m pytest                                  # 412+ tests should pass
 python scripts/tk_verify_ingest.py                # cross-CLI ingest sanity
 python -m threadkeeper._setup --dry-run           # setup is idempotent
 ```

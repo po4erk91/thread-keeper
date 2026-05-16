@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/po4erk91/thread-keeper/discussions
+    about: |
+      Have a question about how thread-keeper works, want to share an
+      idea, or discuss design? Use Discussions instead of opening an
+      issue.
