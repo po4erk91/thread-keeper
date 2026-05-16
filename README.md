@@ -157,60 +157,162 @@ parent via `search_via_parent` — no per-child copy of sentence-transformers.
 
 ### Learning loops
 
-Five loops materialize knowledge into Anthropic-style Skill files
-(`SKILL.md` under each detected CLI's skills directory — Claude's
-`~/.claude/skills/`, Codex's `~/.codex/skills/`, plus the canonical
-`~/.threadkeeper/skills/` mirror) with a CLI-agnostic
-`~/.threadkeeper/lessons.md` fallback for CLIs that don't auto-trigger
-on the Skill format (Gemini / Copilot / bare MCP clients):
+Five loops turn raw agent dialog into a curated, multi-CLI-mirrored
+skill library — autonomously, without requiring agents to call
+`note()` / `verbatim_user()` / `close_thread()` on their own (audit
+shows agents focused on their primary task rarely do).
 
-- **Auto-review on close_thread** — when a closed thread is rich
-  (≥5 notes, ≥2 insight/move), `close_thread` spawns a slim child with
-  `SKILL_REVIEW_PROMPT` + the thread's notes. The prompt is rubric-form
-  (Q1–Q5 yes/no) with explicit positive examples for incident-vs-rule
-  classification. The fork also receives a "recently active skills"
-  block so it prefers PATCHing existing umbrellas over creating new
-  ones (*active-update bias*). Child appends a
-  lesson via `lesson_append`, optionally mirrors to
-  `~/.claude/skills/<name>/SKILL.md`, then closes with
-  `mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
-- **Shadow-review daemon** — every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S`
-  seconds (default off; 15 min recommended), scans the diff of
-  `dialog_messages` since the last cursor across **all** CLIs. The
-  window filters internal review-child sessions (no self-pollution)
-  and strips adapter `[tool_result]` / `[tool_call]` noise (the
-  "clean context" rule). If ≥500 chars of meaningful signal
-  remain, spawns a slim observer child that decides on class-level
-  learning. Idempotent through `events.kind='shadow_review_pass'`.
-- **Extract daemon** — every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds
-  (default off; 10 min recommended), scans recent `dialog_messages`
-  with heuristic matchers (locale-aware "I want / next time / always"
-  patterns, headers + insight markers, bullet regularities, paraphrase
-  clusters via cosine ≥ 0.80) and enqueues candidates in
-  `extract_candidates.status='pending'`. The same self-pollution
-  filter as shadow_review excludes internal review-child sessions.
-  Where shadow extracts CLASS-LEVEL durable rules, extract harvests
-  PER-INCIDENT decision-shaped utterances.
-- **Candidate-reviewer daemon** — every
-  `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` seconds (default off;
-  1 h recommended), consumes the pending queue extract built up.
-  Spawns an LLM child that decides per candidate or per coherent
-  cluster: SKILL.create / SKILL.patch (active-update bias toward
-  recently-touched skills) / SKILL.write_file as references/ sub-file
-  / NOTE (with thread_id) / VERBATIM / REJECT. Closes the gap
-  between heuristic harvest and SKILL.md materialization — previously
-  pending candidates accumulated indefinitely waiting for an agent to
-  call `accept_candidate()` manually, which audit showed agents rarely
-  do.
-- **Autonomous Curator** — every `THREADKEEPER_CURATOR_INTERVAL_S`
-  seconds (default off; 7 days recommended), spawns a slim child that
-  reviews the EXISTING `lessons.md` + `skill_usage` inventory and
-  writes `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP /
-  PATCH / CONSOLIDATE / PRUNE recommendations. Pinned and
-  foreground-authored entries are marked `[PROTECTED]` in the
-  inventory so the curator never proposes destructive changes against
-  them. Phase 1 is advisory-only — user reviews the REPORT and
-  applies changes manually.
+**Pipeline at a glance:**
+
+```
+   every CLI's transcripts
+            │
+            ▼  (ingest, every 30s — always-on)
+   dialog_messages  ◄──────────────────────────────────────┐
+            │                                              │
+            ├────────► [1] auto_review on close_thread     │
+            │              (agent triggers — rare)         │
+            │                  │                           │
+            ├────────► [2] shadow_review daemon            │
+            │              (cron, every 15 min)            │
+            │                  │                           │
+            ├────────► [3] extract daemon                  │
+            │              (cron, every 10 min)            │
+            │                  │                           │
+            │              extract_candidates              │
+            │                  │                           │
+            │                  ▼                           │
+            │          [4] candidate_reviewer daemon       │
+            │              (cron, every 1 h) ──────────────┤
+            │                  │                           │
+            ▼                  ▼                           │
+         brief()    SKILL.md + lessons.md ─► skill_usage   │
+            │              │                  │            │
+            │              ▼                  ▼            │
+            │         (every detected CLI's   │            │
+            │          skills/ directory)     │            │
+            │              │                  │            │
+            │              └──────► [5] Curator daemon ───┘
+            │                          (cron, every 7d)
+            │                              │
+            │                              ▼
+            │                       REPORT-<date>.md
+            ▼
+   injected into every new session at SessionStart
+```
+
+**Each loop in one row:**
+
+| # | Loop | Default tick | Reads | Writes |
+|---|---|---|---|---|
+| 1 | auto_review on close_thread | on `close_thread()` for rich threads | the thread's notes | SKILL.md, lessons.md |
+| 2 | shadow_review daemon | every 15 min (env knob) | recent `dialog_messages` window | SKILL.md, lessons.md |
+| 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
+| 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
+| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md (advisory) or direct PATCH/PRUNE/CONSOLIDATE |
+
+All five write into the universal Skill format (`SKILL.md` under each
+detected CLI's skills directory — `~/.claude/skills/`,
+`~/.codex/skills/`, plus the canonical `~/.threadkeeper/skills/`
+mirror), with `~/.threadkeeper/lessons.md` as a CLI-agnostic fallback
+for clients without a native skills loader (Gemini, Copilot, bare
+MCP).
+
+#### 1. Auto-review on close_thread
+
+When a closed thread is rich (≥5 notes, ≥2 insight/move),
+`close_thread` spawns a slim child with `SKILL_REVIEW_PROMPT` + the
+thread's notes. The prompt is rubric-form (Q1–Q5 yes/no) with explicit
+positive examples for incident-vs-rule classification. The fork also
+receives a "recently active skills" block so it prefers PATCHing
+existing umbrellas over creating new ones (*active-update bias*).
+Child appends a lesson via `lesson_append`, optionally mirrors to
+`~/.claude/skills/<name>/SKILL.md`, then closes with
+`mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
+
+#### 2. Shadow-review daemon
+
+Every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` seconds (default off,
+900 = 15 min recommended) scans the diff of `dialog_messages` since
+the last cursor **across all CLIs at once**. The window filters
+internal review-child sessions (no self-pollution) and strips adapter
+`[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
+≥500 chars of meaningful signal remain, spawns a slim observer child
+that decides on class-level learning. Idempotent through
+`events.kind='shadow_review_pass'`.
+
+#### 3. Extract daemon
+
+Every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds (default off, 600 =
+10 min recommended) scans recent `dialog_messages` with heuristic
+matchers: locale-aware "I want / next time / always" patterns,
+headers + insight markers, bullet regularities, and paraphrase
+clusters via cosine ≥ 0.80. Each match enqueues a row in
+`extract_candidates.status='pending'`. Same self-pollution filter as
+shadow_review (internal review-child sessions excluded) plus
+message-level noise filter (compaction summaries, SKILL.md
+injections, subagent role prompts, test-runner log dumps).
+
+Where shadow extracts CLASS-LEVEL durable rules, extract harvests
+PER-INCIDENT decision-shaped utterances. Heuristic, not LLM —
+findings get refined by loop 4.
+
+#### 4. Candidate-reviewer daemon
+
+Every `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` seconds (default off,
+3600 = 1 h recommended) consumes the pending queue extract built up.
+Spawns a slim LLM child that decides per candidate or per coherent
+cluster:
+
+- **SKILL.create** — class-level rule; merge 2-5 related candidates
+  into one skill (active-update bias prefers PATCH over CREATE)
+- **SKILL.patch** — refines a recently-active skill
+- **SKILL.write_file** — adds `references/<topic>.md` under an
+  existing umbrella
+- **NOTE** — per-incident decision (requires `thread_id`)
+- **VERBATIM** — user quote worth preserving in `brief()`
+- **REJECT** — false positive that slipped past extract's filters
+
+Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
+foreground-authored) skills off-limits. Closes the gap between
+heuristic harvest and SKILL.md materialization — previously pending
+candidates accumulated indefinitely waiting for an agent to call
+`accept_candidate()` manually.
+
+#### 5. Autonomous Curator
+
+Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
+= 7 days recommended) spawns a slim child that reviews the EXISTING
+`lessons.md` + `skill_usage` inventory and writes
+`~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
+CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
+entries are marked `[PROTECTED]` in the inventory so the curator
+never proposes destructive changes against them.
+
+Phase 1 is advisory-only (REPORT only); flip
+`THREADKEEPER_CURATOR_DESTRUCTIVE=1` once trust builds to let the
+child apply its own recommendations directly.
+
+#### Honest take
+
+What works **without** agent cooperation (passive, opt-in via env):
+
+- Loop 2 (shadow), 3 (extract), 4 (candidate-reviewer), 5 (curator) —
+  all run from the parent process, never require `note()` or
+  `close_thread()` from the agent
+
+What depends on the agent **calling tools explicitly**:
+
+- Loop 1 (auto-review on close_thread) — only fires if the agent
+  closes threads, which the audit shows agents focused on coding
+  tasks rarely do
+- Manual `skill_record(outcome='wrong')` — strongest feedback signal
+  to the Curator, but agents need to remember to flag bad skills
+
+The whole point of having five loops (not one) is graceful
+degradation: even when agents don't actively contribute, loops 2-5
+keep the library growing from passive observation of the dialog
+stream.
 
 ### Dialectic user model
 
