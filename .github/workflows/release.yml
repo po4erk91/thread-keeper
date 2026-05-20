@@ -58,7 +58,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # MUST check out the branch by name, not the head SHA, or
+          # python-semantic-release lands in a detached-HEAD state and
+          # bails with "cannot match any release groups". When triggered
+          # via workflow_run we lose the original ref, so pin to `main`
+          # explicitly. Race risk if main moves between tests passing
+          # and the release run is accepted — head_sha would have been
+          # safer there, but the branch-config requirement wins.
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: python-semantic-release
