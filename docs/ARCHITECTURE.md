@@ -32,21 +32,26 @@ threadkeeper/
 └── tools/             @mcp.tool() — each file = group
     ├── threads.py     open/note/close/idle, brief, context, search, …
     ├── peers.py       broadcast/whisper/ask/respond/wait/inbox/live_status
-    ├── spawn.py       spawn/tournament/tasks/budget/task_kill/task_logs
-    ├── skills.py      skill_manage/skill_record/skill_list/curator/review_thread
-    ├── dialectic.py   claim/evidence/review/synthesis/supersede
+    ├── spawn.py       spawn/tournament/tasks/task_logs/spawn_status/budget
+    ├── skills.py      skill_manage/skill_record/skill_list/curator_run/review_thread
+    ├── dialectic.py   claim/evidence/review/synthesis/supersede (tier + discount)
     ├── core_memory.py set/get/list/remove (Letta-tier RAM)
     ├── shadow_review.py shadow_review_run/status
     ├── process_health.py mp_health/mp_cleanup
     ├── probes.py      register/run/record/reliability_for/weak_spots
     ├── distill.py     distill/vote/pending/export
     ├── extract.py     extract_recent/review/accept/reject candidates
+    ├── candidate_reviewer.py candidate_review_run/status
+    ├── curator.py     curator_review/status
+    ├── lessons.py     lesson_append/list/get
     ├── concepts.py    register/list/expand
-    ├── graph.py       link/unlink (+ neighbors from correlation.py)
+    ├── graph.py       link/unlink/neighbors
+    ├── correlation.py tag_signal/task_thread
     ├── pickup.py      pickup_candidates/claim/release
     ├── dialog.py      dialog_search/open_dialog_window/ingest
-    ├── invariants.py, missed_spawns.py, consolidate.py, correlation.py,
-    ├── style.py, session.py, …
+    ├── validate.py    validate_threads
+    ├── style.py       style_set/verbatim_user
+    ├── invariants.py, missed_spawns.py, consolidate.py, session.py, …
 ```
 
 Launch: `python -m threadkeeper.server`. Stdio-MCP, no ports.
@@ -384,7 +389,7 @@ Tools:
   so we don't accidentally kill an active mcp on a false-positive classification.
 
 The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
-`mcp.run()`) is closed; 265+ green tests.
+`mcp.run()`) is closed; 495 green tests / 1 skipped.
 
 ## sqlite-vec (HNSW) and Python fallback
 
@@ -401,16 +406,16 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 Optional — not needed for basic functionality. Embeddings themselves are stored
 as BLOB in `notes.embedding` regardless of vec0 availability.
 
-## MCP tools (83 total)
+## MCP tools (89 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations.
 
 | Module | N | Tools |
 |---|---|---|
-| threads | 12 | open_thread, note, close_thread, idle_thread, brief, context, search, compost, verbatim_user, evolve_format, evolve_review, auto_review_trigger, mark_skill_materialized |
+| threads | 12 | open_thread, note, close_thread, idle_thread, brief, context, search, compost, evolve_format, evolve_review, auto_review_trigger, mark_skill_materialized |
 | peers | 11 | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
-| spawn | 7 | spawn, tournament, tasks, task_logs, task_kill, spawn_budget_status, spawn_budget_set |
+| spawn | 7 | spawn, tournament, tasks, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
 | skills | 5 | skill_manage, skill_record, skill_list, curator_run, review_thread |
 | dialectic | 5 | dialectic_claim, dialectic_evidence, dialectic_review, dialectic_synthesis, dialectic_supersede |
 | probes | 5 | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
@@ -419,12 +424,15 @@ auto-generates JSON-Schema from annotations.
 | distill | 4 | distill, vote_distill, pending_distillates, export_distillates |
 | dialog | 3 | dialog_search, open_dialog_window, ingest |
 | concepts | 3 | register_concept, list_concepts, expand_concept |
-| graph | 3 | link, unlink, (+ neighbors from correlation.py) |
+| graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
+| lessons | 3 | lesson_append, lesson_list, lesson_get |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
-| style | 2 | style_set, tag_signal |
+| candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
+| curator | 2 | curator_review, curator_review_status |
+| style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
-| correlation | 2 | neighbors, task_thread |
+| correlation | 2 | tag_signal, task_thread |
 | consolidate | 1 | consolidate |
 | validate | 1 | validate_threads |
 | invariants | 1 | find_invariants |
@@ -454,7 +462,7 @@ tests/
 └── …
 ```
 
-Run: `.venv/bin/python -m pytest tests/ -q`. Currently 282 tests (1 skipped),
+Run: `.venv/bin/python -m pytest tests/ -q`. Currently 495 tests (1 skipped),
 all green. Smoke parametrization automatically picks up any new tools without
 having to add tests.
 
