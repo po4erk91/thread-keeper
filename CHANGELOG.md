@@ -5,9 +5,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
-## v0.5.1 — 2026-05-20
+## v0.5.2 — 2026-05-20
 
-### CI
+### Fixed
+
+- `publish.yml` step names that contain inline colons (e.g.
+  `Create GitHub Release (fallback: auto-generated notes)`) are now
+  quoted as YAML scalars. The unquoted form crashed YAML parsing at
+  load time, which is why v0.5.1 left a tag on GitHub but no PyPI
+  upload and no Release entry — the tag-triggered workflow never even
+  started running. v0.5.2 ships the same content v0.5.1 was supposed
+  to.
+
+## v0.5.1 — 2026-05-20 (broken release)
+
+Tag exists but no artifacts on PyPI or GitHub Releases. The
+publish.yml change in this commit had a YAML syntax error (unquoted
+colon inside a step `name:`) that prevented the workflow from
+loading. Superseded by v0.5.2.
+
+### CI (shipped in v0.5.2)
 
 - `publish.yml` now also creates a GitHub Release entry on tag push
   (after the PyPI upload completes). Notes are pulled from the

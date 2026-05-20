@@ -103,7 +103,7 @@ jobs:
           fi
           echo "notes_path=$notes_file" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release (with notes from CHANGELOG)
+      - name: "Create GitHub Release (with notes from CHANGELOG)"
         if: steps.notes.outputs.use_file == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,7 +114,7 @@ jobs:
             --notes-file "${{ steps.notes.outputs.notes_path }}" \
             dist/*
 
-      - name: Create GitHub Release (fallback: auto-generated notes)
+      - name: "Create GitHub Release (fallback: auto-generated notes)"
         if: steps.notes.outputs.use_file == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
