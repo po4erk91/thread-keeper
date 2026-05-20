@@ -66,13 +66,28 @@ jobs:
           # and the release run is accepted — head_sha would have been
           # safer there, but the branch-config requirement wins.
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Use RELEASE_PAT for both checkout and the eventual push.
+          # Classic branch protection on main (required status checks
+          # + linear history + no force push) blocks the default
+          # GITHUB_TOKEN from pushing the version-bump commit:
+          #   "GH006: Protected branch update failed for refs/heads/main"
+          # enforce_admins=false means the admin (you) bypasses the
+          # rules, but github-actions[bot] isn't an admin. A
+          # fine-grained PAT owned by the admin, with contents:write
+          # on this repo, IS admin and bypasses. Create one at
+          # github.com → Settings → Developer settings → Personal
+          # access tokens → Fine-grained → repo=thread-keeper,
+          # permissions: contents=read+write, metadata=read. Save as
+          # repo secret RELEASE_PAT. Falls back to GITHUB_TOKEN if
+          # unset — the release will compute the version but fail to
+          # push, which is loud and obvious.
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: python-semantic-release
         id: release
         uses: python-semantic-release/python-semantic-release@v9
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           push: "true"
           changelog: "true"
           vcs_release: "true"

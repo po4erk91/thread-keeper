@@ -255,6 +255,32 @@ changelog, or push a tag by hand. The flow:
    explicitly because default `GITHUB_TOKEN` pushes don't trigger
    downstream workflows.)
 
+### Required setup: RELEASE_PAT secret
+
+Classic branch protection on `main` requires `contents:write` from an
+account that bypasses the rules. `enforce_admins=false` means the
+maintainer admin account does — but `github-actions[bot]` does not.
+release.yml therefore needs a **fine-grained PAT** belonging to the
+admin to push the version-bump commit and tag.
+
+**One-time setup** (maintainer only):
+
+1. GitHub → Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → **Generate new token**.
+2. Resource owner: your account. Repository access: only
+   `po4erk91/thread-keeper`.
+3. Permissions:
+   - **Repository → Contents** → Read and write
+   - **Repository → Metadata** → Read-only (auto-required)
+4. Expiration: 1 year (or whatever your security policy mandates).
+5. Copy the token.
+6. Repo → Settings → Secrets and variables → Actions → **New
+   repository secret**, name `RELEASE_PAT`, paste the token.
+
+release.yml falls back to the default `GITHUB_TOKEN` when the secret
+isn't set, but that path will fail loudly on push to main —
+intentional so a missing token is surfaced, not silently swallowed.
+
 ### Bump policy
 
 | Commit type                | Bump   | Example: 0.5.3 → |
