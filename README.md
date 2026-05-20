@@ -318,9 +318,38 @@ stream.
 
 A model of you, accumulated as you use the agent. `dialectic_claim`,
 `dialectic_evidence` (support / contradict / clarifying),
-`dialectic_synthesis`, `dialectic_supersede`. Honcho-inspired smoothed
-ratio `(s-c)/(s+c+3)` → low / medium / high / disputed confidence.
+`dialectic_synthesis`, `dialectic_supersede`. Honcho-inspired
+**weighted, smoothed** ratio
+`(Σw_support − Σw_contradict) / (Σw_support + Σw_contradict + 3)`
+→ low / medium / high / disputed confidence.
 Grouped by domain (style, values, workflow, ...) in `brief()`.
+
+**Source-based evidence discount.** Each evidence row's effective weight
+is `base_weight × discount(WRITE_ORIGIN)`. Foreground (direct user / human
+signal) = 1.0. shadow_review / background_review / candidate_review /
+curator review-forks = 0.5. Structural defence against self-confirmation
+loops: a claim that surfaces in `brief()` and then gets "confirmed" by a
+review-fork reading the same dialog can't ride that internal evidence
+all the way to high confidence — internal evidence buys half as much.
+
+**Discrete tier on each claim** — `hypothesis → observed → validated`
+(plus `disputed`). Independent of the continuous confidence band; tier
+is the **action-gating** signal:
+
+- `validated` → agent applies by default (★ in brief)
+- `observed`  → agent references and may mention the assumption (· in brief)
+- `hypothesis` → active probe; surfaces in a separate `currently_testing`
+  block so the agent watches the next user moves through that lens
+
+Transitions are discrete events (`tier_promoted` / `tier_demoted` in the
+`events` table) with timestamps for an auditable trail of when each
+claim earned trust. Thresholds:
+
+- `hypothesis → observed`: `w_support ≥ 2.0` (claim has real backing)
+- `observed → validated`: `w_support ≥ 4.0` **and** no contradict in 14 days
+- `validated → observed`: any recent contradict (demote on user pushback)
+- any → `disputed`: `w_contradict > w_support`
+- `disputed → hypothesis`: support overtakes contradict (recovery path)
 
 ### i18n bundle
 
@@ -401,6 +430,31 @@ export THREADKEEPER_ACTIVE_CLI=claude                   # force detection
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
 override pointing at them falls back to the next priority level.
+
+---
+
+## Hygiene tools
+
+Two tools keep the memory tidy — both default to `dry_run=True`, run
+them with `dry_run=False` to apply:
+
+- **`consolidate()`** — dedup near-identical notes (intra-thread cosine
+  ≥ 0.95), deduplicate verbatim quotes, demote untouched-active threads
+  to `idle` after 30 days, release orphaned thread claims.
+- **`validate_threads()`** — heuristic triage of active threads with
+  four categories (first match wins per thread):
+  - `no_notes_old` — active with zero notes ≥ 7 days → close as abandoned.
+  - `shipped` — last note matches a shipped-marker regex (EN+RU:
+    shipped/fixed/works/passed/done/merged/закрыто/готово/сделано/…)
+    and has settled ≥ 3 days → close with the last move as outcome.
+  - `dropped_open_q` — last note is an `open_q` left unfollowed
+    ≥ 14 days → close as dropped.
+  - `stale_idle` — any active not touched in ≥ 30 days → demote to
+    `idle` (not closed — revives on next `note()`).
+
+  Idle threads are never touched. Tunable via `no_notes_days`,
+  `shipped_settle_days`, `drop_open_q_days`, `stale_days`, and
+  `shipped_markers` (comma-separated extra tokens).
 
 ---
 

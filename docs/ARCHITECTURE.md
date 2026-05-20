@@ -242,7 +242,11 @@ Manual hook: `shadow_review_run(force=True)`, observability:
   `references|templates|scripts|assets` with path-traversal blocking.
   `patch` revalidates the result before writing.
 
-- **skill_record(name, kind)** — manual bump of `use_count/view_count/patch_count`.
+- **skill_record(name, kind, outcome)** — manual bump of
+  `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
+  `kind='use'` also bumps `foreground_use_count` and recomputes the
+  skill's tier (may promote `hypothesis → observed → validated`).
+  `outcome='wrong'` bumps `wrong_count` and may demote a tier.
 
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
   from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
@@ -255,8 +259,20 @@ Manual hook: `shadow_review_run(force=True)`, observability:
   `sessions.write_origin` and proxied into `skill_usage.created_by_origin`.
 
 - **curator_run(stale_after_days, archive_after_days, dry_run=True)** —
-  background cleanup of stale agent-created skills. Never touches `foreground`
-  or `pinned=1`. On apply, physically archives into `.archive/<name>`.
+  background cleanup of stale agent-created skills. Never touches
+  `foreground`, `pinned=1`, or **`tier='validated'`** (proven externally).
+  Hypothesis-tier ages at half the configured window (unproven skills
+  don't linger); observed-tier uses the default window. On apply,
+  physically archives into `.archive/<name>`.
+
+- **Skill tier** (`hypothesis`/`observed`/`validated`) — discrete trust
+  signal driven by `foreground_use_count` and `wrong_count`. Mirrors
+  the dialectic tier state machine for the skill library:
+  `hypothesis → observed` at `foreground_use_count ≥ 2`,
+  `observed → validated` at `foreground_use_count ≥ 5` with no `'wrong'`
+  outcome in 14 days. Demotion: validated → observed on any `'wrong'`,
+  observed → hypothesis at `wrong_count ≥ 2`. Transitions emit
+  `skill_tier_promoted` / `skill_tier_demoted` events.
 
 - **mark_skill_materialized(thread_id, skill_path)** — writes a `move`-note
   + event, kills the `skill_hint` for the thread.
@@ -271,16 +287,65 @@ Compat: frontmatter shape + folder layout match agentskills.io.
 
 `tools/dialectic.py` — Honcho-inspired discrete claims. Each claim is a separate
 proposition with a domain (`style`/`workflow`/`values`/`context`/`skills`/`other`);
-evidence accumulates, confidence via smoothed ratio:
-`(support − contradict) / (support + contradict + 3)`.
+evidence accumulates, confidence via **weighted** smoothed ratio:
+`(Σw_support − Σw_contradict) / (Σw_support + Σw_contradict + 3)`.
 
 - Smoothing 3 prevents jumping into `high` after a single supporting note:
-  3 supports → medium (0.5), 5 supports → high (0.625).
+  3 foreground supports → medium (3/6=0.5), 5 → high (5/8=0.625).
 - A heavy contradict knocks back to `disputed`.
 - `dialectic_supersede(old, new, reason)` — versioning of claims.
 - `dialectic_synthesis(domain)` — text-render `support` vs `contradict`.
-- `brief()` renders the `user_model (dialectic)` section with medium+high,
-  groups by domain, ★ — high, · — medium.
+- `brief()` renders the `user_model (dialectic)` section gated by **tier**,
+  groups by domain. `★` — validated, `·` — observed. Hypothesis-tier
+  claims with ≥1 support surface separately under `currently_testing`.
+
+### Source-based evidence discount
+
+Each row in `dialectic_evidence` stores
+`weight = base_weight × discount(WRITE_ORIGIN)` where the discount table
+is:
+
+| WRITE_ORIGIN          | discount |
+|-----------------------|----------|
+| `foreground`          | 1.0      |
+| `shadow_review`       | 0.5      |
+| `background_review`   | 0.5      |
+| `candidate_review`    | 0.5      |
+| `curator`             | 0.5      |
+| (anything else)       | 1.0      |
+
+Defends against the self-confirmation loop where a claim surfaced by
+`brief()` gets "re-observed" by a shadow-review fork reading the same
+dialog window. Internal observations still count, but earn half as much
+confidence per row — twice as many internal supports are needed to
+promote a claim into a load-bearing state.
+
+The `support_count` / `contradict_count` columns on `user_dialectic`
+remain as observability counters (incremented by 1 per row regardless of
+weight); confidence and tier are driven by the weighted sums over the
+`dialectic_evidence` table.
+
+### Tier state machine
+
+Independent of the continuous confidence band, each claim carries a
+discrete `tier ∈ {hypothesis, observed, validated, disputed}` that is
+the **action-gating** signal. Promotion/demotion is a discrete event
+(`events.kind ∈ {tier_promoted, tier_demoted}` with summary
+`old→new ws=… wc=…`) so the audit trail is queryable, unlike continuous
+confidence drift.
+
+```
+hypothesis ──(w_support ≥ 2.0)──────────────────────► observed
+observed   ──(w_support ≥ 4.0 AND quiet 14d)────────► validated
+validated  ──(any recent contradict)─────────────► observed (demote)
+observed   ──(w_contradict > w_support)──────────► hypothesis (drift back)
+any        ──(w_contradict > w_support AND w_c ≥ 1)► disputed
+disputed   ──(w_support > w_contradict)──────────► hypothesis (recovery)
+```
+
+`tier_changed_at` records the timestamp of the last transition so the
+Curator and audit queries can reason about how recently a claim earned
+or lost a tier.
 
 ## Hooks (Claude Code settings.json)
 
@@ -336,7 +401,7 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 Optional — not needed for basic functionality. Embeddings themselves are stored
 as BLOB in `notes.embedding` regardless of vec0 availability.
 
-## MCP tools (82 total)
+## MCP tools (83 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations.
@@ -361,6 +426,7 @@ auto-generates JSON-Schema from annotations.
 | process_health | 2 | mp_health, mp_cleanup |
 | correlation | 2 | neighbors, task_thread |
 | consolidate | 1 | consolidate |
+| validate | 1 | validate_threads |
 | invariants | 1 | find_invariants |
 | missed_spawns | 1 | find_missed_spawns |
 | session | 1 | session_end |

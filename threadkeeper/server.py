@@ -38,6 +38,7 @@ from .tools import graph  # noqa: F401
 from .tools import correlation  # noqa: F401
 from .tools import extract  # noqa: F401
 from .tools import consolidate  # noqa: F401
+from .tools import validate  # noqa: F401
 from .tools import invariants  # noqa: F401
 from .tools import missed_spawns  # noqa: F401
 from .tools import dialog  # noqa: F401

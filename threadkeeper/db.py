@@ -465,9 +465,40 @@ def get_db() -> sqlite3.Connection:
         "TEXT NOT NULL DEFAULT 'foreground'",
         "ALTER TABLE tasks ADD COLUMN rss_kb INTEGER",
         "ALTER TABLE tasks ADD COLUMN rss_updated_at INTEGER",
+        # Tier promotion machinery — discrete state machine over claims
+        # and skills. Independent of the continuous confidence/state
+        # columns; tier is what gates downstream behavior (brief framing,
+        # curator archival, auto-action thresholds).
+        "ALTER TABLE user_dialectic ADD COLUMN tier "
+        "TEXT NOT NULL DEFAULT 'hypothesis'",
+        "ALTER TABLE user_dialectic ADD COLUMN tier_changed_at INTEGER",
+        "ALTER TABLE skill_usage ADD COLUMN tier "
+        "TEXT NOT NULL DEFAULT 'hypothesis'",
+        "ALTER TABLE skill_usage ADD COLUMN tier_changed_at INTEGER",
+        # Weighted use counter on skills: a foreground 'use' counts 1.0,
+        # background_review/shadow_review/curator 'use' counts 0.5. Lets
+        # tier promotion ignore self-generated activity (skills the
+        # system-itself used through review-forks).
+        "ALTER TABLE skill_usage ADD COLUMN foreground_use_count "
+        "INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE skill_usage ADD COLUMN wrong_count "
+        "INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE skill_usage ADD COLUMN last_wrong_at INTEGER",
     ):
         try:
             conn.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
+
+    # Indexes for tier-aware queries. Safe to repeat (IF NOT EXISTS).
+    for idx in (
+        "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
+        "ON user_dialectic(tier)",
+        "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
+        "ON skill_usage(tier)",
+    ):
+        try:
+            conn.execute(idx)
         except sqlite3.OperationalError:
             pass
     conn.row_factory = sqlite3.Row

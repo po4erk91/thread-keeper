@@ -55,9 +55,23 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     ).fetchone()["c"]
 
     self_cid = _detect_self_cid()
+
+    # peers=N: distinct OTHER session_ids that wrote to dialog_messages
+    # in the last 5 min. Separate from live= (event backlog) — peers is
+    # "who is rendering alongside me right now", live is "what cross-session
+    # signals haven't I read yet".
+    peers_n = conn.execute(
+        "SELECT COUNT(DISTINCT session_id) c FROM dialog_messages "
+        "WHERE created_at > ? AND session_id IS NOT NULL AND session_id != '' "
+        "AND session_id != ? "
+        "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%'",
+        (now - 300, self_cid or ""),
+    ).fetchone()["c"]
+
     out.append(
         f"ctx sess={identity._session_id or '-'} last={last_str} sem={sem} "
-        f"live={fresh} cid={self_cid[:8] if self_cid else '-'} now={now_iso}"
+        f"live={fresh} peers={peers_n} cid={self_cid[:8] if self_cid else '-'} "
+        f"now={now_iso}"
     )
 
     # ── core_memory ───────────────────────────────────────────────────────
@@ -588,17 +602,19 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
             out.append(f"  {c['id']} {q(snip)}")
 
     # ── user_model (dialectic) ────────────────────────────────────────────
-    # Honcho-inspired dialectic snapshot: medium+high confidence claims about
-    # the user, grouped by domain. Excludes low/disputed; never inferred from
-    # one signal — claims earn confidence through accumulating evidence.
+    # Honcho-inspired dialectic snapshot, tier-gated:
+    #   ★ validated  — load-bearing; agent applies by default
+    #   · observed   — pattern with backing; agent references, may mention
+    # Hypothesis-tier claims are rendered separately (`currently_testing`)
+    # so the agent treats them as active probes rather than facts.
     try:
         syn_rows = conn.execute(
-            "SELECT id, claim, domain, confidence, "
+            "SELECT id, claim, domain, confidence, tier, "
             "  support_count, contradict_count "
             "FROM user_dialectic "
-            "WHERE state='active' AND confidence IN ('medium','high') "
+            "WHERE state='active' AND tier IN ('observed','validated') "
             "ORDER BY "
-            "  CASE confidence WHEN 'high' THEN 0 ELSE 1 END, "
+            "  CASE tier WHEN 'validated' THEN 0 ELSE 1 END, "
             "  (support_count - contradict_count) DESC, "
             "  domain ASC "
             "LIMIT 12"
@@ -626,12 +642,39 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
             for r in grouped[dom]:
                 if line_budget <= 0:
                     break
-                tag = "★" if r["confidence"] == "high" else "·"
+                tier = r["tier"] or "observed"
+                tag = "★" if tier == "validated" else "·"
                 snip = r["claim"][:140].replace("\n", " ")
                 if len(r["claim"]) > 140:
                     snip += "…"
                 out.append(f"    {tag} {snip}")
                 line_budget -= 1
+
+    # ── currently_testing (hypothesis-tier dialectic claims) ──────────────
+    # Active probes the system is actively trying to confirm or refute —
+    # NOT facts. Surfaced so the agent watches the next user moves through
+    # this lens rather than ignoring weak claims until they accumulate
+    # enough evidence to promote. Cap at 3 to avoid drowning the brief.
+    try:
+        hyp_rows = conn.execute(
+            "SELECT id, claim, domain "
+            "FROM user_dialectic "
+            "WHERE state='active' AND tier='hypothesis' "
+            "  AND support_count >= 1 "
+            "ORDER BY last_evidence_at DESC, created_at DESC "
+            "LIMIT 3"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        hyp_rows = []
+    if hyp_rows:
+        out.append("")
+        out.append("currently_testing (hypothesis — watch next user moves)")
+        for r in hyp_rows:
+            dom = f"[{r['domain']}] " if r["domain"] else ""
+            snip = r["claim"][:140].replace("\n", " ")
+            if len(r["claim"]) > 140:
+                snip += "…"
+            out.append(f"  ? {dom}{snip}")
 
     # ── distill_pending (votes >= 2) ───────────────────────────────────────
     try:

@@ -214,10 +214,93 @@ def _unmirror_skill(name: str) -> None:
 # Telemetry
 # ──────────────────────────────────────────────────────────────────────────
 
+# Tier promotion thresholds for skills. Mirror the dialectic thresholds in
+# spirit (require foreground signal) but tuned to skill cadence — a skill
+# that gets invoked twice by real users counts as "observed"; sustained
+# use without negative outcomes earns "validated" status (which curator
+# treats as permanent).
+SKILL_OBSERVED_FG_USES = 2
+SKILL_VALIDATED_FG_USES = 5
+SKILL_VALIDATED_QUIET_S = 14 * 86400  # no 'wrong' in this window
+SKILL_VALID_TIERS = ("hypothesis", "observed", "validated")
+
+
+def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
+                          now_t: int) -> tuple[str, str]:
+    """Decide the new tier for a skill based on foreground usage and
+    'wrong' outcomes; persist if changed and emit an event.
+
+    Returns (old_tier, new_tier). Background-review / shadow-review usage
+    does NOT count toward promotion — that's the whole point: skills
+    materialized by the system can't promote themselves through their
+    own use by review-forks.
+
+    State machine:
+      hypothesis → observed:   foreground_use_count ≥ 2
+      observed   → validated:  foreground_use_count ≥ 5
+                               AND no 'wrong' outcome in 14d
+      validated  → observed:   'wrong' outcome inside the quiet window
+      observed   → hypothesis: wrong_count ≥ 2 total
+    """
+    row = conn.execute(
+        "SELECT tier, foreground_use_count, wrong_count, last_wrong_at "
+        "FROM skill_usage WHERE name=?",
+        (name,),
+    ).fetchone()
+    if not row:
+        return "hypothesis", "hypothesis"
+    old_tier = row["tier"] or "hypothesis"
+    fg = row["foreground_use_count"] or 0
+    wrong_n = row["wrong_count"] or 0
+    last_wrong = row["last_wrong_at"]
+    quiet = (
+        last_wrong is None
+        or (now_t - last_wrong) >= SKILL_VALIDATED_QUIET_S
+    )
+
+    if old_tier == "validated":
+        if not quiet:
+            new_tier = "observed"
+        else:
+            new_tier = "validated"
+    elif old_tier == "observed":
+        if wrong_n >= 2:
+            new_tier = "hypothesis"
+        elif fg >= SKILL_VALIDATED_FG_USES and quiet:
+            new_tier = "validated"
+        else:
+            new_tier = "observed"
+    else:  # hypothesis (or any unknown legacy value)
+        if fg >= SKILL_OBSERVED_FG_USES and wrong_n < 2:
+            new_tier = "observed"
+        else:
+            new_tier = "hypothesis"
+
+    if new_tier != old_tier:
+        conn.execute(
+            "UPDATE skill_usage SET tier=?, tier_changed_at=? WHERE name=?",
+            (new_tier, now_t, name),
+        )
+        order = {"hypothesis": 0, "observed": 1, "validated": 2}
+        direction = (
+            "skill_tier_promoted"
+            if order.get(new_tier, 0) > order.get(old_tier, 0)
+            else "skill_tier_demoted"
+        )
+        _emit(
+            conn, direction, target=name,
+            summary=f"{old_tier}→{new_tier} fg={fg} wrong={wrong_n}",
+        )
+    return old_tier, new_tier
+
+
 def _record_event(name: str, kind: str) -> None:
     """Bump skill_usage counters/timestamps. Inserts a row if missing.
 
     `kind`: 'create' | 'use' | 'view' | 'patch'. Unknown kinds are ignored.
+
+    Side effect for kind='use' under WRITE_ORIGIN='foreground': also bumps
+    foreground_use_count and re-evaluates tier (may promote).
     """
     conn = get_db()
     now = int(time.time())
@@ -225,18 +308,20 @@ def _record_event(name: str, kind: str) -> None:
     if kind == "create":
         conn.execute(
             "INSERT INTO skill_usage (name, created_at, created_by_cid, "
-            "created_by_origin, state) VALUES (?,?,?,?, 'active') "
+            "created_by_origin, state, tier, tier_changed_at) "
+            "VALUES (?,?,?,?, 'active', 'hypothesis', ?) "
             "ON CONFLICT(name) DO NOTHING",
-            (name, now, cid, WRITE_ORIGIN),
+            (name, now, cid, WRITE_ORIGIN, now),
         )
         conn.commit()
         return
     # ensure row exists for upserts that aren't 'create'
     conn.execute(
         "INSERT INTO skill_usage (name, created_at, created_by_cid, "
-        "created_by_origin, state) VALUES (?,?,?,?,'active') "
+        "created_by_origin, state, tier, tier_changed_at) "
+        "VALUES (?,?,?,?,'active','hypothesis',?) "
         "ON CONFLICT(name) DO NOTHING",
-        (name, now, cid, WRITE_ORIGIN),
+        (name, now, cid, WRITE_ORIGIN, now),
     )
     if kind == "view":
         conn.execute(
@@ -246,12 +331,18 @@ def _record_event(name: str, kind: str) -> None:
             (now, name),
         )
     elif kind == "use":
+        # Foreground use also bumps the discounted counter that gates tier
+        # promotion; review-fork use bumps only the raw use_count.
+        fg_inc = 1 if WRITE_ORIGIN == "foreground" else 0
         conn.execute(
             "UPDATE skill_usage SET last_used_at=?, use_count=use_count+1, "
+            "foreground_use_count=foreground_use_count+?, "
             "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
             "WHERE name=?",
-            (now, name),
+            (now, fg_inc, name),
         )
+        if fg_inc:
+            _recompute_skill_tier(conn, name, now)
     elif kind == "patch":
         conn.execute(
             "UPDATE skill_usage SET last_patched_at=?, "
@@ -307,6 +398,17 @@ def skill_record(name: str, kind: str = "use", outcome: str = "") -> str:
         conn = get_db()
         _ensure_session(conn)
         _emit(conn, "skill_outcome", target=name, summary=outcome)
+        # A 'wrong' outcome is a contradict-equivalent for skills — counts
+        # toward tier demotion. 'helped' and 'partial' don't affect tier
+        # directly (foreground use already counted in _record_event).
+        if outcome == "wrong":
+            now = int(time.time())
+            conn.execute(
+                "UPDATE skill_usage SET wrong_count=wrong_count+1, "
+                "last_wrong_at=? WHERE name=?",
+                (now, name),
+            )
+            _recompute_skill_tier(conn, name, now)
         conn.commit()
     return "ok"
 
@@ -526,8 +628,9 @@ def _action_delete(name: str) -> str:
 @mcp.tool()
 def skill_list(include_archived: bool = False) -> str:
     """List Claude skills with telemetry. Format:
-        <name> origin=<foreground|background_review> state=<active|stale|archived>
-            uses=N views=N patches=N pinned=0/1 last_active=<age>
+        <name> tier=<hypothesis|observed|validated> origin=<...>
+            state=<active|stale|archived> uses=N fg_uses=N
+            views=N patches=N wrong=N pinned=0/1 last_active=<age>
     """
     conn = get_db()
     _ensure_session(conn)
@@ -558,10 +661,24 @@ def skill_list(include_archived: bool = False) -> str:
             age = f"{age_s // 3600}h"
         else:
             age = f"{age_s // 86400}d"
+        # Backfill defaults for legacy rows that pre-date the tier column.
+        tier = r["tier"] if "tier" in r.keys() and r["tier"] else "hypothesis"
+        fg_uses = (
+            r["foreground_use_count"]
+            if "foreground_use_count" in r.keys()
+               and r["foreground_use_count"] is not None
+            else 0
+        )
+        wrong_n = (
+            r["wrong_count"]
+            if "wrong_count" in r.keys() and r["wrong_count"] is not None
+            else 0
+        )
         out.append(
-            f"{r['name']} origin={r['created_by_origin']} "
+            f"{r['name']} tier={tier} origin={r['created_by_origin']} "
             f"state={r['state']} uses={r['use_count']} "
-            f"views={r['view_count']} patches={r['patch_count']} "
+            f"fg_uses={fg_uses} views={r['view_count']} "
+            f"patches={r['patch_count']} wrong={wrong_n} "
             f"pinned={r['pinned']} last_active={age}_ago"
         )
     return "\n".join(out)
@@ -648,9 +765,17 @@ def curator_run(stale_after_days: int = 30,
       stale   → archived  when last activity > archive_after_days
                           (also moves directory to ~/.claude/skills/.archive/)
 
+    Tier-aware adjustments (the discrete trust signal trumps raw activity):
+      • tier='validated' skills are NEVER stale-aged or archived — proven
+        load-bearing knowledge stays alive regardless of recency.
+      • tier='hypothesis' skills age faster — half the stale_after window
+        (default 15d instead of 30d). Unproven skills don't get to linger.
+      • tier='observed' uses the standard windows.
+
     NEVER touches:
       • foreground (user-authored) skills — provenance check
       • pinned skills — opt-out flag
+      • validated tier — proven externally
       • skills with no `created_by_origin` set (unknown provenance — be safe)
 
     `dry_run=True` (default) reports what would change without writing.
@@ -658,8 +783,6 @@ def curator_run(stale_after_days: int = 30,
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
-    stale_thresh = now - stale_after_days * 86400
-    archive_thresh = now - archive_after_days * 86400
 
     rows = conn.execute(
         "SELECT * FROM skill_usage "
@@ -675,15 +798,29 @@ def curator_run(stale_after_days: int = 30,
             r["created_at"],
         )
         cur_state = r["state"]
+        tier = r["tier"] if "tier" in r.keys() and r["tier"] else "hypothesis"
+
+        # Validated skills are off-limits: they earned trust through
+        # foreground use without 'wrong' outcomes. Curator must not
+        # second-guess that signal regardless of how quiet recent activity
+        # has been.
+        if tier == "validated":
+            continue
+
+        # Hypothesis tier ages twice as fast — unproven skills can't linger.
+        scale = 0.5 if tier == "hypothesis" else 1.0
+        stale_thresh = now - int(stale_after_days * 86400 * scale)
+        archive_thresh = now - int(archive_after_days * 86400 * scale)
+
         if cur_state == "active" and last_activity < stale_thresh:
             plan.append({
                 "name": r["name"], "from": "active", "to": "stale",
-                "last": last_activity,
+                "last": last_activity, "tier": tier,
             })
         elif cur_state == "stale" and last_activity < archive_thresh:
             plan.append({
                 "name": r["name"], "from": "stale", "to": "archived",
-                "last": last_activity,
+                "last": last_activity, "tier": tier,
             })
 
     if not plan:
@@ -692,7 +829,10 @@ def curator_run(stale_after_days: int = 30,
     lines = [f"plan n={len(plan)} dry_run={dry_run}"]
     for p in plan:
         age = (now - p["last"]) // 86400
-        lines.append(f"  {p['name']}: {p['from']} → {p['to']} (last {age}d ago)")
+        lines.append(
+            f"  {p['name']}: {p['from']} → {p['to']} "
+            f"(tier={p['tier']} last {age}d ago)"
+        )
 
     if dry_run:
         return "\n".join(lines)
@@ -714,7 +854,7 @@ def curator_run(stale_after_days: int = 30,
                     dst = arch / f"{p['name']}_{now}"
                 shutil.move(str(src), str(dst))
         _emit(conn, "curator_transition", target=p["name"],
-              summary=f"{p['from']}→{p['to']}")
+              summary=f"{p['from']}→{p['to']} tier={p['tier']}")
     conn.commit()
     return "\n".join(lines)
 

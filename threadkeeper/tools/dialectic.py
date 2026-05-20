@@ -2,21 +2,45 @@
 evidence that accumulates over time. Inspired by Honcho's Theory of Mind.
 
 Confidence emerges from evidence rather than being asserted. We use a
-smoothed ratio so that magnitude matters (3 supports < 5 supports), not
-just sign:
+weighted, smoothed ratio so that magnitude AND source-trust matter:
 
-  ratio = (support_count - contradict_count) / (support_count + contradict_count + 3)
+  ratio = (Σw_support - Σw_contradict) /
+          (Σw_support + Σw_contradict + 3)
 
     < -0.2  → 'disputed'  (more contradictions than supports by margin)
     < 0.2   → 'low'
     < 0.6   → 'medium'
     else    → 'high'
 
-A claim with no evidence stays 'low' regardless of age. The smoothing
-constant (3) means a single piece of evidence does not jump to 'high':
-3 supports lands at medium (3/6=0.5), 5 supports at high (5/8=0.625).
-Heavy contradiction can still drag a claim back: 1 support + 3 contradicts
-→ -2/7 → disputed.
+Each evidence row carries a weight ∈ [0,1]. The weight is auto-derived
+from the writer session's `WRITE_ORIGIN`: foreground=1.0 (explicit human
+signal), background/shadow/candidate/curator review-forks=0.5 (the system
+observing its own behavior — discounted to prevent self-confirmation
+loops where claims promoted into brief() shape later observations).
+Callers may pass an explicit `weight` to dialectic_evidence; that's
+treated as a BASE weight and still multiplied by the origin discount.
+
+A claim with no evidence stays 'low' regardless of age. Smoothing
+constant 3 prevents a single piece of evidence from jumping to 'high':
+3 foreground supports lands at medium (3/6=0.5), 5 at high (5/8=0.625).
+Heavy contradiction still drags a claim down.
+
+In addition to the ratio-derived `confidence` band, each claim carries
+a discrete `tier` ∈ {hypothesis, observed, validated, disputed}. Tier
+is a state machine with hysteresis — it's the action-gating signal:
+
+  hypothesis → observed:  w_support ≥ 2.0 (claim has accumulated real
+                          backing; brief surfaces it as a working pattern)
+  observed → validated:   w_support ≥ 4.0 AND no contradict in 14 days
+                          (claim is load-bearing; agent defaults to it
+                          without asking)
+  validated → observed:   any contradict (demote one step on pushback)
+  any → disputed:         w_contradict > w_support
+  disputed → hypothesis:  w_support > w_contradict (recovery)
+
+Promotion/demotion fires as a discrete event (`tier_promoted` /
+`tier_demoted` in events.kind) so the audit trail is queryable, unlike
+continuous confidence drift.
 
 Tools:
   dialectic_claim       — register a new claim with optional initial evidence
@@ -25,8 +49,8 @@ Tools:
   dialectic_synthesis   — terse 'who is this user' rendering for brief()
   dialectic_supersede   — retire claim A in favor of claim B (claim_B refines A)
 
-Confidence is recomputed on every evidence add. domain is free-text but a
-small enumeration is recommended:
+Confidence and tier are recomputed on every evidence add. domain is
+free-text but a small enumeration is recommended:
   'style','workflow','values','context','skills','other'.
 """
 from __future__ import annotations
@@ -36,6 +60,7 @@ import time
 from typing import Optional
 
 from .._mcp import mcp
+from ..config import WRITE_ORIGIN
 from ..db import get_db
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
@@ -44,27 +69,78 @@ from ..identity import _ensure_session, _detect_self_cid, _emit
 VALID_KINDS = ("support", "contradict")
 VALID_CONFIDENCE = ("low", "medium", "high", "disputed")
 VALID_STATE = ("active", "retired", "superseded")
+VALID_TIER = ("hypothesis", "observed", "validated", "disputed")
 SUGGESTED_DOMAINS = (
     "style", "workflow", "values", "context", "skills", "other",
 )
 SMOOTHING = 3  # see module docstring for rationale
 
+# Multiplicative discount on evidence weight by the writer's WRITE_ORIGIN.
+# Foreground = 1.0 (human-attested or direct user signal). All review-fork
+# origins = 0.5 (the system observing its own behavior — halved so that
+# self-generated evidence can't single-handedly promote a claim into high
+# confidence / validated tier).
+EVIDENCE_DISCOUNT: dict[str, float] = {
+    "foreground": 1.0,
+    "shadow_review": 0.5,
+    "background_review": 0.5,
+    "candidate_review": 0.5,
+    "curator": 0.5,
+}
 
-def _recompute_confidence(conn: sqlite3.Connection, claim_id: str) -> str:
-    """Recalculate confidence from current support/contradict counts and
-    persist. Returns the new label."""
+# Tier promotion thresholds. Tuned together with the smoothing constant so
+# that a steady foreground stream of supports reaches `validated` in a
+# realistic conversation window, while a single review-fork pass cannot.
+TIER_OBSERVED_W_SUPPORT = 2.0
+TIER_VALIDATED_W_SUPPORT = 4.0
+TIER_VALIDATED_QUIET_S = 14 * 86400  # no contradict in this window
+
+
+def _evidence_weight(write_origin: str, base_weight: float) -> float:
+    """Resolve the effective weight for an evidence row.
+
+    base_weight (default 1.0 from MCP API) multiplied by the origin
+    discount; result clamped to [0,1]."""
+    mult = EVIDENCE_DISCOUNT.get(write_origin, 1.0)
+    return max(0.0, min(1.0, base_weight * mult))
+
+
+def _weighted_sums(conn: sqlite3.Connection,
+                   claim_id: str) -> tuple[float, float, Optional[int]]:
+    """Return (w_support, w_contradict, last_contradict_at) for a claim.
+
+    last_contradict_at = max(created_at) over contradict-kind evidence, or
+    None if no contradicts exist."""
     row = conn.execute(
-        "SELECT support_count, contradict_count FROM user_dialectic WHERE id=?",
+        "SELECT "
+        "  COALESCE(SUM(CASE WHEN kind='support' THEN weight ELSE 0 END), 0) "
+        "    AS ws, "
+        "  COALESCE(SUM(CASE WHEN kind='contradict' THEN weight ELSE 0 END), "
+        "    0) AS wc, "
+        "  MAX(CASE WHEN kind='contradict' THEN created_at END) "
+        "    AS last_contradict "
+        "FROM dialectic_evidence WHERE claim_id=?",
         (claim_id,),
     ).fetchone()
     if not row:
-        return "low"
-    s, c = row["support_count"], row["contradict_count"]
-    total = s + c
+        return 0.0, 0.0, None
+    return float(row["ws"] or 0.0), float(row["wc"] or 0.0), \
+        row["last_contradict"]
+
+
+def _recompute_confidence(conn: sqlite3.Connection, claim_id: str) -> str:
+    """Recalculate confidence from weighted evidence sums and persist.
+
+    Returns the new label. Bands match the legacy raw-count behavior when
+    every weight equals 1.0 (foreground manual evidence), so existing
+    tests are unaffected; weight discounts only narrow the rate at which
+    review-fork evidence drives the bands."""
+    ws, wc, _ = _weighted_sums(conn, claim_id)
+    total = ws + wc
     if total == 0:
         new_conf = "low"
     else:
-        ratio = (s - c) / (total + SMOOTHING)
+        ratio = (ws - wc) / (total + SMOOTHING)
         if ratio < -0.2:
             new_conf = "disputed"
         elif ratio < 0.2:
@@ -80,14 +156,100 @@ def _recompute_confidence(conn: sqlite3.Connection, claim_id: str) -> str:
     return new_conf
 
 
+def _recompute_tier(conn: sqlite3.Connection, claim_id: str,
+                    now_t: int) -> tuple[str, str]:
+    """Decide the new tier for a claim and persist if changed.
+
+    Returns (old_tier, new_tier). Emits a 'tier_promoted' or
+    'tier_demoted' event on transition so the audit trail is queryable.
+
+    State machine:
+      hypothesis → observed:   w_support ≥ TIER_OBSERVED_W_SUPPORT
+                               AND w_contradict ≤ w_support
+      observed   → validated:  w_support ≥ TIER_VALIDATED_W_SUPPORT
+                               AND no contradict in TIER_VALIDATED_QUIET_S
+      validated  → observed:   any contradict received recently (
+                               last_contradict_at within quiet window)
+      observed   → hypothesis: w_contradict > w_support (drift back)
+      any        → disputed:   w_contradict > w_support AND there's been
+                               real opposition (≥1.0 weighted contradict)
+      disputed   → hypothesis: w_support > w_contradict (recovery)
+    """
+    row = conn.execute(
+        "SELECT tier FROM user_dialectic WHERE id=?", (claim_id,)
+    ).fetchone()
+    if not row:
+        return "hypothesis", "hypothesis"
+    old_tier = row["tier"] or "hypothesis"
+    ws, wc, last_c = _weighted_sums(conn, claim_id)
+
+    # Disputed gate first — applies regardless of current tier.
+    if wc > ws and wc >= 1.0:
+        new_tier = "disputed"
+    elif old_tier == "disputed":
+        # Recovery: if support has overtaken contradict, slot back to
+        # hypothesis (re-earn the higher tiers via the normal path).
+        new_tier = "hypothesis" if ws > wc else "disputed"
+    elif old_tier == "validated":
+        # Demote on recent contradict. The quiet window is symmetric:
+        # if a contradict landed within TIER_VALIDATED_QUIET_S, validated
+        # is no longer safe to assume.
+        if last_c is not None and (now_t - last_c) < TIER_VALIDATED_QUIET_S:
+            new_tier = "observed"
+        else:
+            new_tier = "validated"
+    elif old_tier == "observed":
+        # Promote on enough support + quiet contradict window.
+        quiet = (
+            last_c is None
+            or (now_t - last_c) >= TIER_VALIDATED_QUIET_S
+        )
+        if ws >= TIER_VALIDATED_W_SUPPORT and quiet:
+            new_tier = "validated"
+        elif wc > ws:
+            new_tier = "hypothesis"
+        else:
+            new_tier = "observed"
+    else:  # hypothesis
+        if ws >= TIER_OBSERVED_W_SUPPORT and ws >= wc:
+            new_tier = "observed"
+        else:
+            new_tier = "hypothesis"
+
+    if new_tier != old_tier:
+        conn.execute(
+            "UPDATE user_dialectic SET tier=?, tier_changed_at=? WHERE id=?",
+            (new_tier, now_t, claim_id),
+        )
+        # Direction: disputed is below hypothesis, so transitions to/from
+        # it count as demotions/promotions accordingly. Ordering used for
+        # the event direction tag:
+        order = {"disputed": 0, "hypothesis": 1, "observed": 2, "validated": 3}
+        direction = (
+            "tier_promoted" if order[new_tier] > order[old_tier]
+            else "tier_demoted"
+        )
+        _emit(
+            conn, direction, target=claim_id,
+            summary=f"{old_tier}→{new_tier} ws={ws:.2f} wc={wc:.2f}",
+        )
+    return old_tier, new_tier
+
+
 def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
-                     quote: str, source: str, weight: float,
+                     quote: str, source: str, base_weight: float,
                      cid: Optional[str], now_t: int) -> int:
-    """Write evidence row and bump the claim's counter. Caller commits."""
+    """Write evidence row and bump the claim's counter. Caller commits.
+
+    The stored weight is `base_weight × origin_discount(WRITE_ORIGIN)`.
+    The kind-counter (support_count / contradict_count) increments by 1
+    regardless of weight — counters are for observability; the weighted
+    sums in dialectic_evidence drive confidence + tier."""
+    eff_w = _evidence_weight(WRITE_ORIGIN, base_weight)
     cur = conn.execute(
         "INSERT INTO dialectic_evidence (claim_id, kind, source, quote, "
         "weight, created_by_cid, created_at) VALUES (?,?,?,?,?,?,?)",
-        (claim_id, kind, source or None, quote or None, float(weight),
+        (claim_id, kind, source or None, quote or None, eff_w,
          cid, now_t),
     )
     col = "support_count" if kind == "support" else "contradict_count"
@@ -110,7 +272,7 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     `domain` is free-text; recommended values:
       'style','workflow','values','context','skills','other'.
 
-    Returns: 'ok id=<UCxxx> conf=<level>'."""
+    Returns: 'ok id=<UCxxx> conf=<level> tier=<tier>'."""
     claim = claim.strip()
     if not claim:
         return "ERR empty_claim"
@@ -130,17 +292,18 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at) VALUES (?,?,?,?,?)",
-        (pid, claim, dom, cid_db, now_t),
+        "created_at, tier, tier_changed_at) VALUES (?,?,?,?,?,?,?)",
+        (pid, claim, dom, cid_db, now_t, "hypothesis", now_t),
     )
     seed_quote = evidence.strip()
     if seed_quote:
         _insert_evidence(conn, pid, evidence_kind, seed_quote,
                          "manual", 1.0, cid_short, now_t)
     new_conf = _recompute_confidence(conn, pid)
+    _, new_tier = _recompute_tier(conn, pid, now_t)
     _emit(conn, "dialectic_claim", target=pid, summary=claim[:140])
     conn.commit()
-    return f"ok id={pid} conf={new_conf}"
+    return f"ok id={pid} conf={new_conf} tier={new_tier}"
 
 
 @mcp.tool()
@@ -150,10 +313,14 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
     """Attach evidence to a claim. `kind`: 'support' | 'contradict'.
 
     `source` is a freeform pointer like 'thread:T7f3', 'verbatim:42',
-    'dialog:<uuid>', or 'manual'. `weight` ∈ [0,1] (default 1.0) is
-    captured for future reweighting; counts increment by 1 regardless.
+    'dialog:<uuid>', or 'manual'. `weight` ∈ [0,1] is the BASE trust
+    (default 1.0); the effective stored weight is base × discount(
+    WRITE_ORIGIN of the calling session). foreground sessions store
+    `weight` as-is; shadow/background/candidate/curator forks store
+    weight × 0.5 to prevent self-confirmation loops.
 
-    Bumps support_count or contradict_count and recomputes confidence."""
+    Bumps support_count or contradict_count, recomputes confidence and
+    tier (which may emit a tier_promoted/demoted event)."""
     claim_id = claim_id.strip()
     if kind not in VALID_KINDS:
         return f"ERR bad_kind={kind} valid={'/'.join(VALID_KINDS)}"
@@ -177,10 +344,14 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
     eid = _insert_evidence(conn, claim_id, kind, quote.strip(),
                            source.strip(), w, cid, now_t)
     new_conf = _recompute_confidence(conn, claim_id)
+    _, new_tier = _recompute_tier(conn, claim_id, now_t)
     _emit(conn, f"dialectic_evidence:{kind}", target=claim_id,
           summary=(quote or "")[:140])
     conn.commit()
-    return f"ok evidence_id={eid} claim={claim_id} conf={new_conf}"
+    return (
+        f"ok evidence_id={eid} claim={claim_id} "
+        f"conf={new_conf} tier={new_tier}"
+    )
 
 
 @mcp.tool()
@@ -194,7 +365,8 @@ def dialectic_review(min_confidence: str = "low",
     'disputed' is treated as its own bucket (not ordered against the
     others) — passing `min_confidence='disputed'` returns only disputed.
 
-    Format: '<id> [conf] domain=<d> support=N contradict=N <claim>'."""
+    Format: '<id> [conf] tier=<tier> domain=<d> support=N contradict=N
+            <claim>'."""
     rank = {"low": 0, "medium": 1, "high": 2}
     if min_confidence not in VALID_CONFIDENCE:
         return f"ERR bad_confidence={min_confidence}"
@@ -205,8 +377,8 @@ def dialectic_review(min_confidence: str = "low",
     conn = get_db()
     sql = (
         "SELECT id, claim, domain, support_count, contradict_count, "
-        "confidence, last_evidence_at, created_at FROM user_dialectic "
-        "WHERE state='active'"
+        "confidence, tier, last_evidence_at, created_at "
+        "FROM user_dialectic WHERE state='active'"
     )
     params: list = []
     dom_filter = domain.strip()
@@ -229,8 +401,9 @@ def dialectic_review(min_confidence: str = "low",
             if rank.get(conf, 0) < rank[min_confidence]:
                 continue
         dom_str = r["domain"] or "-"
+        tier_str = r["tier"] or "hypothesis"
         out.append(
-            f"{r['id']} [{conf}] domain={dom_str} "
+            f"{r['id']} [{conf}] tier={tier_str} domain={dom_str} "
             f"support={r['support_count']} contradict={r['contradict_count']} "
             f"{r['claim']}"
         )
@@ -251,12 +424,19 @@ def dialectic_synthesis(domain: str = "") -> str:
     domain. Used as brief() input. Excludes low/disputed claims and
     non-active states. Returns at most 12 lines.
 
+    Tier markers in the output:
+      ★ validated   — load-bearing; act on it without asking
+      · observed    — pattern with backing; reference, mention if used
+      ? hypothesis  — currently testing (only shown if no observed/validated
+                      in same domain, to avoid surfacing weak guesses next
+                      to load-bearing facts)
+
     If `domain` is provided, restricts to that domain (no group headers
     in that case)."""
     conn = get_db()
     sql = (
-        "SELECT id, claim, domain, confidence, support_count, "
-        "contradict_count FROM user_dialectic "
+        "SELECT id, claim, domain, confidence, tier, "
+        "  support_count, contradict_count FROM user_dialectic "
         "WHERE state='active' AND confidence IN ('medium','high')"
     )
     params: list = []
@@ -264,10 +444,14 @@ def dialectic_synthesis(domain: str = "") -> str:
     if dom_filter:
         sql += " AND domain=?"
         params.append(dom_filter)
-    # high before medium; within each, more evidence first
+    # validated before observed; within each, more evidence first
     sql += (
         " ORDER BY "
-        "  CASE confidence WHEN 'high' THEN 0 ELSE 1 END, "
+        "  CASE tier "
+        "    WHEN 'validated' THEN 0 "
+        "    WHEN 'observed' THEN 1 "
+        "    WHEN 'hypothesis' THEN 2 "
+        "    ELSE 3 END, "
         "  (support_count - contradict_count) DESC, "
         "  domain ASC"
     )
@@ -281,7 +465,13 @@ def dialectic_synthesis(domain: str = "") -> str:
         for r in rows:
             if len(lines) >= 12:
                 break
-            tag = "★" if r["confidence"] == "high" else "·"
+            tier = r["tier"] or "hypothesis"
+            if tier == "validated":
+                tag = "★"
+            elif tier == "observed":
+                tag = "·"
+            else:
+                tag = "?"
             lines.append(f"  {tag} {r['claim']}")
     else:
         grouped: dict[str, list[sqlite3.Row]] = {}
@@ -299,7 +489,13 @@ def dialectic_synthesis(domain: str = "") -> str:
             for r in grouped[dom]:
                 if len(lines) >= 12:
                     break
-                tag = "★" if r["confidence"] == "high" else "·"
+                tier = r["tier"] or "hypothesis"
+                if tier == "validated":
+                    tag = "★"
+                elif tier == "observed":
+                    tag = "·"
+                else:
+                    tag = "?"
                 lines.append(f"  {tag} {r['claim']}")
     return "\n".join(lines)
 
@@ -316,7 +512,7 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
 
     If `domain` is empty, the new claim inherits the old claim's domain.
 
-    Returns: 'ok new=<UCxxx> old=<UCxxx> conf=<level>'."""
+    Returns: 'ok new=<UCxxx> old=<UCxxx> conf=<level> tier=<tier>'."""
     old_id = old_claim_id.strip()
     new_claim = new_claim.strip()
     if not new_claim:
@@ -340,14 +536,15 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at) VALUES (?,?,?,?,?)",
-        (pid, new_claim, dom, cid, now_t),
+        "created_at, tier, tier_changed_at) VALUES (?,?,?,?,?,?,?)",
+        (pid, new_claim, dom, cid, now_t, "hypothesis", now_t),
     )
     seed_quote = quote.strip()
     if seed_quote:
         _insert_evidence(conn, pid, "support", seed_quote,
                          f"supersede:{old_id}", 1.0, cid, now_t)
     new_conf = _recompute_confidence(conn, pid)
+    _, new_tier = _recompute_tier(conn, pid, now_t)
     conn.execute(
         "UPDATE user_dialectic SET state='superseded', superseded_by=? "
         "WHERE id=?",
@@ -356,4 +553,4 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     _emit(conn, "dialectic_supersede", target=pid,
           summary=f"{old_id}→{pid} {new_claim[:100]}")
     conn.commit()
-    return f"ok new={pid} old={old_id} conf={new_conf}"
+    return f"ok new={pid} old={old_id} conf={new_conf} tier={new_tier}"
