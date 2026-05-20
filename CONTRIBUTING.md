@@ -117,7 +117,7 @@ Currently shipped: en, zh, hi, es, pt, fr, de, ar, ru, ja
 ## Verification before PR
 
 ```bash
-python -m pytest                                  # 412+ tests should pass
+python -m pytest                                  # 495+ tests should pass
 python scripts/tk_verify_ingest.py                # cross-CLI ingest sanity
 python -m threadkeeper._setup --dry-run           # setup is idempotent
 ```
@@ -230,3 +230,60 @@ A PR with no activity for 30 days and red CI gets a polite ping from
 the maintainer asking if it's still alive. After 60 days idle it
 gets closed with `stale` label and a link to re-open if the
 contributor returns.
+
+## Releases
+
+Releases are fully automated — you don't bump the version, write the
+changelog, or push a tag by hand. The flow:
+
+1. PR title (Conventional Commits format, enforced by `pr-title.yml`)
+   becomes the squash-merge commit message on `main`.
+2. `.github/workflows/tests.yml` runs the full pytest matrix on the
+   merge commit.
+3. On green tests, `.github/workflows/release.yml` runs
+   `python-semantic-release`, which:
+   - reads commits since the last `v*` tag,
+   - picks the highest bump implied by the types,
+   - writes the new version into `pyproject.toml`,
+   - appends a `CHANGELOG.md` entry,
+   - commits the bump back to `main`,
+   - creates an annotated tag `vX.Y.Z` and a GitHub release with the
+     auto-generated notes.
+4. The tag push triggers `publish.yml`, which builds sdist + wheel
+   and uploads to PyPI via the Trusted Publisher OIDC flow. (Within
+   release.yml we call `gh workflow run publish.yml --ref <tag>`
+   explicitly because default `GITHUB_TOKEN` pushes don't trigger
+   downstream workflows.)
+
+### Bump policy
+
+| Commit type                | Bump   | Example: 0.5.3 → |
+|----------------------------|--------|------------------|
+| `feat:`                    | minor  | 0.6.0            |
+| `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`, `build:`, `deps:`, `revert:` | patch  | 0.5.4 |
+| `BREAKING CHANGE:` footer  | minor while in 0.x (`major_on_zero = false`); flip to `true` and re-release when promoting to 1.0.0 | 0.6.0 |
+
+Commits whose type isn't in the table above (or whose summary line
+fails the pr-title check) won't produce a release — they're treated as
+no-ops by the parser. This is how we avoid "wip:" / typos / merge-
+commit noise creating empty version bumps.
+
+### Forcing or skipping a release
+
+- **Force a release run**: Actions tab → "release" workflow →
+  "Run workflow" on the `main` branch. Useful if a release got skipped
+  (e.g. tests were re-run after a flake and the auto-trigger missed).
+- **Skip a release for a specific commit**: prefix the type with a
+  non-allowlisted token (or just don't merge until you have a real
+  user-visible change to bundle with it). There's no `[skip release]`
+  trailer — keep main releasable.
+
+### Promoting to 1.0.0
+
+When the API is stable and you want the next BREAKING CHANGE to bump
+to 1.0.0:
+
+1. Flip `[tool.semantic_release].major_on_zero = true` in
+   `pyproject.toml` (under a `chore:` commit).
+2. Land a commit with a `BREAKING CHANGE:` footer (or `feat!:` prefix).
+3. Next release run produces `v1.0.0` automatically.
