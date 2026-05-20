@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.4.1"
+version = "0.5.0"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini, Copilot, VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -68,48 +68,3 @@ markers = [
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
-
-# ──────────────────────────────────────────────────────────────────────
-# python-semantic-release — automated version bumps from Conventional
-# Commits on main. Invoked by .github/workflows/release.yml; not used
-# locally. Mapping per the user-stated policy "каждый коммит бампит":
-#   feat:       → minor (X.Y → X.(Y+1).0)
-#   everything: → patch (X.Y.Z → X.Y.(Z+1))
-#   BREAKING:   → minor while we're still in 0.x (major_on_zero=false),
-#                 promote manually to 1.0.0 when ready
-# ──────────────────────────────────────────────────────────────────────
-[tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-commit_parser = "conventional"
-# 0.x → 0.x for BREAKING. Manual jump to 1.0.0 when API is stable.
-major_on_zero = false
-allow_zero_version = true
-tag_format = "v{version}"
-# We don't build inside the release workflow; the existing publish.yml
-# handles sdist/wheel + PyPI on tag push. release.yml just bumps + tags.
-build_command = ""
-# Append a CHANGELOG.md entry per release. Committed back to main along
-# with the version bump in a single auto-commit.
-changelog_file = "CHANGELOG.md"
-upload_to_vcs_release = true
-
-[tool.semantic_release.commit_parser_options]
-# Mirror the type list enforced by .github/workflows/pr-title.yml
-# (allowed_tags must be a superset of what `feat`/`fix`/etc. commits use).
-allowed_tags = [
-    "feat", "fix", "perf", "refactor", "docs",
-    "test", "chore", "ci", "build", "deps", "revert",
-]
-# feat is the only minor-bump tag — everything else patches.
-minor_tags = ["feat"]
-patch_tags = [
-    "fix", "perf", "refactor", "docs", "test",
-    "chore", "ci", "build", "deps", "revert",
-]
-
-[tool.semantic_release.branches.main]
-match = "main"
-prerelease = false
-
-[tool.semantic_release.remote]
-type = "github"

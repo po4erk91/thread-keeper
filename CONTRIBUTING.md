@@ -233,83 +233,55 @@ contributor returns.
 
 ## Releases
 
-Releases are fully automated — you don't bump the version, write the
-changelog, or push a tag by hand. The flow:
+Versions follow Conventional-Commits-driven semver, executed by the
+maintainer as part of each commit to `main`. The flow:
 
 1. PR title (Conventional Commits format, enforced by `pr-title.yml`)
    becomes the squash-merge commit message on `main`.
-2. `.github/workflows/tests.yml` runs the full pytest matrix on the
-   merge commit.
-3. On green tests, `.github/workflows/release.yml` runs
-   `python-semantic-release`, which:
-   - reads commits since the last `v*` tag,
-   - picks the highest bump implied by the types,
-   - writes the new version into `pyproject.toml`,
-   - appends a `CHANGELOG.md` entry,
-   - commits the bump back to `main`,
-   - creates an annotated tag `vX.Y.Z` and a GitHub release with the
-     auto-generated notes.
-4. The tag push triggers `publish.yml`, which builds sdist + wheel
-   and uploads to PyPI via the Trusted Publisher OIDC flow. (Within
-   release.yml we call `gh workflow run publish.yml --ref <tag>`
-   explicitly because default `GITHUB_TOKEN` pushes don't trigger
-   downstream workflows.)
+2. **Same commit**: maintainer bumps `version` in `pyproject.toml`
+   per the bump policy below and adds a `CHANGELOG.md` entry.
+3. **Same push**: maintainer creates an annotated tag `vX.Y.Z` on the
+   bump commit and pushes both the commit and the tag.
+4. `.github/workflows/tests.yml` runs the full pytest matrix on push.
+5. The tag push triggers `.github/workflows/publish.yml`, which builds
+   sdist + wheel and uploads to PyPI via the Trusted Publisher OIDC
+   flow.
 
-### Required setup: RELEASE_PAT secret
-
-Classic branch protection on `main` requires `contents:write` from an
-account that bypasses the rules. `enforce_admins=false` means the
-maintainer admin account does — but `github-actions[bot]` does not.
-release.yml therefore needs a **fine-grained PAT** belonging to the
-admin to push the version-bump commit and tag.
-
-**One-time setup** (maintainer only):
-
-1. GitHub → Settings → Developer settings → Personal access tokens →
-   Fine-grained tokens → **Generate new token**.
-2. Resource owner: your account. Repository access: only
-   `po4erk91/thread-keeper`.
-3. Permissions:
-   - **Repository → Contents** → Read and write
-   - **Repository → Metadata** → Read-only (auto-required)
-4. Expiration: 1 year (or whatever your security policy mandates).
-5. Copy the token.
-6. Repo → Settings → Secrets and variables → Actions → **New
-   repository secret**, name `RELEASE_PAT`, paste the token.
-
-release.yml falls back to the default `GITHUB_TOKEN` when the secret
-isn't set, but that path will fail loudly on push to main —
-intentional so a missing token is surfaced, not silently swallowed.
+There's no CI-side release automation — solo-repo, all commits go
+through the maintainer anyway, and the `python-semantic-release`
+machinery hit branch-protection friction (default `GITHUB_TOKEN` can't
+push to a protected `main`; the alternatives — PAT secret, GitHub App,
+release-please-style PR — all add per-release friction or one-time
+setup that wasn't worth it at this scale). Pulled it out; the rule
+lives in this section instead.
 
 ### Bump policy
 
-| Commit type                | Bump   | Example: 0.5.3 → |
-|----------------------------|--------|------------------|
-| `feat:`                    | minor  | 0.6.0            |
-| `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`, `build:`, `deps:`, `revert:` | patch  | 0.5.4 |
-| `BREAKING CHANGE:` footer  | minor while in 0.x (`major_on_zero = false`); flip to `true` and re-release when promoting to 1.0.0 | 0.6.0 |
+| Commit type | Bump | Example: 0.5.3 → |
+|---|---|---|
+| `feat:` | minor | 0.6.0 |
+| `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`, `build:`, `deps:`, `revert:` | patch | 0.5.4 |
+| `BREAKING CHANGE:` footer | minor while in 0.x (manual promotion to 1.0.0 when API is stable) | 0.6.0 |
 
-Commits whose type isn't in the table above (or whose summary line
-fails the pr-title check) won't produce a release — they're treated as
-no-ops by the parser. This is how we avoid "wip:" / typos / merge-
-commit noise creating empty version bumps.
+If a single commit touches multiple concerns (rare — squash-merge
+typically prevents this), pick the highest bump that applies.
 
-### Forcing or skipping a release
+### Tagging recipe
 
-- **Force a release run**: Actions tab → "release" workflow →
-  "Run workflow" on the `main` branch. Useful if a release got skipped
-  (e.g. tests were re-run after a flake and the auto-trigger missed).
-- **Skip a release for a specific commit**: prefix the type with a
-  non-allowlisted token (or just don't merge until you have a real
-  user-visible change to bundle with it). There's no `[skip release]`
-  trailer — keep main releasable.
+```bash
+# Update pyproject.toml `version` per the bump table; add a CHANGELOG.md
+# entry under a new `## vX.Y.Z — YYYY-MM-DD` heading.
+
+git add pyproject.toml CHANGELOG.md <other files for this change>
+git commit -m "feat: <imperative summary>"
+git tag -a vX.Y.Z -m "release vX.Y.Z"
+git push && git push --tags
+```
+
+The tag push fans out to `publish.yml` automatically.
 
 ### Promoting to 1.0.0
 
-When the API is stable and you want the next BREAKING CHANGE to bump
-to 1.0.0:
-
-1. Flip `[tool.semantic_release].major_on_zero = true` in
-   `pyproject.toml` (under a `chore:` commit).
-2. Land a commit with a `BREAKING CHANGE:` footer (or `feat!:` prefix).
-3. Next release run produces `v1.0.0` automatically.
+Once the API is stable and the next BREAKING CHANGE should land 1.0.0:
+bump `pyproject.toml` to `1.0.0` directly, tag `v1.0.0`, push. No
+config flip needed — manual control by design.
