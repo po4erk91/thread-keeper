@@ -43,10 +43,10 @@ make it more than a memory store:
   concurrent sessions signal each other across CLIs. Parent /
   children / sibling agents become a coordinated swarm, not isolated
   chats.
-- **Self-improving skill library** — four autonomous background loops
+- **Self-improving skill library** — five autonomous background loops
   (auto-review on thread close, shadow-review daemon, extract
-  harvester, weekly Curator) materialize class-level skills as the
-  agents work. Adapted to multi-CLI:
+  harvester, candidate-reviewer, weekly Curator) materialize
+  class-level skills as the agents work. Adapted to multi-CLI:
   SKILL.md is the primary write target and gets mirrored to every
   detected CLI's skills directory simultaneously
   (`~/.claude/skills/`, `~/.codex/skills/`, `~/.threadkeeper/skills/`),
@@ -317,7 +317,7 @@ stream.
 ### Dialectic user model
 
 A model of you, accumulated as you use the agent. `dialectic_claim`,
-`dialectic_evidence` (support / contradict / clarifying),
+`dialectic_evidence` (support / contradict),
 `dialectic_synthesis`, `dialectic_supersede`. Honcho-inspired
 **weighted, smoothed** ratio
 `(Σw_support − Σw_contradict) / (Σw_support + Σw_contradict + 3)`
@@ -381,7 +381,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
-| `THREADKEEPER_INGEST_INTERVAL_S` | 30 | transcript ingest tick (s) |
+| `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 
@@ -490,7 +490,7 @@ pip install -e '.[semantic,dev]'
 python -m pytest
 ```
 
-412 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
+495 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
 the suite on every push and PR.
 
 ---
@@ -515,11 +515,13 @@ threadkeeper/
 │   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @mcp.tool entries — 83 of them
+└── tools/                # @mcp.tool entries — 89 of them
     ├── threads.py
     ├── peers.py
     ├── spawn.py
     ├── skills.py
+    ├── dialectic.py
+    ├── validate.py
     └── ...
 ```
 
