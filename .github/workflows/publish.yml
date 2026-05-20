@@ -63,3 +63,64 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    # Only auto-create the release entry on tag pushes — skip when this
+    # workflow is invoked manually via workflow_dispatch for a re-publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full history so the auto-notes can walk commits
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract release section from CHANGELOG.md
+        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Pull the section for this tag out of CHANGELOG.md. If the
+          # file or the tag's section isn't present, fall back to
+          # GitHub's --generate-notes (auto from commit messages).
+          version="${TAG#v}"
+          notes_file="$(mktemp)"
+          if [ -f CHANGELOG.md ] && grep -q "^## v${version} " CHANGELOG.md; then
+            awk "/^## v${version} /{flag=1; next} /^## v/{flag=0} flag" \
+              CHANGELOG.md > "$notes_file"
+            echo "use_file=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_file=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "notes_path=$notes_file" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (with notes from CHANGELOG)
+        if: steps.notes.outputs.use_file == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "${{ steps.notes.outputs.notes_path }}" \
+            dist/*
+
+      - name: Create GitHub Release (fallback: auto-generated notes)
+        if: steps.notes.outputs.use_file == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/*

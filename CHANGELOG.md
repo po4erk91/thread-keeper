@@ -5,6 +5,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.5.1 — 2026-05-20
+
+### CI
+
+- `publish.yml` now also creates a GitHub Release entry on tag push
+  (after the PyPI upload completes). Notes are pulled from the
+  matching `## vX.Y.Z` section of `CHANGELOG.md`; falls back to
+  `--generate-notes` if the section is missing. dist artifacts are
+  attached to the release for direct download. Closes the gap where
+  v0.4.1 had a tag but no Release entry; future tags self-document.
+
 ## v0.5.0 — 2026-05-20
 
 ### Features
