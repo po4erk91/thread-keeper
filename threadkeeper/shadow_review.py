@@ -51,9 +51,9 @@ from .review_prompts import POSITIVE_EXAMPLES
 
 SHADOW_REVIEW_PROMPT = f"""\
 You are a SHADOW LEARNING OBSERVER for thread-keeper. You read a slice
-of recent dialog from across ALL Claude sessions on this machine and
+of recent dialog from across ALL agent sessions on this machine and
 decide whether any CLASS-LEVEL learning emerged that's worth a durable
-skill under ~/.claude/skills/.
+skill.
 
 CLASS-LEVEL signals (materialize):
 {SHADOW_CLASS_SIGNAL_EXAMPLES}\
@@ -84,7 +84,7 @@ PROCEDURE
       - body: markdown rationale + procedure
       - summary: optional one-line TL;DR
    b. OPTIONAL: also call `mcp__thread-keeper__skill_manage(...)` to mirror
-      under ~/.claude/skills/ when Claude-specific frontmatter
+      SKILL.md into every configured skills root when frontmatter
       auto-triggering adds value beyond the lesson alone.
    c. Output `MATERIALIZED: <slug>` on success.
 

@@ -140,20 +140,29 @@ def close_thread(thread_id: str, outcome: str) -> str:
 @mcp.tool()
 def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     """Close the Learning loop: record that a closed thread's insights were
-    written into a Claude skill under ~/.claude/skills/.
+    written into a skill.
 
     Stops the brief()'s `skill_hint` nudge from firing for this thread. Also
     appends a `move` note pointing at the skill path so future briefs surface
     the link.
 
     Pass the absolute path to the SKILL.md (or skill directory) when known;
-    leave empty if you only want to silence the hint without recording a path."""
+    leave empty if you only want to silence the hint without recording a path.
+    When a path is provided, thread-keeper also mirrors that skill directory
+    into every configured native skills root (Claude, Codex, shared agents,
+    and ~/.threadkeeper/skills) on a best-effort basis."""
     conn = get_db()
     _ensure_session(conn)
     if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():
         return f"ERR thread_not_found={thread_id}"
     now = int(time.time())
     path = skill_path.strip()
+    if path:
+        try:
+            from .skills import mirror_skill_from_path
+            mirror_skill_from_path(path)
+        except Exception:
+            pass
     summary = path or "(no path recorded)"
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
@@ -163,7 +172,7 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     )
     note_body = (
         f"materialized into {path}" if path
-        else "materialized into a Claude skill (path not recorded)"
+        else "materialized into a skill (path not recorded)"
     )
     emb = _embed(note_body)
     cur = conn.execute(

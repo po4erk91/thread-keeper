@@ -355,7 +355,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     # ── skill_hint ────────────────────────────────────────────────────────
     # Behavioral nudge: after a rich thread closes, the lessons inside
     # it (insights + repeated moves) should
-    # be materialized as a reusable Claude skill under ~/.claude/skills/,
+    # be materialized as a reusable skill mirrored across configured roots,
     # not just sit in notes. Trigger only on threads recently closed AND
     # rich enough to be worth a class-level skill — never on one-off chatter.
     #
@@ -413,7 +413,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
             warn = "⚠️ " if consecutive_ignored >= 3 else ""
             out.append(
                 f"  → {warn}closed thread is rich (≥5 notes, ≥2 insight/move). "
-                "MATERIALIZE: invoke skill-creator to write ~/.claude/skills/"
+                "MATERIALIZE: invoke skill-creator or skill_manage to write "
                 "<class-level-name>/SKILL.md from the insights — don't let "
                 "learnings sit only in notes"
             )

@@ -535,7 +535,7 @@ def test_skill_manage_mirrors_skill_across_detected_clis(
     skills_pkg, monkeypatch,
 ):
     """skill_manage(create) must write SKILL.md not only to the canonical
-    ~/.claude/skills/ but also to every detected CLI's skills_dir() —
+    primary skills root but also to every configured skills_dir() —
     so one materialization reaches Claude AND Codex at once."""
     # Pin two mirror targets that we own (in tmp_path) so the test is
     # hermetic — don't touch the developer's ~/.codex/ or ~/.threadkeeper/.
@@ -566,6 +566,71 @@ def test_skill_manage_mirrors_skill_across_detected_clis(
     # Mirror content identical to canonical
     assert (mirror_codex / "mirrored-skill" / "SKILL.md").read_text() == \
         canonical.read_text()
+
+
+def test_mirror_targets_include_known_skill_roots_without_install_detection(
+    skills_pkg, monkeypatch,
+):
+    """Mirror planning should include native skill roots even when an
+    adapter's executable/config detection would be false. Skill roots are
+    cheap paths; creation should not depend on whether the CLI has already
+    written a config file."""
+    from threadkeeper.tools import skills as st
+    import threadkeeper.adapters as adapters
+
+    class FakeAdapter:
+        def skills_dir(self):
+            return skills_pkg["tmp"] / "future_cli_skills"
+
+    monkeypatch.setattr(adapters, "ADAPTERS", [FakeAdapter()])
+
+    targets = st._mirror_targets("future-skill")
+    assert skills_pkg["tmp"] / "future_cli_skills" / "future-skill" in targets
+
+
+def test_mark_skill_materialized_mirrors_external_skill_dir(
+    skills_pkg, monkeypatch,
+):
+    """If an agent created a skill directly in Codex/Claude and then calls
+    mark_skill_materialized(skill_path=...), thread-keeper should copy the
+    whole skill dir to canonical + mirrors."""
+    mirror_codex = skills_pkg["tmp"] / "fake_codex_skills"
+    mirror_agents = skills_pkg["tmp"] / "fake_agents_skills"
+
+    from threadkeeper.tools import skills as st
+
+    def fake_mirror_targets(name):
+        return [mirror_codex / name, mirror_agents / name]
+
+    monkeypatch.setattr(st, "_mirror_targets", fake_mirror_targets)
+
+    external = skills_pkg["tmp"] / "external_codex" / "external-sync"
+    (external / "agents").mkdir(parents=True)
+    (external / "SKILL.md").write_text(
+        "---\n"
+        "name: external-sync\n"
+        "description: Use when testing external skill sync.\n"
+        "---\n\n"
+        "# external-sync\n",
+        encoding="utf-8",
+    )
+    (external / "agents" / "openai.yaml").write_text(
+        "interface:\n"
+        "  display_name: \"External Sync\"\n",
+        encoding="utf-8",
+    )
+
+    open_t = _tool(skills_pkg, "open_thread")
+    mark = _tool(skills_pkg, "mark_skill_materialized")
+    tid = open_t(question="external skill sync")
+
+    assert mark(thread_id=tid, skill_path=str(external / "SKILL.md")) == "ok"
+
+    canonical = skills_pkg["skills_root"] / "external-sync"
+    assert (canonical / "SKILL.md").exists()
+    assert (canonical / "agents" / "openai.yaml").exists()
+    assert (mirror_codex / "external-sync" / "SKILL.md").exists()
+    assert (mirror_agents / "external-sync" / "agents" / "openai.yaml").exists()
 
 
 def test_skill_manage_delete_removes_mirrors(skills_pkg, monkeypatch):

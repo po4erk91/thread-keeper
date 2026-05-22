@@ -81,7 +81,7 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    counts `live=N` by cursor delta. Signals — broadcast/whisper/
    search_request/search_response between parallel windows.
 
-5. **skill_usage** — telemetry for `~/.claude/skills/*/SKILL.md`. Fields:
+5. **skill_usage** — telemetry for mirrored Skill.md entries. Fields:
    `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
    background_review vs shadow_review). This is the input for the curator.
@@ -127,8 +127,8 @@ All daemon threads are cheap (ticks 0.5–15 s), no-op when env-knobs disable th
   the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
   closes dead ones.
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
-  `~/.claude/skills/*/SKILL.md`, bumps `last_patched_at` if the file was
-  changed outside `skill_manage`.
+  the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
+  if the file was changed outside `skill_manage`.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
 
@@ -237,15 +237,19 @@ Manual hook: `shadow_review_run(force=True)`, observability:
 
 ## Skills system
 
-`~/.claude/skills/<name>/SKILL.md` — the root. Optional subfolders
-`references/`, `templates/`, `scripts/`, `assets/`.
+`~/.claude/skills/<name>/SKILL.md` is the primary write target. The same
+skill directory is mirrored to Codex/shared/canonical roots. Optional
+subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
   `create | edit | patch | write_file | remove_file | delete`.
   Frontmatter validator: `name` regex + ≤64 chars, `description` ≤1024 chars,
   total ≤100k chars. `write_file/remove_file` are restricted to subfolders
   `references|templates|scripts|assets` with path-traversal blocking.
-  `patch` revalidates the result before writing.
+  `patch` revalidates the result before writing. Every successful write
+  mirrors the whole skill directory into all configured roots:
+  `~/.claude/skills/`, `~/.codex/skills/`, existing `~/.agents/skills/`,
+  `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
@@ -280,7 +284,10 @@ Manual hook: `shadow_review_run(force=True)`, observability:
   `skill_tier_promoted` / `skill_tier_demoted` events.
 
 - **mark_skill_materialized(thread_id, skill_path)** — writes a `move`-note
-  + event, kills the `skill_hint` for the thread.
+  + event, kills the `skill_hint` for the thread. When `skill_path` points
+  at a `SKILL.md` or skill directory created outside `skill_manage`, it first
+  imports that external skill into the canonical root and mirrors it to every
+  configured skills root.
 
 - **review_prompts.py** — MEMORY/SKILL/COMBINED/SHADOW + a shared ANTI_CAPTURE
   section (do-NOT-capture: env failures, negative tool claims, transient
@@ -474,6 +481,7 @@ having to add tests.
 | `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | jsonl for ingest |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills root |
+| `THREADKEEPER_EXTRA_SKILLS_DIRS` | unset | os.pathsep-separated extra skills roots to mirror into |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
 | `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
 | `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |

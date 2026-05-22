@@ -11,6 +11,21 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_cli_homes(tmp_path, monkeypatch):
+    """Keep adapter defaults like ~/.codex/skills inside the test tmpdir.
+
+    Multi-mirror code resolves several CLI homes even when a fixture only
+    overrides CLAUDE_SKILLS_DIR. Without an isolated HOME/CODEX_HOME, unit
+    tests can leak throwaway skills into the developer's real CLI stores.
+    """
+    home = tmp_path / ".threadkeeper-test-home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
+    monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
+
+
 def _force_clean_env(tmp_root: Path) -> dict[str, str]:
     """Env knobs that must be set before threadkeeper.config imports.
 

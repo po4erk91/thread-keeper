@@ -1,5 +1,5 @@
 """brief() skill_hint nudge — fires when a recently-closed thread is rich
-enough to be worth materializing as a Claude skill under ~/.claude/skills/.
+enough to be worth materializing as a mirrored reusable skill.
 
 After complex tasks, the agent should turn distilled insights into
 reusable skills, not let them sit only in notes. The nudge surfaces

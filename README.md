@@ -48,10 +48,10 @@ make it more than a memory store:
   harvester, candidate-reviewer, weekly Curator) materialize
   class-level skills as the agents work. Adapted to multi-CLI:
   SKILL.md is the primary write target and gets mirrored to every
-  detected CLI's skills directory simultaneously
-  (`~/.claude/skills/`, `~/.codex/skills/`, `~/.threadkeeper/skills/`),
-  with lessons.md as a fallback for CLIs without a native skills
-  loader.
+  known/configured skills root simultaneously (`~/.claude/skills/`,
+  `~/.codex/skills/`, existing `~/.agents/skills/`, extra roots from
+  `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`),
+  with lessons.md as a fallback for CLIs without a native skills loader.
 
 ---
 
@@ -189,8 +189,8 @@ shows agents focused on their primary task rarely do).
          brief()    SKILL.md + lessons.md ─► skill_usage   │
             │              │                  │            │
             │              ▼                  ▼            │
-            │         (every detected CLI's   │            │
-            │          skills/ directory)     │            │
+            │         (every configured       │            │
+            │          skills/ root)          │            │
             │              │                  │            │
             │              └──────► [5] Curator daemon ───┘
             │                          (cron, every 7d)
@@ -212,11 +212,11 @@ shows agents focused on their primary task rarely do).
 | 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md (advisory) or direct PATCH/PRUNE/CONSOLIDATE |
 
 All five write into the universal Skill format (`SKILL.md` under each
-detected CLI's skills directory — `~/.claude/skills/`,
-`~/.codex/skills/`, plus the canonical `~/.threadkeeper/skills/`
-mirror), with `~/.threadkeeper/lessons.md` as a CLI-agnostic fallback
-for clients without a native skills loader (Gemini, Copilot, bare
-MCP).
+known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
+existing `~/.agents/skills/`, optional `THREADKEEPER_EXTRA_SKILLS_DIRS`,
+plus the canonical `~/.threadkeeper/skills/` mirror), with
+`~/.threadkeeper/lessons.md` as a CLI-agnostic fallback for clients
+without a native skills loader (Gemini, Copilot, bare MCP).
 
 #### 1. Auto-review on close_thread
 
@@ -226,9 +226,12 @@ thread's notes. The prompt is rubric-form (Q1–Q5 yes/no) with explicit
 positive examples for incident-vs-rule classification. The fork also
 receives a "recently active skills" block so it prefers PATCHing
 existing umbrellas over creating new ones (*active-update bias*).
-Child appends a lesson via `lesson_append`, optionally mirrors to
-`~/.claude/skills/<name>/SKILL.md`, then closes with
-`mark_skill_materialized`. Opt in with `THREADKEEPER_AUTO_REVIEW=1`.
+Child appends a lesson via `lesson_append`, writes/patches a skill via
+`skill_manage` or writes a skill file directly, then closes with
+`mark_skill_materialized`. If `skill_path` points at a `SKILL.md` (or a
+skill directory), thread-keeper immediately mirrors that whole skill
+into every configured skills root. Opt in with
+`THREADKEEPER_AUTO_REVIEW=1`.
 
 #### 2. Shadow-review daemon
 

@@ -1,8 +1,9 @@
-"""Claude-skills lifecycle: create/edit/patch/delete + usage telemetry +
+"""Multi-CLI skills lifecycle: create/edit/patch/delete + usage telemetry +
 curator + background-review fork.
 
 Bridges thread-keeper (working memory across sessions) and Claude's
-~/.claude/skills/ store (procedural memory). The Learning loop:
+primary ~/.claude/skills/ store plus mirrored CLI skill roots
+(procedural memory). The Learning loop:
 
     rich thread closes → brief() surfaces skill_hint nudge →
     agent calls review_thread(...) → spawned child reads notes,
@@ -24,6 +25,7 @@ Validator enforces the agentskills.io-compatible frontmatter shape:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -143,60 +145,132 @@ def _archive_dir() -> Path:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Multi-mirror — propagate SKILL.md across every detected CLI's skills/
-# directory so a single skill_manage call reaches Claude AND Codex AND
-# the canonical ~/.threadkeeper/skills/ fallback at once. Best-effort:
-# per-mirror failures are logged but don't fail the canonical write.
+# Multi-mirror — propagate a whole skill directory across every known
+# native skills/ root so a single materialization reaches Claude, Codex,
+# shared ~/.agents skills, and the canonical ~/.threadkeeper/skills/
+# fallback at once. Best-effort: per-mirror failures are logged but
+# don't fail the canonical write.
 # ──────────────────────────────────────────────────────────────────────────
 
-def _mirror_targets(name: str) -> list[Path]:
-    """Per-CLI skill directories that should hold a copy of <name>.
+def _extra_skill_roots() -> list[Path]:
+    """Additional skills roots outside CLI adapters.
 
-    Always includes the canonical ~/.threadkeeper/skills/<name>/ fallback
-    (consumed by lessons.md-style scans from CLIs without a native
-    skills/ loader). Plus every installed adapter whose skills_dir() is
-    distinct from CLAUDE_SKILLS_DIR (the canonical write target)."""
-    from ..adapters import installed_adapters
+    THREADKEEPER_EXTRA_SKILLS_DIRS is os.pathsep-separated. We also mirror
+    into ~/.agents/skills when that shared OpenAI-agent skill root already
+    exists on the machine.
+    """
+    roots: list[Path] = []
+    raw = os.environ.get("THREADKEEPER_EXTRA_SKILLS_DIRS", "").strip()
+    if raw:
+        for item in raw.split(os.pathsep):
+            item = item.strip()
+            if item:
+                roots.append(Path(item).expanduser())
+    agents_root = Path("~/.agents/skills").expanduser()
+    if agents_root.exists():
+        roots.append(agents_root)
+    return roots
+
+
+def _skill_roots() -> list[Path]:
+    """Every root that should receive mirrored skill directories.
+
+    Use all adapters, not only installed adapters. Skill roots are cheap
+    filesystem paths, and relying on install-detection can miss a CLI that
+    is present but has not written its config yet.
+    """
+    from ..adapters import ADAPTERS
     from ..config import DB_PATH
 
-    targets: list[Path] = []
-    seen: set[Path] = {CLAUDE_SKILLS_DIR.resolve()}
-    # CLI-native skills/ dirs from each installed adapter.
-    for a in installed_adapters():
-        sd = a.skills_dir()
-        if sd is None:
-            continue
-        sd_r = sd.resolve() if sd.exists() else sd
-        if sd_r in seen:
-            continue
-        seen.add(sd_r)
-        targets.append(sd / name)
-    # Canonical thread-keeper-side mirror (always written, used as the
-    # source of truth for restore / curator audit / non-skills CLIs).
-    tk_canonical = (DB_PATH.parent / "skills").resolve()
-    if tk_canonical not in seen:
-        targets.append((DB_PATH.parent / "skills") / name)
-    return targets
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(root: Path | None) -> None:
+        if root is None:
+            return
+        root = root.expanduser()
+        key = root.resolve()
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(root)
+
+    add(CLAUDE_SKILLS_DIR)
+    for adapter in ADAPTERS:
+        add(adapter.skills_dir())
+    for root in _extra_skill_roots():
+        add(root)
+    add(DB_PATH.parent / "skills")
+    return roots
+
+
+def _mirror_targets(name: str) -> list[Path]:
+    """All non-primary skill directories that should hold <name>/."""
+    primary = CLAUDE_SKILLS_DIR.resolve()
+    return [root / name for root in _skill_roots() if root.resolve() != primary]
+
+
+def _copy_skill_tree(src: Path, dst: Path) -> None:
+    """Replace dst with a recursive copy of src unless they are identical."""
+    if src.resolve() == dst.resolve():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
 
 
 def _mirror_skill_dir(name: str) -> None:
     """Copy CLAUDE_SKILLS_DIR/<name>/ → every mirror target (recursive).
     Pre-existing mirror is replaced atomically. Best-effort per target."""
-    import shutil as _sh
     src = _skill_dir(name)
     if not src.exists():
         return
     for dst in _mirror_targets(name):
         try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if dst.exists():
-                _sh.rmtree(dst)
-            _sh.copytree(src, dst)
+            _copy_skill_tree(src, dst)
         except Exception:
             # Per-mirror failure (permission denied / disk full / etc.)
             # doesn't fail the canonical write. The user can re-sync
             # later via re-running skill_manage.
             pass
+
+
+def mirror_skill_from_path(skill_path: str) -> Optional[str]:
+    """Mirror an existing external skill dir into every configured root.
+
+    `skill_path` may point at SKILL.md or at the skill directory. The
+    frontmatter `name` is authoritative; the source directory does not
+    need to be under CLAUDE_SKILLS_DIR. Returns the mirrored skill name,
+    or None if the path is absent/invalid. Best-effort mirrors are still
+    handled by _mirror_skill_dir after the canonical copy lands.
+    """
+    raw = skill_path.strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    src = p.parent if p.name == "SKILL.md" else p
+    md = src / "SKILL.md"
+    if not md.is_file():
+        return None
+    try:
+        body = md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    fields, err = _parse_frontmatter(body)
+    if err or not fields:
+        return None
+    name = fields["name"]
+    if err := _validate_name(name):
+        return None
+    if err := _validate_skill_md(body, name):
+        return None
+    try:
+        _copy_skill_tree(src, _skill_dir(name))
+    except Exception:
+        return None
+    _mirror_skill_dir(name)
+    return name
 
 
 def _unmirror_skill(name: str) -> None:
@@ -359,7 +433,7 @@ _VALID_OUTCOMES: set[str] = {"helped", "partial", "wrong"}
 
 @mcp.tool()
 def skill_record(name: str, kind: str = "use", outcome: str = "") -> str:
-    """Record usage telemetry for a Claude skill.
+    """Record usage telemetry for a mirrored skill.
 
     `kind`: 'use' | 'view' | 'patch' | 'create'. Bumps the corresponding
     counter + timestamp in skill_usage. The curator reads these to decide
@@ -425,9 +499,10 @@ def skill_manage(action: str,
                  new_string: str = "",
                  sub_path: str = "",
                  description: str = "") -> str:
-    """Create, edit, patch, or delete Claude skills under ~/.claude/skills/.
+    """Create, edit, patch, or delete skills under the primary skills root.
 
-    Atomic write with frontmatter validation before disk hits.
+    Atomic primary write with frontmatter validation before disk hits, then
+    best-effort mirror into every configured skill root.
 
     Actions:
       create      — write a brand-new skill. Requires `name` + `description`
@@ -627,7 +702,7 @@ def _action_delete(name: str) -> str:
 
 @mcp.tool()
 def skill_list(include_archived: bool = False) -> str:
-    """List Claude skills with telemetry. Format:
+    """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
             state=<active|stale|archived> uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
@@ -763,7 +838,7 @@ def curator_run(stale_after_days: int = 30,
     Lifecycle:
       active  → stale     when last activity > stale_after_days
       stale   → archived  when last activity > archive_after_days
-                          (also moves directory to ~/.claude/skills/.archive/)
+                          (also moves primary directory to .archive/)
 
     Tier-aware adjustments (the discrete trust signal trumps raw activity):
       • tier='validated' skills are NEVER stale-aged or archived — proven

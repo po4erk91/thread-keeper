@@ -5,6 +5,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## Unreleased
+
+### Changed
+
+- Skill materialization now syncs to every known/configured skills root,
+  not only the primary Claude skills directory. `skill_manage` mirrors
+  into Claude, Codex, existing `~/.agents/skills/`, extra roots from
+  `THREADKEEPER_EXTRA_SKILLS_DIRS`, and the canonical
+  `~/.threadkeeper/skills/` mirror. `mark_skill_materialized(skill_path=...)`
+  now also imports an externally-created skill directory and mirrors it
+  immediately, so agents no longer have to manually copy a new skill across
+  CLI homes after a build.
+
 ## v0.5.2 — 2026-05-20
 
 ### Fixed
