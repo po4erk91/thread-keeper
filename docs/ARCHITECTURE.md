@@ -359,26 +359,78 @@ disputed   ──(w_support > w_contradict)──────────► hyp
 Curator and audit queries can reason about how recently a claim earned
 or lost a tier.
 
-## Hooks (Claude Code settings.json)
+## Hooks (multi-CLI)
 
-`~/.threadkeeper/hooks/` — three shell wrappers, wired into
+`~/.threadkeeper/hooks/` — six shell wrappers, wired into every
+hook-capable CLI by `thread-keeper-setup` (see [Cross-CLI
+deployment](#cross-cli-deployment) below). The canonical wiring lives in
 `~/.claude/settings.json`:
 
-- **SessionStart → mp-brief.sh** — at the start of every session injects
+- **SessionStart → tk-brief.sh** — at the start of every session injects
   `brief()` + `context()` into the system prompt. Additionally prints status
   `thread-keeper: ok threads_open=N closed_recent=M live_peers=K`.
   This removes the need to call `brief()` manually every time — the new Claude
   sees it right away.
 
-- **PostToolUse → mp-status.sh** (matcher `mcp__thread-keeper__.*`) — short
+- **PostToolUse → tk-status.sh** (matcher `mcp__thread-keeper__.*`) — short
   human-readable markers for mutating calls:
   `🧵 opened: <thread>`, `✅ closed: <thread>`, `📝 +insight`,
   `🎯 skill materialized`, etc. Read-only tools (`search`, `brief`, `peers`)
-  are deliberately silent, not to add noise.
+  are deliberately silent, not to add noise. Also writes a per-session
+  `state/sess-<id>.opened` marker on `open_thread` for the two nudge hooks.
 
 - **UserPromptSubmit → inbox-check.sh** — before every user turn checks the
   inbox for fresh signals (broadcast/whisper/ask) from other windows and
   inlines them.
+
+- **UserPromptSubmit → tk-thread-nudge.sh** — open-thread safety net.
+  Backstops the prose rule "new substantive topic → `open_thread()`", which
+  nothing watched before. Once per session, if no thread was opened yet,
+  injects a reminder as `additionalContext` (non-blocking). Goes silent for
+  the session once `open_thread` fires (the `.opened` marker) or after one
+  nudge.
+
+- **Stop → tk-session-end.sh** — `close_thread` / `session_end` safety net.
+  Throttled to once per session and only when a thread was opened this
+  session (`.opened` marker present); advisory `systemMessage`, never blocks.
+  Note: Claude Code's `Stop` fires at the end of every turn (there is no
+  model-actionable session-end event), hence the once-per-session throttle.
+
+- **PreToolUse → tk-task-gate.sh** (matcher `^Task$`) — blocks the built-in
+  Task tool for work that should go through `spawn()` (see
+  `core_memory.spawn_pattern`). Claude-Code-specific; other CLIs ignore the
+  unknown event.
+
+### Cross-CLI deployment
+
+`thread-keeper-setup` installs the same event specs into every detected
+adapter that reports `hooks_supported()`. The wiring shape is identical
+(Claude-Code-style `hooks` object), only the target file differs:
+
+| CLI            | hooks file                  | open-thread nudge path |
+|----------------|-----------------------------|------------------------|
+| Claude Code    | `~/.claude/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
+| Gemini         | `~/.gemini/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
+| Copilot        | `~/.copilot/hooks.json`     | `tk-thread-nudge.sh` (UserPromptSubmit) |
+| Claude Desktop | — (no hook mechanism)       | in-`brief()` fallback  |
+| Codex          | — (no hook mechanism)       | in-`brief()` fallback  |
+| VS Code        | — (no hook mechanism)       | in-`brief()` fallback  |
+
+Events that a given CLI doesn't fire (e.g. `PreToolUse`/`Stop` on a CLI
+that lacks them) are simply never triggered — installing the spec is
+harmless.
+
+**Hook-less fallback.** Clients with no hook mechanism never run
+`tk-thread-nudge.sh`, so the open-thread reminder is surfaced *inside*
+`brief()` instead, by `nudges.compute_thread_nudge`. To avoid double-firing
+on hook-capable CLIs, `tk-brief.sh` (the SessionStart hook) exports
+`THREADKEEPER_BRIEF_NO_THREAD_NUDGE=1`, which makes `render_brief` skip the
+in-brief copy; hook-less clients call `brief()` directly with no such env,
+so the nudge appears there. Either way it fires at most once per session
+(a `thread_hint_shown` event suppresses repeats). That bookkeeping event —
+and the shadow-review daemon's `shadow_review_pass` cursor mark — are
+excluded from the memory/skill nudge counters (`nudges._NONCOUNTING_KINDS`)
+so they don't make those counters fire a turn early.
 
 ## Process health
 

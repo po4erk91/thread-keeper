@@ -56,6 +56,22 @@ _SKILL_RESET_KINDS = (
     "skill_materialized",
 )
 
+# Bookkeeping/automatic events that are NOT agent turns and must never
+# inflate the memory/skill nudge counters. These are byproducts of the
+# system itself, not "work done without a save":
+#   thread_hint_shown  — logged by render_brief when the open-thread nudge
+#                        is surfaced (once per session).
+#   shadow_review_pass — cursor mark written by the shadow-review daemon
+#                        on a tick; non-deterministic, daemon-driven.
+# Counting either would make a nudge fire a turn early (and made
+# test_skill_nudge_soft_at_threshold flaky). They are unioned into the
+# exclude set in _count_events_since, NOT added to the *_RESET_KINDS sets,
+# so they neither reset the counter nor count toward it.
+_NONCOUNTING_KINDS = (
+    "thread_hint_shown",
+    "shadow_review_pass",
+)
+
 
 def _last_reset_event_id(conn: sqlite3.Connection, session_id: str,
                          kinds: tuple[str, ...]) -> int:
@@ -78,9 +94,11 @@ def _count_events_since(conn: sqlite3.Connection, session_id: str,
                         exclude_kinds: tuple[str, ...]) -> int:
     """Count events for session with id > since_id whose kind is NOT in
     exclude_kinds. These are the "non-save" turns between the last save
-    and now."""
+    and now. Bookkeeping kinds (_NONCOUNTING_KINDS) are always excluded on
+    top of the caller's exclude_kinds — they are not agent turns."""
     if not session_id:
         return 0
+    exclude_kinds = tuple(exclude_kinds) + _NONCOUNTING_KINDS
     if exclude_kinds:
         placeholders = ",".join("?" * len(exclude_kinds))
         row = conn.execute(
@@ -227,6 +245,49 @@ def compute_skill_nudge(conn: sqlite3.Connection,
         f"closed thread rich enough (≥5 notes, ≥2 insight/move)? If yes → "
         f"review_thread(thread_id, focus='skills', mode='auto') OR "
         f"skill_manage(action='patch', ...)."
+    )
+
+
+def compute_thread_nudge(conn: sqlite3.Connection,
+                         session_id: str) -> Optional[str]:
+    """Open-thread nudge for clients WITHOUT a UserPromptSubmit hook
+    (Claude Desktop, Codex, VS Code). On hook-capable CLIs (Claude Code,
+    Gemini, Copilot) the `tk-thread-nudge.sh` hook covers this, and the
+    SessionStart hook sets THREADKEEPER_BRIEF_NO_THREAD_NUDGE so render_brief
+    suppresses it — so in practice this only surfaces when the agent calls
+    brief() directly, which is exactly what hook-less clients are instructed
+    to do at session start.
+
+    Fires once per session, while the session has not yet opened a thread.
+    Suppressed as soon as an `open_thread` event exists for the session, or
+    after one `thread_hint_shown` event (logged by render_brief when shown).
+    Unlike the counter-driven memory/skill nudges, this has no activity
+    threshold: the whole point is to remind at the very first brief().
+    """
+    if not session_id:
+        return None
+    try:
+        if conn.execute(
+            "SELECT 1 FROM events WHERE session_id=? AND kind='open_thread' "
+            "LIMIT 1",
+            (session_id,),
+        ).fetchone():
+            return None
+        if conn.execute(
+            "SELECT 1 FROM events WHERE session_id=? AND kind='thread_hint_shown' "
+            "LIMIT 1",
+            (session_id,),
+        ).fetchone():
+            return None
+    except sqlite3.OperationalError:
+        return None
+    return (
+        "thread_hint: no open_thread yet this session\n"
+        "  → if this conversation is a substantive topic (debugging, a "
+        "feature, a multi-step task), open_thread(question) now — then "
+        "note(thread_id, ..., kind='insight'|'move') as decisions land and "
+        "close_thread(thread_id, outcome) when it resolves. Skip if this is "
+        "a trivial one-off."
     )
 
 

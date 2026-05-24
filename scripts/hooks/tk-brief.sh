@@ -32,7 +32,10 @@ fi
 #  - CONTEXT\t<rest> → full brief, injected into system prompt
 # Any exception inside python is swallowed so the hook never blocks startup.
 OUTPUT=$(
-  PYTHONPATH="$PKG_ROOT" "$VENV_PY" - <<'PY' 2>/dev/null
+  # THREADKEEPER_BRIEF_NO_THREAD_NUDGE: this CLI has hooks, so the
+  # open-thread reminder is delivered by tk-thread-nudge.sh (UserPromptSubmit)
+  # instead — suppress the in-brief copy so it doesn't double-fire.
+  PYTHONPATH="$PKG_ROOT" THREADKEEPER_BRIEF_NO_THREAD_NUDGE=1 "$VENV_PY" - <<'PY' 2>/dev/null
 import re, sys
 try:
     from threadkeeper.tools.threads import brief, context
@@ -42,7 +45,13 @@ try:
 
     # Build compact visible status line. Parsed straight from brief output,
     # no IDs cited (per user_facing_style — paraphrase only).
+    #
+    # Two distinct counters from brief's ctx line (do not conflate):
+    #   live=N   → unread cross-session events (broadcast/whisper/note backlog)
+    #   peers=N  → distinct other session_ids writing to dialog_messages
+    #              in last 5 min (the actual "who's alive next to me")
     live_n = 0
+    peers_n = 0
     m = re.search(r"live=(\d+)", b or "")
     if m:
         live_n = int(m.group(1))
@@ -54,6 +63,9 @@ try:
                     parts += ["", "live_status (peek):", ls]
             except Exception:
                 pass
+    m_peers = re.search(r"peers=(\d+)", b or "")
+    if m_peers:
+        peers_n = int(m_peers.group(1))
 
     # Count active / recently-closed threads, orphan mp processes.
     threads_open = len(re.findall(r"^\s+T[a-f0-9]{3}\s+q=", b or "", re.M))
@@ -72,7 +84,8 @@ try:
         "thread-keeper: ok",
         f"threads_open={threads_open}",
         f"closed_recent={threads_closed_recent}",
-        f"live_peers={live_n}",
+        f"live_peers={peers_n}",
+        f"unread_events={live_n}",
     ]
     if orphans > 0:
         parts_status.append(f"⚠️ orphan_procs={orphans}")
@@ -104,10 +117,11 @@ CONTEXT_BODY=$(printf '%s\n' "$OUTPUT" | awk -F'\t' '
 #      context (invisible to user, drives behavior). The status line is
 #      folded in as a first line so no info is lost.
 #   2. `systemMessage` — short, user-visible chip in chat ("🧵
-#      thread-keeper: 8 threads open, 0 live peers"). Signals keeper IS
-#      alive on every new session — without it the user sees a normal
-#      chat with no indication that memory is loaded. Toggle off by
-#      setting THREADKEEPER_VISIBLE_STATUS="" if it breaks any client.
+#      thread-keeper: 8 threads open, 0 live peers"). This signals
+#      keeper IS alive on every new session — without it the user sees
+#      a normal chat with no indication that memory is loaded. Toggle
+#      off by setting THREADKEEPER_VISIBLE_STATUS="" if it breaks any
+#      client.
 #   3. 32 KB cap on additionalContext — picky UI parsers choke on huge
 #      injections.
 python3 -c '

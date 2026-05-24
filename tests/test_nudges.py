@@ -438,3 +438,69 @@ def test_close_thread_with_auto_review_enabled_spawns(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert calls[0]["thread_id"] == tid
     assert calls[0]["mode"] == "auto"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# compute_thread_nudge  (open-thread nudge for hook-less clients)
+# ──────────────────────────────────────────────────────────────────────────
+
+def _insert_event(pkg, session_id: str, kind: str) -> None:
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?,?,?,?,?)",
+        (session_id, kind, None, "", int(time.time())),
+    )
+    conn.commit()
+
+
+def test_thread_nudge_fires_on_empty_session(tmp_path, monkeypatch):
+    """No activity threshold — fires as soon as a session exists with no
+    open_thread (mirrors the hook firing on the first prompt)."""
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    out = pkg["nudges"].compute_thread_nudge(conn, "sess-empty")
+    assert out is not None
+    assert "thread_hint" in out
+    assert "open_thread(question)" in out
+
+
+def test_thread_nudge_silent_after_open_thread(tmp_path, monkeypatch):
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    _insert_event(pkg, "sess-B", "open_thread")
+    conn = pkg["db"].get_db()
+    assert pkg["nudges"].compute_thread_nudge(conn, "sess-B") is None
+
+
+def test_thread_nudge_silent_after_shown(tmp_path, monkeypatch):
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    _insert_event(pkg, "sess-C", "thread_hint_shown")
+    conn = pkg["db"].get_db()
+    assert pkg["nudges"].compute_thread_nudge(conn, "sess-C") is None
+
+
+def test_thread_nudge_silent_without_session_id(tmp_path, monkeypatch):
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    assert pkg["nudges"].compute_thread_nudge(conn, "") is None
+
+
+def test_brief_shows_thread_hint_once_then_suppresses(tmp_path, monkeypatch):
+    """brief() surfaces the nudge on the first call (no env set = hook-less
+    client), logs thread_hint_shown, and stays quiet thereafter."""
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    monkeypatch.delenv("THREADKEEPER_BRIEF_NO_THREAD_NUDGE", raising=False)
+    brief = _tool(pkg, "brief")
+    out1 = brief()
+    assert "thread_hint" in out1
+    out2 = brief()
+    assert "thread_hint" not in out2
+
+
+def test_brief_suppresses_thread_hint_when_env_set(tmp_path, monkeypatch):
+    """SessionStart-hook path (env set) never surfaces the in-brief nudge —
+    the UserPromptSubmit hook owns it there."""
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("THREADKEEPER_BRIEF_NO_THREAD_NUDGE", "1")
+    out = _tool(pkg, "brief")()
+    assert "thread_hint" not in out

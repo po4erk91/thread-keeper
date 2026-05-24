@@ -2,8 +2,8 @@
 
 Idempotently wires thread-keeper into a Claude Code installation:
   1. Registers `thread-keeper` MCP server in ~/.claude.json
-  2. Installs hooks (SessionStart, PostToolUse, UserPromptSubmit) in
-     ~/.claude/settings.json
+  2. Installs hooks (SessionStart, PostToolUse, UserPromptSubmit, Stop,
+     PreToolUse) in ~/.claude/settings.json
   3. Copies hook scripts to ~/.threadkeeper/hooks/
   4. Updates the managed block in ~/.claude/CLAUDE.md between sentinel
      markers — content outside the markers is preserved.
@@ -69,8 +69,11 @@ At session start:
     If the user's opening message is substantive, pass it as `query`
     to `brief()` to inline relevant past notes.
 
-During the conversation:
-- New substantive topic → `open_thread()`.
+During the conversation (a UserPromptSubmit hook nudges you once per
+session if you haven't opened a thread, and a Stop hook reminds you to
+close at the end — but the discipline is yours; act before the nudge):
+- The FIRST substantive topic of a session (debugging, a feature, a
+  multi-step task) → `open_thread()` BEFORE diving into tool calls.
 - Topic resolved with an outcome → `close_thread(thread_id, outcome)`.
 - After every turn that produced a decision or insight →
   `note(thread_id, ..., kind in ['move','failed','insight','open_q'])`.
@@ -149,7 +152,14 @@ def install_hooks(dry_run: bool) -> list[str]:
     # and is referenced by every supporting CLI.
     if not dry_run:
         TK_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    for fname in ("tk-brief.sh", "tk-status.sh", "inbox-check.sh"):
+    for fname in (
+        "tk-brief.sh",
+        "tk-status.sh",
+        "inbox-check.sh",
+        "tk-task-gate.sh",
+        "tk-thread-nudge.sh",
+        "tk-session-end.sh",
+    ):
         src = HOOKS_SRC / fname
         dst = TK_HOOKS_DIR / fname
         if not src.exists():
@@ -181,6 +191,28 @@ def install_hooks(dry_run: bool) -> list[str]:
             "event": "UserPromptSubmit",
             "matcher": "",
             "command": str(TK_HOOKS_DIR / "inbox-check.sh"),
+        },
+        # Open-thread safety net: once per session, nudge open_thread() if
+        # none was opened yet (additionalContext, non-blocking).
+        {
+            "event": "UserPromptSubmit",
+            "matcher": "",
+            "command": str(TK_HOOKS_DIR / "tk-thread-nudge.sh"),
+        },
+        # close_thread / session_end safety net at end of turn (throttled to
+        # once per session; advisory systemMessage, never blocks stopping).
+        {
+            "event": "Stop",
+            "matcher": "",
+            "command": str(TK_HOOKS_DIR / "tk-session-end.sh"),
+        },
+        # spawn-vs-Task gate: block the built-in Task tool for work that
+        # should go through mcp__thread-keeper__spawn() (Claude Code only;
+        # other CLIs ignore an unknown PreToolUse event).
+        {
+            "event": "PreToolUse",
+            "matcher": "^Task$",
+            "command": str(TK_HOOKS_DIR / "tk-task-gate.sh"),
         },
     ]
 

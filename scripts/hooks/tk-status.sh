@@ -19,6 +19,12 @@ INPUT=$(cat)
 TOOL=$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null | sed 's|^mcp__thread-keeper__||')
 [ -z "$TOOL" ] && exit 0
 
+# Per-session markers shared with tk-thread-nudge.sh (UserPromptSubmit) and
+# tk-session-end.sh (Stop): writing `.opened` here tells them a thread is
+# being tracked this session, so they stop nagging.
+STATE_DIR="${THREADKEEPER_STATE_DIR:-$HOME/.threadkeeper/state}"
+SID=$(jq -r '.session_id // empty' <<<"$INPUT" 2>/dev/null)
+
 # Truncate helper — first N chars, single-line
 trim() {
   local s="$1"
@@ -43,6 +49,9 @@ case "$TOOL" in
   open_thread)
     Q=$(input_field question)
     MSG="🧵 opened: $(trim "$Q" 80)"
+    if [ -n "$SID" ]; then
+      mkdir -p "$STATE_DIR" 2>/dev/null && : > "$STATE_DIR/sess-$SID.opened"
+    fi
     ;;
   close_thread)
     OUT=$(input_field outcome)

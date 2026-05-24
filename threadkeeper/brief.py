@@ -10,6 +10,7 @@ pickup_top, evolve_pending, and the trailing user-facing reminder.
 shared dialog log tailed by open_dialog_window().
 """
 
+import os
 import re
 import sqlite3
 import time
@@ -338,6 +339,33 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         out.append("closed_recent")
         for t in closed_t:
             out.append(f"  {t['id']} out={q((t['outcome'] or '-')[:120])}")
+
+    # ── thread_hint (open-thread nudge for hook-less clients) ─────────────
+    # Claude Code / Gemini / Copilot get the open-thread reminder from the
+    # UserPromptSubmit hook (tk-thread-nudge.sh); their SessionStart hook
+    # sets THREADKEEPER_BRIEF_NO_THREAD_NUDGE so this path stays quiet and
+    # doesn't double-fire. Clients with NO hook mechanism (Claude Desktop,
+    # Codex, VS Code) call brief() directly — they have no env set, so the
+    # nudge surfaces here instead. See nudges.compute_thread_nudge.
+    if not os.environ.get("THREADKEEPER_BRIEF_NO_THREAD_NUDGE"):
+        try:
+            from .nudges import compute_thread_nudge
+            th_nudge = compute_thread_nudge(conn, identity._session_id or "")
+        except (sqlite3.OperationalError, ImportError):
+            th_nudge = None
+        if th_nudge:
+            out.append("")
+            out.append(th_nudge)
+            try:
+                conn.execute(
+                    "INSERT INTO events (session_id, kind, target, summary, "
+                    "created_at) VALUES (?,?,?,?,?)",
+                    (identity._session_id or "", "thread_hint_shown",
+                     self_cid or "", "", now),
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
     # ── memory_nudge ──────────────────────────────────────────────────────
     # Counter-driven (active push, not just passive surface): when N mutating

@@ -5,6 +5,37 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## [Unreleased]
+
+### Added
+
+- Two hook-based safety nets for the thread lifecycle, wired by
+  `thread-keeper-setup` (see [ARCHITECTURE.md → Hooks](docs/ARCHITECTURE.md)):
+  - `tk-thread-nudge.sh` (UserPromptSubmit) — once per session, reminds you
+    to `open_thread()` if none was opened yet, via non-blocking
+    `additionalContext`. Backstops the "new substantive topic → open_thread"
+    rule that previously nothing watched for.
+  - `tk-session-end.sh` (Stop) — once per session, reminds you to
+    `close_thread()` / `session_end()` when a thread was opened this session.
+    Advisory `systemMessage`; throttled because `Stop` fires every turn.
+  - `tk-status.sh` now writes a per-session `state/sess-<id>.opened` marker on
+    `open_thread`, which both nudges read to suppress themselves once a thread
+    is being tracked.
+
+### Fixed
+
+- `thread-keeper-setup` now version-controls and installs `tk-task-gate.sh`
+  (the spawn-vs-Task `PreToolUse` gate); it had been deployed out-of-band and
+  was missing from the repo, so fresh installs lacked it.
+- Synced the live `tk-brief.sh` `live=`/`peers=` counter fix back into the
+  repo source — the deployed copy had drifted ahead of the tracked one.
+- Memory/skill nudge counters no longer count bookkeeping events
+  (`thread_hint_shown`, `shadow_review_pass`) as agent turns
+  (`nudges._NONCOUNTING_KINDS`). The new open-thread nudge's
+  `thread_hint_shown` marker was inflating the counter by one per session
+  (firing nudges a turn early) and made `test_skill_nudge_soft_at_threshold`
+  flaky against the shadow-review daemon's cursor mark.
+
 ## v0.5.3 — 2026-05-22
 
 ### Changed
