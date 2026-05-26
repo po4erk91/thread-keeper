@@ -18,7 +18,7 @@ from .config import (
     SEMANTIC_AVAILABLE,
 )
 from .db import get_db
-from .embeddings import _embed
+from .embeddings import _embed, embed_tag
 
 _ingest_thread: Optional[threading.Thread] = None
 _ingest_lock = threading.Lock()
@@ -215,11 +215,11 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
             emb = _embed(text[:2000]) if SEMANTIC_AVAILABLE else None
             conn.execute(
                 "INSERT INTO dialog_messages (uuid, source, project, session_id, "
-                "role, content, model, created_at, embedding) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "role, content, model, created_at, embedding, embed_backend) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (nm.uuid, adapter.name, adapter.project_label(fp),
                  nm.session_id, nm.role, text,
-                 nm.model, nm.created_at, emb)
+                 nm.model, nm.created_at, emb, embed_tag(emb))
             )
             try:
                 conn.execute(
@@ -381,7 +381,7 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
         return 0
     if not rows:
         return 0
-    from .embeddings import _embed, _vec_upsert_note
+    from .embeddings import _embed, _vec_upsert_note, embed_tag
     updated = 0
     for r in rows:
         try:
@@ -392,8 +392,8 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
             continue
         try:
             conn.execute(
-                "UPDATE notes SET embedding=? WHERE id=?",
-                (emb, r["id"]),
+                "UPDATE notes SET embedding=?, embed_backend=? WHERE id=?",
+                (emb, embed_tag(emb), r["id"]),
             )
             _vec_upsert_note(conn, r["id"], emb)
             updated += 1

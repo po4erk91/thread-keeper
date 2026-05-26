@@ -17,7 +17,7 @@ from ..db import get_db
 from ..helpers import gen_thread_id, fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
-from ..embeddings import _embed, _cosine_search, _vec_upsert_note
+from ..embeddings import _embed, _cosine_search, _vec_upsert_note, embed_tag
 from ..brief import render_brief
 
 
@@ -92,9 +92,9 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
     now = int(time.time())
     emb = _embed(content)
     cur = conn.execute(
-        "INSERT INTO notes (thread_id, content, kind, created_at, session_id, embedding) "
-        "VALUES (?,?,?,?,?,?)",
-        (thread_id, content, kind, now, identity._session_id, emb),
+        "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
+        "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+        (thread_id, content, kind, now, identity._session_id, emb, embed_tag(emb)),
     )
     note_id = cur.lastrowid
     _vec_upsert_note(conn, note_id, emb)
@@ -177,8 +177,8 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     emb = _embed(note_body)
     cur = conn.execute(
         "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
-        "embedding) VALUES (?,?,?,?,?,?)",
-        (thread_id, note_body, "move", now, identity._session_id, emb),
+        "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+        (thread_id, note_body, "move", now, identity._session_id, emb, embed_tag(emb)),
     )
     _vec_upsert_note(conn, cur.lastrowid, emb)
     conn.execute(

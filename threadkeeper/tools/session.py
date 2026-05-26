@@ -7,7 +7,7 @@ import time
 from .._mcp import mcp
 from ..db import get_db
 from ..helpers import fmt_age
-from ..embeddings import _embed
+from ..embeddings import _embed, embed_tag
 from .. import identity
 
 
@@ -24,9 +24,9 @@ def session_end(summary: str = "") -> str:
     if summary:
         emb = _embed(summary)
         conn.execute(
-            "INSERT INTO notes (thread_id, content, kind, created_at, session_id, embedding) "
-            "VALUES (NULL,?,?,?,?,?)",
-            (summary, "session_summary", now, sid, emb),
+            "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
+            "embedding, embed_backend) VALUES (NULL,?,?,?,?,?,?)",
+            (summary, "session_summary", now, sid, emb, embed_tag(emb)),
         )
     conn.commit()
     identity._session_id = None

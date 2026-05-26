@@ -36,8 +36,15 @@ disk — the footprint is real RAM pressure, just not visible as swap.
 
 Replace the embedding runtime with **ONNX Runtime via `fastembed`** (pure
 onnxruntime + tokenizers, no torch/transformers/sklearn/scipy), keeping the
-same model and 384-dim output. Target footprint **~250–400 MB**, disk savings
-**~650 MB**.
+same model and 384-dim output.
+
+**Measured result (2026-05-27):** a model-loaded process sits at **~670 MB
+physical footprint / ~844 MB RSS** with **zero `libtorch` mappings**, down from
+~1.8 GB on the PyTorch backend — roughly a 2.7× footprint reduction. (The
+initial ~250–400 MB projection was too optimistic: ONNX Runtime's own library
++ memory arenas + numpy + the quantized model are the floor; the win is real
+but smaller than projected, and PyTorch/transformers/sklearn/scipy are gone.)
+fastembed pulls the quantized `qdrant/...-onnx-Q` build automatically.
 
 ## Feasibility (verified 2026-05-26)
 

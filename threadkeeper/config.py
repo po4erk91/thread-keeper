@@ -15,6 +15,23 @@ EMBED_MODEL_NAME: str = os.environ.get(
     "paraphrase-multilingual-MiniLM-L12-v2",  # 118 MB, RU+EN cross-lingual
 )
 
+# Embedding runtime backend. 'onnx' (default) runs the model through fastembed /
+# ONNX Runtime — no PyTorch, ~700MB footprint (vs ~1.8GB). 'sentence-transformers' is
+# the legacy PyTorch path, kept as an opt-in fallback (install `.[semantic-st]`
+# and set THREADKEEPER_EMBED_BACKEND=sentence-transformers). Both produce the
+# same 384-dim vectors, but fastembed's are numerically NOT identical to ST's,
+# so switching backends warrants a `tk-migrate-embeddings --all` recompute.
+EMBED_BACKEND: str = os.environ.get(
+    "THREADKEEPER_EMBED_BACKEND", "onnx"
+).strip().lower()
+
+# fastembed addresses the model under its sentence-transformers org prefix;
+# SentenceTransformer accepts the bare name. Normalize for the ONNX backend.
+FASTEMBED_MODEL_ID: str = (
+    EMBED_MODEL_NAME if "/" in EMBED_MODEL_NAME
+    else f"sentence-transformers/{EMBED_MODEL_NAME}"
+)
+
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # One-shot migration from the historical name `memory_partner`. If the new
@@ -54,9 +71,16 @@ NO_EMBEDDINGS: bool = os.environ.get(
 # Brief still works either way.
 if NO_EMBEDDINGS:
     SEMANTIC_AVAILABLE: bool = False
-else:
+elif EMBED_BACKEND == "sentence-transformers":
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore  # noqa: F401
+        import numpy as np  # type: ignore  # noqa: F401
+        SEMANTIC_AVAILABLE = True
+    except Exception:
+        SEMANTIC_AVAILABLE = False
+else:  # 'onnx' (default)
+    try:
+        from fastembed import TextEmbedding  # type: ignore  # noqa: F401
         import numpy as np  # type: ignore  # noqa: F401
         SEMANTIC_AVAILABLE = True
     except Exception:

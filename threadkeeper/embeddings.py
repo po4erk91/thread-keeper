@@ -17,7 +17,12 @@ import sqlite3
 import threading
 from typing import Optional
 
-from .config import SEMANTIC_AVAILABLE, EMBED_MODEL_NAME
+from .config import (
+    SEMANTIC_AVAILABLE,
+    EMBED_MODEL_NAME,
+    EMBED_BACKEND,
+    FASTEMBED_MODEL_ID,
+)
 from . import db as _db
 
 
@@ -29,13 +34,22 @@ _model = None
 _model_lock = threading.RLock()
 
 def _get_model():
+    """Lazily load and cache the embedding model for the active backend.
+
+    'onnx' (default) → fastembed.TextEmbedding (ONNX Runtime, no PyTorch).
+    'sentence-transformers' → the legacy PyTorch path (opt-in fallback).
+    """
     global _model
     if not SEMANTIC_AVAILABLE:
         return None
     with _model_lock:
         if _model is None:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-            _model = SentenceTransformer(EMBED_MODEL_NAME)
+            if EMBED_BACKEND == "sentence-transformers":
+                from sentence_transformers import SentenceTransformer  # type: ignore
+                _model = SentenceTransformer(EMBED_MODEL_NAME)
+            else:  # 'onnx' (default)
+                from fastembed import TextEmbedding  # type: ignore
+                _model = TextEmbedding(model_name=FASTEMBED_MODEL_ID)
         return _model
 
 
@@ -66,23 +80,55 @@ def unload_model() -> bool:
     del model
     return True
 
-def _embed(text: str) -> Optional[bytes]:
+def _encode(texts: list[str]):
+    """Backend-agnostic batch encode → L2-normalized float32 array of shape
+    (len(texts), EMBED_DIM), or None when semantic search is unavailable.
+
+    Both backends are normalized to unit length here so the dot product used
+    by the vec0 and legacy paths equals cosine similarity, regardless of
+    whether the backend already normalizes.
+    """
     with _model_lock:
         m = _get_model()
         if m is None:
             return None
-        v = m.encode([text], normalize_embeddings=True)[0].astype("float32")
-    return v.tobytes()
+        import numpy as np  # type: ignore
+        if EMBED_BACKEND == "sentence-transformers":
+            arr = np.asarray(m.encode(list(texts)), dtype="float32")
+        else:  # fastembed generator → stack
+            arr = np.asarray(list(m.embed(list(texts))), dtype="float32")
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (arr / norms).astype("float32")
+
+
+def encode_many(texts: list[str]):
+    """Public batch encoder for the migration command. Returns the same
+    normalized float32 array as `_encode`, or None when unavailable."""
+    return _encode(texts)
+
+
+def embed_tag(blob: Optional[bytes]) -> Optional[str]:
+    """Backend label to store in the `embed_backend` column alongside a freshly
+    written embedding blob. None when no embedding was produced, so legacy /
+    NULL-vector rows stay untagged."""
+    return EMBED_BACKEND if blob is not None else None
+
+
+def _embed(text: str) -> Optional[bytes]:
+    arr = _encode([text])
+    if arr is None:
+        return None
+    return arr[0].astype("float32").tobytes()
 
 
 def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     """Top-k cosine over notes. Uses vec0 ANN when available."""
-    with _model_lock:
-        m = _get_model()
-        if m is None:
-            return []
-        import numpy as np  # type: ignore
-        qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
+    import numpy as np  # type: ignore
+    qa = _encode([query])
+    if qa is None:
+        return []
+    qv = qa[0]
     if _vec_on():
         try:
             return _vec0_notes_search(conn, qv.tobytes(), k)
@@ -131,12 +177,11 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
 
 def _dialog_cosine_search(conn, query: str, k: int) -> list[dict]:
     """Top-k cosine over dialog_messages. Uses vec0 ANN when available."""
-    with _model_lock:
-        m = _get_model()
-        if m is None:
-            return []
-        import numpy as np  # type: ignore
-        qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
+    import numpy as np  # type: ignore
+    qa = _encode([query])
+    if qa is None:
+        return []
+    qv = qa[0]
     if _vec_on():
         try:
             return _vec0_dialog_search(conn, qv.tobytes(), k)

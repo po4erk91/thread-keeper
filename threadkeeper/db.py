@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS notes (
     kind        TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     session_id  TEXT,
-    embedding   BLOB
+    embedding   BLOB,
+    embed_backend TEXT           -- backend that produced `embedding`; NULL = legacy
 );
 
 CREATE TABLE IF NOT EXISTS verbatim (
@@ -143,7 +144,8 @@ CREATE TABLE IF NOT EXISTS dialog_messages (
     content      TEXT NOT NULL,                -- concatenated text blocks
     model        TEXT,
     created_at   INTEGER NOT NULL,
-    embedding    BLOB
+    embedding    BLOB,
+    embed_backend TEXT           -- backend that produced `embedding`; NULL = legacy
 );
 
 CREATE TABLE IF NOT EXISTS ingest_state (
@@ -500,6 +502,11 @@ def get_db() -> sqlite3.Connection:
         "ALTER TABLE skill_usage ADD COLUMN wrong_count "
         "INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE skill_usage ADD COLUMN last_wrong_at INTEGER",
+        # Embedding backend tag. NULL = legacy (sentence-transformers, pre-ONNX
+        # migration). New/recomputed rows carry 'onnx' or 'sentence-transformers'
+        # so `tk-migrate-embeddings` can find stale vectors and skip done ones.
+        "ALTER TABLE notes ADD COLUMN embed_backend TEXT",
+        "ALTER TABLE dialog_messages ADD COLUMN embed_backend TEXT",
     ):
         try:
             conn.execute(ddl)
