@@ -195,6 +195,7 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 3000)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_TARGET_SERVERS", 1)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_IDLE_S", 900)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_LIVE", False)
     monkeypatch.setattr(memory_guard, "reclaim_memory", lambda reason="": {
         "before_mb": 900, "after_mb": 800, "freed_mb": 100,
         "pid": os.getpid(), "actions": ["fake"],
@@ -203,7 +204,12 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     def scan():
         return [
             _proc(os.getpid(), 900),
-            _proc(1001, 1200, ppid=os.getpid()) | {"heartbeat_age_s": None},
+            _proc(1001, 1200, ppid=1) | {
+                "heartbeat_age_s": None,
+                "parent_alive": False,
+                "is_orphaned": True,
+                "orphan_reason": "parent_gone + no_heartbeat",
+            },
             _proc(1002, 800, ppid=os.getpid()) | {"heartbeat_age_s": 5},
         ]
 
@@ -217,3 +223,33 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     out = memory_guard.check_once(dry_run=False, notify=False)
     assert out["retired"] == [1001]
     assert calls == [(1001, _sig.SIGTERM)]
+
+
+def test_aggregate_retire_skips_live_parent_without_opt_in(mp_with_cid, monkeypatch):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import memory_guard, process_health
+
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 5000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 6000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 2000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 3000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_TARGET_SERVERS", 1)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_IDLE_S", 900)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_LIVE", False)
+    monkeypatch.setattr(memory_guard, "reclaim_memory", lambda reason="": {
+        "before_mb": 900, "after_mb": 800, "freed_mb": 100,
+        "pid": os.getpid(), "actions": ["fake"],
+    })
+    monkeypatch.setattr(process_health, "scan", lambda: [
+        _proc(os.getpid(), 900),
+        _proc(1001, 1200, ppid=os.getpid()) | {"heartbeat_age_s": None},
+    ])
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "os.kill",
+        lambda pid, sig: calls.append((pid, sig)) if sig != 0 else None,
+    )
+
+    out = memory_guard.check_once(dry_run=False, notify=False)
+    assert out["retired"] == []
+    assert calls == []

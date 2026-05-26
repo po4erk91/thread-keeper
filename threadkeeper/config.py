@@ -183,6 +183,9 @@ MEMORY_GUARD_TARGET_SERVERS: int = int(
 MEMORY_GUARD_RETIRE_IDLE_S: int = int(
     os.environ.get("THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S", "900")
 )
+MEMORY_GUARD_RETIRE_LIVE: bool = os.environ.get(
+    "THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE", ""
+).lower() in {"1", "true", "yes", "on"}
 MEMORY_GUARD_NOTIFY: bool = os.environ.get(
     "THREADKEEPER_MEMORY_GUARD_NOTIFY", "1"
 ).lower() in {"1", "true", "yes", "on"}

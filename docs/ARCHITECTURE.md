@@ -133,7 +133,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.
   It also watches aggregate server RSS: above `MEMORY_GUARD_AGG_WARN_MB`
   it asks all peer servers to unload embedding models/caches; under pressure
-  it retires stale non-self servers toward `MEMORY_GUARD_TARGET_SERVERS`.
+  it retires stale non-self servers whose parent is gone toward
+  `MEMORY_GUARD_TARGET_SERVERS`. Parent-alive retirement is opt-in via
+  `MEMORY_GUARD_RETIRE_LIVE`.
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
@@ -578,6 +580,7 @@ having to add tests.
 | `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
 | `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` | 1 | target process count after stale retirement |
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S` | 900 | stale heartbeat age before server retirement |
+| `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | off | allow retiring parent-alive MCP servers |
 | `THREADKEEPER_MEMORY_GUARD_NOTIFY` | on | send macOS desktop notification when possible |
 | `THREADKEEPER_MEMORY_GUARD_COOLDOWN_S` | 300 | notification cooldown per pid/level |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |

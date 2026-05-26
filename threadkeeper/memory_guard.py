@@ -28,6 +28,7 @@ from .config import (
     MEMORY_GUARD_POLL_S,
     MEMORY_GUARD_RECLAIM_MB,
     MEMORY_GUARD_RETIRE_IDLE_S,
+    MEMORY_GUARD_RETIRE_LIVE,
     MEMORY_GUARD_TARGET_SERVERS,
     MEMORY_GUARD_WARN_MB,
     TASK_LOG_DIR,
@@ -288,6 +289,7 @@ def _aggregate_state(procs: list[dict]) -> dict:
         "kill_mb": MEMORY_GUARD_AGG_KILL_MB,
         "target_servers": MEMORY_GUARD_TARGET_SERVERS,
         "retire_idle_s": MEMORY_GUARD_RETIRE_IDLE_S,
+        "retire_live": MEMORY_GUARD_RETIRE_LIVE,
     }
 
 
@@ -295,6 +297,8 @@ def _idle_retire_candidates(procs: list[dict]) -> list[dict]:
     candidates: list[dict] = []
     for p in procs:
         if p.get("is_self"):
+            continue
+        if p.get("parent_alive") and not MEMORY_GUARD_RETIRE_LIVE:
             continue
         hb = p.get("heartbeat_age_s")
         if hb is None or hb >= MEMORY_GUARD_RETIRE_IDLE_S:

@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.6.1 — 2026-05-26
+
+### Fixed
+
+- Aggregate memory retirement no longer terminates `threadkeeper.server`
+  processes whose parent process is still alive by default. This prevents a
+  newly-starting or idle-but-live MCP server with `heartbeat_age_s=None` from
+  being killed mid-tool-call, which surfaced in clients as `Transport closed`
+  on `brief()` / `context()`. Live-parent retirement now requires the explicit
+  opt-in `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE=1`.
+
 ## v0.6.0 — 2026-05-26
 
 ### Added

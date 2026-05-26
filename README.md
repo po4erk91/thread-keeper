@@ -398,6 +398,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
 | `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` | 1 | aggregate-pressure target after retiring stale idle servers |
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S` | 900 | heartbeat age before a non-self server is retireable |
+| `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | "" (off) | allow retiring parent-alive MCP servers; off protects live clients |
 | `THREADKEEPER_MEMORY_GUARD_NOTIFY` | "1" | send macOS desktop notification when possible |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |
