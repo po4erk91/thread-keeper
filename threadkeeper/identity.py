@@ -76,6 +76,11 @@ def _heartbeat(conn: sqlite3.Connection) -> None:
 
 def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> str:
     global _session_id, _session_start
+    if _session_id is not None:
+        _heartbeat(conn)
+        conn.commit()
+        return _session_id
+
     if _session_id is None:
         # pid embedded so two processes can never collide; hex tail keeps id short.
         # NB: claude desktop/code may multiplex several windows into one mcp
@@ -122,6 +127,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         try:
             from . import spawn_budget
             spawn_budget.start_budget_daemon()
+        except Exception:
+            pass
+        try:
+            from . import memory_guard
+            memory_guard.start_memory_guard_daemon()
         except Exception:
             pass
         try:

@@ -25,6 +25,7 @@ threadkeeper/
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
 ├── process_health.py  orphan-detection (ppid + heartbeat)
+├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
@@ -38,6 +39,7 @@ threadkeeper/
     ├── core_memory.py set/get/list/remove (Letta-tier RAM)
     ├── shadow_review.py shadow_review_run/status
     ├── process_health.py mp_health/mp_cleanup
+    ├── memory_guard.py memory_guard_status/check
     ├── probes.py      register/run/record/reliability_for/weak_spots
     ├── distill.py     distill/vote/pending/export
     ├── extract.py     extract_recent/review/accept/reject candidates
@@ -116,7 +118,7 @@ read via `identity._session_id` attr-access, pinned by the test
 ## Daemons inside the parent process
 
 `identity._ensure_session()` brings up background threads on first call.
-All daemon threads are cheap (ticks 0.5–15 s), no-op when env-knobs disable them:
+All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable them:
 
 - **background_ingester** (`ingest._start_background_ingester`) — ticks every
   `INGEST_INTERVAL_S` (default 3 s), reads fresh jsonl chunks, tops up
@@ -126,11 +128,22 @@ All daemon threads are cheap (ticks 0.5–15 s), no-op when env-knobs disable th
 - **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
   the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
   closes dead ones.
+- **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
+  all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
+  and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.
+  It also watches aggregate server RSS: above `MEMORY_GUARD_AGG_WARN_MB`
+  it asks all peer servers to unload embedding models/caches; under pressure
+  it retires stale non-self servers toward `MEMORY_GUARD_TARGET_SERVERS`.
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
+
+Autonomous learning daemons only run in foreground parent processes. Spawned
+children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
+non-foreground `THREADKEEPER_WRITE_ORIGIN`; either condition prevents
+shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 
 The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
 + many readers without blocking.
@@ -150,6 +163,9 @@ light-executors. Trigger: **N≥2 modular independent units, ≥5 min each**.
   section, passed as `--mcp-config <file> --strict-mcp-config`;
 - the child does NOT load other MCPs (`context7`, `figma`, …);
 - `THREADKEEPER_NO_EMBEDDINGS=1` → child doesn't load PyTorch/transformers;
+- `THREADKEEPER_SPAWNED_CHILD=1` is injected into both the child process env
+  and the generated slim MCP config, so child MCP servers do not run
+  autonomous daemons;
 - on-disk size ~400–500 MB RSS instead of ~1.3 GB for full;
 - semantic search is delegated to the parent via `search_via_parent`.
 
@@ -220,11 +236,15 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 2. _collect_window(): pull dialog_messages WHERE created_at > max(cursor, now-WINDOW_S)
    — ALL sessions, not just our own.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
-4. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
+4. if a shadow observer task is already running, return `shadow_child_running`
+   without advancing the cursor; retry the same window next tick.
+5. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
    allowed_tools = skill_manage + skill_list + mark_skill_materialized.
-5. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
+6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
    calls skill_manage. Otherwise prints `SKIP: <reason>`.
-6. Write events.kind='shadow_review_pass' with new high_water_ts.
+7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
+   `write_origin='shadow_review'` and refuses to start its own shadow daemon.
+8. Write events.kind='shadow_review_pass' with new high_water_ts.
 ```
 
 Dedupe — via a cursor in `events.target` (timestamp of the last evaluated
@@ -446,9 +466,14 @@ Tools:
 - `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
 - `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
   so we don't accidentally kill an active mcp on a false-positive classification.
+- `memory_guard_status()` — show RSS guard thresholds and current server rows.
+- `memory_guard_check(dry_run=True, notify=False)` — one-shot guard pass;
+  pass `dry_run=False` to SIGTERM processes over the hard memory limit.
+- `memory_guard_reclaim(scope='self')` — immediately unload local
+  embedding/caches; with `scope='all'` also queues peer trim requests.
 
 The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
-`mcp.run()`) is closed; 495 green tests / 1 skipped.
+`mcp.run()`) is closed; daemon tests disable background loops explicitly.
 
 ## sqlite-vec (HNSW) and Python fallback
 
@@ -491,6 +516,7 @@ auto-generates JSON-Schema from annotations.
 | curator | 2 | curator_review, curator_review_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
+| memory_guard | 2 | memory_guard_status, memory_guard_check |
 | correlation | 2 | tag_signal, task_thread |
 | consolidate | 1 | consolidate |
 | validate | 1 | validate_threads |
@@ -544,11 +570,22 @@ having to add tests.
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
+| `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
+| `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log above this server RSS |
+| `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |
+| `THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB` | 2048 | notify/request trim above combined server RSS |
+| `THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB` | 3072 | retire stale idle servers under aggregate pressure |
+| `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
+| `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` | 1 | target process count after stale retirement |
+| `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S` | 900 | stale heartbeat age before server retirement |
+| `THREADKEEPER_MEMORY_GUARD_NOTIFY` | on | send macOS desktop notification when possible |
+| `THREADKEEPER_MEMORY_GUARD_COOLDOWN_S` | 300 | notification cooldown per pid/level |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
 | `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |
 | `THREADKEEPER_WRITE_ORIGIN` | foreground | provenance tag for curator |
+| `THREADKEEPER_SPAWNED_CHILD` | off | spawn-internal marker; disables autonomous child daemons |
 | `THREADKEEPER_FORCE_CID` | — | test-only / spawn-injected cid override |
 | `THREADKEEPER_SELF_CID_TTL_S` | 5 | mtime-fallback cache TTL |
 

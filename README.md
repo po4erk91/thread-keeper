@@ -149,6 +149,8 @@ Claude session via a `claude -p` subprocess. By default `slim=True`: the
 child loads only the thread-keeper MCP, no embeddings, no third-party
 servers. ~500 MB RSS versus ~1.3 GB for a full child. Heuristic for the
 parent: N≥2 modular independent units of ≥5 min each = spawn signal.
+Spawn also marks children with `THREADKEEPER_SPAWNED_CHILD=1`, so
+autonomous learning daemons cannot recursively start inside review forks.
 
 A daemon measures combined child RSS every 10 s; admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
@@ -241,7 +243,11 @@ the last cursor **across all CLIs at once**. The window filters
 internal review-child sessions (no self-pollution) and strips adapter
 `[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
 ≥500 chars of meaningful signal remain, spawns a slim observer child
-that decides on class-level learning. Idempotent through
+that decides on class-level learning. It is single-flight across the shared
+DB: if any shadow observer task is already running, the daemon does not spawn
+another one and does not advance the cursor. Shadow observer children are
+marked as spawned/background processes, so they cannot start their own shadow
+daemon even if a CLI drops the no-embeddings env. Idempotent through
 `events.kind='shadow_review_pass'`.
 
 #### 3. Extract daemon
@@ -384,8 +390,18 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |
+| `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log when a server crosses this RSS |
+| `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |
+| `THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB` | 2048 | notify/request trim when all server RSS crosses this |
+| `THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB` | 3072 | under aggregate pressure, retire stale idle servers |
+| `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
+| `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` | 1 | aggregate-pressure target after retiring stale idle servers |
+| `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S` | 900 | heartbeat age before a non-self server is retireable |
+| `THREADKEEPER_MEMORY_GUARD_NOTIFY` | "1" | send macOS desktop notification when possible |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |
+| `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 
 Persist them via `~/.claude/settings.json`'s `env` block (Claude Code) or

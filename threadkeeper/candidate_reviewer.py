@@ -323,15 +323,16 @@ def _serve_loop() -> None:
 
 
 def start_candidate_reviewer_daemon() -> None:
-    """Idempotent daemon starter. Slim-children cascade prevention via
-    SEMANTIC_AVAILABLE, same pattern as shadow_review / curator /
-    extract."""
+    """Idempotent daemon starter. Uses the same spawned/background child
+    cascade prevention as shadow_review / curator / extract."""
     global _started
     if _started:
         return
     if CANDIDATE_REVIEW_INTERVAL_S <= 0:
         return
-    from .config import SEMANTIC_AVAILABLE
+    from .config import BACKGROUND_DAEMONS_ALLOWED, SEMANTIC_AVAILABLE
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     if not SEMANTIC_AVAILABLE:
         return
     t = threading.Thread(

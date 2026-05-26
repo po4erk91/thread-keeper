@@ -7,8 +7,34 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.6.0 — 2026-05-26
+
 ### Added
 
+- Thread-keeper server memory optimization:
+  - `memory_guard` now watches aggregate RSS across all
+    `threadkeeper.server` processes, not just per-process thresholds.
+  - `memory_guard_reclaim(scope='self'|'all')` unloads the local embedding
+    model, clears Python/import/line caches, asks PyTorch CUDA/MPS caches to
+    empty when loaded, runs GC, and requests allocator pressure relief on
+    supported platforms.
+  - Cross-process `resource_controls` mailbox lets one MCP server ask peer
+    servers to trim models/caches on their next guard tick.
+  - Under aggregate memory pressure, stale non-self MCP servers can be
+    retired toward `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` instead of
+    waiting for each individual process to hit the hard RSS limit.
+- Shadow-review single-flight: shadow review now detects already-running
+  shadow observer child tasks and skips spawning another evaluator until the
+  current one ends.
+- Spawned children are marked with `THREADKEEPER_SPAWNED_CHILD=1`; autonomous
+  background daemons are gated to foreground parent processes so child agents
+  cannot recursively start their own shadow/extract/curator/reviewer loops.
+- New memory guard configuration:
+  `THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB`,
+  `THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB`,
+  `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB`,
+  `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS`, and
+  `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S`.
 - Two hook-based safety nets for the thread lifecycle, wired by
   `thread-keeper-setup` (see [ARCHITECTURE.md → Hooks](docs/ARCHITECTURE.md)):
   - `tk-thread-nudge.sh` (UserPromptSubmit) — once per session, reminds you
@@ -24,6 +50,8 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- Read-only MCP tool calls now refresh session heartbeat, preventing active
+  sessions from looking idle to process-retirement heuristics.
 - `thread-keeper-setup` now version-controls and installs `tk-task-gate.sh`
   (the spawn-vs-Task `PreToolUse` gate); it had been deployed out-of-band and
   was missing from the repo, so fresh installs lacked it.

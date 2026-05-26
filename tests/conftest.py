@@ -43,6 +43,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_INGEST_CAP": "0",          # don't ingest at session start
         "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",  # disable skill_watcher
         "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",     # disable spawn_budget daemon
+        "THREADKEEPER_MEMORY_GUARD_POLL_S": "0",     # disable memory_guard daemon
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",     # disable search_proxy daemon
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",  # disable shadow daemon
         "THREADKEEPER_CURATOR_INTERVAL_S": "0",       # disable curator daemon

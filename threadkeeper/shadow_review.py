@@ -36,6 +36,7 @@ from .config import (
     SHADOW_REVIEW_WINDOW_S,
 )
 from .db import get_db
+from .helpers import alive
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,40 @@ def _record_shadow_pass(conn: sqlite3.Connection,
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("shadow: failed to record pass", exc_info=True)
+
+
+def _running_shadow_children(conn: sqlite3.Connection) -> list[str]:
+    """Return running shadow-observer task ids, refreshing dead rows.
+
+    This is a machine-wide single-flight guard: every foreground
+    thread-keeper process shares the same DB, so even if multiple client MCP
+    servers have a shadow daemon, only one evaluator child should run at a
+    time. Dead pids are marked ended before counting.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT id, pid FROM tasks "
+            "WHERE ended_at IS NULL "
+            "AND prompt LIKE 'You are a SHADOW LEARNING OBSERVER%'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now = int(time.time())
+    running: list[str] = []
+    touched = False
+    for r in rows:
+        pid = int(r["pid"] or 0)
+        if pid > 0 and not alive(pid):
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            touched = True
+            continue
+        running.append(r["id"])
+    if touched:
+        conn.commit()
+    return running
 
 
 # Opening lines of every prompt we ourselves inject into a spawned
@@ -286,6 +321,14 @@ def run_shadow_pass(force: bool = False) -> str:
         _record_shadow_pass(conn, high_water, "too_short")
         return "too_short"
 
+    running = _running_shadow_children(conn)
+    if running:
+        outcome = f"shadow_child_running n={len(running)}"
+        # Do not advance high-water. Re-evaluate this window when the current
+        # evaluator exits instead of dropping potentially useful dialog.
+        _record_shadow_pass(conn, floor, outcome)
+        return outcome
+
     full_prompt = SHADOW_REVIEW_PROMPT + dump
 
     # Late import — spawn module imports identity / config; importing it
@@ -331,24 +374,22 @@ def start_shadow_daemon() -> None:
     """Idempotent daemon starter. Honors env: no-op when
     SHADOW_REVIEW_INTERVAL_S<=0 so tests stay quiet.
 
-    CRITICAL: only the parent mp process runs this daemon. Spawned slim
-    children DO start their own MCP server (so they can call tools), and
-    each MCP server in turn calls _ensure_session() which would start
-    yet another shadow daemon — that one tries to spawn its own
-    evaluator children, which themselves spawn more shadows, etc.
-    A recursive spawn cascade.
+    CRITICAL: only the user-facing parent process runs this daemon.
+    Spawned children start their own MCP server so they can call tools; if
+    that server starts shadow_review too, it can recursively spawn more
+    observer children.
 
-    We tell parent-vs-child by SEMANTIC_AVAILABLE: parents load the
-    embedding model and have it True; slim children get NO_EMBEDDINGS=1
-    injected by spawn() so they're False. Same gating that search_proxy
-    uses for the symmetric reason.
+    We use an explicit spawn marker / write-origin guard first, then keep
+    the semantic guard as a second belt for older slim children.
     """
     global _started
     if _started:
         return
     if SHADOW_REVIEW_INTERVAL_S <= 0:
         return
-    from .config import SEMANTIC_AVAILABLE
+    from .config import BACKGROUND_DAEMONS_ALLOWED, SEMANTIC_AVAILABLE
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire shadow review from here
     t = threading.Thread(

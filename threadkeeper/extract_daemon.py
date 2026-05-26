@@ -108,14 +108,16 @@ def _serve_loop() -> None:
 def start_extract_daemon() -> None:
     """Idempotent daemon starter. Honors env: no-op when
     EXTRACT_INTERVAL_S<=0. Same cascade-prevention as shadow_review:
-    slim children (SEMANTIC_AVAILABLE=False) refuse to start the
-    daemon so spawn() doesn't recurse."""
+    spawned/background children refuse to start the daemon so spawn()
+    doesn't recurse."""
     global _started
     if _started:
         return
     if EXTRACT_INTERVAL_S <= 0:
         return
-    from .config import SEMANTIC_AVAILABLE
+    from .config import BACKGROUND_DAEMONS_ALLOWED, SEMANTIC_AVAILABLE
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire extract from here
     t = threading.Thread(

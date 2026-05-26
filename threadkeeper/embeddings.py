@@ -14,6 +14,7 @@ path keeps working and we can roll back without data loss. Old rows are
 backfilled to vec0 lazily by the ingester.
 """
 import sqlite3
+import threading
 from typing import Optional
 
 from .config import SEMANTIC_AVAILABLE, EMBED_MODEL_NAME
@@ -25,31 +26,63 @@ def _vec_on() -> bool:
     return _db.vec_available()
 
 _model = None
+_model_lock = threading.RLock()
 
 def _get_model():
     global _model
     if not SEMANTIC_AVAILABLE:
         return None
-    if _model is None:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        _model = SentenceTransformer(EMBED_MODEL_NAME)
-    return _model
+    with _model_lock:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            _model = SentenceTransformer(EMBED_MODEL_NAME)
+        return _model
+
+
+def model_loaded() -> bool:
+    """True when this process currently holds the embedding model in RAM."""
+    with _model_lock:
+        return _model is not None
+
+
+def unload_model() -> bool:
+    """Drop the cached embedding model so GC can reclaim Python references.
+
+    Python allocators and PyTorch may keep arenas mapped, so RSS reduction is
+    best-effort. The next semantic call lazily reloads the model.
+    """
+    global _model
+    with _model_lock:
+        if _model is None:
+            return False
+        model = _model
+        _model = None
+    try:
+        to = getattr(model, "to", None)
+        if callable(to):
+            to("cpu")
+    except Exception:
+        pass
+    del model
+    return True
 
 def _embed(text: str) -> Optional[bytes]:
-    m = _get_model()
-    if m is None:
-        return None
-    v = m.encode([text], normalize_embeddings=True)[0].astype("float32")
+    with _model_lock:
+        m = _get_model()
+        if m is None:
+            return None
+        v = m.encode([text], normalize_embeddings=True)[0].astype("float32")
     return v.tobytes()
 
 
 def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     """Top-k cosine over notes. Uses vec0 ANN when available."""
-    m = _get_model()
-    if m is None:
-        return []
-    import numpy as np  # type: ignore
-    qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
+    with _model_lock:
+        m = _get_model()
+        if m is None:
+            return []
+        import numpy as np  # type: ignore
+        qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
     if _vec_on():
         try:
             return _vec0_notes_search(conn, qv.tobytes(), k)
@@ -98,11 +131,12 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
 
 def _dialog_cosine_search(conn, query: str, k: int) -> list[dict]:
     """Top-k cosine over dialog_messages. Uses vec0 ANN when available."""
-    m = _get_model()
-    if m is None:
-        return []
-    import numpy as np  # type: ignore
-    qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
+    with _model_lock:
+        m = _get_model()
+        if m is None:
+            return []
+        import numpy as np  # type: ignore
+        qv = m.encode([query], normalize_embeddings=True)[0].astype("float32")
     if _vec_on():
         try:
             return _vec0_dialog_search(conn, qv.tobytes(), k)

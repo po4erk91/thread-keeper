@@ -201,7 +201,10 @@ ROLE_PROMPTS: dict[str, str] = {
 }
 
 
-def _build_slim_mcp_config(task_id: str) -> Optional[Path]:
+def _build_slim_mcp_config(
+    task_id: str,
+    env_overrides: Optional[dict[str, str]] = None,
+) -> Optional[Path]:
     """Write a minimal MCP config containing ONLY thread-keeper, so the
     spawned child doesn't load every other MCP server (context7, figma,
     stitch, etc.). Pair with --strict-mcp-config on the CLI.
@@ -238,6 +241,12 @@ def _build_slim_mcp_config(task_id: str) -> Optional[Path]:
                 ),
             },
         }
+    else:
+        mp_entry = dict(mp_entry)
+    env = dict(mp_entry.get("env") or {})
+    if env_overrides:
+        env.update(env_overrides)
+    mp_entry["env"] = env
     try:
         slim_path.write_text(
             _json.dumps({"mcpServers": {"thread-keeper": mp_entry}},
@@ -370,6 +379,30 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             )
     if append_system:
         sys_extra += "\n\n" + append_system
+    child_env = {
+        **os.environ,
+        "THREADKEEPER_FORCE_CID": child_cid,
+        "THREADKEEPER_SPAWNED_CHILD": "1",
+        "THREADKEEPER_TZ": os.environ.get("THREADKEEPER_TZ", "UTC"),
+    }
+    if write_origin:
+        child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
+    # slim spawn → child loads NO embeddings (delegates semantic search to
+    # the parent via search_via_parent). Override only if user didn't set
+    # the env explicitly already (allow opt-out by setting =0 explicitly).
+    if slim and "THREADKEEPER_NO_EMBEDDINGS" not in child_env:
+        child_env["THREADKEEPER_NO_EMBEDDINGS"] = "1"
+    mcp_env_overrides = {
+        k: child_env[k]
+        for k in (
+            "THREADKEEPER_FORCE_CID",
+            "THREADKEEPER_SPAWNED_CHILD",
+            "THREADKEEPER_TZ",
+            "THREADKEEPER_WRITE_ORIGIN",
+            "THREADKEEPER_NO_EMBEDDINGS",
+        )
+        if k in child_env
+    }
     # Resolve which CLI agent should run this child. Claude is the
     # historical default and the only path with full MCP-config
     # injection + session-id + append-system-prompt translation; for
@@ -483,7 +516,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         # DB access (no Bash/Edit beyond claude built-ins, no external
         # API integrations).
         if slim:
-            slim_cfg = _build_slim_mcp_config(task_id)
+            slim_cfg = _build_slim_mcp_config(task_id, mcp_env_overrides)
             if slim_cfg is not None:
                 cmd += ["--mcp-config", str(slim_cfg),
                         "--strict-mcp-config"]
@@ -491,14 +524,6 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
     if capture_output and not visible:
         log_path = TASK_LOG_DIR / f"{task_id}.log"
-    child_env = {**os.environ, "THREADKEEPER_FORCE_CID": child_cid}
-    if write_origin:
-        child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
-    # slim spawn → child loads NO embeddings (delegates semantic search to
-    # the parent via search_via_parent). Override only if user didn't set
-    # the env explicitly already (allow opt-out by setting =0 explicitly).
-    if slim and "THREADKEEPER_NO_EMBEDDINGS" not in child_env:
-        child_env["THREADKEEPER_NO_EMBEDDINGS"] = "1"
     proc_pid = 0
     try:
         if visible:
@@ -509,6 +534,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             cmd_line = " \\\n    ".join(shlex.quote(a) for a in cmd)
             env_pairs = [
                 ("THREADKEEPER_FORCE_CID", child_cid),
+                ("THREADKEEPER_SPAWNED_CHILD", "1"),
                 ("THREADKEEPER_TZ",
                  os.environ.get("THREADKEEPER_TZ", "UTC")),
             ]

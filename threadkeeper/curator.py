@@ -371,14 +371,16 @@ def _serve_loop() -> None:
 def start_curator_daemon() -> None:
     """Idempotent daemon starter. Honors env: no-op when
     CURATOR_INTERVAL_S<=0. Identical cascade-prevention as
-    start_shadow_daemon: slim children (SEMANTIC_AVAILABLE=False)
-    refuse to start the daemon so spawn() doesn't recurse."""
+    start_shadow_daemon: spawned/background children refuse to start
+    the daemon so spawn() doesn't recurse."""
     global _started
     if _started:
         return
     if CURATOR_INTERVAL_S <= 0:
         return
-    from .config import SEMANTIC_AVAILABLE
+    from .config import BACKGROUND_DAEMONS_ALLOWED, SEMANTIC_AVAILABLE
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire curator from here
     t = threading.Thread(

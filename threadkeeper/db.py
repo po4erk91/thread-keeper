@@ -364,6 +364,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     return_code   INTEGER
 );
 
+-- Cross-process resource-control requests. The memory guard uses this as a
+-- small mailbox so one MCP server can ask peer servers to unload models/caches
+-- without sharing process memory.
+CREATE TABLE IF NOT EXISTS resource_controls (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    action        TEXT NOT NULL CHECK(action IN ('trim')),
+    target_pid    INTEGER NOT NULL,
+    reason        TEXT,
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    handled_at    INTEGER,
+    result        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -381,6 +395,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_unread ON signals(read_at) WHERE read_at 
 CREATE INDEX IF NOT EXISTS idx_tasks_started  ON tasks(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
+    ON resource_controls(target_pid, action, handled_at, expires_at);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
 CREATE INDEX IF NOT EXISTS idx_probes_enabled     ON probes(enabled) WHERE enabled=1;
 CREATE INDEX IF NOT EXISTS idx_probe_results_cat  ON probe_results(category, created_at DESC);

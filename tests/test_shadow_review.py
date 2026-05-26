@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -258,6 +259,42 @@ def test_run_shadow_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert long_msg.strip()[:40] in kw["prompt"]
 
 
+def test_run_shadow_pass_single_flight_when_child_running(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_chars="100")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    long_msg = "Pattern: in this type of task always X. " * 10
+    _seed_dialog(conn, "user", long_msg, now - 5)
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, rss_kb, rss_updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "tk_shadow_running",
+            os.getpid(),
+            "parent",
+            "child",
+            str(tmp_path),
+            pkg["shadow_review"].SHADOW_REVIEW_PROMPT,
+            now - 1,
+            123,
+            now,
+        ),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def should_not_spawn(**kwargs):
+        raise AssertionError("shadow pass should be single-flight")
+
+    monkeypatch.setattr(spawn_mod, "spawn", should_not_spawn)
+    out = pkg["shadow_review"].run_shadow_pass(force=True)
+    assert out == "shadow_child_running n=1"
+    # Cursor does not advance; retry the same window when the child exits.
+    assert pkg["shadow_review"]._last_shadow_ts(conn) == 0
+
+
 def test_run_shadow_pass_idempotent_after_cursor_advance(tmp_path, monkeypatch):
     """Second pass over the same data must produce no_window once cursor
     catches up."""
@@ -311,6 +348,24 @@ def test_daemon_does_not_start_in_slim_child(tmp_path, monkeypatch):
     pkg["shadow_review"].start_shadow_daemon()
     assert pkg["shadow_review"]._started is False, (
         "slim child should refuse to start shadow daemon"
+    )
+
+
+def test_daemon_does_not_start_in_marked_spawned_child(tmp_path, monkeypatch):
+    """The cascade guard must not depend only on NO_EMBEDDINGS.
+
+    Some CLIs launch MCP servers from a config env block, so the child
+    process may not reliably inherit THREADKEEPER_NO_EMBEDDINGS. The explicit
+    THREADKEEPER_SPAWNED_CHILD marker still has to stop shadow_review.
+    """
+    monkeypatch.setenv("THREADKEEPER_SPAWNED_CHILD", "1")
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="60")
+    import threadkeeper.config as cfg
+    monkeypatch.setattr(cfg, "SEMANTIC_AVAILABLE", True)
+    pkg["shadow_review"]._started = False
+    pkg["shadow_review"].start_shadow_daemon()
+    assert pkg["shadow_review"]._started is False, (
+        "marked spawned child should refuse to start shadow daemon"
     )
 
 

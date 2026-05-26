@@ -44,7 +44,12 @@ def test_build_slim_mcp_config_from_claude_json(tmp_path, monkeypatch):
         del sys.modules[name]
     from threadkeeper.tools.spawn import _build_slim_mcp_config
 
-    slim_path = _build_slim_mcp_config("tk_test01")
+    slim_path = _build_slim_mcp_config("tk_test01", {
+        "THREADKEEPER_FORCE_CID": _FAKE_CID,
+        "THREADKEEPER_SPAWNED_CHILD": "1",
+        "THREADKEEPER_NO_EMBEDDINGS": "1",
+        "THREADKEEPER_WRITE_ORIGIN": "shadow_review",
+    })
     assert slim_path is not None
     assert slim_path.exists()
     data = json.loads(slim_path.read_text())
@@ -53,6 +58,11 @@ def test_build_slim_mcp_config_from_claude_json(tmp_path, monkeypatch):
     mp = data["mcpServers"]["thread-keeper"]
     assert mp["command"] == "/path/to/python"
     assert mp["args"] == ["-m", "threadkeeper.server"]
+    assert mp["env"]["PYTHONPATH"] == "/path/to/repo"
+    assert mp["env"]["THREADKEEPER_FORCE_CID"] == _FAKE_CID
+    assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
+    assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
+    assert mp["env"]["THREADKEEPER_WRITE_ORIGIN"] == "shadow_review"
 
 
 def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeypatch):
@@ -70,7 +80,10 @@ def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeyp
         del sys.modules[name]
     from threadkeeper.tools.spawn import _build_slim_mcp_config
 
-    slim_path = _build_slim_mcp_config("tk_synth")
+    slim_path = _build_slim_mcp_config("tk_synth", {
+        "THREADKEEPER_SPAWNED_CHILD": "1",
+        "THREADKEEPER_NO_EMBEDDINGS": "1",
+    })
     assert slim_path is not None
     data = json.loads(slim_path.read_text())
     assert "thread-keeper" in data["mcpServers"]
@@ -79,6 +92,8 @@ def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeyp
     assert mp["command"] == sys.executable
     assert "threadkeeper.server" in mp["args"]
     assert "PYTHONPATH" in mp["env"]
+    assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
+    assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
 
 
 def test_spawn_slim_falls_back_to_full_config_when_unable(tmp_path, monkeypatch):

@@ -73,6 +73,20 @@ WRITE_ORIGIN: str = os.environ.get(
     "THREADKEEPER_WRITE_ORIGIN", "foreground"
 )
 
+# Explicit marker set by spawn() for child CLI processes. Do not infer
+# child-ness from THREADKEEPER_FORCE_CID: tests and manual diagnostics use it
+# to pin identity for otherwise-foreground sessions.
+SPAWNED_CHILD: bool = os.environ.get(
+    "THREADKEEPER_SPAWNED_CHILD", ""
+).lower() in {"1", "true", "yes", "on"}
+
+# Autonomous daemons may spawn children or do expensive background work. They
+# should run only in user-facing parent processes, never inside spawned review
+# children, where they can recurse.
+BACKGROUND_DAEMONS_ALLOWED: bool = (
+    not SPAWNED_CHILD and WRITE_ORIGIN == "foreground"
+)
+
 # Where Claude's user-local skills live. Used by skill_manage / curator.
 CLAUDE_SKILLS_DIR: Path = Path(
     os.environ.get("CLAUDE_SKILLS_DIR", "~/.claude/skills")
@@ -139,6 +153,41 @@ SPAWN_ESTIMATE_FULL_MB: int = int(
 # stay frozen; not recommended outside tests).
 SPAWN_BUDGET_POLL_S: float = float(
     os.environ.get("THREADKEEPER_SPAWN_BUDGET_POLL_S", "10")
+)
+
+# Memory guard for thread-keeper server processes themselves. Unlike
+# spawn_budget, this watches every running `python -m threadkeeper.server`
+# process and can terminate a server that crosses the hard RSS limit.
+# Set poll or kill threshold to 0 to disable the daemon / killing.
+MEMORY_GUARD_POLL_S: float = float(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_POLL_S", "30")
+)
+MEMORY_GUARD_WARN_MB: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_WARN_MB", "1536")
+)
+MEMORY_GUARD_KILL_MB: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_KILL_MB", "3072")
+)
+MEMORY_GUARD_AGG_WARN_MB: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB", "2048")
+)
+MEMORY_GUARD_AGG_KILL_MB: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB", "3072")
+)
+MEMORY_GUARD_RECLAIM_MB: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_RECLAIM_MB", "1024")
+)
+MEMORY_GUARD_TARGET_SERVERS: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS", "1")
+)
+MEMORY_GUARD_RETIRE_IDLE_S: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S", "900")
+)
+MEMORY_GUARD_NOTIFY: bool = os.environ.get(
+    "THREADKEEPER_MEMORY_GUARD_NOTIFY", "1"
+).lower() in {"1", "true", "yes", "on"}
+MEMORY_GUARD_COOLDOWN_S: int = int(
+    os.environ.get("THREADKEEPER_MEMORY_GUARD_COOLDOWN_S", "300")
 )
 
 # Shadow-review daemon. Periodically scans recently-ingested
