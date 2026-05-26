@@ -68,9 +68,11 @@ jobs:
     name: Create GitHub Release
     needs: publish-pypi
     runs-on: ubuntu-latest
-    # Only auto-create the release entry on tag pushes — skip when this
-    # workflow is invoked manually via workflow_dispatch for a re-publish.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Auto-create the release on tag pushes and on explicit dispatches
+    # pointed at a tag ref (used by release-tag.yml after tests pass).
+    if: >
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:

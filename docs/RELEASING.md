@@ -1,9 +1,14 @@
 # Releasing thread-keeper
 
-Publishing to PyPI is automated via GitHub Actions
-(`.github/workflows/publish.yml`). Every annotated tag matching `v*`
-triggers a build + upload via PyPI's Trusted Publisher OIDC flow — no
-API tokens stored in the repository.
+Publishing to PyPI is automated via GitHub Actions. A push to `main`
+runs `.github/workflows/test.yml`; when that run succeeds,
+`.github/workflows/release-tag.yml` creates an annotated `v*` tag from
+the version in `pyproject.toml` and dispatches
+`.github/workflows/publish.yml` on that tag ref. Manual annotated tags
+matching `v*` still trigger `publish.yml` directly.
+
+PyPI upload uses Trusted Publisher OIDC — no PyPI API token is stored in
+the repository.
 
 ## One-time setup
 
@@ -50,25 +55,38 @@ on GitHub.
 # 1. Bump version in pyproject.toml
 $EDITOR pyproject.toml         # version = "0.4.0" → "0.4.1"
 
-# 2. Commit + push to main
+# 2. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
+$EDITOR CHANGELOG.md
+
+# 3. Commit + push to main
 git commit -am "release: 0.4.1"
 git push origin main
+```
 
-# 3. Tag + push tag (triggers the workflow)
-git tag v0.4.1
+The workflows then:
+1. Run the full test matrix on `main`
+2. Create annotated tag `vX.Y.Z` if it does not already exist
+3. Dispatch `publish.yml` on that tag ref
+4. Build sdist + wheel (`python -m build`)
+5. Run `twine check dist/*`
+6. Upload artifacts to PyPI via `pypa/gh-action-pypi-publish` (OIDC,
+   no token)
+7. Create a GitHub Release from the matching `CHANGELOG.md` section
+
+Watch progress at
+<https://github.com/po4erk91/thread-keeper/actions>.
+
+### Manual tag fallback
+
+If the post-test tag workflow is disabled or needs to be bypassed, you
+can still publish by creating the annotated tag yourself:
+
+```bash
+git tag -a v0.4.1 -m "release: v0.4.1"
 git push origin v0.4.1
 ```
 
-The `publish.yml` workflow then:
-1. Checks out the tagged commit
-2. Builds sdist + wheel (`python -m build`)
-3. Runs `twine check dist/*`
-4. Uploads artifacts to PyPI via `pypa/gh-action-pypi-publish` (OIDC,
-   no token)
-5. Posts the run URL — typically completes in <2 min
-
-Watch progress at
-<https://github.com/po4erk91/thread-keeper/actions/workflows/publish.yml>.
+Manual tag pushes trigger `publish.yml` directly.
 
 ## Versioning
 
@@ -89,11 +107,10 @@ If a release ships broken, **don't try to overwrite**. PyPI rejects
 re-uploads of an existing version. Instead:
 
 ```bash
-# Bump patch + retag
+# Bump patch + commit; the post-test release workflow tags it
 $EDITOR pyproject.toml         # 0.4.1 → 0.4.2
 git commit -am "release: 0.4.2 (yank 0.4.1)"
-git tag v0.4.2
-git push origin main v0.4.2
+git push origin main
 ```
 
 Then yank 0.4.1 via PyPI UI:

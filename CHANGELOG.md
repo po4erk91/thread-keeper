@@ -35,6 +35,9 @@ version bumps follow semver per the policy in
   `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB`,
   `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS`, and
   `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S`.
+- Post-test release tagging workflow: successful `tests` runs on `main`
+  now create the annotated `vX.Y.Z` tag from `pyproject.toml` and dispatch
+  `publish.yml` on that tag ref. Manual tag publishing remains supported.
 - Two hook-based safety nets for the thread lifecycle, wired by
   `thread-keeper-setup` (see [ARCHITECTURE.md → Hooks](docs/ARCHITECTURE.md)):
   - `tk-thread-nudge.sh` (UserPromptSubmit) — once per session, reminds you
