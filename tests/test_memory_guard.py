@@ -108,6 +108,7 @@ def test_memory_guard_status_tool_reports_thresholds(mp_with_cid, monkeypatch):
     assert "state=active" in txt
     assert "warn_mb=1000" in txt
     assert "kill_mb=2000" in txt
+    assert "coordinator=on" in txt
     assert "ok pid=1001" in txt
     assert "WARN pid=1002" in txt
     assert "KILL pid=1003" in txt
@@ -172,17 +173,51 @@ def test_check_apply_requests_peer_trim_on_aggregate_warn(mp_with_cid, monkeypat
     })
     monkeypatch.setattr(process_health, "scan", lambda: [
         _proc(os.getpid(), 900),
-        _proc(1002, 1200, ppid=os.getpid()),
+        _proc(os.getpid() + 1002, 1200, ppid=os.getpid()),
     ])
 
     out = memory_guard.check_once(dry_run=False, notify=False)
-    assert sorted(out["reclaim_requests"]["requested"]) == sorted([os.getpid(), 1002])
+    peer_pid = os.getpid() + 1002
+    assert sorted(out["reclaim_requests"]["requested"]) == sorted(
+        [os.getpid(), peer_pid]
+    )
 
     conn = pkg["db"].get_db()
     rows = conn.execute(
         "SELECT target_pid FROM resource_controls WHERE action='trim'"
     ).fetchall()
-    assert sorted(r["target_pid"] for r in rows) == sorted([os.getpid(), 1002])
+    assert sorted(r["target_pid"] for r in rows) == sorted([os.getpid(), peer_pid])
+
+
+def test_aggregate_side_effects_only_run_on_coordinator(mp_with_cid, monkeypatch):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import memory_guard, process_health
+
+    self_pid = os.getpid()
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 5000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 6000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 2000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 0)
+    monkeypatch.setattr(process_health, "scan", lambda: [
+        _proc(self_pid - 1, 1200),
+        _proc(self_pid, 1200),
+    ])
+    reclaim_calls: list[str] = []
+    monkeypatch.setattr(
+        memory_guard,
+        "reclaim_memory",
+        lambda reason="": reclaim_calls.append(reason) or {
+            "before_mb": 1200, "after_mb": 1100, "freed_mb": 100,
+            "pid": self_pid, "actions": [],
+        },
+    )
+
+    out = memory_guard.check_once(dry_run=False, notify=False)
+    assert out["aggregate"]["warn"] is True
+    assert out["coordinator"] is False
+    assert out["reclaim_requests"]["count"] == 0
+    assert out["local_reclaim"] is None
+    assert reclaim_calls == []
 
 
 def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, monkeypatch):
@@ -204,13 +239,13 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     def scan():
         return [
             _proc(os.getpid(), 900),
-            _proc(1001, 1200, ppid=1) | {
+            _proc(os.getpid() + 1001, 1200, ppid=1) | {
                 "heartbeat_age_s": None,
                 "parent_alive": False,
                 "is_orphaned": True,
                 "orphan_reason": "parent_gone + no_heartbeat",
             },
-            _proc(1002, 800, ppid=os.getpid()) | {"heartbeat_age_s": 5},
+            _proc(os.getpid() + 1002, 800, ppid=os.getpid()) | {"heartbeat_age_s": 5},
         ]
 
     monkeypatch.setattr(process_health, "scan", scan)
@@ -221,8 +256,9 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     )
 
     out = memory_guard.check_once(dry_run=False, notify=False)
-    assert out["retired"] == [1001]
-    assert calls == [(1001, _sig.SIGTERM)]
+    stale_pid = os.getpid() + 1001
+    assert out["retired"] == [stale_pid]
+    assert calls == [(stale_pid, _sig.SIGTERM)]
 
 
 def test_aggregate_retire_skips_live_parent_without_opt_in(mp_with_cid, monkeypatch):
@@ -242,7 +278,7 @@ def test_aggregate_retire_skips_live_parent_without_opt_in(mp_with_cid, monkeypa
     })
     monkeypatch.setattr(process_health, "scan", lambda: [
         _proc(os.getpid(), 900),
-        _proc(1001, 1200, ppid=os.getpid()) | {"heartbeat_age_s": None},
+        _proc(os.getpid() + 1001, 1200, ppid=os.getpid()) | {"heartbeat_age_s": None},
     ])
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(

@@ -33,6 +33,8 @@ def memory_guard_status() -> str:
         f"agg_warn_mb={agg['warn_mb']} agg_kill_mb={agg['kill_mb']} "
         f"target_servers={agg['target_servers']} "
         f"retire_live={'on' if agg['retire_live'] else 'off'} "
+        f"coordinator={'on' if result['coordinator'] else 'off'} "
+        f"coordinator_pid={result['coordinator_pid'] or '-'} "
         f"notify={'on' if result['notify'] else 'off'}",
         f"processes={len(procs)} rss_total={total_mb}MB aggregate={agg_marker}",
     ]

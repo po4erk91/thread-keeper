@@ -7,6 +7,18 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.6.2 — 2026-05-26
+
+### Fixed
+
+- Memory guard aggregate pressure handling is now single-coordinator across
+  live MCP server processes. This prevents every open Codex/Claude session from
+  independently emitting the same aggregate warn, queuing duplicate trim
+  requests, and attempting the same idle-retirement plan.
+- Aggregate warn/reclaim side effects now respect the guard cooldown globally,
+  reducing repeated desktop warnings and repeated self-trim sweeps while total
+  `threadkeeper.server` RSS remains above the aggregate threshold.
+
 ## v0.6.1 — 2026-05-26
 
 ### Fixed

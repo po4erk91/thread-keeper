@@ -131,11 +131,12 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
   all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
   and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.
-  It also watches aggregate server RSS: above `MEMORY_GUARD_AGG_WARN_MB`
-  it asks all peer servers to unload embedding models/caches; under pressure
-  it retires stale non-self servers whose parent is gone toward
-  `MEMORY_GUARD_TARGET_SERVERS`. Parent-alive retirement is opt-in via
-  `MEMORY_GUARD_RETIRE_LIVE`.
+  It also watches aggregate server RSS. Aggregate side effects are owned by a
+  single live coordinator server so multiple open clients do not duplicate
+  warn/reclaim/retire actions: above `MEMORY_GUARD_AGG_WARN_MB` it asks peer
+  servers to unload embedding models/caches; under pressure it retires stale
+  non-self servers whose parent is gone toward `MEMORY_GUARD_TARGET_SERVERS`.
+  Parent-alive retirement is opt-in via `MEMORY_GUARD_RETIRE_LIVE`.
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.

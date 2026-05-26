@@ -73,13 +73,19 @@ def _log_line(line: str) -> None:
         logger.debug("memory_guard: failed to append log", exc_info=True)
 
 
-def _emit_event(kind: str, pid: int, summary: str) -> None:
+def _emit_event(kind: str, target: int | str, summary: str) -> None:
     try:
         conn = get_db()
         conn.execute(
             "INSERT INTO events (session_id, kind, target, summary, created_at) "
             "VALUES (?,?,?,?,?)",
-            (identity._session_id or "", kind, str(pid), summary[:200], int(time.time())),
+            (
+                identity._session_id or "",
+                kind,
+                str(target),
+                summary[:200],
+                int(time.time()),
+            ),
         )
         conn.commit()
     except Exception:
@@ -228,6 +234,18 @@ def _pending_recent_control(conn, action: str, pid: int, now: int) -> bool:
     return row is not None
 
 
+def _recent_event(conn, kind: str, target: str, now: int) -> bool:
+    if MEMORY_GUARD_COOLDOWN_S <= 0:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM events "
+        "WHERE kind=? AND target=? AND created_at>=? "
+        "ORDER BY id DESC LIMIT 1",
+        (kind, target, now - max(1, MEMORY_GUARD_COOLDOWN_S)),
+    ).fetchone()
+    return row is not None
+
+
 def request_reclaim(procs: list[dict] | None = None, reason: str = "manual") -> dict:
     """Queue trim requests for the given process rows, deduped by cooldown."""
     if procs is None:
@@ -293,6 +311,33 @@ def _aggregate_state(procs: list[dict]) -> dict:
     }
 
 
+def _global_guard_coordinator_pid(procs: list[dict]) -> int | None:
+    candidates = [
+        int(p["pid"])
+        for p in procs
+        if int(p.get("pid") or 0) > 0 and not p.get("is_orphaned")
+    ]
+    if not candidates:
+        candidates = [int(p["pid"]) for p in procs if int(p.get("pid") or 0) > 0]
+    return min(candidates) if candidates else None
+
+
+def is_global_guard_coordinator(procs: list[dict]) -> bool:
+    """True when this server owns process-wide aggregate side effects.
+
+    Every MCP server runs its own local daemon. Without coordination, N open
+    conversations produce N aggregate warnings, N trim sweeps, and racing retire
+    attempts. The oldest non-orphaned server is the single coordinator; if the
+    scanner somehow misses this process, treat the current manual caller as the
+    coordinator so diagnostics/tests still apply side effects.
+    """
+    self_pid = os.getpid()
+    pids = {int(p["pid"]) for p in procs if int(p.get("pid") or 0) > 0}
+    if self_pid not in pids:
+        return True
+    return self_pid == _global_guard_coordinator_pid(procs)
+
+
 def _idle_retire_candidates(procs: list[dict]) -> list[dict]:
     candidates: list[dict] = []
     for p in procs:
@@ -351,12 +396,15 @@ def scan_over_limit() -> dict:
             warn.append(p)
     aggregate = _aggregate_state(procs)
     retire = _retire_plan(procs, aggregate)
+    coordinator = is_global_guard_coordinator(procs)
     return {
         "procs": procs,
         "warn": warn,
         "kill": kill,
         "aggregate": aggregate,
         "retire": retire,
+        "coordinator": coordinator,
+        "coordinator_pid": _global_guard_coordinator_pid(procs),
         "warn_mb": MEMORY_GUARD_WARN_MB,
         "kill_mb": MEMORY_GUARD_KILL_MB,
         "reclaim_mb": MEMORY_GUARD_RECLAIM_MB,
@@ -377,6 +425,7 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
         handled_controls = handle_resource_controls()
 
     result = scan_over_limit()
+    is_coordinator = bool(result.get("coordinator"))
     killed: list[int] = []
     failed: list[dict] = []
     retired: list[int] = []
@@ -384,6 +433,8 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
     local_reclaim: dict | None = None
 
     for p in result["warn"]:
+        if p["pid"] != os.getpid():
+            continue
         msg = (
             f"pid {p['pid']} RSS {p['rss_mb']}MB crossed warn "
             f"threshold {MEMORY_GUARD_WARN_MB}MB"
@@ -396,21 +447,24 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
             _maybe_notify(p["pid"], "warn", msg)
 
     aggregate = result["aggregate"]
-    if aggregate["warn"]:
+    if aggregate["warn"] and is_coordinator:
         msg = (
             f"aggregate RSS {aggregate['rss_mb']}MB crossed warn "
             f"threshold {aggregate['warn_mb']}MB across "
             f"{len(result['procs'])} server process(es)"
         )
         if not dry_run:
-            _emit_event("memory_guard_aggregate_warn", os.getpid(), msg)
-            reclaim_requests = request_reclaim(
-                result["procs"], reason="aggregate_warn"
-            )
-            if any(p["pid"] == os.getpid() for p in result["procs"]):
-                local_reclaim = reclaim_memory(reason="aggregate_warn")
-        if notify and not dry_run:
-            _maybe_notify(os.getpid(), "aggregate_warn", msg)
+            conn = get_db()
+            now = int(time.time())
+            if not _recent_event(conn, "memory_guard_aggregate_warn", "aggregate", now):
+                _emit_event("memory_guard_aggregate_warn", "aggregate", msg)
+                reclaim_requests = request_reclaim(
+                    result["procs"], reason="aggregate_warn"
+                )
+                if any(p["pid"] == os.getpid() for p in result["procs"]):
+                    local_reclaim = reclaim_memory(reason="aggregate_warn")
+                if notify:
+                    _maybe_notify(os.getpid(), "aggregate_warn", msg)
 
     kill_rows = sorted(
         result["kill"], key=lambda p: p["pid"] == os.getpid()
@@ -422,6 +476,8 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
         )
         if dry_run:
             continue
+        if p["pid"] != os.getpid() and not is_coordinator:
+            continue
         _emit_event("memory_guard_kill", p["pid"], msg)
         if notify:
             _maybe_notify(p["pid"], "kill", msg, force=True)
@@ -431,7 +487,7 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
         except (ProcessLookupError, PermissionError, OSError) as e:
             failed.append({"pid": p["pid"], "err": str(e)})
 
-    if aggregate["warn"] and result["retire"]:
+    if aggregate["warn"] and is_coordinator and result["retire"]:
         for p in result["retire"]:
             msg = (
                 f"aggregate RSS {aggregate['rss_mb']}MB; retiring idle "
