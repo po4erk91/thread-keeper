@@ -52,6 +52,13 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
+        # The ONNX embedding backend (fastembed) pulls tokenizers + onnxruntime,
+        # which each spawn native thread pools (tokenizers via rayon). The
+        # per-test sys.modules wipe + re-import (see _bootstrap_mp) orphans those
+        # pools; orphaned rayon workers deadlock sqlite connection finalize on
+        # the next re-import. Disabling the parallel pools keeps re-imports clean.
+        "TOKENIZERS_PARALLELISM": "false",
+        "OMP_NUM_THREADS": "1",
     }
 
 

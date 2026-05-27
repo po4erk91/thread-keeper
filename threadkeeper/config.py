@@ -2,6 +2,7 @@
 Imported wherever a constant or config is needed; cheap to import."""
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 from typing import Optional
@@ -69,22 +70,26 @@ NO_EMBEDDINGS: bool = os.environ.get(
 # Optional semantic search. If sentence-transformers is not installed OR the
 # no-embeddings opt-out is set, fall back to FTS5 keyword matching + delegate.
 # Brief still works either way.
+def _installed(*mods: str) -> bool:
+    """True if every module is importable, checked WITHOUT importing it.
+
+    `find_spec` locates the module via the import machinery but never executes
+    it — so probing availability here doesn't pull PyTorch / ONNX Runtime /
+    tokenizers (and their thread pools) into every process that imports config.
+    The heavy import stays lazy in `embeddings._get_model()`.
+    """
+    try:
+        return all(importlib.util.find_spec(m) is not None for m in mods)
+    except (ImportError, ValueError):
+        return False
+
+
 if NO_EMBEDDINGS:
     SEMANTIC_AVAILABLE: bool = False
 elif EMBED_BACKEND == "sentence-transformers":
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore  # noqa: F401
-        import numpy as np  # type: ignore  # noqa: F401
-        SEMANTIC_AVAILABLE = True
-    except Exception:
-        SEMANTIC_AVAILABLE = False
+    SEMANTIC_AVAILABLE = _installed("sentence_transformers", "numpy")
 else:  # 'onnx' (default)
-    try:
-        from fastembed import TextEmbedding  # type: ignore  # noqa: F401
-        import numpy as np  # type: ignore  # noqa: F401
-        SEMANTIC_AVAILABLE = True
-    except Exception:
-        SEMANTIC_AVAILABLE = False
+    SEMANTIC_AVAILABLE = _installed("fastembed", "numpy")
 
 # Client label used for `presence`/`sessions` rows.
 CLIENT_LABEL: str = os.environ.get("THREADKEEPER_CLIENT", "claude")
