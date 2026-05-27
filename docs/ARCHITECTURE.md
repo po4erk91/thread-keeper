@@ -19,7 +19,8 @@ threadkeeper/
 ├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
-├── embeddings.py      sentence-transformers (optional), cosine search
+├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
+├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── brief.py           render_brief() / render_context() — main digest
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
@@ -493,6 +494,17 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 Optional — not needed for basic functionality. Embeddings themselves are stored
 as BLOB in `notes.embedding` regardless of vec0 availability.
 
+### Embedding backend
+
+`embeddings.py` is backend-pluggable via `THREADKEEPER_EMBED_BACKEND`. The
+default `onnx` runs the model through **fastembed / ONNX Runtime** (no PyTorch,
+~700 MB footprint / ~850 MB RSS); `sentence-transformers` is a heavier opt-in
+fallback (~1.8 GB). `_encode()` L2-normalizes both backends' output so the dot product
+used by vec0 and the legacy path equals cosine. Each row records its producing
+backend in `embed_backend` (NULL = legacy). The two backends are not
+numerically identical, so after a switch run `tk-migrate-embeddings --all`
+(`migrate_embeddings.py`) to recompute stale rows into one consistent space.
+
 ## MCP tools (89 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
@@ -560,6 +572,7 @@ having to add tests.
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
 | `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
+| `THREADKEEPER_EMBED_BACKEND` | `onnx` | `onnx` (fastembed, no PyTorch) or `sentence-transformers` (fallback) |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | jsonl for ingest |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills root |
 | `THREADKEEPER_EXTRA_SKILLS_DIRS` | unset | os.pathsep-separated extra skills roots to mirror into |

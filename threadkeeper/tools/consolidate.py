@@ -17,7 +17,7 @@ from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, normalize_text
 from ..identity import _ensure_session, _emit
-from ..embeddings import _get_model
+from ..embeddings import _get_model, _encode
 
 
 CONSOLIDATE_NOTE_COSINE = 0.95
@@ -121,9 +121,9 @@ def consolidate(dry_run: bool = True,
             for sp, vs in by_speaker.items():
                 if len(vs) < 2:
                     continue
-                vecs = m.encode(
-                    [v["content"] for v in vs], normalize_embeddings=True
-                ).astype("float32")
+                vecs = _encode([v["content"] for v in vs])
+                if vecs is None:
+                    continue
                 sim = vecs @ vecs.T
                 kept = [True] * len(vs)
                 for i in range(len(vs)):

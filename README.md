@@ -155,7 +155,7 @@ autonomous learning daemons cannot recursively start inside review forks.
 A daemon measures combined child RSS every 10 s; admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
-parent via `search_via_parent` — no per-child copy of sentence-transformers.
+parent via `search_via_parent` — no per-child copy of the embedding model.
 
 ### Learning loops
 
@@ -401,7 +401,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | "" (off) | allow retiring parent-alive MCP servers; off protects live clients |
 | `THREADKEEPER_MEMORY_GUARD_NOTIFY` | "1" | send macOS desktop notification when possible |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
-| `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable sentence-transformers |
+| `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable the embedding model (FTS5 + delegate only) |
+| `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
+| `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 
@@ -488,6 +490,34 @@ fallback to Python-side cosine when the extension is missing.
 One file. Backup = `cp`. Wipe memory = `rm`.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
+
+---
+
+## Embeddings
+
+Semantic search runs `paraphrase-multilingual-MiniLM-L12-v2` (384-dim,
+RU+EN+50 langs). The default backend is **fastembed / ONNX Runtime** — no
+PyTorch. A model-loaded process sits at ~700 MB physical footprint
+(~850 MB RSS), down from ~1.8 GB on the PyTorch backend.
+
+A **sentence-transformers** (PyTorch) backend is kept as an opt-in fallback.
+It is heavier (~1.8 GB RSS) and produces vectors that are *not numerically
+identical* to the ONNX backend's, so switching backends warrants a recompute:
+
+```bash
+# Install the fallback runtime and switch to it:
+pip install -e '.[semantic-st]'
+export THREADKEEPER_EMBED_BACKEND=sentence-transformers
+
+# After any backend switch, homogenize the stored corpus so queries and
+# stored vectors live in the same space:
+tk-migrate-embeddings --all          # or --notes-only / --dialog-only
+tk-migrate-embeddings --dry-run      # report stale counts only
+```
+
+The migration is batched, resumable, and idempotent (a second run finds
+nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
+unchanged.
 
 ---
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.6.2"
+version = "0.7.0"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini, Copilot, VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -32,15 +32,27 @@ dependencies = [
 [project.optional-dependencies]
 # Semantic cross-language search + sub-linear vector index. Recommended
 # for any real use — without it, dialog_search falls back to FTS5 only.
+# Default backend is fastembed/ONNX Runtime: no PyTorch, ~700MB footprint.
 semantic = [
+    "fastembed>=0.3",
+    "numpy>=1.24.0",
+    "sqlite-vec>=0.1.9",
+]
+# Legacy PyTorch backend, kept as an opt-in fallback. Install this AND set
+# THREADKEEPER_EMBED_BACKEND=sentence-transformers to use it. ~1.8GB RSS.
+semantic-st = [
     "sentence-transformers>=2.2.0",
     "numpy>=1.24.0",
     "sqlite-vec>=0.1.9",
 ]
-# Test runner + coverage.
+# Test runner + coverage. pytest-forked isolates each test in its own
+# process: the per-test package re-import (tests/conftest.py) accumulates
+# native ONNX/tokenizer thread pools that can deadlock sqlite finalize in a
+# single long-lived process, so CI runs `pytest --forked`.
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-forked>=1.6",
 ]
 
 [project.urls]
@@ -54,6 +66,9 @@ Changelog     = "https://github.com/po4erk91/thread-keeper/releases"
 # After `pip install threadkeeper`, the user gets `thread-keeper-setup`
 # directly on PATH. Equivalent to `python -m threadkeeper._setup`.
 thread-keeper-setup = "threadkeeper._setup:main"
+# Recompute stored embeddings with the active backend (e.g. after switching to
+# the ONNX default). Equivalent to `python -m threadkeeper.migrate_embeddings`.
+tk-migrate-embeddings = "threadkeeper.migrate_embeddings:main"
 
 [tool.setuptools.packages.find]
 include = ["threadkeeper*"]

@@ -26,6 +26,29 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _drop_embed_model_after_test():
+    """Drop any embedding model loaded during the test (memory hygiene).
+
+    The ONNX backend (fastembed) holds an onnxruntime InferenceSession with a
+    native thread pool; the per-test sys.modules re-import (see _bootstrap_mp)
+    would otherwise let those pile up. CI runs `pytest --forked` so each test is
+    process-isolated (the reliable cure for native-resource accumulation — see
+    .github/workflows/test.yml); this teardown just keeps non-forked local runs
+    of large subsets from ballooning. Best-effort.
+    """
+    yield
+    import gc
+    import sys as _sys
+    emb = _sys.modules.get("threadkeeper.embeddings")
+    if emb is not None:
+        try:
+            emb.unload_model()
+        except Exception:
+            pass
+    gc.collect()
+
+
 def _force_clean_env(tmp_root: Path) -> dict[str, str]:
     """Env knobs that must be set before threadkeeper.config imports.
 
@@ -52,6 +75,13 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
+        # The ONNX embedding backend (fastembed) pulls tokenizers + onnxruntime,
+        # which each spawn native thread pools (tokenizers via rayon). The
+        # per-test sys.modules wipe + re-import (see _bootstrap_mp) orphans those
+        # pools; orphaned rayon workers deadlock sqlite connection finalize on
+        # the next re-import. Disabling the parallel pools keeps re-imports clean.
+        "TOKENIZERS_PARALLELISM": "false",
+        "OMP_NUM_THREADS": "1",
     }
 
 

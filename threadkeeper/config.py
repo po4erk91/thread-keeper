@@ -2,6 +2,7 @@
 Imported wherever a constant or config is needed; cheap to import."""
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,23 @@ DB_PATH: Path = Path(
 EMBED_MODEL_NAME: str = os.environ.get(
     "THREADKEEPER_EMBED_MODEL",
     "paraphrase-multilingual-MiniLM-L12-v2",  # 118 MB, RU+EN cross-lingual
+)
+
+# Embedding runtime backend. 'onnx' (default) runs the model through fastembed /
+# ONNX Runtime — no PyTorch, ~700MB footprint (vs ~1.8GB). 'sentence-transformers' is
+# the legacy PyTorch path, kept as an opt-in fallback (install `.[semantic-st]`
+# and set THREADKEEPER_EMBED_BACKEND=sentence-transformers). Both produce the
+# same 384-dim vectors, but fastembed's are numerically NOT identical to ST's,
+# so switching backends warrants a `tk-migrate-embeddings --all` recompute.
+EMBED_BACKEND: str = os.environ.get(
+    "THREADKEEPER_EMBED_BACKEND", "onnx"
+).strip().lower()
+
+# fastembed addresses the model under its sentence-transformers org prefix;
+# SentenceTransformer accepts the bare name. Normalize for the ONNX backend.
+FASTEMBED_MODEL_ID: str = (
+    EMBED_MODEL_NAME if "/" in EMBED_MODEL_NAME
+    else f"sentence-transformers/{EMBED_MODEL_NAME}"
 )
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -52,15 +70,26 @@ NO_EMBEDDINGS: bool = os.environ.get(
 # Optional semantic search. If sentence-transformers is not installed OR the
 # no-embeddings opt-out is set, fall back to FTS5 keyword matching + delegate.
 # Brief still works either way.
+def _installed(*mods: str) -> bool:
+    """True if every module is importable, checked WITHOUT importing it.
+
+    `find_spec` locates the module via the import machinery but never executes
+    it — so probing availability here doesn't pull PyTorch / ONNX Runtime /
+    tokenizers (and their thread pools) into every process that imports config.
+    The heavy import stays lazy in `embeddings._get_model()`.
+    """
+    try:
+        return all(importlib.util.find_spec(m) is not None for m in mods)
+    except (ImportError, ValueError):
+        return False
+
+
 if NO_EMBEDDINGS:
     SEMANTIC_AVAILABLE: bool = False
-else:
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore  # noqa: F401
-        import numpy as np  # type: ignore  # noqa: F401
-        SEMANTIC_AVAILABLE = True
-    except Exception:
-        SEMANTIC_AVAILABLE = False
+elif EMBED_BACKEND == "sentence-transformers":
+    SEMANTIC_AVAILABLE = _installed("sentence_transformers", "numpy")
+else:  # 'onnx' (default)
+    SEMANTIC_AVAILABLE = _installed("fastembed", "numpy")
 
 # Client label used for `presence`/`sessions` rows.
 CLIENT_LABEL: str = os.environ.get("THREADKEEPER_CLIENT", "claude")

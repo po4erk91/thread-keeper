@@ -15,7 +15,7 @@ from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, gen_concept_id, gen_distill_id
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
-from ..embeddings import _embed
+from ..embeddings import _embed, embed_tag
 
 
 # Locale-aware heuristic matchers — patterns live in i18n.py so this
@@ -340,8 +340,8 @@ def accept_candidate(id: int, target_kind: str = "",
         emb = _embed(content)
         cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, "
-            "session_id, embedding) VALUES (?,?,?,?,?,?)",
-            (tid, content, "insight", now, identity._session_id, emb),
+            "session_id, embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            (tid, content, "insight", now, identity._session_id, emb, embed_tag(emb)),
         )
         placed = f"note id={cur.lastrowid} thread={tid or '-'}"
     elif kind == "concept":
