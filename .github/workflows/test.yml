@@ -32,9 +32,9 @@ jobs:
           # Editable install with both optional-dep groups. semantic is
           # required: a handful of tests (test_delegated_search,
           # test_vec_search) assert on actual cosine search behavior and
-          # don't have a skip-when-missing guard. sentence-transformers
-          # pulls torch + numpy + sqlite-vec — ~500MB but cached between
-          # runs via the pip cache action above.
+          # don't have a skip-when-missing guard. semantic now uses
+          # fastembed/ONNX Runtime (no PyTorch) + numpy + sqlite-vec; the
+          # model is fetched from HF on first use and is small.
           pip install -e '.[semantic,dev]'
 
       - name: Run pytest
@@ -46,4 +46,8 @@ jobs:
           THREADKEEPER_SPAWN_BUDGET_POLL_S: "0"
           THREADKEEPER_SEARCH_PROXY_POLL_S: "0"
         run: |
-          python -m pytest -q --tb=short
+          # --forked isolates each test in its own process. The suite's
+          # per-test package re-import (tests/conftest.py) otherwise piles up
+          # native ONNX/tokenizer thread pools that can deadlock sqlite
+          # connection finalize in a single long-lived interpreter.
+          python -m pytest -q --forked --tb=short
