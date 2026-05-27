@@ -7,6 +7,40 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.7.0 — 2026-05-27
+
+### Changed
+
+- **Default embedding backend is now fastembed / ONNX Runtime** instead of
+  sentence-transformers / PyTorch. Same model
+  (`paraphrase-multilingual-MiniLM-L12-v2`, 384-dim) and `vec0` schema, but no
+  PyTorch: a model-loaded process drops from ~1.8 GB to ~670 MB physical
+  footprint, and the install sheds ~650 MB (torch + transformers +
+  scikit-learn + scipy).
+- `THREADKEEPER_EMBED_BACKEND` selects the runtime (`onnx` default;
+  `sentence-transformers` opt-in). The `semantic` extra now installs fastembed;
+  the new `semantic-st` extra installs the legacy PyTorch backend.
+
+### Added
+
+- `tk-migrate-embeddings` — batched, resumable, idempotent CLI that recomputes
+  stored embeddings with the active backend after a switch (both the BLOB
+  column and the `vec0` mirror).
+- `embed_backend` column on `notes` / `dialog_messages` recording which backend
+  produced each stored vector (NULL = legacy).
+
+### Fixed
+
+- `config` is cheap to import again: backend availability is probed via
+  `importlib.util.find_spec` rather than importing the heavy library at module
+  load, so the embedding runtime (and its thread pools) load lazily on first use.
+
+### Internal
+
+- CI runs `pytest --forked` so each test is process-isolated. The suite's
+  per-test package re-import otherwise accumulates native ONNX / tokenizer
+  thread pools that can deadlock sqlite connection finalize.
+
 ## v0.6.2 — 2026-05-26
 
 ### Fixed
