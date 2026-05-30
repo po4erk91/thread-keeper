@@ -71,6 +71,16 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- `extract_recent` no longer re-harvests thread-keeper's own spawned-child
+  sessions. Curator / panel / research children open with arbitrary task
+  framing ("You are auditing…", "You are analyzing whether…", "Use the
+  Write tool to…") that the prompt-prefix noise list didn't match, so their
+  system prompts re-entered the dialog and became extract candidates — the
+  dominant noise source (66 of 107 historical decisions, ~5% accept rate).
+  extract_recent now also excludes any session whose cid is a
+  `tasks.spawned_cid`, reusing the same provenance link as
+  `ingest._is_spawned_child_session`. Kills the whole self-pollution class
+  regardless of prompt wording.
 - `search()` / `brief(query=...)` / `dialog_search` no longer choke on
   everyday punctuation. A query containing an FTS5 operator char
   (`-`, `?`, `/`, `(`, `:`, `*`) previously raised `fts_error` from `search()`

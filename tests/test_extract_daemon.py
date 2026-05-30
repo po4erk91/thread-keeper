@@ -347,6 +347,61 @@ def test_extract_filters_shadow_observer_sessions(tmp_path, monkeypatch):
     assert not any(r["source_cid"] == "shadow-sess" for r in rows)
 
 
+def test_extract_filters_spawned_child_sessions(tmp_path, monkeypatch):
+    """A session whose cid is a tasks.spawned_cid is one of OUR spawned
+    children (curator, panel voter, ad-hoc research agent, ...). Its dialog
+    is system-injected task framing + work artifacts, never user intent —
+    exclude it wholesale, regardless of how its prompt opens. This catches
+    the noise the prompt-prefix list misses: real rejects included children
+    opening with 'You are auditing…', 'You are analyzing whether…',
+    'Use the Write tool to…' — none matched _INTERNAL_PROMPT_PREFIXES, so
+    66/107 historical rejects were exactly this class."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    child_cid = "child-cid-xyz"
+    # Register the child in tasks (parent spawned it). Prompt text is
+    # deliberately NOT in any prefix list — the link is what identifies it.
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_x', 0, 'parent-cid', ?, '/x', "
+        "'You are auditing a slice of lessons. Analyze each one.', ?)",
+        (child_cid, now - 200),
+    )
+    # The child emits substantive-looking dialog that WOULD trip H1/H2/H3.
+    _seed_dialog(
+        conn, "user",
+        "I want you to record the decision: always reset the network "
+        "before WDA start, every single run.",
+        now - 90, session_id=child_cid,
+    )
+    _seed_dialog(
+        conn, "assistant",
+        "## Findings\n\nWe want the pipeline to always dedup first.\n"
+        "Therefore the rule is: dedup before enrich. In conclusion, that "
+        "is the durable pattern here for every future run of this job.",
+        now - 85, session_id=child_cid,
+    )
+    # A genuine foreground user session — must still be picked up.
+    _seed_dialog(
+        conn, "user",
+        "I want you to record decision notes automatically without "
+        "waiting for the agent to remember each time.",
+        now - 60, session_id="real-sess",
+    )
+    conn.commit()
+
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out
+    rows = conn.execute(
+        "SELECT source_cid FROM extract_candidates WHERE status='pending'"
+    ).fetchall()
+    assert any(r["source_cid"] == "real-sess" for r in rows), \
+        "real user session should still yield candidates"
+    assert not any(r["source_cid"] == child_cid for r in rows), \
+        "spawned-child session must be fully excluded"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Daemon lifecycle
 # ──────────────────────────────────────────────────────────────────────

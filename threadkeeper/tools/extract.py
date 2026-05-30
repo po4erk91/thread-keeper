@@ -145,6 +145,14 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         [f"content NOT LIKE ?"] * len(_NOISE_CONTENT_PREFIXES)
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
+    # Session-level filter #2 — drop sessions that ARE one of our spawned
+    # children (their cid appears as tasks.spawned_cid). The prompt-prefix
+    # list above only catches children whose opening line is a known
+    # marker; spawned agents open with arbitrary task framing ("You are
+    # auditing…", "You are analyzing whether…", "Use the Write tool to…"),
+    # so 66/107 historical rejects were spawned-child noise that slipped
+    # past the prefix list. The tasks.spawned_cid link identifies them
+    # regardless of wording. Mirrors ingest._is_spawned_child_session.
     rows = conn.execute(
         "SELECT uuid, role, content, session_id, created_at, embedding "
         "FROM dialog_messages WHERE created_at >= ? "
@@ -155,6 +163,9 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         "AND session_id NOT IN ("
         "  SELECT DISTINCT session_id FROM dialog_messages "
         f"  WHERE role = 'user' AND ({sess_prefix_clauses})"
+        ") "
+        "AND session_id NOT IN ("
+        "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ") "
         "ORDER BY created_at ASC LIMIT ?",
         (cutoff, *msg_noise_params, *sess_prefix_params,

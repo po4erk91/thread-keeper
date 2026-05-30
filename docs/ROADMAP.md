@@ -166,10 +166,24 @@ heuristic (time + absence of patches). Unclear whether this loses useful
 skills. Need a dry-run mode with a dump of "what would be archived" for
 review. Scope: S.
 
-**Extract_recent UX.** `review_candidates` is rarely called. Hypothesis:
-too many candidates or they're noisy. Need to either raise the
-threshold, or make high-confidence candidates flow into notes
-automatically (with rollback). Scope: S.
+**Extract_recent precision.** ✅ PARTIALLY DONE. The hypothesis was
+"too many / too noisy", and the ledger confirmed it hard: 107 decisions,
+1 accept, ~5% precision. Root cause found by reading the 106 rejects —
+the dominant noise (66/107, all on the H1 user_want heuristic) was
+thread-keeper's OWN spawned-child sessions (curator/panel/research
+agents) whose system prompts re-entered the dialog and got re-extracted.
+The prompt-prefix noise list only caught known openers; arbitrary task
+framing ("You are auditing…", "You are analyzing whether…", "Use the
+Write tool to…") slipped through. Fix: extract_recent now also excludes
+any session whose cid is a `tasks.spawned_cid` (reusing the
+`ingest._is_spawned_child_session` provenance link) — kills the whole
+class regardless of wording. Remaining open: even with self-noise gone,
+the surviving heuristics (H2 long_insight on assistant summaries, H3
+example_regularity on bulleted reports) still over-fire on work
+artifacts; a precision re-measurement after a few real sessions decides
+whether they need tightening or a similarity-scorer (the ML-extraction
+item above). Auto-flow-to-notes is explicitly NOT pursued — at the
+observed precision it would inject garbage. Scope of remainder: S.
 
 ---
 
