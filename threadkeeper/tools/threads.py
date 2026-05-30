@@ -84,7 +84,13 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
     """Add a note to a thread. Write terse, optimized for future-Claude.
 
     `kind`: 'move' (we tried/decided X), 'failed' (tried X, broke because Y),
-    'insight' (crystallized observation), 'open_q' (something to come back to)."""
+    'insight' (crystallized observation), 'open_q' (something to come back to).
+
+    Reopens the thread: a note on an `idle` OR `closed` thread revives it to
+    `active`. Closed is not terminal — returning to a topic (adding a note)
+    brings it back. This is what makes aggressive auto-close safe: the
+    thread-janitor can close idle threads to harvest skills, and you just
+    note() to pick any of them back up."""
     conn = get_db()
     _ensure_session(conn)
     if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():
@@ -100,7 +106,8 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
     _vec_upsert_note(conn, note_id, emb)
     conn.execute(
         "UPDATE threads SET last_touched_at=?, last_move=?, "
-        "state=CASE WHEN state='idle' THEN 'active' ELSE state END WHERE id=?",
+        "state=CASE WHEN state IN ('idle','closed') THEN 'active' ELSE state END "
+        "WHERE id=?",
         (now, content[:90], thread_id),
     )
     _emit(conn, f"note:{kind}", target=thread_id, summary=content)
