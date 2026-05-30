@@ -167,13 +167,21 @@ so no dialog falls between ticks), `MIN_CHARS` 500→1500 so marginal
 windows don't spawn a child just to emit SKIP. 4× fewer children, lessons
 store is already saturating so recall loss is negligible.
 
-Surfaced-but-deferred: shadow children's `tasks.return_code` records
-NULL even after they end (0 of 775 ended tasks have a code), so the
-dashboard can't measure shadow's spawn→outcome conversion. The reap path
-(`_reap_finished_tasks`) only runs for pid>0 headless children polled
-while alive; shadow's slim children exit between poll ticks and are
-reaped by the OS first. Worth a follow-up: persist exit status at child
-teardown rather than relying on the parent's waitpid race. Scope: S.
+Resolved (was "surfaced-but-deferred"): `tasks.return_code` recorded
+NULL even after children ended (0 of 944 ended tasks had a code), so the
+dashboard couldn't measure spawn→outcome conversion. The original
+diagnosis (slim children racing the poll) was incomplete — it affected
+*every* ended task, including pid>0 headless ones. Real cause: the
+`tasks` table outlives the MCP process that launched a child, so the
+cross-session reaper is almost never the spawning parent and
+`os.waitpid` raises `ChildProcessError` (exit code unknowable for a
+process you didn't spawn). Fix shipped: headless children run under a
+thin stdlib recorder (`threadkeeper/_spawn_wrap.py`) that persists
+`return_code` from inside the child's own lifecycle — no waitpid race,
+no dependency on the launching session staying alive. It forwards
+termination signals so `task_kill` still works; the parent reaper stays
+as a fallback. The visible/Terminal path records via a `--record` shell
+line.
 
 **Documentation.** README / ARCHITECTURE / this file — update now.
 Going forward: keep in sync when the set of tools or daemons changes.

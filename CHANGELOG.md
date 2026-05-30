@@ -33,6 +33,21 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- `tasks.return_code` was NULL for **every** ended task (measured 0 of 944),
+  so the dashboard could never measure a spawn→outcome conversion. Root cause
+  was deeper than previously documented (not just slim children racing the
+  poll): the `tasks` table outlives the MCP process that launched a child, so
+  the cross-session reaper is almost never the spawning parent — its
+  `os.waitpid` raises `ChildProcessError` and the exit code is lost. Fixed by
+  running headless children under a thin stdlib recorder
+  (`threadkeeper/_spawn_wrap.py`) that writes `return_code` from inside the
+  child's own lifecycle, independent of any waitpid race or which session is
+  alive. The recorder forwards `SIGTERM`/`SIGINT`/`SIGHUP` so `task_kill`
+  still terminates the real child; the visible/Terminal path persists the
+  code via a `--record` shell line. The parent reaper
+  (`_reap_finished_tasks`) stays as a fallback. Run by file path (not
+  `python -m`) so it adds zero package-init cost per spawn.
+
 - extract_recent self-pollution: also exclude **curator** and
   **candidate-reviewer** daemon children by prompt opener. The v0.8.1
   `tasks.spawned_cid` exclusion catches `spawn()` children, but curator and

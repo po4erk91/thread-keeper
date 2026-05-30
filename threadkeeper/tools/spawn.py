@@ -21,11 +21,16 @@ from typing import Optional
 
 from .._mcp import mcp
 from ..db import get_db
-from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR
+from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
 from ..helpers import fmt_age, q, alive
 from .. import identity  # noqa: F401  (kept for future identity.* attr access)
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..ingest import _parse_ts
+
+# Path to the exit-code recorder that wraps spawned children so their real
+# return_code reaches the DB regardless of which session reaps them. Run by
+# file path (not `-m`) to avoid importing the package on every spawn.
+_WRAP = Path(__file__).resolve().parent.parent / "_spawn_wrap.py"
 
 
 def _claude_bin() -> Optional[str]:
@@ -584,6 +589,17 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             # then `read` so the window stays open for inspection.
             script_path = TASK_LOG_DIR / f"{task_id}.command"
             cmd_line = " \\\n    ".join(shlex.quote(a) for a in cmd)
+            # After the child exits in this shell, persist its real exit code
+            # to the DB (the visible/pid=0 path is invisible to the parent
+            # reaper's waitpid). Best-effort; never blocks window teardown.
+            wrap_record = ""
+            if _WRAP.exists():
+                wrap_record = (
+                    shlex.quote(sys.executable) + " "
+                    + shlex.quote(str(_WRAP)) + " --record "
+                    + shlex.quote(str(DB_PATH)) + " "
+                    + shlex.quote(task_id) + ' "$rc" 2>/dev/null || true'
+                )
             env_pairs = [
                 ("THREADKEEPER_FORCE_CID", child_cid),
                 ("THREADKEEPER_SPAWNED_CHILD", "1"),
@@ -631,6 +647,7 @@ echo '────────────────────────�
 echo
 {cmd_line}
 rc=$?
+{wrap_record}
 echo
 echo "── done (exit=$rc) — closing in 2s ──"
 sleep 2
@@ -653,10 +670,21 @@ exit $rc
             # here; tasks() relies on spawned_cid + jsonl mtime instead.
             proc_pid = 0
         else:
+            # Run the child UNDER our exit-code recorder so return_code lands
+            # in the DB from inside the child's own lifecycle — the parent
+            # reaper's waitpid can't see cross-session children (the reason
+            # return_code was always NULL). Degrade to the bare cmd if the
+            # recorder file is somehow missing.
+            launch_cmd = cmd
+            if _WRAP.exists():
+                launch_cmd = [
+                    sys.executable, str(_WRAP), str(DB_PATH), task_id,
+                    "--", *cmd,
+                ]
             if log_path is not None:
                 log_f = log_path.open("wb")
                 proc = subprocess.Popen(
-                    cmd,
+                    launch_cmd,
                     cwd=cwd,
                     stdin=subprocess.DEVNULL,
                     stdout=log_f,
@@ -667,7 +695,7 @@ exit $rc
                 log_f.close()
             else:
                 proc = subprocess.Popen(
-                    cmd,
+                    launch_cmd,
                     cwd=cwd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -1006,7 +1034,18 @@ def spawn_status() -> str:
 
 
 def task_kill(task_id: str, force: bool = False) -> str:
-    """Stop a spawned task. SIGTERM by default; force=True sends SIGKILL."""
+    """Stop a spawned task. SIGTERM by default; force=True sends SIGKILL.
+
+    Headless children launch detached (``start_new_session=True``) under the
+    exit-code recorder, so the tracked pid is the session/group leader and
+    the real CLI child shares its process group. We signal the whole group
+    (``killpg``) rather than the bare pid: ``force`` sends SIGKILL, which the
+    recorder cannot forward (SIGKILL is uncatchable), so a pid-only kill
+    would drop the wrapper and orphan the live ``claude`` child. Killing the
+    group reaps wrapper + child together (and any same-group MCP subprocesses
+    the child started). Falls back to a single-pid ``kill`` if the group send
+    is refused.
+    """
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
@@ -1017,16 +1056,35 @@ def task_kill(task_id: str, force: bool = False) -> str:
     if row["ended_at"]:
         return f"already_ended task={task_id}"
     pid = row["pid"]
-    sig_to_send = _sig.SIGKILL if force else _sig.SIGTERM
-    try:
-        os.kill(pid, sig_to_send)
-    except ProcessLookupError:
+    if not pid or pid <= 0:
+        # Visible/Terminal tasks aren't tracked by pid (pid=0). Signalling
+        # pid 0 would hit the server's OWN process group — refuse instead.
+        return (f"ERR not_killable_by_pid task={task_id} "
+                f"(visible/terminal task — close its window)")
+
+    def _mark_dead() -> str:
         conn.execute(
             "UPDATE tasks SET ended_at=? WHERE id=?",
             (int(time.time()), task_id),
         )
         conn.commit()
         return f"already_dead task={task_id}"
+
+    sig_to_send = _sig.SIGKILL if force else _sig.SIGTERM
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return _mark_dead()
+    try:
+        os.killpg(pgid, sig_to_send)
+    except ProcessLookupError:
+        return _mark_dead()
     except PermissionError:
-        return f"ERR permission_denied pid={pid}"
+        # Group send refused (cross-owner group); fall back to the pid.
+        try:
+            os.kill(pid, sig_to_send)
+        except ProcessLookupError:
+            return _mark_dead()
+        except PermissionError:
+            return f"ERR permission_denied pid={pid}"
     return f"signal={sig_to_send.name} sent task={task_id} pid={pid}"
