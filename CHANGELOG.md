@@ -16,6 +16,21 @@ version bumps follow semver per the policy in
   dropped at spawn time and nothing ever waited on it, so `return_code`
   stayed NULL for every task and finished children lingered as "running"
   zombie rows. `tasks()` now shows `rc=<n>` for completed tasks.
+- Passive skill-use detection now feeds tier promotion. The ingest scanner
+  bumped only `use_count` and never `foreground_use_count`, and never
+  recomputed tier — so every skill was frozen at `hypothesis` regardless of
+  real usage. Both scan sites now route through a shared `_record_skill_use`
+  that bumps `foreground_use_count` and recomputes the tier ladder
+  (hypothesis → observed → validated) for genuine foreground sessions, while
+  spawned review-fork child sessions (matched via `tasks.spawned_cid`) bump
+  only the raw `use_count` — so the system observing its own behavior can't
+  self-promote a skill (mirroring the dialectic evidence discount).
+
+### Added
+
+- `scripts/backfill_skill_tiers.py` — one-shot, idempotent backfill that
+  recomputes `foreground_use_count` + tier for every skill from a transcript
+  re-scan, iterating to a tier fixpoint. Dry-run by default; `--apply` writes.
 
 ## v0.7.0 — 2026-05-27
 

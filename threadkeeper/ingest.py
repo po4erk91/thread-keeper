@@ -126,6 +126,67 @@ def _scan_message_for_skill_use(msg: dict) -> list[str]:
     return found
 
 
+def _is_spawned_child_session(conn: sqlite3.Connection,
+                             session_id: Optional[str]) -> bool:
+    """True when `session_id` belongs to a child we spawned (its cid is a
+    tasks.spawned_cid). Skill use inside review-fork children must NOT count
+    toward tier promotion — the system observing its own behavior can't
+    promote a skill, mirroring the dialectic evidence discount.
+
+    Best-effort: spawned_cid is linked lazily, so a just-started child may
+    briefly read as foreground. Acceptable — the backfill pass corrects it
+    once the link resolves."""
+    if not session_id:
+        return False
+    try:
+        return conn.execute(
+            "SELECT 1 FROM tasks WHERE spawned_cid=? LIMIT 1", (session_id,)
+        ).fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
+
+
+def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
+                     created_at: int,
+                     session_id: Optional[str] = None) -> None:
+    """Record one observed Skill invocation against skill_usage.
+
+    `use_count` (raw) always increments. `foreground_use_count` — the
+    counter that GATES tier promotion — increments only for genuine
+    foreground sessions, not spawned review-fork children. On a real
+    foreground bump, recompute the skill's tier so the hypothesis →
+    observed → validated ladder actually advances from passive usage.
+
+    Idempotent via the last_used_at guard (re-ingesting the same message
+    won't double-count). Single combined UPDATE so the guard sees the
+    pre-update last_used_at for both counters."""
+    fg = 0 if _is_spawned_child_session(conn, session_id) else 1
+    try:
+        conn.execute(
+            "INSERT INTO skill_usage "
+            "(name, created_at, created_by_origin) "
+            "VALUES (?, ?, 'foreground') "
+            "ON CONFLICT(name) DO NOTHING",
+            (skill_name, created_at),
+        )
+        cur = conn.execute(
+            "UPDATE skill_usage "
+            "SET last_used_at=?, use_count=use_count+1, "
+            "    foreground_use_count=foreground_use_count+? "
+            "WHERE name=? AND (last_used_at IS NULL "
+            "OR last_used_at < ?)",
+            (created_at, fg, skill_name, created_at),
+        )
+    except sqlite3.OperationalError:
+        return  # skill_usage missing on this conn
+    if fg and cur.rowcount:
+        try:
+            from .tools.skills import _recompute_skill_tier
+            _recompute_skill_tier(conn, skill_name, created_at)
+        except (ImportError, sqlite3.OperationalError):
+            pass
+
+
 def _extract_text(msg: dict) -> str:
     """Pull searchable text from a message; skip tool_use args, cap tool_results."""
     content = msg.get("content", "")
@@ -192,23 +253,9 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
             # whose text body would fail the >=10 char filter below.
             if nm.role == "assistant":
                 for skill_name in _scan_message_for_skill_use(nm.raw):
-                    try:
-                        conn.execute(
-                            "INSERT INTO skill_usage "
-                            "(name, created_at, created_by_origin) "
-                            "VALUES (?, ?, 'foreground') "
-                            "ON CONFLICT(name) DO NOTHING",
-                            (skill_name, nm.created_at),
-                        )
-                        conn.execute(
-                            "UPDATE skill_usage "
-                            "SET last_used_at=?, use_count=use_count+1 "
-                            "WHERE name=? AND (last_used_at IS NULL "
-                            "OR last_used_at < ?)",
-                            (nm.created_at, skill_name, nm.created_at),
-                        )
-                    except sqlite3.OperationalError:
-                        pass  # skill_usage missing on this conn
+                    _record_skill_use(
+                        conn, skill_name, nm.created_at, nm.session_id
+                    )
             text = nm.content
             if not text or len(text) < 10:
                 continue
@@ -330,24 +377,10 @@ def _backfill_skill_usage_from_jsonls(conn: sqlite3.Connection) -> int:
                     if not skills:
                         continue
                     for skill_name in skills:
-                        try:
-                            conn.execute(
-                                "INSERT INTO skill_usage "
-                                "(name, created_at, created_by_origin) "
-                                "VALUES (?, ?, 'foreground') "
-                                "ON CONFLICT(name) DO NOTHING",
-                                (skill_name, nm.created_at),
-                            )
-                            conn.execute(
-                                "UPDATE skill_usage "
-                                "SET last_used_at=?, use_count=use_count+1 "
-                                "WHERE name=? AND (last_used_at IS NULL "
-                                "OR last_used_at < ?)",
-                                (nm.created_at, skill_name, nm.created_at),
-                            )
-                            processed += 1
-                        except sqlite3.OperationalError:
-                            pass
+                        _record_skill_use(
+                            conn, skill_name, nm.created_at, nm.session_id
+                        )
+                        processed += 1
             except OSError:
                 continue
     try:
