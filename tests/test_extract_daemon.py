@@ -347,6 +347,64 @@ def test_extract_filters_shadow_observer_sessions(tmp_path, monkeypatch):
     assert not any(r["source_cid"] == "shadow-sess" for r in rows)
 
 
+def test_extract_filters_curator_and_candidate_children(tmp_path, monkeypatch):
+    """Curator + candidate-reviewer are DAEMONS, not spawn() children — their
+    sessions link into tasks.spawned_cid unreliably, so the spawned_cid
+    exclusion alone misses them. But their prompt openers are fixed, so the
+    prompt-prefix filter (_INTERNAL_PROMPT_PREFIXES) catches them with no
+    tasks-row dependency. Was the single biggest reject class in the live
+    ledger (54 curator + others of 126 rejects). Verifies BOTH daemon-child
+    sessions are fully excluded while a real user session survives."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    # Curator child — NOT registered in tasks at all (no spawned_cid link),
+    # so only the prompt-prefix filter can catch it.
+    _seed_dialog(
+        conn, "user",
+        "You are an autonomous CURATOR for thread-keeper's lessons + "
+        "skills library. You read the inventory below…",
+        now - 120, session_id="curator-sess",
+    )
+    _seed_dialog(
+        conn, "assistant",
+        "## Findings\n\nWe want the pipeline to always dedup first. "
+        "Therefore the durable rule for every future run is dedup-before-"
+        "enrich, in conclusion.",
+        now - 115, session_id="curator-sess",
+    )
+    # Candidate-reviewer child — same deal.
+    _seed_dialog(
+        conn, "user",
+        "You are a CANDIDATE REVIEWER for thread-keeper's extract queue. "
+        "For each candidate decide…",
+        now - 100, session_id="candrev-sess",
+    )
+    _seed_dialog(
+        conn, "assistant",
+        "I want to record the rule: always verify the ticket before "
+        "closing. That is a class-level policy worth keeping.",
+        now - 95, session_id="candrev-sess",
+    )
+    # Real user session — must survive.
+    _seed_dialog(
+        conn, "user",
+        "I want you to auto-record decisions without me asking each time, "
+        "as a standing rule for this project.",
+        now - 60, session_id="real-sess",
+    )
+    conn.commit()
+
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out
+    cids = [r["source_cid"] for r in conn.execute(
+        "SELECT source_cid FROM extract_candidates WHERE status='pending'"
+    ).fetchall()]
+    assert "real-sess" in cids, "real user session should yield a candidate"
+    assert "curator-sess" not in cids, "curator child must be excluded"
+    assert "candrev-sess" not in cids, "candidate-reviewer child must be excluded"
+
+
 def test_extract_filters_spawned_child_sessions(tmp_path, monkeypatch):
     """A session whose cid is a tasks.spawned_cid is one of OUR spawned
     children (curator, panel voter, ad-hoc research agent, ...). Its dialog

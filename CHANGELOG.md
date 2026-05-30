@@ -7,6 +7,22 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- extract_recent self-pollution: also exclude **curator** and
+  **candidate-reviewer** daemon children by prompt opener. The v0.8.1
+  `tasks.spawned_cid` exclusion catches `spawn()` children, but curator and
+  candidate-reviewer are *daemons* whose sessions link into `tasks`
+  unreliably (cid seen as `parent_cid` more often than `spawned_cid`), so
+  ~49 of 126 historical rejects — curator/candidate prompt fragments
+  re-harvested as candidates — slipped past it. Their openers are fixed, so
+  they're now in `_INTERNAL_PROMPT_PREFIXES` ("You are an autonomous
+  CURATOR", "You are a CANDIDATE REVIEWER") alongside shadow/probe/evolve —
+  caught with no tasks-row dependency. Together with the spawned_cid filter
+  this removes essentially all extract self-noise (the cause of the 1%
+  candidate accept-rate). Same fix benefits `shadow_review._collect_window`,
+  which shares the constant.
+
 ## v0.8.1 — 2026-05-30
 
 ### Added

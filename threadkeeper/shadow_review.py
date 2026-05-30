@@ -199,6 +199,14 @@ _INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
     "You are reviewing closed thread",
     "You are a PROBE RUNNER",
     "You are an EVOLVE REVIEWER",
+    # curator + candidate-reviewer are DAEMONS (not spawn() children), so
+    # their sessions link into tasks.spawned_cid unreliably — the
+    # spawned_cid exclusion in extract_recent misses them. Their prompt
+    # openers are fixed, so match those directly. These two were the
+    # biggest extract self-pollution class in the live ledger (curator
+    # alone = 54 of 126 rejects).
+    "You are an autonomous CURATOR",
+    "You are a CANDIDATE REVIEWER",
 )
 
 
