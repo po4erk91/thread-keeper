@@ -420,10 +420,15 @@ deployment](#cross-cli-deployment) below). The canonical wiring lives in
   Note: Claude Code's `Stop` fires at the end of every turn (there is no
   model-actionable session-end event), hence the once-per-session throttle.
 
-- **PreToolUse → tk-task-gate.sh** (matcher `^Task$`) — blocks the built-in
-  Task tool for work that should go through `spawn()` (see
-  `core_memory.spawn_pattern`). Claude-Code-specific; other CLIs ignore the
-  unknown event.
+- **PreToolUse → tk-task-gate.sh** (matcher `^(Task|Agent|Workflow)$`) —
+  steers the spawn-vs-native choice (see `core_memory.spawn_pattern`) with
+  two OPPOSITE heuristics, since the right default flipped with opus 4.8.
+  `Task` (legacy, non-opus-4.8 models): blocks fan-out lacking a synthesis
+  cue → push to `spawn()` (modes via `TK_TASK_GATE`: `deny`/`warn`/`off`).
+  `Agent`/`Workflow` (opus-4.8 native): native is the right default for
+  in-turn fan-out, so advisory `warn` ONLY on persistence signals
+  (cross-session, inter-agent channels, outlive-session, daemon) — never
+  hard-blocks. Claude-Code-specific; other CLIs ignore the unknown event.
 
 ### Cross-CLI deployment
 

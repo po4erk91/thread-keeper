@@ -206,12 +206,14 @@ def install_hooks(dry_run: bool) -> list[str]:
             "matcher": "",
             "command": str(TK_HOOKS_DIR / "tk-session-end.sh"),
         },
-        # spawn-vs-Task gate: block the built-in Task tool for work that
-        # should go through mcp__thread-keeper__spawn() (Claude Code only;
-        # other CLIs ignore an unknown PreToolUse event).
+        # spawn-vs-native gate: covers the legacy built-in Task tool AND the
+        # opus-4.8 native primitives (Agent/Workflow). Task → deny fan-out
+        # toward spawn(); Agent/Workflow → advisory warn on persistence
+        # signals only. Claude Code only; other CLIs ignore an unknown
+        # PreToolUse event.
         {
             "event": "PreToolUse",
-            "matcher": "^Task$",
+            "matcher": "^(Task|Agent|Workflow)$",
             "command": str(TK_HOOKS_DIR / "tk-task-gate.sh"),
         },
     ]

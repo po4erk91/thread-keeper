@@ -7,6 +7,30 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- `tk-task-gate.sh` now covers the opus-4.8 native parallelism tools
+  (`Agent` / `Workflow`), not only the legacy `Task` tool — with an
+  *inverted* heuristic, because the right default flipped. The gate keyed
+  only on `Task` (`matcher: ^Task$`), which opus 4.8 replaced with native
+  `Agent`/`Workflow`, so it silently no-op'd on every native call. Now:
+  - **`Task`** (still present on non-opus-4.8 models): unchanged — blocks
+    parallel-fanout work lacking a synthesis cue, pushes to `spawn()`
+    (`deny` default).
+  - **`Agent` / `Workflow`**: native is the right default for ephemeral
+    in-turn fan-out, so the gate stays out of the way there. Inverted —
+    advisory `warn` only (never hard-blocks) when the prompt carries
+    *persistence* signals (cross-session, inter-agent channels
+    broadcast/whisper/inbox/wait, must-outlive-the-session, daemon) — work
+    that belongs to `spawn()` but went to native.
+  Matcher `^Task$` → `^(Task|Agent|Workflow)$` (`_setup.py` updated so fresh
+  installs get it). No functional conflict between spawn and native existed —
+  spawn's child-linking already skips `agent-`-prefixed native-subagent
+  transcripts; this realigns the advisory. `core_memory.spawn_pattern` + the
+  `spawn-vs-task-decision-tree` lesson rewritten to choose on SCOPE
+  (cross-session / channels / daemon → spawn; in-turn fan-out → native)
+  rather than the obsolete N≥2/duration rule.
+
 ### Fixed
 
 - extract_recent self-pollution: also exclude **curator** and
