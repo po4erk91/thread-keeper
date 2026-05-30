@@ -354,3 +354,21 @@ PANEL_VOTE_WEIGHT: float = float(
 )
 PANEL_MODEL: str = os.environ.get("THREADKEEPER_PANEL_MODEL", "")
 PANEL_EFFORT: str = os.environ.get("THREADKEEPER_PANEL_EFFORT", "")
+
+# Evolve reviewer daemon. Periodically triages the format-evolution
+# suggestion queue (evolve_format writes; nothing read them → 5 pending, 0
+# actioned in the audit). Spawns a context-free child that, per pending
+# suggestion, calls evolve_decide(promote|dismiss): dedup near-duplicates,
+# drop stale/superseded ones, and PROMOTE the live ones so the brief
+# surfaces them sharply (★) for the foreground agent/human to APPLY. The
+# child NEVER applies a suggestion itself — applying edits format/code, a
+# foreground/human action. 0 disables (default — opt in). Recommended:
+# 604800 (weekly) — suggestions accrue slowly; this is housekeeping.
+EVOLVE_REVIEW_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S", "0")
+)
+# Minimum pending suggestions before the daemon spawns a reviewer child —
+# below this there's nothing worth an LLM pass.
+EVOLVE_REVIEW_MIN: int = int(
+    os.environ.get("THREADKEEPER_EVOLVE_REVIEW_MIN", "2")
+)

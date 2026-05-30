@@ -281,11 +281,53 @@ def evolve_review(include_applied: bool = False) -> str:
         ).fetchall()
     if not rows:
         return "no_pending"
+
+    def _st(e) -> str:
+        try:
+            return e["status"] or "pending"
+        except (IndexError, KeyError):
+            return "pending"
     return "\n".join(
-        f"#{e['id']} {'[APPLIED]' if e['applied'] else '[pending]'} "
+        f"#{e['id']} {'[APPLIED]' if e['applied'] else '['+_st(e)+']'} "
         f"{q(e['suggestion'])}" + (f" why={q(e['rationale'])}" if e["rationale"] else "")
         for e in rows
     )
+
+
+_EVOLVE_DECISIONS = {"promote", "dismiss"}
+
+
+@mcp.tool()
+def evolve_decide(evolve_id: int, decision: str, reason: str = "") -> str:
+    """Triage a pending format-evolution suggestion. Used by the autonomous
+    evolve reviewer daemon (and available manually).
+
+    `decision`:
+      'promote' — still relevant + worth doing → status='promoted', so the
+                  brief surfaces it sharply (★) for the foreground agent /
+                  human to ACTUALLY APPLY. Applying edits format/code — that
+                  stays a foreground/human action; this tool never applies.
+      'dismiss' — duplicate of another suggestion, superseded, or stale →
+                  status='dismissed', dropped from the pending queue.
+
+    `reason`: one line (esp. which #id it duplicates, for dismiss)."""
+    dec = decision.strip().lower()
+    if dec not in _EVOLVE_DECISIONS:
+        return f"ERR bad_decision={decision} (promote|dismiss)"
+    conn = get_db()
+    _ensure_session(conn)
+    if not conn.execute(
+        "SELECT 1 FROM evolve WHERE id=?", (int(evolve_id),)
+    ).fetchone():
+        return f"ERR evolve_not_found={evolve_id}"
+    status = "promoted" if dec == "promote" else "dismissed"
+    conn.execute(
+        "UPDATE evolve SET status=?, reviewed_at=?, review_reason=? WHERE id=?",
+        (status, int(time.time()), reason.strip() or None, int(evolve_id)),
+    )
+    _emit(conn, f"evolve_{status}", target=str(evolve_id), summary=reason[:140])
+    conn.commit()
+    return f"ok id={evolve_id} status={status}"
 
 
 @mcp.tool()

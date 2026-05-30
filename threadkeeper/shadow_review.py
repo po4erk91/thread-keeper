@@ -198,6 +198,7 @@ _INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
     "You are a SHADOW LEARNING OBSERVER",
     "You are reviewing closed thread",
     "You are a PROBE RUNNER",
+    "You are an EVOLVE REVIEWER",
 )
 
 

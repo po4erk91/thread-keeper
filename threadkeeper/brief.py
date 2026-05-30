@@ -762,15 +762,27 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         pass
 
     # ── evolve hints ──────────────────────────────────────────────────────
-    pend = conn.execute(
-        "SELECT suggestion FROM evolve WHERE applied=0 "
-        "ORDER BY created_at DESC LIMIT 3"
-    ).fetchall()
+    # Reviewer-vetted (promoted) suggestions sort first and get a ★ so the
+    # agent acts on them; dismissed ones drop out entirely. Falls back
+    # gracefully on pre-migration DBs where `status` doesn't exist yet.
+    try:
+        pend = conn.execute(
+            "SELECT suggestion, COALESCE(status,'pending') AS st FROM evolve "
+            "WHERE applied=0 AND COALESCE(status,'pending') != 'dismissed' "
+            "ORDER BY CASE WHEN COALESCE(status,'pending')='promoted' "
+            "         THEN 0 ELSE 1 END, created_at DESC LIMIT 3"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        pend = conn.execute(
+            "SELECT suggestion, 'pending' AS st FROM evolve WHERE applied=0 "
+            "ORDER BY created_at DESC LIMIT 3"
+        ).fetchall()
     if pend:
         out.append("")
         out.append("evolve_pending")
         for e in pend:
-            out.append(f"  {q(e['suggestion'][:200])}")
+            mark = "★ " if e["st"] == "promoted" else ""
+            out.append(f"  {mark}{q(e['suggestion'][:200])}")
 
     # ── footer reminder: IDs are tool-call internals only ─────────────────
     # Evolve_pending #1 noted that brief's T-codes/cids leak into user-facing

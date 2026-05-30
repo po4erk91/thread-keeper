@@ -72,6 +72,8 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_CURATOR_INTERVAL_S": "0",       # disable curator daemon
         "THREADKEEPER_EXTRACT_INTERVAL_S": "0",       # disable extract daemon
         "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",  # disable candidate-reviewer daemon
+        "THREADKEEPER_PROBE_INTERVAL_S": "0",         # disable probe daemon
+        "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": "0", # disable evolve reviewer daemon
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",

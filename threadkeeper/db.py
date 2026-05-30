@@ -507,6 +507,15 @@ def get_db() -> sqlite3.Connection:
         # so `tk-migrate-embeddings` can find stale vectors and skip done ones.
         "ALTER TABLE notes ADD COLUMN embed_backend TEXT",
         "ALTER TABLE dialog_messages ADD COLUMN embed_backend TEXT",
+        # Evolve triage: the autonomous evolve reviewer moves a suggestion
+        # from 'pending' to 'promoted' (still relevant, surface it sharply
+        # for the foreground agent / human to APPLY) or 'dismissed' (dup /
+        # superseded / stale). The legacy `applied` flag stays for the human
+        # "I implemented this" mark. status default 'pending' so existing
+        # rows enter the queue.
+        "ALTER TABLE evolve ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE evolve ADD COLUMN reviewed_at INTEGER",
+        "ALTER TABLE evolve ADD COLUMN review_reason TEXT",
     ):
         try:
             conn.execute(ddl)

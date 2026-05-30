@@ -9,6 +9,18 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- Autonomous **evolve reviewer** daemon (`threadkeeper/evolve_daemon.py`) —
+  triages the format-evolution suggestion queue that `evolve_format()` writes
+  to (the audit found 5 filed, 0 ever actioned: a write-only graveyard). A
+  weekly context-free child reviews pending suggestions and, per item, calls
+  the new `evolve_decide(id, promote|dismiss)` tool: PROMOTE keeps a live one
+  (brief now surfaces promoted suggestions first, marked ★), DISMISS drops
+  duplicates/stale/superseded ones. The child NEVER applies a suggestion —
+  applying edits format/code, a foreground/human action; the reviewer only
+  keeps the queue honest. `evolve` table gains `status`/`reviewed_at`/
+  `review_reason`. Knobs `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` (default 0 =
+  off; recommend 604800) and `EVOLVE_REVIEW_MIN` (default 2). Single-flight,
+  foreground-only, same daemon shape as probe/curator.
 - Curator now also reviews the **concepts** store (was: lessons + skills
   only). Each weekly curator pass appends a `## CONCEPTS` inventory —
   every concept with its confidence band and days since last

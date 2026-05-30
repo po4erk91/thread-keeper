@@ -164,6 +164,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             probe_daemon.start_probe_daemon()
         except Exception:
             pass
+        try:
+            from . import evolve_daemon
+            evolve_daemon.start_evolve_daemon()
+        except Exception:
+            pass
     return _session_id
 
 

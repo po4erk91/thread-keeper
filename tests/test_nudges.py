@@ -37,6 +37,19 @@ def _bootstrap_with_env(tmp_path, monkeypatch,
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
+        # Zero every background-daemon interval so no daemon thread fires a
+        # pass mid-test and emits a counted `spawn` event that races the
+        # nudge-counter assertions. Inherited from the real shell env
+        # otherwise (a dev box with probe/evolve daemons enabled in
+        # settings.json leaks the interval into pytest).
+        "THREADKEEPER_PROBE_INTERVAL_S": "0",
+        "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_CURATOR_INTERVAL_S": "0",
+        "THREADKEEPER_EXTRACT_INTERVAL_S": "0",
+        "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
+        "THREADKEEPER_MEMORY_GUARD_POLL_S": "0",
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_MEMORY_NUDGE_INTERVAL": str(memory_interval),
