@@ -329,3 +329,28 @@ PROBE_INTERVAL_S: float = float(
 PROBE_COOLDOWN_S: int = int(
     os.environ.get("THREADKEEPER_PROBE_COOLDOWN_S", str(7 * 86400))
 )
+
+# Judge panel — fills the distill/dialectic vote quorum with SPAWNED agents
+# that vote independently (the "collective mind"), instead of waiting for a
+# second human or lowering thresholds. convene_panel() raises N children with
+# distinct roles; each evaluates the target and votes (and MAY vote against).
+#
+# The adversarial guard: a panel earns the non-discounted `panel_vote` origin
+# (weight PANEL_VOTE_WEIGHT) ONLY when it includes a skeptic role (when
+# PANEL_REQUIRE_SKEPTIC). Otherwise children run as `background_review` (0.5),
+# so a rubber-stamp panel can't promote a claim — only one that could have
+# contradicted. The spawner grants the origin; no child self-elevates.
+PANEL_SIZE: int = int(os.environ.get("THREADKEEPER_PANEL_SIZE", "3"))
+PANEL_ROLES: list[str] = [
+    r.strip() for r in os.environ.get(
+        "THREADKEEPER_PANEL_ROLES", "skeptic,critic,generator"
+    ).split(",") if r.strip()
+]
+PANEL_REQUIRE_SKEPTIC: bool = os.environ.get(
+    "THREADKEEPER_PANEL_REQUIRE_SKEPTIC", "1"
+).lower() in {"1", "true", "yes", "on"}
+PANEL_VOTE_WEIGHT: float = float(
+    os.environ.get("THREADKEEPER_PANEL_VOTE_WEIGHT", "1.0")
+)
+PANEL_MODEL: str = os.environ.get("THREADKEEPER_PANEL_MODEL", "")
+PANEL_EFFORT: str = os.environ.get("THREADKEEPER_PANEL_EFFORT", "")

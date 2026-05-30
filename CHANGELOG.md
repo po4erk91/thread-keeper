@@ -7,6 +7,27 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- Judge panel (`threadkeeper/tools/panel.py`, `convene_panel`) — fills the
+  distill/dialectic promotion quorum with SPAWNED agents that vote
+  independently, instead of waiting for a second human or lowering
+  thresholds. Single-CLI installs never reached `vote_sum >= 2` (distill) or
+  the dialectic tier thresholds, because there's one human and the system's
+  own review-forks are discounted to 0.5 so they can't self-promote.
+  `convene_panel(target_kind, target_id)` spawns N role-diverse children;
+  each evaluates the target and casts one vote (and may vote against). The
+  honesty guard is structural: a panel earns the full-weight `panel_vote`
+  origin ONLY when adversarial (a skeptic is present, `PANEL_REQUIRE_SKEPTIC`);
+  otherwise it runs discounted as `background_review`, so a rubber-stamp
+  panel can't promote anything. The spawner grants the origin for the whole
+  panel — no child self-elevates. Distill votes (raw per-cid sum) work by
+  headcount; dialectic evidence (origin-discounted) is lifted to full weight
+  by the new `panel_vote` entry in `EVIDENCE_DISCOUNT`. Knobs:
+  `THREADKEEPER_PANEL_SIZE` (3), `PANEL_ROLES` (skeptic,critic,generator),
+  `PANEL_REQUIRE_SKEPTIC` (on), `PANEL_VOTE_WEIGHT` (1.0), `PANEL_MODEL`,
+  `PANEL_EFFORT`.
+
 ### Fixed
 
 - Spawned tasks now record their real `return_code` and get reaped. A new

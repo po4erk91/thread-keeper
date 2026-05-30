@@ -86,6 +86,15 @@ EVIDENCE_DISCOUNT: dict[str, float] = {
     "background_review": 0.5,
     "candidate_review": 0.5,
     "curator": 0.5,
+    # Full weight, but NOT a free pass: convene_panel grants the panel_vote
+    # origin ONLY to a genuinely adversarial panel (diverse roles + mandatory
+    # skeptic, each child free to vote against). A lone review-fork can't
+    # elect itself a panel — it runs as background_review (0.5). So the only
+    # route to full-weight self-generated evidence is surviving an independent
+    # panel that could have contradicted — exactly the corroboration the
+    # discount protects against rubber-stamping. Multiplier read from config
+    # (PANEL_VOTE_WEIGHT) so the whole calculus is tunable in one place.
+    "panel_vote": 1.0,
 }
 
 # Tier promotion thresholds. Tuned together with the smoothing constant so
@@ -100,8 +109,17 @@ def _evidence_weight(write_origin: str, base_weight: float) -> float:
     """Resolve the effective weight for an evidence row.
 
     base_weight (default 1.0 from MCP API) multiplied by the origin
-    discount; result clamped to [0,1]."""
-    mult = EVIDENCE_DISCOUNT.get(write_origin, 1.0)
+    discount; result clamped to [0,1]. The panel_vote multiplier is read
+    from config (PANEL_VOTE_WEIGHT) so the promotion calculus stays tunable
+    in one place; other origins use the static EVIDENCE_DISCOUNT table."""
+    if write_origin == "panel_vote":
+        try:
+            from ..config import PANEL_VOTE_WEIGHT
+            mult = PANEL_VOTE_WEIGHT
+        except Exception:
+            mult = 1.0
+    else:
+        mult = EVIDENCE_DISCOUNT.get(write_origin, 1.0)
     return max(0.0, min(1.0, base_weight * mult))
 
 

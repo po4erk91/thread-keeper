@@ -46,6 +46,7 @@ from .tools import pickup  # noqa: F401
 from .tools import session  # noqa: F401
 from .tools import skills  # noqa: F401
 from .tools import dialectic  # noqa: F401
+from .tools import panel  # noqa: F401
 from .tools import process_health  # noqa: F401
 from .tools import memory_guard  # noqa: F401
 from .tools import shadow_review  # noqa: F401
