@@ -9,6 +9,20 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Thread-janitor daemon** (`threadkeeper/thread_janitor.py`) + reversible
+  close. The skill-harvest path is event-driven on `close_thread()`, but the
+  user never closes threads and the agent rarely does, so it almost never
+  ran (2 auto-review spawns ever; 5 skills from 115 closes; 32 threads left
+  open, some idle 12d). The janitor closes threads idle past
+  `THREAD_IDLE_CLOSE_DAYS` (default 1) through the normal `close_thread()`
+  path, so the auto-review hook fires and the brief's skill_hint surfaces
+  the rest. Aggressive auto-close is made safe by a reversed invariant:
+  **a `note()` on a closed thread now revives it to active** (was terminal —
+  only `idle` revived). Returning to a topic reopens it; nothing is lost,
+  just parked. Knobs `THREADKEEPER_THREAD_JANITOR_INTERVAL_S` (default 0 =
+  off; recommend 86400) and `THREADKEEPER_THREAD_IDLE_CLOSE_DAYS` (default
+  1). Foreground-only, idempotent, records a `janitor_pass` event (visible
+  in `mp_dashboard`).
 - `mp_dashboard(window_days=7)` — aggregate telemetry rollup in one call.
   The point-view tools (`mp_health`, `spawn_budget_status`,
   `shadow_review_status`) each show one slice; nothing showed the whole

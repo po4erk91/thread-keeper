@@ -43,10 +43,12 @@ make it more than a memory store:
   concurrent sessions signal each other across CLIs. Parent /
   children / sibling agents become a coordinated swarm, not isolated
   chats.
-- **Self-improving skill library** — five autonomous background loops
+- **Self-improving skill library** — autonomous background loops
   (auto-review on thread close, shadow-review daemon, extract
-  harvester, candidate-reviewer, weekly Curator) materialize
-  class-level skills as the agents work. Adapted to multi-CLI:
+  harvester, candidate-reviewer, weekly Curator, and a thread-janitor
+  that auto-closes idle threads so abandoned work reaches the harvest
+  path — closing is reversible, a note reopens a closed thread)
+  materialize class-level skills as the agents work. Adapted to multi-CLI:
   SKILL.md is the primary write target and gets mirrored to every
   known/configured skills root simultaneously (`~/.claude/skills/`,
   `~/.codex/skills/`, existing `~/.agents/skills/`, extra roots from

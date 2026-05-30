@@ -372,3 +372,22 @@ EVOLVE_REVIEW_INTERVAL_S: float = float(
 EVOLVE_REVIEW_MIN: int = int(
     os.environ.get("THREADKEEPER_EVOLVE_REVIEW_MIN", "2")
 )
+
+# Thread-janitor daemon. The skill-harvest path fires on close_thread(), but
+# the user never closes threads and the agent rarely does — so threads pile
+# up open (32 active, some 12d stale in the audit) and abandoned work never
+# gets reviewed into a skill (2 auto-review spawns ever, 5 skills / 115
+# closes). This daemon closes threads that have been idle past
+# THREAD_IDLE_CLOSE_DAYS, routing through the normal close_thread() path so
+# the auto-review hook fires for the richest pending thread. Safe because
+# closing is reversible: note() revives a closed thread (see tools/threads
+# note()). 0 disables (default — opt in). Recommended: 86400 (daily) — this
+# is slow housekeeping, not a hot loop.
+THREAD_JANITOR_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_THREAD_JANITOR_INTERVAL_S", "0")
+)
+# Close active/idle threads whose last_touched_at is older than this many
+# days. Default 1 (user's choice): aggressive, but reopenable on return.
+THREAD_IDLE_CLOSE_DAYS: float = float(
+    os.environ.get("THREADKEEPER_THREAD_IDLE_CLOSE_DAYS", "1")
+)

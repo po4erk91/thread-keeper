@@ -169,6 +169,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             evolve_daemon.start_evolve_daemon()
         except Exception:
             pass
+        try:
+            from . import thread_janitor
+            thread_janitor.start_thread_janitor()
+        except Exception:
+            pass
     return _session_id
 
 
