@@ -321,3 +321,85 @@ def test_advisory_mode_default_excludes_destructive_tools(
     assert "lesson_append" not in allowed
     assert "ADVISORY MODE" in kw["prompt"]
     assert "DESTRUCTIVE MODE ENABLED" not in kw["prompt"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Concepts review (F1) — curator also audits the concepts store
+# ──────────────────────────────────────────────────────────────────────
+
+def _add_concept(conn, cid, desc, confidence="medium",
+                 registered_at=None, last_evidence_at=None):
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO concepts (id, description, confidence, registered_at, "
+        "last_evidence_at) VALUES (?,?,?,?,?)",
+        (cid, desc, confidence, registered_at or now, last_evidence_at),
+    )
+    conn.commit()
+
+
+def test_collect_concepts_empty(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    text, n = pkg["curator"]._collect_concepts(conn)
+    assert n == 0
+    assert text == ""
+
+
+def test_collect_concepts_lists_with_age(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    _add_concept(conn, "Cfresh", "fresh high-conf idea",
+                 confidence="high", last_evidence_at=now - 86400)  # 1d
+    _add_concept(conn, "Cstale", "stale low-conf idea",
+                 confidence="low",
+                 registered_at=now - 40 * 86400,
+                 last_evidence_at=None)  # never corroborated, 40d old
+    text, n = pkg["curator"]._collect_concepts(conn)
+    assert n == 2
+    assert "Cfresh" in text and "Cstale" in text
+    assert "CONCEPTS (n=2)" in text
+    # stale concept (no last_evidence, registered 40d ago) shows ~40d age
+    assert "40d_ago" in text
+    # oldest-first ordering: stale concept appears before fresh one
+    assert text.index("Cstale") < text.index("Cfresh")
+
+
+def test_run_curator_pass_includes_concepts_in_inventory(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="a", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="b", body="b2", source="shadow")
+    conn = pkg["db"].get_db()
+    _add_concept(conn, "Cabc", "asymmetric in-band reactivity",
+                 confidence="high")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
+    )
+    pkg["curator"].run_curator_pass(force=True)
+    prompt = captured[0]["prompt"]
+    assert "CONCEPTS (n=1)" in prompt
+    assert "Cabc" in prompt
+    assert "asymmetric in-band reactivity" in prompt
+
+
+def test_concepts_alone_do_not_trigger_pass(tmp_path, monkeypatch):
+    """Concepts enrich the review but don't lower the lesson threshold —
+    a pass still requires CURATOR_MIN_LESSONS lessons."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="3")
+    conn = pkg["db"].get_db()
+    _add_concept(conn, "Conly", "a lone concept", confidence="high")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    called = []
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: called.append(kw) or "x")
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert out.startswith("below_threshold")
+    assert called == []

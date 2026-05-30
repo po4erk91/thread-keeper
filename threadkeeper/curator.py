@@ -100,6 +100,25 @@ recently-active skill):
     PRUNE: <slug>
       reason: <one line; note "false_positive" if from the criteria above>
 
+CONCEPTS RUBRIC — if a `## CONCEPTS` section is present below, review it
+with the SAME verbs (KEEP / CONSOLIDATE / PRUNE; PATCH rarely applies).
+Concepts are abstract regularities the system noticed; they are all
+system-generated, so NONE are [PROTECTED] — you may recommend
+destructive changes freely. Priorities specific to concepts:
+  • CONSOLIDATE first — the concept store is thin and prone to near-
+    duplicate descriptions of the same idea. Merging overlapping
+    concepts is the highest-value action here. Format:
+      CONSOLIDATE_CONCEPT: <kept-id>
+        merges: <id-a>, <id-b>
+        reason: <one line on the overlap>
+  • PRUNE a concept that is `conf=low AND last_evidence >30d_ago` —
+    registered once, never corroborated: the concept equivalent of an
+    unused background_review skill (false positive). Format:
+      PRUNE_CONCEPT: <id>
+        reason: <one line; note "false_positive" if low-conf+stale>
+  • For a `conf=medium`+ concept with no fresh evidence in 30d, RECOMMEND
+    a confidence review (it may be aging out) — note it, don't mutate.
+
 INVENTORY ORDERING — entries marked [PROTECTED] are pinned or
 foreground-authored. NEVER suggest PATCH/CONSOLIDATE/PRUNE on those —
 only KEEP. Always-OK to RECOMMEND that the user manually review them,
@@ -260,6 +279,39 @@ def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
     return ("\n".join(parts), n_lessons, n_skills)
 
 
+def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
+    """Build the concepts section of the curator inventory.
+
+    Returns (dump_text, concept_count). Empty string when there are no
+    concepts. Ordered oldest-evidence-first so the curator sees the
+    stalest (most prune-worthy) entries at the top. Each line carries the
+    confidence band and days since last corroboration — the two signals
+    the curator rubric uses to flag low-confidence/never-corroborated
+    concepts as false positives."""
+    try:
+        rows = conn.execute(
+            "SELECT id, description, confidence, registered_at, "
+            "last_evidence_at FROM concepts "
+            "ORDER BY COALESCE(last_evidence_at, registered_at) ASC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return "", 0
+    if not rows:
+        return "", 0
+    now_t = int(time.time())
+    lines = [f"## CONCEPTS (n={len(rows)})\n"]
+    for r in rows:
+        last = r["last_evidence_at"] or r["registered_at"]
+        age_d = max(0, (now_t - last) // 86400)
+        desc = (r["description"] or "").replace("\n", " ")[:200]
+        lines.append(
+            f"- {r['id']} conf={r['confidence']} "
+            f"last_evidence={age_d}d_ago\n"
+            f"    {desc}"
+        )
+    return "\n".join(lines), len(rows)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
@@ -285,6 +337,13 @@ def run_curator_pass(force: bool = False) -> str:
             f"below_threshold lessons={n_lessons} skills={n_skills}",
         )
         return f"below_threshold lessons={n_lessons}"
+
+    # Concepts enrich the review but do NOT lower the lesson threshold —
+    # a curator pass is only worth a child spawn when there's a real
+    # lesson/skill inventory to audit; concepts ride along.
+    concepts_text, n_concepts = _collect_concepts(conn)
+    if concepts_text:
+        inventory = inventory + "\n\n" + concepts_text
 
     # Ensure reports dir exists before the child tries to Write into it.
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -353,7 +412,8 @@ def run_curator_pass(force: bool = False) -> str:
 
     _record_curator_pass(
         conn, now,
-        f"spawned lessons={n_lessons} skills={n_skills} :: {str(result)[:140]}",
+        f"spawned lessons={n_lessons} skills={n_skills} "
+        f"concepts={n_concepts} :: {str(result)[:140]}",
     )
     return str(result)
 

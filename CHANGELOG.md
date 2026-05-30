@@ -9,6 +9,18 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- Curator now also reviews the **concepts** store (was: lessons + skills
+  only). Each weekly curator pass appends a `## CONCEPTS` inventory —
+  every concept with its confidence band and days since last
+  corroboration, oldest-first — and the curator rubric gained a concepts
+  section: CONSOLIDATE near-duplicate concepts (the store is thin and
+  prone to restating the same idea), PRUNE `conf=low AND last_evidence
+  >30d` concepts as false positives (registered once, never corroborated —
+  the concept equivalent of an unused background_review skill), and flag
+  aging medium+ concepts for confidence review. Advisory like the rest of
+  the curator. Concepts enrich the review but don't lower the lesson
+  threshold that gates a pass. Closes the audit gap where the concepts
+  store (1 entry, never validated) had no autonomous maintainer.
 - Judge panel (`threadkeeper/tools/panel.py`, `convene_panel`) — fills the
   distill/dialectic promotion quorum with SPAWNED agents that vote
   independently, instead of waiting for a second human or lowering
