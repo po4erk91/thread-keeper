@@ -312,3 +312,20 @@ CANDIDATE_REVIEW_INTERVAL_S: float = float(
 CANDIDATE_REVIEW_MIN: int = int(
     os.environ.get("THREADKEEPER_CANDIDATE_REVIEW_MIN", "3")
 )
+
+# Probe daemon. Periodically spawns a CONTEXT-FREE child to attempt one due
+# self-test probe (a known weak spot: token counting, date math, format
+# compliance, …); the parent grades the child's raw answer mechanically and
+# records it to probe_results → reliability → brief weak_spots. Only OBJECTIVE
+# graders (regex/exact with a pattern) are driven — manual probes have no
+# mechanical key and stay on the manual run_probe loop. 0 disables (default —
+# opt in). Recommended: 86400 (daily) — probes are a slow-moving tripwire on
+# model-version drift, not a hot loop.
+PROBE_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_PROBE_INTERVAL_S", "0")
+)
+# Don't re-test a category whose probe ran within this window. Defaults to a
+# week so each weak-spot gets a fresh reading without burning tokens daily.
+PROBE_COOLDOWN_S: int = int(
+    os.environ.get("THREADKEEPER_PROBE_COOLDOWN_S", str(7 * 86400))
+)

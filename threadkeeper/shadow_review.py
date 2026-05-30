@@ -197,6 +197,7 @@ def _running_shadow_children(conn: sqlite3.Connection) -> list[str]:
 _INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
     "You are a SHADOW LEARNING OBSERVER",
     "You are reviewing closed thread",
+    "You are a PROBE RUNNER",
 )
 
 

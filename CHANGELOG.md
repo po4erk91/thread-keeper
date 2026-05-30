@@ -31,6 +31,18 @@ version bumps follow semver per the policy in
 - `scripts/backfill_skill_tiers.py` — one-shot, idempotent backfill that
   recomputes `foreground_use_count` + tier for every skill from a transcript
   re-scan, iterating to a tier fixpoint. Dry-run by default; `--apply` writes.
+- Probe daemon (`threadkeeper/probe_daemon.py`) — drives the self-test probe
+  loop that was defined but never run, so `probe_results` / `reliability` were
+  empty and the brief showed every weak-spot as `never_tested`. Each tick
+  spawns one CONTEXT-FREE child to attempt a due probe (an isolated child is a
+  clean capability measurement, uncontaminated by the parent conversation);
+  the child writes only its raw answer and the PARENT grades it mechanically
+  via `_grade_probe` — the child never sees the answer key, so it can't game
+  the result. Only objective graders (regex/exact with a pattern) are driven;
+  `manual` probes stay on the manual `run_probe` loop. Two-phase non-blocking
+  (grade last tick's answer, then spawn the next), machine-wide single-flight,
+  per-category cooldown. New knobs `THREADKEEPER_PROBE_INTERVAL_S` (default 0 =
+  off; recommended 86400) and `THREADKEEPER_PROBE_COOLDOWN_S` (default 7d).
 
 ## v0.7.0 — 2026-05-27
 
