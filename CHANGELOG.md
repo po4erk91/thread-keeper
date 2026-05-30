@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.8.0 — 2026-05-30
+
 ### Added
 
 - Autonomous **evolve reviewer** daemon (`threadkeeper/evolve_daemon.py`) —
