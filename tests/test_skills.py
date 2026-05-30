@@ -31,6 +31,22 @@ def skills_pkg(tmp_path, monkeypatch):
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
+        # Disable every background daemon. Without this the skill_watcher
+        # daemon runs live and races delete tests: it scans CLAUDE_SKILLS_DIR
+        # on a timer and re-INSERTs a skill_usage row right after a test's
+        # delete removed dir+row, making test_delete_removes_skill_dir_and_
+        # usage_row flake (~2 in 20). Same daemon-vs-test TOCTOU the conftest
+        # _force_clean_env guards against; this bespoke fixture must mirror it.
+        "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",
+        "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
+        "THREADKEEPER_MEMORY_GUARD_POLL_S": "0",
+        "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
+        "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_CURATOR_INTERVAL_S": "0",
+        "THREADKEEPER_EXTRACT_INTERVAL_S": "0",
+        "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_PROBE_INTERVAL_S": "0",
+        "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": "0",
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
