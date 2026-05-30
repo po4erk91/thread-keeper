@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.8.1 — 2026-05-30
+
 ### Added
 
 - **Thread-janitor daemon** (`threadkeeper/thread_janitor.py`) + reversible
