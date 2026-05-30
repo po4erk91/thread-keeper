@@ -531,6 +531,7 @@ auto-generates JSON-Schema from annotations.
 | curator | 2 | curator_review, curator_review_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
+| dashboard | 1 | mp_dashboard |
 | memory_guard | 2 | memory_guard_status, memory_guard_check |
 | correlation | 2 | tag_signal, task_thread |
 | consolidate | 1 | consolidate |

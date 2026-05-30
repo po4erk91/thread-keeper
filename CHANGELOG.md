@@ -7,6 +7,21 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- `mp_dashboard(window_days=7)` — aggregate telemetry rollup in one call.
+  The point-view tools (`mp_health`, `spawn_budget_status`,
+  `shadow_review_status`) each show one slice; nothing showed the whole
+  system. The dashboard reports **stores** (threads by state, note/dialog/
+  distill/concept counts, skills + dialectic claims by tier, extract-
+  candidate + evolve queues, probe/task counts), **loops** (per-daemon
+  fire counts over the window vs 30 days + last-fire age, from the
+  `events.kind='*_pass'` markers), and **outcomes** (skills materialized,
+  tier promotions, candidate accept-vs-reject rate). Read-only; never
+  spawns or mutates; degrades to zeros on partial schemas. Surfaces
+  "loop fires constantly but produces nothing" and "queue backing up"
+  signals the per-loop tools can't.
+
 ## v0.8.0 — 2026-05-30
 
 ### Added

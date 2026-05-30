@@ -480,6 +480,22 @@ them with `dry_run=False` to apply:
 
 ---
 
+## Telemetry
+
+- **`mp_dashboard(window_days=7)`** — one-call rollup of the whole
+  system, read-only. Three sections: **stores** (threads by state,
+  notes/dialog/distill/concepts counts, skills + claims by tier,
+  extract-candidate and evolve queues, probe/task counts), **loops**
+  (how many times each autonomous daemon fired in the window vs 30 days,
+  plus last-fire age), and **outcomes** (what those loops actually
+  produced — skills materialized, tier promotions, candidate
+  accept-vs-reject rate). Surfaces the gaps the point-tools can't:
+  a loop firing constantly while its outcomes stay flat, or a queue
+  backing up. Complements the per-loop `*_status` tools (`mp_health`,
+  `spawn_budget_status`, `shadow_review_status`).
+
+---
+
 ## Storage
 
 `~/.threadkeeper/db.sqlite` (overridable via `THREADKEEPER_DB`). WAL

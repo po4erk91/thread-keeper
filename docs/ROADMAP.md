@@ -140,12 +140,15 @@ probably never the right answer here.
 Ideally — pickup without restarting daemons. Scope: S (env via periodic
 re-read in the config object, daemons already read per-tick).
 
-**Telemetry dashboard.** `shadow_review_status`, `spawn_budget_status`,
-`mp_health` provide point views. There's no aggregate across the whole
-system: how many reviews passed per day, how many skills got
-materialized, how many spawns rejected by budget, how notes/
-dialog_messages grow. Scope: M — separate tool `mp_dashboard` or
-periodic dump to file.
+**Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
+aggregate the point views (`shadow_review_status`, `spawn_budget_status`,
+`mp_health`) lacked: store sizes, per-loop fire counts (window vs 30d +
+last-fire age), and outcomes (skills materialized, tier promotions,
+candidate accept-vs-reject rate). Read-only, degrades gracefully on
+partial schemas. The first live run surfaced the "Shadow-review proof"
+item below (shadow fires ≫ skills materialized). Possible follow-up:
+periodic dump-to-file for historical trend lines (currently a
+point-in-time snapshot). Scope of follow-up: S.
 
 **Shadow-review proof in production.** The daemon just landed. Need an
 observation period (two-three weeks) to understand — does it actually
