@@ -150,12 +150,30 @@ item below (shadow fires ≫ skills materialized). Possible follow-up:
 periodic dump-to-file for historical trend lines (currently a
 point-in-time snapshot). Scope of follow-up: S.
 
-**Shadow-review proof in production.** The daemon just landed. Need an
-observation period (two-three weeks) to understand — does it actually
-find class-level patterns that auto-review on close_thread doesn't
-catch, or does it duplicate work. After — decision on default
-`SHADOW_REVIEW_INTERVAL_S` (currently 0 = disabled). Scope: S in volume,
-M in time.
+**Shadow-review proof in production.** ✅ ANSWERED (~16d of live data,
+read via `mp_dashboard` + an evidence dive). Verdict: **complementary,
+not duplicate — but it was over-firing.** Numbers: 1423 passes, 773
+(54%) actually spawned an evaluator (NOT cheap skips), ~120 spawns/day
+and climbing. Its real product is **`lessons.md` (1054 sections),
+not skills** — it stopped creating skill files 15 days in; the headline
+"5 skills materialized" undercounts its output ~200× because it writes
+to a different store than auto-review. Scope difference (from code):
+auto-review fires once per rich CLOSED thread reading curated notes;
+shadow fires on a timer over ALL sessions' raw dialog and feeds the
+CLI-agnostic lessons store. It is also the only safety net when the
+agent never closes a thread. Decision taken: keep it, but cut the churn
+— `SHADOW_REVIEW_INTERVAL_S` 900→3600, `WINDOW_S` 900→3600 (kept equal
+so no dialog falls between ticks), `MIN_CHARS` 500→1500 so marginal
+windows don't spawn a child just to emit SKIP. 4× fewer children, lessons
+store is already saturating so recall loss is negligible.
+
+Surfaced-but-deferred: shadow children's `tasks.return_code` records
+NULL even after they end (0 of 775 ended tasks have a code), so the
+dashboard can't measure shadow's spawn→outcome conversion. The reap path
+(`_reap_finished_tasks`) only runs for pid>0 headless children polled
+while alive; shadow's slim children exit between poll ticks and are
+reaped by the OS first. Worth a follow-up: persist exit status at child
+teardown rather than relying on the parent's waitpid race. Scope: S.
 
 **Documentation.** README / ARCHITECTURE / this file — update now.
 Going forward: keep in sync when the set of tools or daemons changes.
