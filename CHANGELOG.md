@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- Spawned tasks now record their real `return_code` and get reaped. A new
+  `_reap_finished_tasks` does a non-blocking `waitpid` on every tracked
+  headless child, persisting both `ended_at` and the exit code (negative for
+  signal-kills, e.g. `-9` for SIGKILL). Previously the `Popen` handle was
+  dropped at spawn time and nothing ever waited on it, so `return_code`
+  stayed NULL for every task and finished children lingered as "running"
+  zombie rows. `tasks()` now shows `rc=<n>` for completed tasks.
+
 ## v0.7.0 — 2026-05-27
 
 ### Changed

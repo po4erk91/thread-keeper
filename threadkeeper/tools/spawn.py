@@ -128,10 +128,65 @@ def _visible_task_status(cwd: str, cid: Optional[str],
     return ("idle", m)
 
 
+def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
+    """Reap exited headless children, recording their exit code.
+
+    For each tracked task (pid>0) still marked running, do a non-blocking
+    waitpid. If the child has exited, persist BOTH ended_at and the real
+    return_code (os.waitstatus_to_exitcode → negative for signal-kills,
+    e.g. -9 for SIGKILL). If the pid isn't our child (already reaped, or
+    spawned by another process) we cannot learn the code: fall back to a
+    liveness check and close the row out with return_code left NULL.
+
+    This is the single place return_code gets written. Called by
+    _refresh_tasks before any task read, so tasks() reflects reality.
+    """
+    now_t = int(time.time())
+    rows = conn.execute(
+        "SELECT id, pid FROM tasks "
+        "WHERE ended_at IS NULL AND pid > 0 "
+        "ORDER BY started_at DESC LIMIT 50"
+    ).fetchall()
+    changed = False
+    for t in rows:
+        pid = t["pid"]
+        try:
+            wpid, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # Not our child (or reaped elsewhere) — exit code is lost.
+            # Close the row only if the process is genuinely gone.
+            if not alive(pid):
+                conn.execute(
+                    "UPDATE tasks SET ended_at=? "
+                    "WHERE id=? AND ended_at IS NULL",
+                    (now_t, t["id"]),
+                )
+                changed = True
+            continue
+        except OSError:
+            continue
+        if wpid == 0:
+            continue  # still running
+        if wpid == pid:
+            code = os.waitstatus_to_exitcode(status)
+            conn.execute(
+                "UPDATE tasks SET ended_at=?, return_code=? "
+                "WHERE id=? AND ended_at IS NULL",
+                (now_t, code, t["id"]),
+            )
+            changed = True
+    if changed:
+        conn.commit()
+
+
 def _refresh_tasks(conn: sqlite3.Connection) -> None:
     """Update running tasks: detect process exit (or jsonl idle for visible
     tasks), link spawned_cid where possible. Cheap; safe to call before any
     task-listing read."""
+    # Reap exited headless children first — this owns ended_at + return_code
+    # for every pid>0 task. The loop below then only handles visible (pid<=0)
+    # idle detection and spawned_cid linking.
+    _reap_finished_tasks(conn)
     now_t = int(time.time())
     rows = conn.execute(
         "SELECT id, pid, cwd, started_at, spawned_cid, ended_at FROM tasks "
@@ -141,10 +196,7 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
     for t in rows:
         updates: list[tuple[str, object]] = []
         if t["ended_at"] is None:
-            if t["pid"] and t["pid"] > 0:
-                if not alive(t["pid"]):
-                    updates.append(("ended_at", now_t))
-            else:
+            if not (t["pid"] and t["pid"] > 0):
                 # visible task — infer from jsonl idleness
                 status, end_guess = _visible_task_status(
                     t["cwd"], t["spawned_cid"], t["started_at"]
@@ -789,7 +841,9 @@ def tasks(include_ended: bool = True, k: int = 15) -> str:
     for t in rows:
         is_visible = not t["pid"] or t["pid"] <= 0
         if t["ended_at"]:
-            status = f"done@{fmt_age(now_t - t['ended_at'])}_ago"
+            rc = t["return_code"]
+            rc_disp = "" if rc is None else f" rc={rc}"
+            status = f"done@{fmt_age(now_t - t['ended_at'])}_ago{rc_disp}"
         elif is_visible:
             vstatus, _end = _visible_task_status(
                 t["cwd"], t["spawned_cid"], t["started_at"]
