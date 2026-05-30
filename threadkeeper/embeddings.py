@@ -271,13 +271,17 @@ def _fts_search(conn: sqlite3.Connection, query: str,
     """FTS5 search over dialog_fts joined to dialog_messages. FTS5 ranks
     by BM25 (lower = better); we keep insertion order from the result for
     RRF (already ranked best-first by FTS5)."""
+    from .helpers import _fts_query
+    fq = _fts_query(query)
+    if not fq:
+        return []
     try:
         rows = conn.execute(
             "SELECT f.uuid, d.role, d.session_id, d.content, d.created_at "
             "FROM dialog_fts f "
             "JOIN dialog_messages d ON d.uuid = f.uuid "
             "WHERE dialog_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, max(1, int(k))),
+            (fq, max(1, int(k))),
         ).fetchall()
     except sqlite3.OperationalError:
         # FTS reserved-char syntax error or table missing

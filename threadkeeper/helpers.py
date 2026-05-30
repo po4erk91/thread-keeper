@@ -99,3 +99,24 @@ def alive(pid: int) -> bool:
 def normalize_text(s: str) -> str:
     """Whitespace-collapsed lower for fuzzy duplicate detection."""
     return " ".join(s.lower().strip().split())
+
+
+def _fts_query(raw: str) -> str:
+    """Turn a raw user query into a safe FTS5 MATCH string.
+
+    FTS5 parses '-', '"', '*', '(', ')', ':', 'OR' etc. as query syntax, so
+    an everyday query like 'zebra-quux' or 'what about X?' raises an
+    OperationalError (surfaced as 'fts_error' from search(), or a silent
+    empty result from the brief()/dialog_search FTS fallbacks). We quote
+    each whitespace-separated term as a phrase: operators inside become
+    literal, while the tokenizer still splits the phrase on punctuation so
+    matching is unchanged. Embedded double-quotes are doubled (FTS5's own
+    escape). Pure-punctuation tokens (no alphanumeric content) are dropped.
+
+    Returns '' when the query has no tokenizable content — callers should
+    treat that as 'no query' and skip MATCH rather than run it."""
+    terms: list[str] = []
+    for tok in raw.split():
+        if any(ch.isalnum() for ch in tok):
+            terms.append('"' + tok.replace('"', '""') + '"')
+    return " ".join(terms)

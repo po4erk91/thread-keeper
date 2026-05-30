@@ -14,7 +14,7 @@ from typing import Optional
 from .._mcp import mcp
 from ..config import SEMANTIC_AVAILABLE, DB_PATH
 from ..db import get_db
-from ..helpers import gen_thread_id, fmt_age, q
+from ..helpers import gen_thread_id, fmt_age, q, _fts_query
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, _cosine_search, _vec_upsert_note, embed_tag
@@ -217,11 +217,14 @@ def search(query: str, k: int = 5) -> str:
             f"{q(r['content'][:200].replace(chr(10), ' '))}"
             for r in hits
         )
+    fq = _fts_query(query)
+    if not fq:
+        return "no_matches"
     try:
         rows = conn.execute(
             "SELECT n.thread_id, n.kind, n.content FROM notes_fts f "
             "JOIN notes n ON f.rowid=n.id WHERE notes_fts MATCH ? LIMIT ?",
-            (query, k),
+            (fq, k),
         ).fetchall()
     except sqlite3.OperationalError:
         return "fts_error"

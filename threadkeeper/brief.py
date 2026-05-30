@@ -571,11 +571,13 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
                     )
         else:
             try:
+                from .helpers import _fts_query
+                fq = _fts_query(query)
                 rows = conn.execute(
                     "SELECT n.thread_id, n.kind, n.content FROM notes_fts f "
                     "JOIN notes n ON f.rowid=n.id WHERE notes_fts MATCH ? LIMIT ?",
-                    (query, k),
-                ).fetchall()
+                    (fq, k),
+                ).fetchall() if fq else []
                 if rows:
                     out.append("")
                     out.append(f"fts q={q(query[:80])}")

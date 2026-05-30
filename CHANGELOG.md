@@ -54,6 +54,16 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- `search()` / `brief(query=...)` / `dialog_search` no longer choke on
+  everyday punctuation. A query containing an FTS5 operator char
+  (`-`, `?`, `/`, `(`, `:`, `*`) previously raised `fts_error` from `search()`
+  and silently returned nothing from the brief/dialog FTS fallbacks (the
+  no-embeddings / slim-child path, where FTS5 MATCH is the search backend).
+  Queries are now sanitized via `helpers._fts_query` — each whitespace term
+  is quoted as a phrase, so operators become literal while the tokenizer
+  still splits and matches; pure-punctuation queries return `no_matches`
+  instead of erroring. Found via end-to-end flow verification; regression
+  test in `tests/test_search_fts_punctuation.py`.
 - Spawned tasks now record their real `return_code` and get reaped. A new
   `_reap_finished_tasks` does a non-blocking `waitpid` on every tracked
   headless child, persisting both `ended_at` and the exit code (negative for
