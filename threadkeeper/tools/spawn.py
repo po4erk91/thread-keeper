@@ -989,7 +989,6 @@ def spawn_budget_set(limit_mb: int) -> str:
 
 
 @mcp.tool()
-@mcp.tool()
 def spawn_status() -> str:
     """Show which CLI thread-keeper detected as its host, and which CLI
     each spawn role resolves to (after env + file overrides). Use to

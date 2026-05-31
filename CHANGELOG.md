@@ -33,6 +33,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- `spawn_status` carried an accidental duplicate `@mcp.tool()` decorator
+  (copy-paste), so the second decorator registered the already-wrapped
+  `FunctionTool` instead of the plain function. Removed the extra decorator;
+  audited the whole package and confirmed it was the only double-decoration.
+
 - `tasks.return_code` was NULL for **every** ended task (measured 0 of 944),
   so the dashboard could never measure a spawn→outcome conversion. Root cause
   was deeper than previously documented (not just slim children racing the
