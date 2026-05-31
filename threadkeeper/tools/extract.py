@@ -84,17 +84,32 @@ def _is_log_content(text: str) -> bool:
 
 
 def _candidate_exists(conn, source_uuid, content):
+    """True if this source message or identical content was already
+    enqueued — in ANY state, INCLUDING 'rejected'.
+
+    Rejected MUST count. The extract daemon re-scans overlapping time
+    windows, so a rejected candidate left out of the dedup gets
+    re-harvested on the very next pass: the same heuristic trips the same
+    noise and the reviewer re-rejects it, forever. (Confirmed in prod:
+    #158 was a byte-identical re-harvest of #157 ~19m after rejection.)
+
+    Content match uses a 500-char prefix on BOTH sides. `_enqueue` stores
+    up to 2000-4000 chars, so the old `content = content[:500]` compared a
+    full stored value against a 500-char key and never matched for any
+    candidate longer than 500 chars — the content fallback was dead, and
+    only source_uuid (which the rejected-status gap then bypassed) kept
+    anything out.
+    """
     if source_uuid:
         if conn.execute(
-            "SELECT 1 FROM extract_candidates WHERE source_uuid=? "
-            "AND status IN ('pending','accepted') LIMIT 1",
+            "SELECT 1 FROM extract_candidates WHERE source_uuid=? LIMIT 1",
             (source_uuid,),
         ).fetchone():
             return True
     return bool(
         conn.execute(
-            "SELECT 1 FROM extract_candidates WHERE content=? "
-            "AND status IN ('pending','accepted') LIMIT 1",
+            "SELECT 1 FROM extract_candidates "
+            "WHERE substr(content, 1, 500) = ? LIMIT 1",
             (content[:500],),
         ).fetchone()
     )

@@ -33,6 +33,19 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- Extract-candidate dedup let **rejected** candidates be re-harvested. Two
+  compounding bugs in `_candidate_exists`: (1) it only checked `status IN
+  ('pending','accepted')`, so once a candidate was rejected it dropped out of
+  the dedup and the extract daemon — which re-scans overlapping time windows —
+  re-enqueued the same source message on the next pass; the same heuristic
+  trips the same noise and the reviewer re-rejects it, forever (seen in prod:
+  an identical passage re-harvested ~19m after rejection). (2) The content
+  fallback compared the full stored `content` against a 500-char key
+  (`content = content[:500]`) while `_enqueue` stores up to 4000 chars, so it
+  never matched for candidates longer than 500 chars — the fallback was dead.
+  Now dedup matches on source_uuid or a 500-char content prefix (both sides)
+  across **any** status, including rejected.
+
 - `spawn_status` carried an accidental duplicate `@mcp.tool()` decorator
   (copy-paste), so the second decorator registered the already-wrapped
   `FunctionTool` instead of the plain function. Removed the extra decorator;
