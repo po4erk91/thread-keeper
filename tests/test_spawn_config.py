@@ -299,6 +299,41 @@ def test_get_adapter_recognises_short_names(tmp_path, monkeypatch):
     assert get_adapter("nonsense") is None
 
 
+# ── per-role agent assignments ([agents.<role>]) ──────────────────────
+
+def test_agents_section_sets_cli_and_model(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    cfg = tmp_path / "spawn.toml"
+    cfg.write_text(
+        '[agents.dialectic_validator]\ncli = "claude"\nmodel = "opus"\n'
+        '[models]\nclaude = "sonnet"\n'
+    )
+    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
+    from threadkeeper.spawn_config import resolve_agent, resolve_model
+    assert resolve_agent("dialectic_validator", "codex") == "claude"
+    assert resolve_model("claude", "dialectic_validator") == "opus"
+    assert resolve_model("claude", "curator") == "sonnet"
+
+
+def test_resolve_model_back_compat_cli_only(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    cfg = tmp_path / "spawn.toml"
+    cfg.write_text('[models]\nclaude = "sonnet"\n')
+    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
+    from threadkeeper.spawn_config import resolve_model
+    assert resolve_model("claude") == "sonnet"
+
+
+def test_per_role_model_env_beats_file(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    cfg = tmp_path / "spawn.toml"
+    cfg.write_text('[agents.dialectic_validator]\nmodel = "opus"\n')
+    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MODEL_DIALECTIC_VALIDATOR", "haiku")
+    from threadkeeper.spawn_config import resolve_model
+    assert resolve_model("claude", "dialectic_validator") == "haiku"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # summary_table
 # ──────────────────────────────────────────────────────────────────────

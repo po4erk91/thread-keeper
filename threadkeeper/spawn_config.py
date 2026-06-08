@@ -111,20 +111,35 @@ def _file_default_override(cfg: dict) -> Optional[str]:
     return default if default in SUPPORTED_CLIS or default == "auto" else None
 
 
+def _file_agent_assignment(role: str, cfg: dict) -> dict:
+    """Return the [agents.<role>] table ({} if absent/malformed)."""
+    agents = cfg.get("agents") or {}
+    val = agents.get(role) or agents.get(role.lower())
+    return val if isinstance(val, dict) else {}
+
+
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Return which CLI ('claude' / 'codex' / 'gemini' / 'copilot')
     should run the spawned child for this role.
 
-    Resolution order: per-role env → per-role file → default env →
-    default file → active CLI. The final fallback is 'claude' for
-    backward compatibility — pre-existing installs without a config
-    keep working unchanged.
+    Resolution order: per-role env → [agents.<role>].cli → per-role
+    file → default env → default file → active CLI. The final fallback
+    is 'claude' for backward compatibility — pre-existing installs
+    without a config keep working unchanged.
     """
     cfg = _load_file()
     chosen: Optional[str] = None
 
+    def _agent_cli():
+        v = _file_agent_assignment(role, cfg).get("cli")
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v in SUPPORTED_CLIS or v == "auto" else None
+        return None
+
     for resolver in (
         lambda: _env_role_override(role),
+        _agent_cli,
         lambda: _file_role_override(role, cfg),
         lambda: _env_default_override(),
         lambda: _file_default_override(cfg),
@@ -147,18 +162,33 @@ def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     return "claude"
 
 
-def resolve_model(cli: str) -> str:
-    """Return the configured model override for this CLI, or empty
-    string (let the CLI use its own default).
+def resolve_model(cli: str, role: str = "") -> str:
+    """Configured model for this spawn, or "" (let the CLI use its default).
 
-    Order: per-CLI env (THREADKEEPER_SPAWN_MODEL_<CLI>) → file
-    [models].<cli> entry → empty.
+    Priority (highest first):
+      1. per-role env   THREADKEEPER_SPAWN_MODEL_<ROLE>
+      2. file           [agents.<role>].model
+      3. per-CLI env    THREADKEEPER_SPAWN_MODEL_<CLI>   (legacy)
+      4. file           [models].<cli>                   (legacy)
+      5. ""
+
+    `role` is optional so legacy positional callers — resolve_model("claude") —
+    keep working unchanged.
     """
-    env_key = "THREADKEEPER_SPAWN_MODEL_" + cli.upper()
-    env_val = os.environ.get(env_key, "").strip()
-    if env_val:
-        return env_val
+    if role:
+        env_role = os.environ.get(
+            "THREADKEEPER_SPAWN_MODEL_" + role.upper().replace("-", "_"), ""
+        ).strip()
+        if env_role:
+            return env_role
     cfg = _load_file()
+    if role:
+        m = _file_agent_assignment(role, cfg).get("model")
+        if isinstance(m, str) and m.strip():
+            return m.strip()
+    env_cli = os.environ.get("THREADKEEPER_SPAWN_MODEL_" + cli.upper(), "").strip()
+    if env_cli:
+        return env_cli
     models = cfg.get("models") or {}
     val = models.get(cli) or models.get(cli.lower())
     return val.strip() if isinstance(val, str) else ""
