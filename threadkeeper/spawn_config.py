@@ -209,6 +209,7 @@ def summary_table(active_cli: Optional[str]) -> str:
         "extract",
         "candidate_reviewer",
         "curator",
+        "dialectic_validator",
     )
     cfg = _load_file()
     out = []
@@ -217,6 +218,8 @@ def summary_table(active_cli: Optional[str]) -> str:
         # Pick the source label
         if _env_role_override(role):
             src = "env override"
+        elif _file_agent_assignment(role, cfg).get("cli"):
+            src = "agents assignment"
         elif _file_role_override(role, cfg):
             src = "file override"
         elif _env_default_override():
@@ -227,7 +230,7 @@ def summary_table(active_cli: Optional[str]) -> str:
             src = "active CLI"
         else:
             src = "fallback"
-        model = resolve_model(chosen)
+        model = resolve_model(chosen, role)
         model_suffix = f" model={model}" if model else ""
         out.append(f"  {role:<18} → {chosen:<8}{model_suffix} ({src})")
     return "\n".join(out)

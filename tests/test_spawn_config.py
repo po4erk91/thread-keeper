@@ -355,3 +355,15 @@ def test_summary_table_shows_overrides(tmp_path, monkeypatch):
     assert "curator" in out
     assert "gemini" in out
     assert "env override" in out
+
+
+def test_summary_table_includes_dialectic_validator_model(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    cfg = tmp_path / "spawn.toml"
+    cfg.write_text('[agents.dialectic_validator]\ncli="claude"\nmodel="opus"\n')
+    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
+    from threadkeeper.spawn_config import summary_table
+    out = summary_table("claude")
+    assert "dialectic_validator" in out
+    assert "model=opus" in out
+    assert "agents assignment" in out

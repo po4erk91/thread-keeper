@@ -467,7 +467,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     # spawn_argv that builds basic argv only.
     from .. import spawn_config as _sc, identity as _id
     chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())
-    chosen_model = model or _sc.resolve_model(chosen_cli)
+    chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
     if chosen_cli != "claude":
         from ..adapters import get_adapter
         _ad = get_adapter(chosen_cli)
