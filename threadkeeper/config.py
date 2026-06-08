@@ -391,3 +391,26 @@ THREAD_JANITOR_INTERVAL_S: float = float(
 THREAD_IDLE_CLOSE_DAYS: float = float(
     os.environ.get("THREADKEEPER_THREAD_IDLE_CLOSE_DAYS", "1")
 )
+
+# Dialectic auto-feed. Two daemons build the user-model continuously.
+# dialectic_miner is MECHANICAL (no LLM): every DIALECTIC_MINE_INTERVAL_S it
+# captures user-role dialog_messages + their preceding-assistant context into
+# the dialectic_observations buffer. dialectic_validator periodically spawns an
+# (opus) child that turns the buffer into claims via dialectic_* tools. Both
+# 0 = off (default — opt in via env).
+DIALECTIC_MINE_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_DIALECTIC_MINE_INTERVAL_S", "0")
+)
+DIALECTIC_VALIDATE_INTERVAL_S: float = float(
+    os.environ.get("THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S", "0")
+)
+# Min pending observations before the validator spawns — below this there's
+# not enough signal to justify an opus child.
+DIALECTIC_VALIDATE_MIN: int = int(
+    os.environ.get("THREADKEEPER_DIALECTIC_VALIDATE_MIN", "5")
+)
+# Cap on new claims the validator may create per pass (it should prefer adding
+# evidence to existing claims; see the validator prompt).
+DIALECTIC_MAX_NEW_CLAIMS: int = int(
+    os.environ.get("THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS", "3")
+)
