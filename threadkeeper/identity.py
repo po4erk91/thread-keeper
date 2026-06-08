@@ -181,6 +181,16 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            from . import dialectic_miner
+            dialectic_miner.start_dialectic_miner_daemon()
+        except Exception:
+            pass
+        try:
+            from . import dialectic_validator
+            dialectic_validator.start_dialectic_validator_daemon()
+        except Exception:
+            pass
+        try:
             # One-shot self-heal: claims seeded before the tier machinery
             # never got their tier recomputed (see recompute_all_tiers). Cheap
             # (a handful of active claims); idempotent on every startup.
