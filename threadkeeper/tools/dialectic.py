@@ -614,3 +614,28 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
           summary=f"{old_id}→{pid} {new_claim[:100]}")
     conn.commit()
     return f"ok new={pid} old={old_id} conf={new_conf} tier={new_tier}"
+
+
+@mcp.tool()
+def dialectic_observation_resolve(id: int, note: str = "") -> str:
+    """Mark a dialectic_observations buffer row 'processed' so the validator
+    never re-interprets it. Called by the validator child after it has written
+    (or deliberately skipped) the observation's claims/evidence."""
+    conn = get_db()
+    _ensure_session(conn)
+    r = conn.execute(
+        "SELECT status FROM dialectic_observations WHERE id=?", (int(id),)
+    ).fetchone()
+    if not r:
+        return f"ERR observation_not_found={id}"
+    if r["status"] == "processed":
+        return f"ok already_processed #{id}"
+    now_t = int(time.time())
+    conn.execute(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        (now_t, int(id)),
+    )
+    _emit(conn, "dialectic_observation_resolve", target=str(id), summary=note[:140])
+    conn.commit()
+    return f"ok resolved #{id}"
