@@ -7,6 +7,36 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Dialectic auto-feed daemons** — two new background daemons that build
+  the user model continuously without requiring agents to call dialectic
+  tools manually. `dialectic_miner` (mechanical, no LLM) captures user
+  replies plus preceding-assistant context into a `dialectic_observations`
+  buffer. `dialectic_validator` (spawns an opus child) turns buffered
+  observations into dialectic claims and evidence (support / contradict /
+  supersede). Four new MCP tools: `dialectic_mine_run`,
+  `dialectic_validate_run`, `dialectic_mine_status`,
+  `dialectic_validate_status`. Knobs:
+  `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` (0 = off),
+  `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` (0 = off),
+  `THREADKEEPER_DIALECTIC_VALIDATE_MIN` (5),
+  `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` (3).
+- **Role-keyed agent/model settings** (`[agents.<role>]` in
+  `spawn.toml`) — first-class per-role `cli` + `model` assignment, e.g.
+  `[agents.dialectic_validator]` with `cli="claude"` and `model="opus"`.
+  Resolved at higher priority than the legacy `[loops]`/`[models]` tables,
+  which remain fully supported as fallbacks. New per-role model env:
+  `THREADKEEPER_SPAWN_MODEL_<ROLE>`.
+
+### Fixed
+
+- **Tier recompute on startup** — dialectic claims frozen at
+  `tier='hypothesis'` now self-heal. `recompute_all_tiers()` runs at
+  server startup so any claims that accumulated evidence while the daemon
+  was off are promoted to their correct tier immediately, without waiting
+  for the next evidence write.
+
 ### Changed
 
 - `tk-task-gate.sh` now covers the opus-4.8 native parallelism tools

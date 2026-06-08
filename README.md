@@ -214,6 +214,8 @@ shows agents focused on their primary task rarely do).
 | 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
 | 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md (advisory) or direct PATCH/PRUNE/CONSOLIDATE |
+| 6 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
+| 7 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
 
 All five write into the universal Skill format (`SKILL.md` under each
 known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
@@ -408,6 +410,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
+| `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
+| `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
+| `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
+| `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them via `~/.claude/settings.json`'s `env` block (Claude Code) or
 the equivalent env section in each CLI's config. Hot-config reload is
@@ -424,9 +430,20 @@ resolution table.
 Override per role via `~/.threadkeeper/spawn.toml`:
 
 ```toml
+# Preferred: role-keyed [agents.<role>] sections — pairs a CLI and model
+# to a named purpose. Resolved before [loops]/[models].
+[agents.dialectic_validator]
+cli   = "claude"
+model = "opus"
+
+[agents.shadow_observer]
+cli   = "claude"
+model = "opus"
+
 [default]
 agent = "auto"     # "auto" = use active CLI (default)
 
+# Legacy form — still fully supported, lower priority than [agents.*]
 [loops]
 # Force specific roles to specific CLIs regardless of active host
 shadow_observer    = "claude"   # heaviest reasoning → keep on Claude
@@ -446,8 +463,9 @@ Or via env (highest priority, overrides the TOML):
 
 ```bash
 export THREADKEEPER_SPAWN_DEFAULT=codex                 # global default
-export THREADKEEPER_SPAWN_LOOP_CURATOR=gemini           # per-role
-export THREADKEEPER_SPAWN_MODEL_CLAUDE=opus             # per-CLI model
+export THREADKEEPER_SPAWN_LOOP_CURATOR=gemini           # per-role (legacy)
+export THREADKEEPER_SPAWN_MODEL_DIALECTIC_VALIDATOR=opus  # per-role model
+export THREADKEEPER_SPAWN_MODEL_CLAUDE=opus             # per-CLI model (legacy)
 export THREADKEEPER_ACTIVE_CLI=claude                   # force detection
 ```
 

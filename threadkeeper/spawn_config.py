@@ -11,6 +11,19 @@ order:
 
   2. File overrides at ~/.threadkeeper/spawn.toml (one TOML file,
      stable structure):
+
+         Preferred (role-keyed assignment — "which agent for which purpose"):
+
+         [agents.dialectic_validator]
+         cli   = "claude"
+         model = "opus"
+
+         Resolved before the legacy [loops]/[models] entries; those remain
+         as fallbacks. Per-role model env override:
+         THREADKEEPER_SPAWN_MODEL_<ROLE> (e.g. THREADKEEPER_SPAWN_MODEL_DIALECTIC_VALIDATOR).
+
+         Legacy form (still fully supported, lower priority than [agents.*]):
+
          [default]
          agent = "auto"     # "auto" → use active CLI; or pin: "claude"
 
