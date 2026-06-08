@@ -27,6 +27,12 @@ _self_cid_at: float = 0.0
 _self_cid_via: Optional[str] = None  # 'forced' | 'ppid' | 'mtime' | None
 _self_cid_ttl_s: float = SELF_CID_TTL_S
 
+# Guard: prevents the startup-heal block from running when _ensure_session is
+# called re-entrantly from within recompute_all_tiers() itself (which calls
+# _ensure_session internally). Without this, recompute_all_tiers() would
+# consume tier changes before the outer caller sees them.
+_startup_heal_done: bool = False
+
 
 def _ensure_cursor(conn: sqlite3.Connection) -> None:
     """First time a session looks at events, anchor cursor to current max so we
@@ -172,6 +178,24 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         try:
             from . import thread_janitor
             thread_janitor.start_thread_janitor()
+        except Exception:
+            pass
+        try:
+            # One-shot self-heal: claims seeded before the tier machinery
+            # never got their tier recomputed (see recompute_all_tiers). Cheap
+            # (a handful of active claims); idempotent on every startup.
+            # Skip when recompute_all_tiers() is itself the first caller of
+            # _ensure_session: it sets _recompute_in_flight before calling us,
+            # so we can detect re-entrance and defer; recompute_all_tiers()
+            # will then run on un-promoted claims as expected by the caller.
+            # NOTE: session_end() nulls _session_id, re-arming this whole block
+            # on the next _ensure_session; _startup_heal_done (never reset)
+            # keeps the heal one-shot across that — do not remove it.
+            global _startup_heal_done
+            from .tools import dialectic as _dialectic_mod
+            if not _startup_heal_done and not _dialectic_mod._recompute_in_flight:
+                _startup_heal_done = True
+                _dialectic_mod.recompute_all_tiers()
         except Exception:
             pass
     return _session_id

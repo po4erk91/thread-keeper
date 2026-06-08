@@ -104,6 +104,12 @@ TIER_OBSERVED_W_SUPPORT = 2.0
 TIER_VALIDATED_W_SUPPORT = 4.0
 TIER_VALIDATED_QUIET_S = 14 * 86400  # no contradict in this window
 
+# Re-entrance guard: True while recompute_all_tiers() is on the call stack.
+# identity._ensure_session reads this to skip the startup heal when
+# recompute_all_tiers() is itself the first caller of _ensure_session — which
+# would otherwise consume tier promotions before the outer call sees them.
+_recompute_in_flight: bool = False
+
 
 def _evidence_weight(write_origin: str, base_weight: float) -> float:
     """Resolve the effective weight for an evidence row.
@@ -264,25 +270,30 @@ def recompute_all_tiers() -> int:
     The state machine advances at most one level per _recompute_tier call
     (hysteresis), so hypothesis→observed→validated needs up to two steps; we
     iterate per claim to settle it."""
-    conn = get_db()
-    _ensure_session(conn)
-    now_t = int(time.time())
-    rows = conn.execute(
-        "SELECT id, tier FROM user_dialectic WHERE state='active'"
-    ).fetchall()
-    changed = 0
-    for r in rows:
-        start_tier = r["tier"] or "hypothesis"
-        current_tier = start_tier
-        for _ in range(4):  # ample to settle a 2-step climb
-            _, new_tier = _recompute_tier(conn, r["id"], now_t)
-            if new_tier == current_tier:
-                break
-            current_tier = new_tier
-        if current_tier != start_tier:
-            changed += 1
-    conn.commit()
-    return changed
+    global _recompute_in_flight
+    _recompute_in_flight = True
+    try:
+        conn = get_db()
+        _ensure_session(conn)
+        now_t = int(time.time())
+        rows = conn.execute(
+            "SELECT id, tier FROM user_dialectic WHERE state='active'"
+        ).fetchall()
+        changed = 0
+        for r in rows:
+            start_tier = r["tier"] or "hypothesis"
+            current_tier = start_tier
+            for _ in range(4):  # ample to settle a 2-step climb
+                _, new_tier = _recompute_tier(conn, r["id"], now_t)
+                if new_tier == current_tier:
+                    break
+                current_tier = new_tier
+            if current_tier != start_tier:
+                changed += 1
+        conn.commit()
+        return changed
+    finally:
+        _recompute_in_flight = False
 
 
 def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
