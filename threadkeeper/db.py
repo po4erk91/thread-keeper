@@ -343,6 +343,22 @@ CREATE TABLE IF NOT EXISTS extract_candidates (
     decided_at   INTEGER
 );
 
+-- Dialectic capture buffer. dialectic_miner mechanically stores every user
+-- reply + its preceding-assistant context here (status='pending'); the
+-- dialectic_validator child consumes pending rows, turns them into claims via
+-- the dialectic_* tools, then resolves each to 'processed'.
+CREATE TABLE IF NOT EXISTS dialectic_observations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    dialog_uuid  TEXT UNIQUE,          -- dialog_messages.uuid; dedup key
+    user_quote   TEXT NOT NULL,
+    context      TEXT,                 -- preceding assistant turn (truncated)
+    source_cid   TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK(status IN ('pending','processed')),
+    created_at   INTEGER NOT NULL,
+    processed_at INTEGER
+);
+
 -- Reciprocal-rank-fusion-friendly FTS over dialog content. Mirror table
 -- (not content='dialog_messages') because dialog_messages PK is TEXT and
 -- FTS5 content tables expect INTEGER rowid alignment.
@@ -418,6 +434,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_from          ON edges(from_kind, from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to            ON edges(to_kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_relation      ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 
