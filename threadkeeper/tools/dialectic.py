@@ -254,6 +254,37 @@ def _recompute_tier(conn: sqlite3.Connection, claim_id: str,
     return old_tier, new_tier
 
 
+def recompute_all_tiers() -> int:
+    """One-shot: re-run the tier state machine over every active claim until
+    each reaches a fixed point. Heals claims seeded before the tier machinery
+    landed (tier defaulted to 'hypothesis', tier_changed_at NULL, and
+    _recompute_tier only fires on new evidence). Idempotent — returns the
+    number of claims whose tier actually changed.
+
+    The state machine advances at most one level per _recompute_tier call
+    (hysteresis), so hypothesis→observed→validated needs up to two steps; we
+    iterate per claim to settle it."""
+    conn = get_db()
+    _ensure_session(conn)
+    now_t = int(time.time())
+    rows = conn.execute(
+        "SELECT id, tier FROM user_dialectic WHERE state='active'"
+    ).fetchall()
+    changed = 0
+    for r in rows:
+        start_tier = r["tier"] or "hypothesis"
+        current_tier = start_tier
+        for _ in range(4):  # ample to settle a 2-step climb
+            _, new_tier = _recompute_tier(conn, r["id"], now_t)
+            if new_tier == current_tier:
+                break
+            current_tier = new_tier
+        if current_tier != start_tier:
+            changed += 1
+    conn.commit()
+    return changed
+
+
 def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
                      quote: str, source: str, base_weight: float,
                      cid: Optional[str], now_t: int) -> int:
