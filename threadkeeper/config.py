@@ -1,5 +1,15 @@
 """Paths, env-driven defaults, semantic-search availability flag.
-Imported wherever a constant or config is needed; cheap to import."""
+Imported wherever a constant or config is needed; cheap to import.
+
+All configuration is read from ~/.threadkeeper/.env (or the file at
+THREADKEEPER_ENV_FILE) via pydantic-settings. Real environment variables
+override .env values, which override field defaults.
+
+Nested spawn config uses double-underscore notation:
+  THREADKEEPER_SPAWN__DEFAULT=claude
+  THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=codex
+  THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet
+"""
 from __future__ import annotations
 
 import importlib.util
@@ -7,31 +17,342 @@ import os
 from pathlib import Path
 from typing import Optional
 
-DB_PATH: Path = Path(
-    os.environ.get("THREADKEEPER_DB", "~/.threadkeeper/db.sqlite")
-).expanduser()
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-EMBED_MODEL_NAME: str = os.environ.get(
-    "THREADKEEPER_EMBED_MODEL",
-    "paraphrase-multilingual-MiniLM-L12-v2",  # 118 MB, RU+EN cross-lingual
+# ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
+_ENV_FILE: str = os.environ.get(
+    "THREADKEEPER_ENV_FILE",
+    str(Path("~/.threadkeeper/.env").expanduser()),
 )
 
-# Embedding runtime backend. 'onnx' (default) runs the model through fastembed /
-# ONNX Runtime — no PyTorch, ~700MB footprint (vs ~1.8GB). 'sentence-transformers' is
-# the legacy PyTorch path, kept as an opt-in fallback (install `.[semantic-st]`
-# and set THREADKEEPER_EMBED_BACKEND=sentence-transformers). Both produce the
-# same 384-dim vectors, but fastembed's are numerically NOT identical to ST's,
-# so switching backends warrants a `tk-migrate-embeddings --all` recompute.
-EMBED_BACKEND: str = os.environ.get(
-    "THREADKEEPER_EMBED_BACKEND", "onnx"
-).strip().lower()
+
+# ── Nested spawn config ──────────────────────────────────────────────────────
+
+class SpawnSettings(BaseModel):
+    """Spawn routing config. All keys are lowercased (case_sensitive=False)."""
+
+    default: str = "claude"
+    loop: dict[str, str] = {}   # role -> cli
+    model: dict[str, str] = {}  # cli/role -> model
+
+
+# ── Main Settings class ──────────────────────────────────────────────────────
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="THREADKEEPER_",
+        env_file=_ENV_FILE,
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",
+        env_ignore_empty=True,
+    )
+
+    # ── Paths ────────────────────────────────────────────────────────────────
+    # env: THREADKEEPER_DB (not THREADKEEPER_DB_PATH — old key is "THREADKEEPER_DB")
+    db: Path = Field(
+        default=Path("~/.threadkeeper/db.sqlite"),
+        validation_alias=AliasChoices("THREADKEEPER_DB", "db"),
+    )
+    # Unprefixed env names — bypass prefix via AliasChoices
+    claude_skills_dir: Path = Field(
+        default=Path("~/.claude/skills"),
+        validation_alias=AliasChoices(
+            "CLAUDE_SKILLS_DIR", "THREADKEEPER_CLAUDE_SKILLS_DIR", "claude_skills_dir"
+        ),
+    )
+    claude_projects_dir: Path = Field(
+        default=Path("~/.claude/projects"),
+        validation_alias=AliasChoices(
+            "CLAUDE_PROJECTS_DIR",
+            "THREADKEEPER_CLAUDE_PROJECTS_DIR",
+            "claude_projects_dir",
+        ),
+    )
+    task_log_dir: Path = Field(default=Path("/tmp/thread-keeper-tasks"))
+
+    # ── Embeddings ───────────────────────────────────────────────────────────
+    # env: THREADKEEPER_EMBED_MODEL (field name: embed_model → EMBED_MODEL_NAME)
+    embed_model: str = Field(
+        default="paraphrase-multilingual-MiniLM-L12-v2",
+        validation_alias=AliasChoices("THREADKEEPER_EMBED_MODEL", "embed_model"),
+    )
+    embed_backend: str = "onnx"
+    no_embeddings: bool = False
+
+    # ── Client / process identity ────────────────────────────────────────────
+    client: str = Field(
+        default="claude",
+        validation_alias=AliasChoices("THREADKEEPER_CLIENT", "client"),
+    )
+    write_origin: str = "foreground"
+    spawned_child: bool = False
+
+    # ── Ingest ───────────────────────────────────────────────────────────────
+    # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
+    ingest_cap: int = Field(
+        default=50,
+        validation_alias=AliasChoices("THREADKEEPER_INGEST_CAP", "ingest_cap"),
+    )
+    ingest_interval_s: float = 3.0
+    # env: THREADKEEPER_INGEST_WINDOW_S (not INGEST_RECENT_WINDOW_S)
+    ingest_window_s: int = Field(
+        default=600,
+        validation_alias=AliasChoices(
+            "THREADKEEPER_INGEST_WINDOW_S", "ingest_window_s"
+        ),
+    )
+
+    # ── Identity / session ───────────────────────────────────────────────────
+    self_cid_ttl_s: float = 5.0
+
+    # ── Nudges / brief ───────────────────────────────────────────────────────
+    memory_nudge_interval: int = 10
+    skill_nudge_interval: int = 10
+    brief_lean: bool = False
+    brief_no_thread_nudge: bool = False
+
+    # ── Spawn budget ─────────────────────────────────────────────────────────
+    spawn_budget_mb: int = 3072
+    spawn_estimate_slim_mb: int = 500
+    spawn_estimate_full_mb: int = 1500
+    spawn_budget_poll_s: float = 10.0
+
+    # ── Memory guard ─────────────────────────────────────────────────────────
+    memory_guard_poll_s: float = 30.0
+    memory_guard_warn_mb: int = 1536
+    memory_guard_kill_mb: int = 3072
+    memory_guard_agg_warn_mb: int = 2048
+    memory_guard_agg_kill_mb: int = 3072
+    memory_guard_reclaim_mb: int = 1024
+    memory_guard_target_servers: int = 1
+    memory_guard_retire_idle_s: int = 900
+    memory_guard_retire_live: bool = False
+    memory_guard_notify: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "THREADKEEPER_MEMORY_GUARD_NOTIFY", "memory_guard_notify"
+        ),
+    )
+    memory_guard_cooldown_s: int = 300
+
+    # ── Auto-review ──────────────────────────────────────────────────────────
+    auto_review: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("THREADKEEPER_AUTO_REVIEW", "auto_review"),
+    )
+
+    # ── Shadow review daemon ─────────────────────────────────────────────────
+    shadow_review_interval_s: float = 0.0
+    shadow_review_window_s: int = 900
+    shadow_review_min_chars: int = 500
+
+    # ── Curator daemon ───────────────────────────────────────────────────────
+    curator_interval_s: float = 0.0
+    curator_min_lessons: int = 3
+    # THREADKEEPER_CURATOR_REPORTS_DIR — default is relative to db dir; computed post-init
+    curator_reports_dir: Optional[Path] = None
+    curator_destructive: bool = False
+
+    # ── Extract daemon ───────────────────────────────────────────────────────
+    extract_interval_s: float = 0.0
+    extract_window_min: int = 30
+
+    # ── Candidate reviewer daemon ─────────────────────────────────────────────
+    candidate_review_interval_s: float = 0.0
+    candidate_review_min: int = 3
+
+    # ── Probe daemon ─────────────────────────────────────────────────────────
+    probe_interval_s: float = 0.0
+    probe_cooldown_s: int = 7 * 86400  # one week
+
+    # ── Judge panel ──────────────────────────────────────────────────────────
+    panel_size: int = 3
+    panel_roles: list[str] = ["skeptic", "critic", "generator"]
+    panel_require_skeptic: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "THREADKEEPER_PANEL_REQUIRE_SKEPTIC", "panel_require_skeptic"
+        ),
+    )
+    panel_vote_weight: float = 1.0
+    panel_model: str = ""
+    panel_effort: str = ""
+
+    # ── Evolve review daemon ──────────────────────────────────────────────────
+    evolve_review_interval_s: float = 0.0
+    evolve_review_min: int = 2
+
+    # ── Thread janitor daemon ─────────────────────────────────────────────────
+    thread_janitor_interval_s: float = 0.0
+    thread_idle_close_days: float = 1.0
+
+    # ── Dialectic auto-feed daemons ───────────────────────────────────────────
+    dialectic_mine_interval_s: float = 0.0
+    dialectic_validate_interval_s: float = 0.0
+    dialectic_validate_min: int = 5
+    dialectic_max_new_claims: int = 3
+
+    # ── Nested spawn config ───────────────────────────────────────────────────
+    spawn: SpawnSettings = SpawnSettings()
+
+    # ── Validators ───────────────────────────────────────────────────────────
+
+    @field_validator(
+        "db",
+        "claude_skills_dir",
+        "claude_projects_dir",
+        "task_log_dir",
+        mode="after",
+    )
+    @classmethod
+    def _expand_path(cls, p: Path) -> Path:
+        return p.expanduser()
+
+    @field_validator("curator_reports_dir", mode="before")
+    @classmethod
+    def _parse_curator_dir(cls, v):
+        if v is None:
+            return None
+        return Path(str(v)).expanduser()
+
+    @field_validator("embed_backend", mode="after")
+    @classmethod
+    def _normalize_backend(cls, v: str) -> str:
+        return v.strip().lower()
+
+    @field_validator("panel_roles", mode="before")
+    @classmethod
+    def _parse_panel_roles(cls, v):
+        """Accept comma-separated string or list."""
+        if isinstance(v, str):
+            return [r.strip() for r in v.split(",") if r.strip()]
+        return v
+
+
+# ── Instantiate ──────────────────────────────────────────────────────────────
+
+settings = Settings()
+
+# ── Derived paths that depend on db field ────────────────────────────────────
+
+# CURATOR_REPORTS_DIR: if not explicitly set, anchor to DB_PATH.parent/curator
+# so a custom THREADKEEPER_DB co-locates its curator reports.
+_curator_reports_dir: Path = (
+    settings.curator_reports_dir
+    if settings.curator_reports_dir is not None
+    else (settings.db.parent / "curator")
+)
+
+
+# ── Compat shim: re-export all prior module-level names ──────────────────────
+# Every name listed here is imported by ≥1 call site in the package.
+
+DB_PATH: Path = settings.db
+EMBED_MODEL_NAME: str = settings.embed_model
+EMBED_BACKEND: str = settings.embed_backend  # already normalized to lower
+NO_EMBEDDINGS: bool = settings.no_embeddings
+CLIENT_LABEL: str = settings.client
+WRITE_ORIGIN: str = settings.write_origin
+SPAWNED_CHILD: bool = settings.spawned_child
+CLAUDE_SKILLS_DIR: Path = settings.claude_skills_dir
+CLAUDE_PROJECTS_DIR: Path = settings.claude_projects_dir
+TASK_LOG_DIR: Path = settings.task_log_dir
+DIALOG_LOG: Path = TASK_LOG_DIR / "dialog.log"
+INGEST_CAP_PER_CALL: int = settings.ingest_cap
+INGEST_INTERVAL_S: float = settings.ingest_interval_s
+INGEST_RECENT_WINDOW_S: int = settings.ingest_window_s
+SELF_CID_TTL_S: float = settings.self_cid_ttl_s
+MEMORY_NUDGE_INTERVAL: int = settings.memory_nudge_interval
+SKILL_NUDGE_INTERVAL: int = settings.skill_nudge_interval
+BRIEF_LEAN: bool = settings.brief_lean
+BRIEF_NO_THREAD_NUDGE: bool = settings.brief_no_thread_nudge
+AUTO_REVIEW_ENABLED: bool = settings.auto_review
+SPAWN_BUDGET_MB: int = settings.spawn_budget_mb
+SPAWN_ESTIMATE_SLIM_MB: int = settings.spawn_estimate_slim_mb
+SPAWN_ESTIMATE_FULL_MB: int = settings.spawn_estimate_full_mb
+SPAWN_BUDGET_POLL_S: float = settings.spawn_budget_poll_s
+MEMORY_GUARD_POLL_S: float = settings.memory_guard_poll_s
+MEMORY_GUARD_WARN_MB: int = settings.memory_guard_warn_mb
+MEMORY_GUARD_KILL_MB: int = settings.memory_guard_kill_mb
+MEMORY_GUARD_AGG_WARN_MB: int = settings.memory_guard_agg_warn_mb
+MEMORY_GUARD_AGG_KILL_MB: int = settings.memory_guard_agg_kill_mb
+MEMORY_GUARD_RECLAIM_MB: int = settings.memory_guard_reclaim_mb
+MEMORY_GUARD_TARGET_SERVERS: int = settings.memory_guard_target_servers
+MEMORY_GUARD_RETIRE_IDLE_S: int = settings.memory_guard_retire_idle_s
+MEMORY_GUARD_RETIRE_LIVE: bool = settings.memory_guard_retire_live
+MEMORY_GUARD_NOTIFY: bool = settings.memory_guard_notify
+MEMORY_GUARD_COOLDOWN_S: int = settings.memory_guard_cooldown_s
+SHADOW_REVIEW_INTERVAL_S: float = settings.shadow_review_interval_s
+SHADOW_REVIEW_WINDOW_S: int = settings.shadow_review_window_s
+SHADOW_REVIEW_MIN_CHARS: int = settings.shadow_review_min_chars
+CURATOR_INTERVAL_S: float = settings.curator_interval_s
+CURATOR_MIN_LESSONS: int = settings.curator_min_lessons
+CURATOR_REPORTS_DIR: Path = _curator_reports_dir
+CURATOR_DESTRUCTIVE: bool = settings.curator_destructive
+EXTRACT_INTERVAL_S: float = settings.extract_interval_s
+EXTRACT_WINDOW_MIN: int = settings.extract_window_min
+CANDIDATE_REVIEW_INTERVAL_S: float = settings.candidate_review_interval_s
+CANDIDATE_REVIEW_MIN: int = settings.candidate_review_min
+PROBE_INTERVAL_S: float = settings.probe_interval_s
+PROBE_COOLDOWN_S: int = settings.probe_cooldown_s
+PANEL_SIZE: int = settings.panel_size
+PANEL_ROLES: list[str] = settings.panel_roles
+PANEL_REQUIRE_SKEPTIC: bool = settings.panel_require_skeptic
+PANEL_VOTE_WEIGHT: float = settings.panel_vote_weight
+PANEL_MODEL: str = settings.panel_model
+PANEL_EFFORT: str = settings.panel_effort
+EVOLVE_REVIEW_INTERVAL_S: float = settings.evolve_review_interval_s
+EVOLVE_REVIEW_MIN: int = settings.evolve_review_min
+THREAD_JANITOR_INTERVAL_S: float = settings.thread_janitor_interval_s
+THREAD_IDLE_CLOSE_DAYS: float = settings.thread_idle_close_days
+DIALECTIC_MINE_INTERVAL_S: float = settings.dialectic_mine_interval_s
+DIALECTIC_VALIDATE_INTERVAL_S: float = settings.dialectic_validate_interval_s
+DIALECTIC_VALIDATE_MIN: int = settings.dialectic_validate_min
+DIALECTIC_MAX_NEW_CLAIMS: int = settings.dialectic_max_new_claims
+
+# ── Derived constants (unchanged logic, computed after settings) ──────────────
 
 # fastembed addresses the model under its sentence-transformers org prefix;
 # SentenceTransformer accepts the bare name. Normalize for the ONNX backend.
 FASTEMBED_MODEL_ID: str = (
-    EMBED_MODEL_NAME if "/" in EMBED_MODEL_NAME
+    EMBED_MODEL_NAME
+    if "/" in EMBED_MODEL_NAME
     else f"sentence-transformers/{EMBED_MODEL_NAME}"
 )
+
+
+def _installed(*mods: str) -> bool:
+    """True if every module is importable, checked WITHOUT importing it.
+
+    `find_spec` locates the module via the import machinery but never executes
+    it — so probing availability here doesn't pull PyTorch / ONNX Runtime /
+    tokenizers (and their thread pools) into every process that imports config.
+    The heavy import stays lazy in `embeddings._get_model()`.
+    """
+    try:
+        return all(importlib.util.find_spec(m) is not None for m in mods)
+    except (ImportError, ValueError):
+        return False
+
+
+if NO_EMBEDDINGS:
+    SEMANTIC_AVAILABLE: bool = False
+elif EMBED_BACKEND == "sentence-transformers":
+    SEMANTIC_AVAILABLE = _installed("sentence_transformers", "numpy")
+else:  # 'onnx' (default)
+    SEMANTIC_AVAILABLE = _installed("fastembed", "numpy")
+
+# Autonomous daemons may spawn children or do expensive background work. They
+# should run only in user-facing parent processes, never inside spawned review
+# children, where they can recurse.
+BACKGROUND_DAEMONS_ALLOWED: bool = (
+    not SPAWNED_CHILD and WRITE_ORIGIN == "foreground"
+)
+
+# ── DB-path setup + legacy migration ─────────────────────────────────────────
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -57,373 +378,3 @@ if (
         src = _LEGACY_DIR / fname
         if src.exists():
             shutil.copy2(src, DB_PATH.parent / fname)
-
-# Semantic search opt-out. When this process is light (spawned slim child that
-# should never load PyTorch/transformers), set THREADKEEPER_NO_EMBEDDINGS=1.
-# This process will then delegate semantic queries to a peer via the signals
-# channel (search_via_parent). Notes still get inserted with embedding=NULL;
-# a parent process with embeddings backfills them asynchronously.
-NO_EMBEDDINGS: bool = os.environ.get(
-    "THREADKEEPER_NO_EMBEDDINGS", ""
-).lower() in {"1", "true", "yes", "on"}
-
-# Optional semantic search. If sentence-transformers is not installed OR the
-# no-embeddings opt-out is set, fall back to FTS5 keyword matching + delegate.
-# Brief still works either way.
-def _installed(*mods: str) -> bool:
-    """True if every module is importable, checked WITHOUT importing it.
-
-    `find_spec` locates the module via the import machinery but never executes
-    it — so probing availability here doesn't pull PyTorch / ONNX Runtime /
-    tokenizers (and their thread pools) into every process that imports config.
-    The heavy import stays lazy in `embeddings._get_model()`.
-    """
-    try:
-        return all(importlib.util.find_spec(m) is not None for m in mods)
-    except (ImportError, ValueError):
-        return False
-
-
-if NO_EMBEDDINGS:
-    SEMANTIC_AVAILABLE: bool = False
-elif EMBED_BACKEND == "sentence-transformers":
-    SEMANTIC_AVAILABLE = _installed("sentence_transformers", "numpy")
-else:  # 'onnx' (default)
-    SEMANTIC_AVAILABLE = _installed("fastembed", "numpy")
-
-# Client label used for `presence`/`sessions` rows.
-CLIENT_LABEL: str = os.environ.get("THREADKEEPER_CLIENT", "claude")
-
-# Write-origin for this server process. 'foreground' = a regular user-facing
-# conversation; 'background_review' = a headless review fork spawned to
-# auto-curate memory/skills after a complex task. Curator only ever touches
-# skills created under 'background_review' so user-authored skills are safe.
-WRITE_ORIGIN: str = os.environ.get(
-    "THREADKEEPER_WRITE_ORIGIN", "foreground"
-)
-
-# Explicit marker set by spawn() for child CLI processes. Do not infer
-# child-ness from THREADKEEPER_FORCE_CID: tests and manual diagnostics use it
-# to pin identity for otherwise-foreground sessions.
-SPAWNED_CHILD: bool = os.environ.get(
-    "THREADKEEPER_SPAWNED_CHILD", ""
-).lower() in {"1", "true", "yes", "on"}
-
-# Autonomous daemons may spawn children or do expensive background work. They
-# should run only in user-facing parent processes, never inside spawned review
-# children, where they can recurse.
-BACKGROUND_DAEMONS_ALLOWED: bool = (
-    not SPAWNED_CHILD and WRITE_ORIGIN == "foreground"
-)
-
-# Where Claude's user-local skills live. Used by skill_manage / curator.
-CLAUDE_SKILLS_DIR: Path = Path(
-    os.environ.get("CLAUDE_SKILLS_DIR", "~/.claude/skills")
-).expanduser()
-
-# Where the live ingester reads claude code transcripts from.
-CLAUDE_PROJECTS_DIR: Path = Path(
-    os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")
-).expanduser()
-
-# Per-session ingest cap so brief() at session start doesn't block.
-INGEST_CAP_PER_CALL: int = int(os.environ.get("THREADKEEPER_INGEST_CAP", "50"))
-
-# Background live-ingester tick (seconds). 0 disables.
-INGEST_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_INGEST_INTERVAL_S", "3")
-)
-INGEST_RECENT_WINDOW_S: int = int(
-    os.environ.get("THREADKEEPER_INGEST_WINDOW_S", "600")
-)
-
-# Self-cid heuristic cache TTL (only matters when ppid walk fails).
-SELF_CID_TTL_S: float = float(
-    os.environ.get("THREADKEEPER_SELF_CID_TTL_S", "5")
-)
-
-# Per-task log directory for spawned children.
-TASK_LOG_DIR: Path = Path(
-    os.environ.get("THREADKEEPER_TASK_LOG_DIR", "/tmp/thread-keeper-tasks")
-).expanduser()
-DIALOG_LOG: Path = TASK_LOG_DIR / "dialog.log"
-
-# Counter-driven nudge thresholds. Memory nudge fires when N mutating events
-# have passed since the last memory_save event in this session; skill nudge
-# fires after N events since the last skill_materialized event. 0 disables.
-MEMORY_NUDGE_INTERVAL: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_NUDGE_INTERVAL", "10")
-)
-SKILL_NUDGE_INTERVAL: int = int(
-    os.environ.get("THREADKEEPER_SKILL_NUDGE_INTERVAL", "10")
-)
-
-# Lean brief injection. When set, render_brief() drops the nudge/meta sections
-# (spawn/thread/memory/skill hints, currently_testing, distill/extract/pickup/
-# evolve pending, and the user-facing footer) from the always-on SessionStart
-# injection — each stays reachable on demand via its own tool. The data
-# sections (core_memory, threads, style, verbatim, user_model, …) are kept.
-# Default off → brief output is byte-identical to before. The tk-brief.sh
-# SessionStart hook opts in by exporting THREADKEEPER_BRIEF_LEAN=1, so only the
-# once-per-session injection is lean; in-session brief() calls are unaffected.
-BRIEF_LEAN: bool = os.environ.get(
-    "THREADKEEPER_BRIEF_LEAN", ""
-).lower() in {"1", "true", "yes", "on"}
-
-# When true, review_thread(thread_id) automatically spawns a background fork
-# for rich closed threads at the moment of close_thread(). Default off so
-# behavior is predictable; users opt in via env.
-AUTO_REVIEW_ENABLED: bool = os.environ.get(
-    "THREADKEEPER_AUTO_REVIEW", ""
-).lower() in {"1", "true", "yes", "on"}
-
-# Budget cap on combined RSS of all running spawned children (not the
-# parent itself). spawn() refuses a new child whose estimated RSS would
-# push total over this. Default 3 GB. Set 0 to disable budget enforcement.
-SPAWN_BUDGET_MB: int = int(
-    os.environ.get("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
-)
-# Initial RSS estimate for a freshly-spawned child before its real RSS is
-# measured by the budget daemon. Updated to actual value within ~10s.
-SPAWN_ESTIMATE_SLIM_MB: int = int(
-    os.environ.get("THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB", "500")
-)
-SPAWN_ESTIMATE_FULL_MB: int = int(
-    os.environ.get("THREADKEEPER_SPAWN_ESTIMATE_FULL_MB", "1500")
-)
-# Budget daemon poll interval (seconds). 0 disables the daemon (estimates
-# stay frozen; not recommended outside tests).
-SPAWN_BUDGET_POLL_S: float = float(
-    os.environ.get("THREADKEEPER_SPAWN_BUDGET_POLL_S", "10")
-)
-
-# Memory guard for thread-keeper server processes themselves. Unlike
-# spawn_budget, this watches every running `python -m threadkeeper.server`
-# process and can terminate a server that crosses the hard RSS limit.
-# Set poll or kill threshold to 0 to disable the daemon / killing.
-MEMORY_GUARD_POLL_S: float = float(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_POLL_S", "30")
-)
-MEMORY_GUARD_WARN_MB: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_WARN_MB", "1536")
-)
-MEMORY_GUARD_KILL_MB: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_KILL_MB", "3072")
-)
-MEMORY_GUARD_AGG_WARN_MB: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB", "2048")
-)
-MEMORY_GUARD_AGG_KILL_MB: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB", "3072")
-)
-MEMORY_GUARD_RECLAIM_MB: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_RECLAIM_MB", "1024")
-)
-MEMORY_GUARD_TARGET_SERVERS: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS", "1")
-)
-MEMORY_GUARD_RETIRE_IDLE_S: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S", "900")
-)
-MEMORY_GUARD_RETIRE_LIVE: bool = os.environ.get(
-    "THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE", ""
-).lower() in {"1", "true", "yes", "on"}
-MEMORY_GUARD_NOTIFY: bool = os.environ.get(
-    "THREADKEEPER_MEMORY_GUARD_NOTIFY", "1"
-).lower() in {"1", "true", "yes", "on"}
-MEMORY_GUARD_COOLDOWN_S: int = int(
-    os.environ.get("THREADKEEPER_MEMORY_GUARD_COOLDOWN_S", "300")
-)
-
-# Shadow-review daemon. Periodically scans recently-ingested
-# dialog_messages from ALL active sessions, looks for class-level
-# learning signals, and spawns an LLM evaluator child to decide whether
-# to materialize a skill. 0 disables (default — opt in via env).
-SHADOW_REVIEW_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S", "0")
-)
-# Sliding window of dialog history each shadow pass considers, in
-# seconds. Combined with the dedup cursor: actual scan range is
-# max(cursor_ts, now-window_s) → now.
-SHADOW_REVIEW_WINDOW_S: int = int(
-    os.environ.get("THREADKEEPER_SHADOW_REVIEW_WINDOW_S", "900")
-)
-# Minimum significant chars (user+assistant dialog combined) before a
-# pass is worth spawning the evaluator. Cheap floor against periodic
-# misfires on idle windows.
-SHADOW_REVIEW_MIN_CHARS: int = int(
-    os.environ.get("THREADKEEPER_SHADOW_REVIEW_MIN_CHARS", "500")
-)
-
-# Curator daemon. Periodic LLM-driven audit of the existing
-# lessons.md + ~/.claude/skills/ library — grades, suggests
-# consolidation/patches/prunes, writes a per-run REPORT.md. Where
-# shadow_review LOOKS FOR NEW class-level learning every few minutes,
-# the Curator REVIEWS THE STORE every few days. 0 disables (default —
-# opt in via env). Recommended: 604800 (7 days).
-CURATOR_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_CURATOR_INTERVAL_S", "0")
-)
-# Don't bother curating a tiny library; below this lessons-count there's
-# nothing meaningful to consolidate.
-CURATOR_MIN_LESSONS: int = int(
-    os.environ.get("THREADKEEPER_CURATOR_MIN_LESSONS", "3")
-)
-# Where the Curator writes its REPORT-<isodate>.md per run. One file
-# per pass; latest is the canonical one to read. Anchored to DB_PATH's
-# parent so a custom THREADKEEPER_DB co-locates its curator reports.
-CURATOR_REPORTS_DIR: Path = Path(
-    os.environ.get(
-        "THREADKEEPER_CURATOR_REPORTS_DIR",
-        str(DB_PATH.parent / "curator"),
-    )
-).expanduser()
-# When TRUE, curator-child gets write-mode tools (skill_manage delete/
-# patch + lesson_append) and is instructed to apply its own PRUNE /
-# PATCH / CONSOLIDATE recommendations directly, not just report them.
-# Default OFF — Phase 1 is advisory-only, user reviews REPORT.md and
-# applies manually. Flip to "1" once you trust the curator's verdicts.
-CURATOR_DESTRUCTIVE: bool = bool(
-    os.environ.get("THREADKEEPER_CURATOR_DESTRUCTIVE", "")
-)
-
-# Extract daemon. Periodically scans dialog_messages for heuristic
-# candidates (note / concept / distill / verbatim) via extract_recent()
-# and enqueues them under extract_candidates.status='pending'. Where
-# shadow_review extracts CLASS-LEVEL durable rules, extract harvests
-# PER-INCIDENT decision-shaped utterances ("let's use X", "next time
-# we should Y", insight markers, bullet-listed regularities). Agent's
-# subsequent review_candidates() / accept_candidate() materializes the
-# survivors into notes/concepts/distills.
-# 0 disables (default — opt in via env). Recommended: 600 (every 10
-# min) — extract is cheap, just regex + cosine clustering on the
-# already-ingested dialog window.
-EXTRACT_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_EXTRACT_INTERVAL_S", "0")
-)
-# Sliding window of dialog history each extract pass considers, in
-# minutes. Defaults align with the typical agent-task duration so a
-# whole task's worth of decisions gets harvested at once.
-EXTRACT_WINDOW_MIN: int = int(
-    os.environ.get("THREADKEEPER_EXTRACT_WINDOW_MIN", "30")
-)
-
-# Candidate-reviewer daemon — periodically consumes the pending queue
-# extract_daemon builds up, spawns an LLM child to decide per
-# candidate: SKILL.create / SKILL.patch / NOTE / VERBATIM / REJECT.
-# Closes the loop between heuristic extract and SKILL.md
-# materialization that previously only happened via close_thread
-# auto-review (which agents rarely trigger). 0 disables (default —
-# opt in). Recommended: 3600 (hourly) — extract typically adds
-# ~10 candidates/h with the daemon's 30-min window, hourly review
-# keeps the queue from backing up.
-CANDIDATE_REVIEW_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S", "0")
-)
-# Minimum pending candidates before the daemon engages — below this
-# floor there's not enough signal to justify spawning an Opus child.
-CANDIDATE_REVIEW_MIN: int = int(
-    os.environ.get("THREADKEEPER_CANDIDATE_REVIEW_MIN", "3")
-)
-
-# Probe daemon. Periodically spawns a CONTEXT-FREE child to attempt one due
-# self-test probe (a known weak spot: token counting, date math, format
-# compliance, …); the parent grades the child's raw answer mechanically and
-# records it to probe_results → reliability → brief weak_spots. Only OBJECTIVE
-# graders (regex/exact with a pattern) are driven — manual probes have no
-# mechanical key and stay on the manual run_probe loop. 0 disables (default —
-# opt in). Recommended: 86400 (daily) — probes are a slow-moving tripwire on
-# model-version drift, not a hot loop.
-PROBE_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_PROBE_INTERVAL_S", "0")
-)
-# Don't re-test a category whose probe ran within this window. Defaults to a
-# week so each weak-spot gets a fresh reading without burning tokens daily.
-PROBE_COOLDOWN_S: int = int(
-    os.environ.get("THREADKEEPER_PROBE_COOLDOWN_S", str(7 * 86400))
-)
-
-# Judge panel — fills the distill/dialectic vote quorum with SPAWNED agents
-# that vote independently (the "collective mind"), instead of waiting for a
-# second human or lowering thresholds. convene_panel() raises N children with
-# distinct roles; each evaluates the target and votes (and MAY vote against).
-#
-# The adversarial guard: a panel earns the non-discounted `panel_vote` origin
-# (weight PANEL_VOTE_WEIGHT) ONLY when it includes a skeptic role (when
-# PANEL_REQUIRE_SKEPTIC). Otherwise children run as `background_review` (0.5),
-# so a rubber-stamp panel can't promote a claim — only one that could have
-# contradicted. The spawner grants the origin; no child self-elevates.
-PANEL_SIZE: int = int(os.environ.get("THREADKEEPER_PANEL_SIZE", "3"))
-PANEL_ROLES: list[str] = [
-    r.strip() for r in os.environ.get(
-        "THREADKEEPER_PANEL_ROLES", "skeptic,critic,generator"
-    ).split(",") if r.strip()
-]
-PANEL_REQUIRE_SKEPTIC: bool = os.environ.get(
-    "THREADKEEPER_PANEL_REQUIRE_SKEPTIC", "1"
-).lower() in {"1", "true", "yes", "on"}
-PANEL_VOTE_WEIGHT: float = float(
-    os.environ.get("THREADKEEPER_PANEL_VOTE_WEIGHT", "1.0")
-)
-PANEL_MODEL: str = os.environ.get("THREADKEEPER_PANEL_MODEL", "")
-PANEL_EFFORT: str = os.environ.get("THREADKEEPER_PANEL_EFFORT", "")
-
-# Evolve reviewer daemon. Periodically triages the format-evolution
-# suggestion queue (evolve_format writes; nothing read them → 5 pending, 0
-# actioned in the audit). Spawns a context-free child that, per pending
-# suggestion, calls evolve_decide(promote|dismiss): dedup near-duplicates,
-# drop stale/superseded ones, and PROMOTE the live ones so the brief
-# surfaces them sharply (★) for the foreground agent/human to APPLY. The
-# child NEVER applies a suggestion itself — applying edits format/code, a
-# foreground/human action. 0 disables (default — opt in). Recommended:
-# 604800 (weekly) — suggestions accrue slowly; this is housekeeping.
-EVOLVE_REVIEW_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S", "0")
-)
-# Minimum pending suggestions before the daemon spawns a reviewer child —
-# below this there's nothing worth an LLM pass.
-EVOLVE_REVIEW_MIN: int = int(
-    os.environ.get("THREADKEEPER_EVOLVE_REVIEW_MIN", "2")
-)
-
-# Thread-janitor daemon. The skill-harvest path fires on close_thread(), but
-# the user never closes threads and the agent rarely does — so threads pile
-# up open (32 active, some 12d stale in the audit) and abandoned work never
-# gets reviewed into a skill (2 auto-review spawns ever, 5 skills / 115
-# closes). This daemon closes threads that have been idle past
-# THREAD_IDLE_CLOSE_DAYS, routing through the normal close_thread() path so
-# the auto-review hook fires for the richest pending thread. Safe because
-# closing is reversible: note() revives a closed thread (see tools/threads
-# note()). 0 disables (default — opt in). Recommended: 86400 (daily) — this
-# is slow housekeeping, not a hot loop.
-THREAD_JANITOR_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_THREAD_JANITOR_INTERVAL_S", "0")
-)
-# Close active/idle threads whose last_touched_at is older than this many
-# days. Default 1 (user's choice): aggressive, but reopenable on return.
-THREAD_IDLE_CLOSE_DAYS: float = float(
-    os.environ.get("THREADKEEPER_THREAD_IDLE_CLOSE_DAYS", "1")
-)
-
-# Dialectic auto-feed. Two daemons build the user-model continuously.
-# dialectic_miner is MECHANICAL (no LLM): every DIALECTIC_MINE_INTERVAL_S it
-# captures user-role dialog_messages + their preceding-assistant context into
-# the dialectic_observations buffer. dialectic_validator periodically spawns an
-# (opus) child that turns the buffer into claims via dialectic_* tools. Both
-# 0 = off (default — opt in via env).
-DIALECTIC_MINE_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_DIALECTIC_MINE_INTERVAL_S", "0")
-)
-DIALECTIC_VALIDATE_INTERVAL_S: float = float(
-    os.environ.get("THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S", "0")
-)
-# Min pending observations before the validator spawns — below this there's
-# not enough signal to justify an opus child.
-DIALECTIC_VALIDATE_MIN: int = int(
-    os.environ.get("THREADKEEPER_DIALECTIC_VALIDATE_MIN", "5")
-)
-# Cap on new claims the validator may create per pass (it should prefer adding
-# evidence to existing claims; see the validator prompt).
-DIALECTIC_MAX_NEW_CLAIMS: int = int(
-    os.environ.get("THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS", "3")
-)
