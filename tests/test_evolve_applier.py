@@ -127,6 +127,9 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert "gh pr create" in p
     assert "evolve_mark_applied" in p
     assert "NEVER" in p and "main" in p  # the no-touch-main guard
+    # the slim-child sets NO_EMBEDDINGS=1, which breaks the embedding tests in
+    # the full suite — the prompt must tell the child to unset it for pytest
+    assert "THREADKEEPER_NO_EMBEDDINGS" in p
 
     # applied is NOT set just by launching — only after a real PR
     assert conn.execute(

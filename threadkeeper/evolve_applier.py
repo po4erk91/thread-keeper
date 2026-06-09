@@ -85,11 +85,16 @@ DO, strictly in order:
    Mirror the bootstrap/fixture style of tests/test_brief_sections.py and
    tests/test_evolve_daemon.py (env setup, module reload, render_brief(conn)).
 
-4. RUN THE FULL SUITE from the repo root and read the FINAL summary line:
-       .venv/bin/python -m pytest -q
-   It MUST report 0 failed (e.g. "=== N passed in Xs ==="). If anything fails,
-   FIX it (your change or your test) and re-run until green. Do NOT proceed
-   while red.
+4. RUN THE FULL SUITE from the repo root and read the FINAL summary line.
+   IMPORTANT: your spawned environment sets THREADKEEPER_NO_EMBEDDINGS=1 (the
+   slim-child default). That makes the embedding/vector tests (test_vec_search,
+   test_delegated_search, test_onnx_embeddings) fail SPURIOUSLY — they are NOT
+   related to your change. Run the suite with that var unset so embeddings are
+   available:
+       env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
+   It MUST report 0 failed (e.g. "=== N passed in Xs ==="). If a test fails that
+   IS related to your brief change, FIX it (your change or your test) and re-run
+   until green. Do NOT proceed while red.
 
 5. OPEN A PR — only after the suite is GREEN:
      • Create a NEW feature branch (NEVER commit on main):
