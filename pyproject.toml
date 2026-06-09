@@ -27,6 +27,8 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.0.0",
+    "pydantic>=2",
+    "pydantic-settings>=2",
 ]
 
 [project.optional-dependencies]
