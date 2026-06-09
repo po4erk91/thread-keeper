@@ -156,7 +156,7 @@ def test_panel_roles_is_list(monkeypatch):
 def test_spawn_settings_defaults(monkeypatch):
     """settings.spawn has the right defaults."""
     c = _fresh_config(monkeypatch)
-    assert c.settings.spawn.default == "claude"
+    assert c.settings.spawn.default == ""
     assert c.settings.spawn.loop == {}
     assert c.settings.spawn.model == {}
 

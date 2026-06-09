@@ -32,7 +32,7 @@ _ENV_FILE: str = os.environ.get(
 class SpawnSettings(BaseModel):
     """Spawn routing config. All keys are lowercased (case_sensitive=False)."""
 
-    default: str = "claude"
+    default: str = ""           # "" = no pin -> resolve_agent uses the active CLI
     loop: dict[str, str] = {}   # role -> cli
     model: dict[str, str] = {}  # cli/role -> model
 

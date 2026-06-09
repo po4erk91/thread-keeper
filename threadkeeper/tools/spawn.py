@@ -995,17 +995,14 @@ def spawn_status() -> str:
     sanity-check spawn config when you want loops to fire through a
     specific agent.
 
-    Resolution priority (highest first):
-      • THREADKEEPER_SPAWN_LOOP_<ROLE>=<cli>
-      • ~/.threadkeeper/spawn.toml [loops] override
-      • THREADKEEPER_SPAWN_DEFAULT=<cli>
-      • [default] agent in the toml
+    Resolution priority (highest first), all in ~/.threadkeeper/.env:
+      • THREADKEEPER_SPAWN__LOOP__<ROLE>=<cli>
+      • THREADKEEPER_SPAWN__DEFAULT=<cli>
       • active CLI detected at startup
       • final fallback: claude
 
     Manual model pinning:
-      • THREADKEEPER_SPAWN_MODEL_<CLI>=<model>
-      • [models].<cli> in the toml
+      • THREADKEEPER_SPAWN__MODEL__<CLI-or-ROLE>=<model>
     """
     from .. import spawn_config as _sc, identity as _id
     from ..adapters import get_adapter

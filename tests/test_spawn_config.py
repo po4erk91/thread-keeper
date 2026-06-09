@@ -1,45 +1,33 @@
-"""Per-role spawn agent resolution + active-CLI detection.
+"""Per-role spawn agent + model resolution (from Settings.spawn) + active-CLI
+detection + per-adapter spawn_argv shape.
 
-Covers the priority chain:
-  env-role override → file-role override → env-default override →
-  file-default override → active-CLI → 'claude' fallback.
-
-Plus model resolution and the adapter-level spawn_argv shape per CLI.
+Spawn routing lives in ~/.threadkeeper/.env via pydantic-settings; nested keys
+THREADKEEPER_SPAWN__LOOP__<ROLE> / __MODEL__<KEY> / __DEFAULT (keys lowercased).
 """
-
 from __future__ import annotations
 
+import importlib
 import os
 import sys
-from pathlib import Path
 
 import pytest
 
 
-def _reset(monkeypatch, tmp_path):
-    """Wipe env + module caches so each test starts clean."""
-    for var in (
-        "THREADKEEPER_SPAWN_LOOP_SHADOW_OBSERVER",
-        "THREADKEEPER_SPAWN_LOOP_CURATOR",
-        "THREADKEEPER_SPAWN_LOOP_ARCHIVIST",
-        "THREADKEEPER_SPAWN_LOOP_CANDIDATE_REVIEWER",
-        "THREADKEEPER_SPAWN_LOOP_EXTRACT",
-        "THREADKEEPER_SPAWN_DEFAULT",
-        "THREADKEEPER_SPAWN_MODEL_CLAUDE",
-        "THREADKEEPER_SPAWN_MODEL_CODEX",
-        "THREADKEEPER_SPAWN_MODEL_GEMINI",
-        "THREADKEEPER_SPAWN_MODEL_COPILOT",
-        "THREADKEEPER_SPAWN_CONFIG",
-        "THREADKEEPER_ACTIVE_CLI",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    # Point spawn.toml at a non-existent path so file lookups return {}
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(tmp_path / "no.toml"))
-    # Reset import cache so spawn_config picks up env changes fresh
-    for name in [m for m in list(sys.modules)
-                 if m.startswith("threadkeeper.spawn_config")
-                    or m == "threadkeeper.identity"]:
-        del sys.modules[name]
+def _reset(monkeypatch, tmp_path, env=None, env_file=None):
+    """Clean env slate + reload config (so Settings.spawn is fresh) + reload
+    spawn_config. Points THREADKEEPER_ENV_FILE at a nonexistent file by default
+    so the machine's real ~/.threadkeeper/.env can't leak in."""
+    for k in list(os.environ):
+        if k.startswith("THREADKEEPER_") or k in ("CLAUDE_SKILLS_DIR", "CLAUDE_PROJECTS_DIR"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("THREADKEEPER_ENV_FILE", env_file or str(tmp_path / "none.env"))
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    import threadkeeper.config as c
+    importlib.reload(c)
+    import threadkeeper.spawn_config as sc
+    importlib.reload(sc)
+    return sc
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -47,137 +35,124 @@ def _reset(monkeypatch, tmp_path):
 # ──────────────────────────────────────────────────────────────────────
 
 def test_resolve_falls_back_to_claude_without_overrides(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("shadow_observer", None) == "claude"
-    assert resolve_agent("curator", None) == "claude"
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_agent("shadow_observer", None) == "claude"
+    assert sc.resolve_agent("curator", None) == "claude"
 
 
 def test_resolve_uses_active_cli_when_no_override(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("shadow_observer", "codex") == "codex"
-    assert resolve_agent("shadow_observer", "gemini") == "gemini"
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_agent("shadow_observer", "codex") == "codex"
+    assert sc.resolve_agent("shadow_observer", "gemini") == "gemini"
 
 
 def test_resolve_unknown_active_cli_falls_back_to_claude(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("shadow_observer", "weirdly") == "claude"
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_agent("shadow_observer", "weirdly") == "claude"
 
 
-def test_resolve_env_default_override(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    monkeypatch.setenv("THREADKEEPER_SPAWN_DEFAULT", "gemini")
-    from threadkeeper.spawn_config import resolve_agent
-    # No per-role override, no file → env default wins over active CLI
-    assert resolve_agent("shadow_observer", "codex") == "gemini"
+def test_resolve_default_override(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__DEFAULT": "gemini"})
+    # No per-role override → spawn.default wins over active CLI
+    assert sc.resolve_agent("shadow_observer", "codex") == "gemini"
 
 
-def test_resolve_per_role_env_beats_default(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    monkeypatch.setenv("THREADKEEPER_SPAWN_DEFAULT", "copilot")
-    monkeypatch.setenv("THREADKEEPER_SPAWN_LOOP_CURATOR", "codex")
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("curator", "claude") == "codex"
-    # Other roles still use default
-    assert resolve_agent("shadow_observer", "claude") == "copilot"
+def test_resolve_per_role_beats_default(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": "copilot",
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "codex",
+    })
+    assert sc.resolve_agent("curator", "claude") == "codex"
+    assert sc.resolve_agent("shadow_observer", "claude") == "copilot"
 
 
 def test_resolve_auto_passes_through_to_active_cli(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    monkeypatch.setenv("THREADKEEPER_SPAWN_LOOP_CURATOR", "auto")
-    from threadkeeper.spawn_config import resolve_agent
-    # 'auto' explicitly defers to active CLI
-    assert resolve_agent("curator", "codex") == "codex"
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"})
+    assert sc.resolve_agent("curator", "codex") == "codex"
 
 
 def test_resolve_invalid_override_ignored(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    monkeypatch.setenv("THREADKEEPER_SPAWN_LOOP_CURATOR", "notacli")
-    from threadkeeper.spawn_config import resolve_agent
-    # Invalid value falls through to active CLI / fallback
-    assert resolve_agent("curator", "codex") == "codex"
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "notacli"})
+    assert sc.resolve_agent("curator", "codex") == "codex"
 
 
-def test_resolve_file_loops_override(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text(
-        '[default]\nagent = "auto"\n'
-        '[loops]\nshadow_observer = "codex"\ncurator = "gemini"\n'
+def test_resolve_from_dotenv_file(tmp_path, monkeypatch):
+    envf = tmp_path / "tk.env"
+    envf.write_text(
+        "THREADKEEPER_SPAWN__DEFAULT=claude\n"
+        "THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=codex\n"
+        "THREADKEEPER_SPAWN__LOOP__CURATOR=gemini\n"
     )
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("shadow_observer", "claude") == "codex"
-    assert resolve_agent("curator", "claude") == "gemini"
-    # Not configured → active CLI
-    assert resolve_agent("archivist", "claude") == "claude"
+    sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
+    assert sc.resolve_agent("shadow_observer", "claude") == "codex"
+    assert sc.resolve_agent("curator", "claude") == "gemini"
+    assert sc.resolve_agent("archivist", "claude") == "claude"  # active CLI
 
 
-def test_resolve_env_beats_file(tmp_path, monkeypatch):
-    """Per-role env override has highest priority — wins over the file."""
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[loops]\ncurator = "gemini"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    monkeypatch.setenv("THREADKEEPER_SPAWN_LOOP_CURATOR", "codex")
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("curator", "claude") == "codex"
-
-
-def test_resolve_malformed_toml_ignored(tmp_path, monkeypatch):
-    """Broken TOML doesn't crash the daemon — falls through to env / fallback."""
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text("garbage\nwithout proper [structure")
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import resolve_agent
-    assert resolve_agent("curator", "gemini") == "gemini"
+def test_resolve_env_beats_dotenv(tmp_path, monkeypatch):
+    envf = tmp_path / "tk.env"
+    envf.write_text("THREADKEEPER_SPAWN__LOOP__CURATOR=gemini\n")
+    sc = _reset(monkeypatch, tmp_path,
+                env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "codex"}, env_file=str(envf))
+    assert sc.resolve_agent("curator", "claude") == "codex"
 
 
 # ──────────────────────────────────────────────────────────────────────
 # resolve_model
 # ──────────────────────────────────────────────────────────────────────
 
-def test_resolve_model_env_beats_file(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[models]\nclaude = "sonnet"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    monkeypatch.setenv("THREADKEEPER_SPAWN_MODEL_CLAUDE", "opus")
-    from threadkeeper.spawn_config import resolve_model
-    assert resolve_model("claude") == "opus"
+def test_resolve_model_env_beats_dotenv(tmp_path, monkeypatch):
+    envf = tmp_path / "tk.env"
+    envf.write_text("THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet\n")
+    sc = _reset(monkeypatch, tmp_path,
+                env={"THREADKEEPER_SPAWN__MODEL__CLAUDE": "opus"}, env_file=str(envf))
+    assert sc.resolve_model("claude") == "opus"
 
 
-def test_resolve_model_file_only(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[models]\ncodex = "gpt-5.4"\ngemini = "gemini-2.5-pro"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import resolve_model
-    assert resolve_model("codex") == "gpt-5.4"
-    assert resolve_model("gemini") == "gemini-2.5-pro"
-    assert resolve_model("claude") == ""  # no entry
+def test_resolve_model_from_dotenv(tmp_path, monkeypatch):
+    envf = tmp_path / "tk.env"
+    envf.write_text(
+        "THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.4\n"
+        "THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-2.5-pro\n"
+    )
+    sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
+    assert sc.resolve_model("codex") == "gpt-5.4"
+    assert sc.resolve_model("gemini") == "gemini-2.5-pro"
+    assert sc.resolve_model("claude") == ""  # no entry
 
 
 def test_resolve_model_empty_when_unconfigured(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    from threadkeeper.spawn_config import resolve_model
-    assert resolve_model("claude") == ""
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_model("claude") == ""
+
+
+def test_per_role_agent_and_model(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__DIALECTIC_VALIDATOR": "claude",
+        "THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR": "opus",
+        "THREADKEEPER_SPAWN__MODEL__CLAUDE": "sonnet",
+    })
+    assert sc.resolve_agent("dialectic_validator", "codex") == "claude"
+    assert sc.resolve_model("claude", "dialectic_validator") == "opus"
+    assert sc.resolve_model("claude", "curator") == "sonnet"
+
+
+def test_per_role_model_beats_cli_model(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR": "haiku",
+        "THREADKEEPER_SPAWN__MODEL__CLAUDE": "sonnet",
+    })
+    assert sc.resolve_model("claude", "dialectic_validator") == "haiku"
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Active-CLI detection (env override path; live process-tree walk
-# isn't deterministic enough for unit tests)
+# Active-CLI detection (env override path)
 # ──────────────────────────────────────────────────────────────────────
 
 def test_active_cli_env_override(tmp_path, monkeypatch):
     _reset(monkeypatch, tmp_path)
     monkeypatch.setenv("THREADKEEPER_ACTIVE_CLI", "codex")
-    # Force fresh import + cache reset
-    for name in [m for m in list(sys.modules)
-                 if m.startswith("threadkeeper.identity")]:
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper.identity")]:
         del sys.modules[name]
     from threadkeeper import identity
     identity._active_cli = None
@@ -187,13 +162,10 @@ def test_active_cli_env_override(tmp_path, monkeypatch):
 def test_active_cli_invalid_env_ignored(tmp_path, monkeypatch):
     _reset(monkeypatch, tmp_path)
     monkeypatch.setenv("THREADKEEPER_ACTIVE_CLI", "nonesuch")
-    for name in [m for m in list(sys.modules)
-                 if m.startswith("threadkeeper.identity")]:
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper.identity")]:
         del sys.modules[name]
     from threadkeeper import identity
     identity._active_cli = None
-    # Invalid env → falls through to ppid walk, which from pytest
-    # context most likely returns None
     detected = identity.active_cli()
     assert detected in (None, "claude", "codex", "gemini", "copilot")
 
@@ -213,8 +185,6 @@ def test_claude_spawn_argv_includes_model_and_tools(tmp_path, monkeypatch):
     )
     if argv is None:
         pytest.skip("claude binary not installed in test env")
-    # Always has --output-format and --permission-mode
-    joined = " ".join(argv)
     assert "-p" in argv
     assert "--output-format" in argv
     assert "--permission-mode" in argv
@@ -288,7 +258,6 @@ def test_get_adapter_recognises_short_names(tmp_path, monkeypatch):
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
         del sys.modules[name]
     from threadkeeper.adapters import get_adapter
-    # 'claude' (short) resolves to claude-code adapter
     assert get_adapter("claude").name == "claude-code"
     assert get_adapter("claude-code").name == "claude-code"
     assert get_adapter("codex").name == "codex"
@@ -299,71 +268,32 @@ def test_get_adapter_recognises_short_names(tmp_path, monkeypatch):
     assert get_adapter("nonsense") is None
 
 
-# ── per-role agent assignments ([agents.<role>]) ──────────────────────
-
-def test_agents_section_sets_cli_and_model(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text(
-        '[agents.dialectic_validator]\ncli = "claude"\nmodel = "opus"\n'
-        '[models]\nclaude = "sonnet"\n'
-    )
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import resolve_agent, resolve_model
-    assert resolve_agent("dialectic_validator", "codex") == "claude"
-    assert resolve_model("claude", "dialectic_validator") == "opus"
-    assert resolve_model("claude", "curator") == "sonnet"
-
-
-def test_resolve_model_back_compat_cli_only(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[models]\nclaude = "sonnet"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import resolve_model
-    assert resolve_model("claude") == "sonnet"
-
-
-def test_per_role_model_env_beats_file(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[agents.dialectic_validator]\nmodel = "opus"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    monkeypatch.setenv("THREADKEEPER_SPAWN_MODEL_DIALECTIC_VALIDATOR", "haiku")
-    from threadkeeper.spawn_config import resolve_model
-    assert resolve_model("claude", "dialectic_validator") == "haiku"
-
-
 # ──────────────────────────────────────────────────────────────────────
 # summary_table
 # ──────────────────────────────────────────────────────────────────────
 
 def test_summary_table_shows_active_cli(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    from threadkeeper.spawn_config import summary_table
-    out = summary_table("codex")
+    sc = _reset(monkeypatch, tmp_path)
+    out = sc.summary_table("codex")
     assert "shadow_observer" in out
     assert "codex" in out
     assert "active CLI" in out
 
 
 def test_summary_table_shows_overrides(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    monkeypatch.setenv("THREADKEEPER_SPAWN_LOOP_CURATOR", "gemini")
-    from threadkeeper.spawn_config import summary_table
-    out = summary_table("claude")
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "gemini"})
+    out = sc.summary_table("claude")
     assert "curator" in out
     assert "gemini" in out
-    assert "env override" in out
+    assert "spawn config" in out
 
 
 def test_summary_table_includes_dialectic_validator_model(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    cfg = tmp_path / "spawn.toml"
-    cfg.write_text('[agents.dialectic_validator]\ncli="claude"\nmodel="opus"\n')
-    monkeypatch.setenv("THREADKEEPER_SPAWN_CONFIG", str(cfg))
-    from threadkeeper.spawn_config import summary_table
-    out = summary_table("claude")
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__DIALECTIC_VALIDATOR": "claude",
+        "THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR": "opus",
+    })
+    out = sc.summary_table("claude")
     assert "dialectic_validator" in out
     assert "model=opus" in out
-    assert "agents assignment" in out
+    assert "spawn config" in out
