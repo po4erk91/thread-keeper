@@ -157,6 +157,19 @@ MEMORY_NUDGE_INTERVAL: int = int(
 SKILL_NUDGE_INTERVAL: int = int(
     os.environ.get("THREADKEEPER_SKILL_NUDGE_INTERVAL", "10")
 )
+
+# Lean brief injection. When set, render_brief() drops the nudge/meta sections
+# (spawn/thread/memory/skill hints, currently_testing, distill/extract/pickup/
+# evolve pending, and the user-facing footer) from the always-on SessionStart
+# injection — each stays reachable on demand via its own tool. The data
+# sections (core_memory, threads, style, verbatim, user_model, …) are kept.
+# Default off → brief output is byte-identical to before. The tk-brief.sh
+# SessionStart hook opts in by exporting THREADKEEPER_BRIEF_LEAN=1, so only the
+# once-per-session injection is lean; in-session brief() calls are unaffected.
+BRIEF_LEAN: bool = os.environ.get(
+    "THREADKEEPER_BRIEF_LEAN", ""
+).lower() in {"1", "true", "yes", "on"}
+
 # When true, review_thread(thread_id) automatically spawns a background fork
 # for rich closed threads at the moment of close_thread(). Default off so
 # behavior is predictable; users opt in via env.

@@ -22,15 +22,24 @@ from ..brief import render_brief
 
 
 @mcp.tool()
-def brief(query: str = "", k: int = 6) -> str:
+def brief(query: str = "", k: int = 6, scope: str = "full") -> str:
     """Compact Claude-native memory brief. CALL AT THE START OF EVERY CONVERSATION.
 
     Format is dense, structural, not designed for human reading. Pass the user's
     first message as `query` to inline semantically relevant past notes.
+
+    `scope` controls how much is rendered (context-footprint knob):
+      'full'  (default) — the complete brief: static memory (core_memory, style,
+              verbatim, user_model, concepts, weak_spots) + live working set +
+              nudges. Use for the FIRST call of a session.
+      'query' — only the live working set (ctx, inbox, tasks, threads) plus the
+              query-relevant hits, skipping the static memory the SessionStart
+              hook already injected once. Use for MID-SESSION calls so
+              brief(query=...) doesn't re-emit the whole blob each turn.
     """
     conn = get_db()
     _ensure_session(conn)
-    return render_brief(conn, query=query, k=k)
+    return render_brief(conn, query=query, k=k, scope=scope)
 
 
 @mcp.tool()

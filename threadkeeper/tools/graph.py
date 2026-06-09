@@ -121,7 +121,7 @@ def link(from_kind: str, from_id: str, to_kind: str, to_id: str,
     _emit(conn, "link", target=f"{from_kind}:{from_id}",
           summary=f"-{relation}-> {to_kind}:{to_id}")
     conn.commit()
-    return f"ok edge={eid} {from_kind}:{from_id} -{relation}-> {to_kind}:{to_id}"
+    return f"ok edge={eid}"
 
 
 @mcp.tool()

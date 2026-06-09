@@ -28,6 +28,17 @@ version bumps follow semver per the policy in
   Resolved at higher priority than the legacy `[loops]`/`[models]` tables,
   which remain fully supported as fallbacks. New per-role model env:
   `THREADKEEPER_SPAWN_MODEL_<ROLE>`.
+- **Brief footprint controls** — `brief(query=..., scope="query")` renders only
+  the live working set (ctx, inbox, tasks, threads, query hits), skipping the
+  static memory the SessionStart hook already injected once, so repeated
+  mid-session `brief()` calls don't re-emit the full ~3k-token blob (default
+  `scope="full"` unchanged). New env `THREADKEEPER_BRIEF_LEAN=1` makes
+  `render_brief()` drop the nudge/meta sections (spawn/thread/memory/skill
+  hints, currently_testing, distill/extract/pickup/evolve pending, the
+  user-facing footer) from the always-on injection — each reachable on demand
+  via its own tool; data sections kept. Default off → byte-identical output.
+  Motivated by `/context` showing thread-keeper's live cost is the brief
+  injection + repeated tool results, not the (already-deferred) tool surface.
 
 ### Fixed
 
@@ -38,6 +49,13 @@ version bumps follow semver per the policy in
   for the next evidence write.
 
 ### Changed
+
+- **SessionStart hook injects a lean brief; `context()` no longer injected.**
+  `tk-brief.sh` now exports `THREADKEEPER_BRIEF_LEAN=1` for its once-per-session
+  injection (data sections kept, nudge/meta dropped) and stopped calling
+  `context()` — its sess/sem/db/thread-count line duplicates brief's `ctx`
+  header. The `context()` MCP tool stays callable. Also trimmed `link()`'s
+  return to `ok edge={id}` (dropped the redundant echo of the input args).
 
 - `tk-task-gate.sh` now covers the opus-4.8 native parallelism tools
   (`Agent` / `Workflow`), not only the legacy `Task` tool — with an

@@ -390,11 +390,17 @@ hook-capable CLI by `thread-keeper-setup` (see [Cross-CLI
 deployment](#cross-cli-deployment) below). The canonical wiring lives in
 `~/.claude/settings.json`:
 
-- **SessionStart → tk-brief.sh** — at the start of every session injects
-  `brief()` + `context()` into the system prompt. Additionally prints status
+- **SessionStart → tk-brief.sh** — at the start of every session injects a
+  **lean** `brief()` into the system prompt. Lean mode
+  (`THREADKEEPER_BRIEF_LEAN=1`, set by the hook) drops the nudge/meta sections
+  from this once-per-session injection — each stays reachable on demand via its
+  own tool — while keeping every data section. `context()` is no longer
+  injected separately: its sess/sem/db/thread-count line already appears in
+  brief's `ctx` header. Additionally prints status
   `thread-keeper: ok threads_open=N closed_recent=M live_peers=K`.
   This removes the need to call `brief()` manually every time — the new Claude
-  sees it right away.
+  sees it right away. Mid-session, call `brief(query=..., scope="query")` to
+  refresh only the live working set without re-injecting the static memory.
 
 - **PostToolUse → tk-status.sh** (matcher `mcp__thread-keeper__.*`) — short
   human-readable markers for mutating calls:

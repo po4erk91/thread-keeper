@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .config import SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR
+from .config import SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN
 from .helpers import fmt_age, q
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
@@ -30,9 +30,22 @@ from .embeddings import _cosine_search
 from .i18n import SPAWN_CUE_RE as _SPAWN_CUE_RE  # noqa: E402
 
 
-def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
+def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
+                 scope: str = "full", lean: Optional[bool] = None) -> str:
     now = int(time.time())
     out: list[str] = []
+
+    # Footprint controls (default scope='full' + non-lean → byte-identical
+    # output). `full` renders everything; any other scope ('query') renders
+    # only the live working set (ctx, inbox, tasks, threads, query hits),
+    # skipping the static memory the SessionStart hook already injected once.
+    # `lean` (env THREADKEEPER_BRIEF_LEAN, set by the hook) drops the nudge/meta
+    # sections from the always-on injection; each stays reachable on demand.
+    # eff_lean folds both: any non-full scope is implicitly lean.
+    full = scope == "full"
+    if lean is None:
+        lean = BRIEF_LEAN
+    eff_lean = lean or not full
 
     # ── ctx ───────────────────────────────────────────────────────────────
     last = conn.execute(
@@ -85,7 +98,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         core_rows = []
-    if core_rows:
+    if core_rows and full:
         out.append("")
         out.append("core_memory")
         for r in core_rows:
@@ -151,7 +164,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     # Surface a one-line trigger when conditions suggest decomposition would
     # help (work piling up, never-spawned this conversation, or explicit
     # parallel cue in user message).
-    if self_cid:
+    if self_cid and not eff_lean:
         try:
             active_n = conn.execute(
                 "SELECT COUNT(*) c FROM threads WHERE state='active'"
@@ -278,7 +291,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
             d["last_at"] = r["created_at"]
         if r["role"] == "user" and d["last_user"] is None:
             d["last_user"] = dict(r)
-    if by_sess:
+    if by_sess and full:
         ordered = sorted(by_sess.items(), key=lambda x: x[1]["last_at"], reverse=True)
         out.append("")
         out.append("live_peers (* = you)")
@@ -347,7 +360,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     # doesn't double-fire. Clients with NO hook mechanism (Claude Desktop,
     # Codex, VS Code) call brief() directly — they have no env set, so the
     # nudge surfaces here instead. See nudges.compute_thread_nudge.
-    if not os.environ.get("THREADKEEPER_BRIEF_NO_THREAD_NUDGE"):
+    if not eff_lean and not os.environ.get("THREADKEEPER_BRIEF_NO_THREAD_NUDGE"):
         try:
             from .nudges import compute_thread_nudge
             th_nudge = compute_thread_nudge(conn, identity._session_id or "")
@@ -376,7 +389,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         mem_nudge = compute_memory_nudge(conn, identity._session_id or "")
     except (sqlite3.OperationalError, ImportError):
         mem_nudge = None
-    if mem_nudge:
+    if mem_nudge and not eff_lean:
         out.append("")
         out.append(mem_nudge)
 
@@ -390,7 +403,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     # Rich = ≥5 notes total AND ≥2 of those tagged 'insight' or 'move'.
     # Recently_closed = closed within last 24h.
     # Suppress if a "skill_materialized" event already logged for the thread.
-    if self_cid:
+    if self_cid and not eff_lean:
         try:
             rich_closed = conn.execute(
                 "SELECT t.id, t.question, t.outcome, "
@@ -474,7 +487,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         sk_nudge = compute_skill_nudge(conn, identity._session_id or "")
     except (sqlite3.OperationalError, ImportError):
         sk_nudge = None
-    if sk_nudge:
+    if sk_nudge and not eff_lean:
         out.append("")
         out.append(sk_nudge)
 
@@ -496,7 +509,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         consulted = []
-    if consulted:
+    if consulted and full:
         # Group by skill name, collect kinds + outcomes.
         per_skill: dict[str, dict] = {}
         for r in consulted:
@@ -540,7 +553,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
 
     # ── style ─────────────────────────────────────────────────────────────
     style_rows = conn.execute("SELECT key, value FROM style").fetchall()
-    if style_rows:
+    if style_rows and full:
         out.append("")
         out.append("style " + " ".join(f"{r['key']}={r['value']}" for r in style_rows))
 
@@ -548,7 +561,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     qt = conn.execute(
         "SELECT speaker, content FROM verbatim ORDER BY created_at DESC LIMIT 5"
     ).fetchall()
-    if qt:
+    if qt and full:
         out.append("")
         out.append("verbatim")
         for r in reversed(qt):
@@ -603,7 +616,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         weak, unknown = [], []
-    if weak or unknown:
+    if (weak or unknown) and full:
         out.append("")
         out.append("weak_spots")
         for r in weak:
@@ -624,7 +637,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         cs = []
-    if cs:
+    if cs and full:
         out.append("")
         out.append("concepts (high-conf)")
         for c in cs:
@@ -651,7 +664,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         syn_rows = []
-    if syn_rows:
+    if syn_rows and full:
         # Group by domain inline (keep total ≤ 10 lines incl. headers).
         out.append("")
         out.append("user_model (dialectic)")
@@ -696,7 +709,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         hyp_rows = []
-    if hyp_rows:
+    if hyp_rows and not eff_lean:
         out.append("")
         out.append("currently_testing (hypothesis — watch next user moves)")
         for r in hyp_rows:
@@ -715,7 +728,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchall()
     except sqlite3.OperationalError:
         ds = []
-    if ds:
+    if ds and not eff_lean:
         out.append("")
         out.append("distill_pending (vote≥2)")
         for d in ds:
@@ -730,7 +743,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         ).fetchone()["c"]
     except sqlite3.OperationalError:
         ex_pending = 0
-    if ex_pending > 0:
+    if ex_pending > 0 and not eff_lean:
         out.append("")
         out.append(
             f"extract_pending n={ex_pending} (review_candidates / "
@@ -745,7 +758,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
         active_count = conn.execute(
             "SELECT COUNT(*) c FROM threads WHERE state='active'"
         ).fetchone()["c"]
-        if active_count < 3:
+        if active_count < 3 and not eff_lean:
             top = conn.execute(
                 "SELECT id, question, last_touched_at FROM threads "
                 "WHERE state IN ('active','idle') AND claimed_at IS NULL "
@@ -779,7 +792,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
             "SELECT suggestion, 'pending' AS st FROM evolve WHERE applied=0 "
             "ORDER BY created_at DESC LIMIT 3"
         ).fetchall()
-    if pend:
+    if pend and not eff_lean:
         out.append("")
         out.append("evolve_pending")
         for e in pend:
@@ -790,12 +803,13 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6) -> str:
     # Evolve_pending #1 noted that brief's T-codes/cids leak into user-facing
     # replies when claude paraphrases. Loud trailing reminder beats quiet
     # style line buried mid-brief.
-    out.append("")
-    out.append(
-        "⚠️ user-facing: paraphrase plain. Do NOT cite internal IDs above "
-        "(thread T-codes, cids, signal #ids, session s_codes, task tk_codes, "
-        "probe P-codes) when replying to the user — those are tool-call only."
-    )
+    if not eff_lean:
+        out.append("")
+        out.append(
+            "⚠️ user-facing: paraphrase plain. Do NOT cite internal IDs above "
+            "(thread T-codes, cids, signal #ids, session s_codes, task tk_codes, "
+            "probe P-codes) when replying to the user — those are tool-call only."
+        )
 
     return "\n".join(out)
 

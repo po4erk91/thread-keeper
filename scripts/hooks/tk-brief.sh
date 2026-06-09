@@ -1,10 +1,11 @@
 #!/bin/bash
 # thread-keeper: SessionStart hook
 #
-# Injects brief() + context() into the new session's system prompt as
+# Injects a lean brief() into the new session's system prompt as
 # additionalContext. Replaces the CLAUDE.md instruction "call brief()
-# and context() at start of every conversation" with a deterministic
-# pre-loaded snapshot.
+# at start of every conversation" with a deterministic pre-loaded
+# snapshot. Lean mode (THREADKEEPER_BRIEF_LEAN below) drops the nudge/meta
+# sections from this once-per-session injection; data sections are kept.
 #
 # Also surfaces live_status() output when brief reports live=N>0, so
 # concurrent-session activity is visible immediately.
@@ -26,7 +27,7 @@ if [ ! -x "$VENV_PY" ]; then
   exit 0
 fi
 
-# Run brief() + context() and (when live>0) live_status() in one python
+# Run a lean brief() and (when live>0) live_status() in one python
 # invocation. We split output into two parts:
 #  - STATUS\t<line>  → compact visible status (shown to user via systemMessage)
 #  - CONTEXT\t<rest> → full brief, injected into system prompt
@@ -35,13 +36,14 @@ OUTPUT=$(
   # THREADKEEPER_BRIEF_NO_THREAD_NUDGE: this CLI has hooks, so the
   # open-thread reminder is delivered by tk-thread-nudge.sh (UserPromptSubmit)
   # instead — suppress the in-brief copy so it doesn't double-fire.
-  PYTHONPATH="$PKG_ROOT" THREADKEEPER_BRIEF_NO_THREAD_NUDGE=1 "$VENV_PY" - <<'PY' 2>/dev/null
+  PYTHONPATH="$PKG_ROOT" THREADKEEPER_BRIEF_NO_THREAD_NUDGE=1 THREADKEEPER_BRIEF_LEAN=1 "$VENV_PY" - <<'PY' 2>/dev/null
 import re, sys
 try:
-    from threadkeeper.tools.threads import brief, context
+    from threadkeeper.tools.threads import brief
     b = brief()  # SessionStart fires BEFORE the user's first message, so no query yet
-    c = context()
-    parts = [b, "", c]
+    # context() dropped: its sess/sem/db/thread-count line duplicates brief's
+    # ctx header. The context() MCP tool stays callable for explicit use.
+    parts = [b]
 
     # Build compact visible status line. Parsed straight from brief output,
     # no IDs cited (per user_facing_style — paraphrase only).
