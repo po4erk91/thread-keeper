@@ -9,6 +9,16 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Single-file config: `~/.threadkeeper/.env` via pydantic-settings.** Every
+  `THREADKEEPER_*` knob plus spawn routing now loads from one `.env` (path
+  overridable with `THREADKEEPER_ENV_FILE`) through a typed, validated `Settings`
+  object in `config.py`; real env vars override `.env` which overrides defaults.
+  `.env.example` documents every knob. The 52 `from .config import X` call sites
+  are unchanged (compat shim) and default output is byte-identical. **Retires
+  `spawn.toml`** (was unreleased): spawn routing moved to nested keys
+  `THREADKEEPER_SPAWN__DEFAULT`, `THREADKEEPER_SPAWN__LOOP__<ROLE>`,
+  `THREADKEEPER_SPAWN__MODEL__<CLI-or-ROLE>` (keys lowercased), read from `.env`;
+  `spawn_config` now reads `settings.spawn` instead of `os.environ`/`tomllib`.
 - **Dialectic auto-feed daemons** — two new background daemons that build
   the user model continuously without requiring agents to call dialectic
   tools manually. `dialectic_miner` (mechanical, no LLM) captures user

@@ -15,7 +15,7 @@ read-write the same database simultaneously. One state file:
 threadkeeper/
 ├── _mcp.py            FastMCP singleton (shared @mcp.tool registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
-├── config.py          env-driven constants (DB_PATH, embed model, budgets, …)
+├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill

@@ -17,7 +17,7 @@ threadkeeper/            # the package
 ├── server.py            # MCP entry: python -m threadkeeper.server
 ├── _mcp.py              # FastMCP singleton (shared @mcp.tool registry)
 ├── _setup.py            # `thread-keeper-setup` installer
-├── config.py            # env-driven defaults
+├── config.py            # pydantic-settings Settings ← ~/.threadkeeper/.env
 ├── db.py                # SQLite schema + sqlite-vec loader
 ├── identity.py          # session + self-cid + daemon launchers
 ├── embeddings.py        # optional sentence-transformers

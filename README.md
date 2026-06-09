@@ -415,8 +415,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
-Persist them via `~/.claude/settings.json`'s `env` block (Claude Code) or
-the equivalent env section in each CLI's config. Hot-config reload is
+Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
+read via pydantic-settings; real environment variables still override it.
+Hot-config reload is
 [tracked](https://github.com/po4erk91/thread-keeper/issues/2).
 
 ### Per-loop agent dispatch
@@ -427,47 +428,26 @@ Codex spawn, etc. Detection: process-tree walk at startup, cached for
 the server lifetime. The MCP tool `spawn_status()` shows the live
 resolution table.
 
-Override per role via `~/.threadkeeper/spawn.toml`:
-
-```toml
-# Preferred: role-keyed [agents.<role>] sections — pairs a CLI and model
-# to a named purpose. Resolved before [loops]/[models].
-[agents.dialectic_validator]
-cli   = "claude"
-model = "opus"
-
-[agents.shadow_observer]
-cli   = "claude"
-model = "opus"
-
-[default]
-agent = "auto"     # "auto" = use active CLI (default)
-
-# Legacy form — still fully supported, lower priority than [agents.*]
-[loops]
-# Force specific roles to specific CLIs regardless of active host
-shadow_observer    = "claude"   # heaviest reasoning → keep on Claude
-curator            = "codex"    # weekly audit → Codex is fine
-candidate_reviewer = "auto"     # follow active CLI
-archivist          = "claude"   # close_thread auto-review
-extract            = "auto"     # this one is local (no spawn)
-
-[models]
-# Optional per-CLI model pin — overrides each CLI's own default
-claude = "opus"
-codex  = "gpt-5.4"
-gemini = "gemini-2.5-pro"
-```
-
-Or via env (highest priority, overrides the TOML):
+Override per role in `~/.threadkeeper/.env` (there is no longer a `spawn.toml` —
+all config lives in the one `.env`). Spawn routing uses nested `__` keys; dict
+keys are lowercased:
 
 ```bash
-export THREADKEEPER_SPAWN_DEFAULT=codex                 # global default
-export THREADKEEPER_SPAWN_LOOP_CURATOR=gemini           # per-role (legacy)
-export THREADKEEPER_SPAWN_MODEL_DIALECTIC_VALIDATOR=opus  # per-role model
-export THREADKEEPER_SPAWN_MODEL_CLAUDE=opus             # per-CLI model (legacy)
-export THREADKEEPER_ACTIVE_CLI=claude                   # force detection
+# default agent for roles with no explicit pin ("" / unset = use the active CLI)
+THREADKEEPER_SPAWN__DEFAULT=claude
+# per-role CLI:  THREADKEEPER_SPAWN__LOOP__<ROLE>=<cli>
+THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=claude   # heaviest reasoning → keep on Claude
+THREADKEEPER_SPAWN__LOOP__CURATOR=codex            # weekly audit → Codex is fine
+THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = follow active CLI
+# model pin per CLI or per role:  THREADKEEPER_SPAWN__MODEL__<KEY>=<model>
+THREADKEEPER_SPAWN__MODEL__CLAUDE=opus
+THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR=opus
 ```
+
+Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI →
+`claude`; `"auto"` (or unset) defers to the active CLI. Real environment
+variables override the `.env`. Force host detection with
+`THREADKEEPER_ACTIVE_CLI=claude`. See `.env.example` for the full knob list.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
