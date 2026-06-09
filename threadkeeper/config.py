@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     )
     write_origin: str = "foreground"
     spawned_child: bool = False
+    # Hard kill-switch for every background daemon (memory_guard, spawn_budget,
+    # search_proxy, ingest, skill_watcher, shadow_review, ...). Independent of
+    # each daemon's poll/interval knob so flipping one of those back on (e.g. a
+    # test monkeypatching MEMORY_GUARD_POLL_S to exercise status output) cannot
+    # accidentally spin up a live thread. Tests set THREADKEEPER_DISABLE_BG_DAEMONS=1.
+    disable_bg_daemons: bool = False
 
     # ── Ingest ───────────────────────────────────────────────────────────────
     # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
@@ -257,6 +263,7 @@ NO_EMBEDDINGS: bool = settings.no_embeddings
 CLIENT_LABEL: str = settings.client
 WRITE_ORIGIN: str = settings.write_origin
 SPAWNED_CHILD: bool = settings.spawned_child
+DISABLE_BG_DAEMONS: bool = settings.disable_bg_daemons
 CLAUDE_SKILLS_DIR: Path = settings.claude_skills_dir
 CLAUDE_PROJECTS_DIR: Path = settings.claude_projects_dir
 TASK_LOG_DIR: Path = settings.task_log_dir
@@ -349,7 +356,7 @@ else:  # 'onnx' (default)
 # should run only in user-facing parent processes, never inside spawned review
 # children, where they can recurse.
 BACKGROUND_DAEMONS_ALLOWED: bool = (
-    not SPAWNED_CHILD and WRITE_ORIGIN == "foreground"
+    not SPAWNED_CHILD and WRITE_ORIGIN == "foreground" and not DISABLE_BG_DAEMONS
 )
 
 # ── DB-path setup + legacy migration ─────────────────────────────────────────

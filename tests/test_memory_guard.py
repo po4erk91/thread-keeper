@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import signal as _sig
+import threading
 
 
 _FAKE_CID = "55556666-7777-8888-9999-000011112222"
@@ -289,3 +290,32 @@ def test_aggregate_retire_skips_live_parent_without_opt_in(mp_with_cid, monkeypa
     out = memory_guard.check_once(dry_run=False, notify=False)
     assert out["retired"] == []
     assert calls == []
+
+
+def test_guard_tool_does_not_leak_daemon_thread(mp_with_cid, monkeypatch):
+    """Invoking a guard tool with POLL_S>0 must NOT spawn a live daemon thread.
+
+    Regression for a test-isolation bug: the status test monkeypatches
+    MEMORY_GUARD_POLL_S>0 and calls a tool whose _ensure_session starts the
+    real memory_guard daemon. That daemon=True thread survives the per-test
+    module re-import (conftest wipes sys.modules but cannot join the thread),
+    then races later tests' os.kill/process_health.scan monkeypatches and
+    SIGTERMs real processes — flaking assert killed == [] elsewhere. Tests
+    disable background daemons via THREADKEEPER_DISABLE_BG_DAEMONS, so no
+    thread must ever be created here.
+    """
+    pkg = mp_with_cid(_FAKE_CID)
+    from threadkeeper import memory_guard, process_health
+
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_POLL_S", 30)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 1000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 2000)
+    monkeypatch.setattr(process_health, "scan", lambda: [_proc(1001, 800)])
+
+    before = {t for t in threading.enumerate() if t.name == "memory_guard"}
+    _tool(pkg, "memory_guard_status")()
+    leaked = {
+        t for t in threading.enumerate()
+        if t.name == "memory_guard" and t.is_alive()
+    } - before
+    assert leaked == set(), f"memory_guard daemon thread leaked: {leaked}"

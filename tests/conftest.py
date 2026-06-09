@@ -62,6 +62,12 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
     return {
         "THREADKEEPER_DB": str(tmp_root / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_root / "fake_claude_projects"),
+        # Hard kill-switch (BACKGROUND_DAEMONS_ALLOWED=False) so a tool call's
+        # _ensure_session never starts a real daemon thread — not even when a
+        # test monkeypatches a single daemon's POLL_S back to >0 (e.g. the
+        # memory_guard status test). A leaked daemon=True thread outlives the
+        # per-test sys.modules re-import and SIGTERMs real processes.
+        "THREADKEEPER_DISABLE_BG_DAEMONS": "1",
         "THREADKEEPER_INGEST_INTERVAL_S": "0",   # disable bg ingest daemon
         "THREADKEEPER_INGEST_CAP": "0",          # don't ingest at session start
         "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",  # disable skill_watcher
