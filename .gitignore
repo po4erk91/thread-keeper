@@ -23,6 +23,7 @@ env/
 .DS_Store
 
 # Local config / runtime state (must never land in git)
+.env
 *.bak
 *.bak.*
 .bak.*
