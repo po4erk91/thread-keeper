@@ -176,6 +176,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            from . import evolve_applier
+            evolve_applier.start_evolve_applier_daemon()
+        except Exception:
+            pass
+        try:
             from . import thread_janitor
             thread_janitor.start_thread_janitor()
         except Exception:

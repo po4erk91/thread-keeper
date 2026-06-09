@@ -143,6 +143,17 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   if the file was changed outside `skill_manage`.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
+- **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) picks the oldest promoted +
+  unapplied `evolve_format` suggestion and spawns an `evolve_applier` child that
+  implements the brief-format change in `render_brief`, adds a golden brief test,
+  runs the full suite, and opens a **pull request** (never commits to main).
+  PR-gated: a human reviews + merges; on a successful PR the child calls
+  `evolve_mark_applied(evolve_id, pr_url)` → `applied=1`. Machine-wide
+  single-flight via the `"You are an EVOLVE APPLIER"` prompt prefix. The manual
+  `evolve_apply(evolve_id)` tool fires the same path regardless of the interval.
+  Distinct from `evolve_reviewer`, which only triages (promote/dismiss) and
+  never edits code.
 
 Autonomous learning daemons only run in foreground parent processes. Spawned
 children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
@@ -516,7 +527,7 @@ backend in `embed_backend` (NULL = legacy). The two backends are not
 numerically identical, so after a switch run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (89 total)
+## MCP tools (92 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations.
@@ -540,6 +551,7 @@ auto-generates JSON-Schema from annotations.
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
+| evolve_applier | 3 | evolve_apply, evolve_mark_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |

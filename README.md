@@ -306,6 +306,40 @@ Phase 1 is advisory-only (REPORT only); flip
 `THREADKEEPER_CURATOR_DESTRUCTIVE=1` once trust builds to let the
 child apply its own recommendations directly.
 
+#### 6. Evolve applier — self-improving brief format, PR-gated
+
+The brief format is not fixed: any session can file a change to it with
+`evolve_format(suggestion, rationale)`. The `evolve_reviewer` daemon triages
+the queue and **promotes** the good ones — promoted suggestions surface in the
+brief with a ★. Until now that's where it stopped: a human had to hand-edit
+`render_brief` in `brief.py`.
+
+`evolve_apply(evolve_id)` closes the loop. It spawns an `evolve_applier` child
+(resolved through the normal spawn role/model config — recommend opus, it
+writes code) that:
+
+1. edits `render_brief()` to implement the suggestion;
+2. adds/extends a **golden brief test** asserting both that the new
+   behavior/field appears *and* that the existing brief sections still render —
+   a format change can't silently break the brief;
+3. runs the full suite (`.venv/bin/python -m pytest -q`) until green;
+4. opens a **pull request** on a feature branch via `gh`, body quoting the
+   suggestion + rationale.
+
+**Autonomy is the PR gate, nothing more.** The child never pushes or commits to
+`main` (which has branch protection); a human reviews and merges. On a
+successful PR the child calls `evolve_mark_applied(evolve_id, pr_url)`, which
+sets `applied=1` so the suggestion stops resurfacing. Validation inside the
+child (golden render_brief test + full suite green) is the objective gate the
+loop otherwise lacks.
+
+Manual: `evolve_apply(#id)` (get ids from `evolve_review()`). Optional daemon:
+set `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S>0` (default 0 = off) to periodically
+implement the oldest promoted+unapplied suggestion. Pin the agent/model with
+`THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
+`THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`. Single-flight (one applier child at
+a time) keeps two children from colliding on `brief.py`.
+
 #### Honest take
 
 What works **without** agent cooperation (passive, opt-in via env):
@@ -413,6 +447,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
+| `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); triages the format-evolution queue (promote/dismiss) |
+| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements the oldest promoted+unapplied suggestion behind a PR. Manual `evolve_apply` works regardless |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,

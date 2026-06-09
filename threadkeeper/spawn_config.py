@@ -15,7 +15,7 @@ Agent resolution per role (highest first):
 Model resolution: spawn.model[role] -> spawn.model[cli] -> "".
 
 Roles map to spawn() call-sites: shadow_observer, archivist, curator,
-candidate_reviewer, extract, evolve_reviewer, probe_runner,
+candidate_reviewer, extract, evolve_reviewer, evolve_applier, probe_runner,
 dialectic_validator. Resolution is case-insensitive.
 """
 from __future__ import annotations
@@ -75,6 +75,7 @@ def summary_table(active_cli: Optional[str]) -> str:
         "candidate_reviewer",
         "curator",
         "dialectic_validator",
+        "evolve_applier",
     )
     sp = _spawn()
     out = []

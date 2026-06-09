@@ -191,6 +191,11 @@ class Settings(BaseSettings):
     evolve_review_interval_s: float = 0.0
     evolve_review_min: int = 2
 
+    # ── Evolve applier daemon ─────────────────────────────────────────────────
+    # Periodically picks the top promoted+unapplied evolve suggestion and fires
+    # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
+    evolve_apply_interval_s: float = 0.0
+
     # ── Thread janitor daemon ─────────────────────────────────────────────────
     thread_janitor_interval_s: float = 0.0
     thread_idle_close_days: float = 1.0
@@ -313,6 +318,7 @@ PANEL_MODEL: str = settings.panel_model
 PANEL_EFFORT: str = settings.panel_effort
 EVOLVE_REVIEW_INTERVAL_S: float = settings.evolve_review_interval_s
 EVOLVE_REVIEW_MIN: int = settings.evolve_review_min
+EVOLVE_APPLY_INTERVAL_S: float = settings.evolve_apply_interval_s
 THREAD_JANITOR_INTERVAL_S: float = settings.thread_janitor_interval_s
 THREAD_IDLE_CLOSE_DAYS: float = settings.thread_idle_close_days
 DIALECTIC_MINE_INTERVAL_S: float = settings.dialectic_mine_interval_s

@@ -9,6 +9,23 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Evolve applier — closes the format-evolution loop, PR-gated.** Promoted
+  `evolve_format` suggestions used to just sit in the brief with a ★ until a
+  human hand-edited `brief.py`. The new `evolve_apply(evolve_id)` MCP tool
+  spawns an `evolve_applier` child (resolved through the existing spawn
+  role/model config — pin with `THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
+  `THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`, recommend opus) that implements
+  the suggestion in `render_brief`, adds/extends a **golden brief test**
+  (asserts the new behavior appears AND the existing brief still renders), runs
+  the full suite until green, and opens a **pull request** on a feature branch.
+  Autonomy is PR-gated only: the child never pushes or commits to main; a human
+  reviews + merges. On a successful PR the child calls
+  `evolve_mark_applied(evolve_id, pr_url)` → `applied=1` so it stops
+  resurfacing. New tools: `evolve_apply`, `evolve_mark_applied`,
+  `evolve_apply_status`. Optional daemon knob
+  `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` (0 = off, default) periodically fires
+  the apply for the oldest promoted+unapplied suggestion; mirrors the
+  evolve_reviewer daemon (foreground-only, machine-wide single-flight).
 - **Single-file config: `~/.threadkeeper/.env` via pydantic-settings.** Every
   `THREADKEEPER_*` knob plus spawn routing now loads from one `.env` (path
   overridable with `THREADKEEPER_ENV_FILE`) through a typed, validated `Settings`
