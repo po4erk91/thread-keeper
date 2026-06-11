@@ -327,6 +327,20 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                 parts.append(f"last={q(t['last_move'][:90])}")
             parts.append(f"age={fmt_age(now - t['opened_at'])}")
             out.append(" ".join(parts))
+            # failed_paths: kind='failed' notes are dead ends already walked
+            # (tried X, broke because Y). They live flat in `notes` and never
+            # reached the brief, so the agent kept re-walking them. Surface the
+            # most recent few per thread as a compact field beneath the thread.
+            fails = conn.execute(
+                "SELECT content FROM notes WHERE thread_id=? AND kind='failed' "
+                "ORDER BY created_at DESC LIMIT 3",
+                (t["id"],),
+            ).fetchall()
+            if fails:
+                joined = " ⋯ ".join(
+                    f["content"][:80].replace("\n", " ") for f in fails
+                )
+                out.append(f"    failed_paths={q(joined)}")
 
     # ── idle ──────────────────────────────────────────────────────────────
     idle_t = conn.execute(
