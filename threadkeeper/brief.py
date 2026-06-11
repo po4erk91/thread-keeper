@@ -557,15 +557,38 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         out.append("")
         out.append("style " + " ".join(f"{r['key']}={r['value']}" for r in style_rows))
 
-    # ── verbatim (last 5, chronological) ──────────────────────────────────
+    # ── verbatim (reactivated threads first) ───────────────────────────────
     qt = conn.execute(
-        "SELECT speaker, content FROM verbatim ORDER BY created_at DESC LIMIT 5"
+        "SELECT v.speaker, v.content, "
+        "  ("
+        "    SELECT COUNT(*) FROM events n "
+        "    WHERE n.target=v.thread_id AND n.kind LIKE 'note:%' "
+        "      AND n.created_at >= v.created_at "
+        "      AND EXISTS ("
+        "        SELECT 1 FROM events p "
+        "        WHERE p.target=n.target "
+        "          AND p.kind IN ('idle_thread','close_thread') "
+        "          AND p.created_at >= v.created_at "
+        "          AND (p.created_at < n.created_at "
+        "               OR (p.created_at=n.created_at AND p.id < n.id)) "
+        "          AND NOT EXISTS ("
+        "            SELECT 1 FROM events n2 "
+        "            WHERE n2.target=n.target AND n2.kind LIKE 'note:%' "
+        "              AND (n2.created_at > p.created_at "
+        "                   OR (n2.created_at=p.created_at AND n2.id > p.id)) "
+        "              AND (n2.created_at < n.created_at "
+        "                   OR (n2.created_at=n.created_at AND n2.id < n.id))"
+        "          )"
+        "      )"
+        "  ) AS react "
+        "FROM verbatim v "
+        "ORDER BY react DESC, v.created_at DESC, v.id DESC LIMIT 5"
     ).fetchall()
     if qt and full:
         out.append("")
-        out.append("verbatim")
-        for r in reversed(qt):
-            out.append(f"  {r['speaker']}> {q(r['content'][:200])}")
+        out.append("verbatim (reactivated first)")
+        for r in qt:
+            out.append(f"  react={r['react']} {r['speaker']}> {q(r['content'][:200])}")
 
     # ── relevant_to_query (only if query passed) ──────────────────────────
     if query:
