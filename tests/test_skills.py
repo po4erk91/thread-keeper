@@ -93,8 +93,8 @@ def test_create_writes_valid_skill(skills_pkg):
     assert md.exists()
     body = md.read_text()
     assert body.startswith("---")
-    assert "name: my-test-skill" in body
-    assert "description: Use when testing" in body
+    assert 'name: "my-test-skill"' in body
+    assert 'description: "Use when testing' in body
 
 
 def test_create_rejects_invalid_name(skills_pkg):
@@ -128,6 +128,18 @@ def test_create_accepts_full_content_with_own_frontmatter(skills_pkg):
     )
     result = sm(action="create", name="bring-your-own", content=body)
     assert result.startswith("ok"), result
+
+
+def test_create_rejects_invalid_yaml_frontmatter(skills_pkg):
+    sm = _tool(skills_pkg, "skill_manage")
+    body = (
+        "---\nname: bad-yaml\n"
+        "description: Use when descriptions contain colons: quote them.\n"
+        "---\n\n# Body\n"
+    )
+    result = sm(action="create", name="bad-yaml", content=body)
+    assert result.startswith("ERR")
+    assert "frontmatter invalid YAML" in result
 
 
 def test_create_rejects_mismatched_frontmatter_name(skills_pkg):

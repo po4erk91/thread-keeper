@@ -324,6 +324,10 @@ def test_codex_register_mcp_writes_toml(tmp_path, monkeypatch):
     assert '"/opt/python"' in body
     assert "[mcp_servers.thread-keeper.env]" in body
     assert '"/repo"' in body
+    assert "[mcp_servers.thread-keeper.tools.dialectic_claim]" in body
+    assert "[mcp_servers.thread-keeper.tools.dialectic_observation_resolve]" in body
+    assert "[mcp_servers.thread-keeper.tools.accept_candidate]" in body
+    assert 'approval_mode = "approve"' in body
 
 
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
@@ -348,6 +352,63 @@ def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     assert msgs[0].session_id == "sess-x"
     assert msgs[1].model == "gpt-5"
     assert msgs[1].content == "hello"
+
+
+def test_codex_iter_messages_uses_forced_child_cid_from_spawn_preamble(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fp = tmp_path / "rollout-2026-06-11T10-00-00.jsonl"
+    forced_cid = "af389b3f-8e17-46b5-87f1-402769a74e58"
+    fp.write_text("\n".join([
+        json.dumps({
+            "timestamp": "2026-06-11T10:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "019eb5d0-6753-7c31-bce6-b887761090c6", "cwd": "/x"},
+        }),
+        json.dumps({
+            "timestamp": "2026-06-11T10:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "id": "u-agents",
+                "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}],
+            },
+        }),
+        json.dumps({
+            "timestamp": "2026-06-11T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "id": "u-spawn",
+                "content": [{
+                    "type": "input_text",
+                    "text": (
+                        "You were spawned in the background by parent conversation "
+                        "8877cab4-1f45-4d05-9a1c-09c6ab28adf1. "
+                        f"Your own cid is {forced_cid} (forced via --session-id "
+                        "and THREADKEEPER_FORCE_CID env)."
+                    ),
+                }],
+            },
+        }),
+        json.dumps({
+            "timestamp": "2026-06-11T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "id": "a-1",
+                "content": [{"type": "output_text", "text": "processed"}],
+            },
+        }),
+    ]) + "\n")
+
+    msgs = list(pkg["codex"].iter_messages(fp))
+    assert [m.uuid for m in msgs] == ["u-agents", "u-spawn", "a-1"]
+    assert {m.session_id for m in msgs} == {forced_cid}
 
 
 # ---------------------------------------------------------------------

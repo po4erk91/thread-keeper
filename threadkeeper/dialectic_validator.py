@@ -8,12 +8,17 @@ mechanical producer, this is the careful infrequent consumer."""
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import time
 
-from .config import DIALECTIC_VALIDATE_INTERVAL_S, DIALECTIC_VALIDATE_MIN, \
-    DIALECTIC_MAX_NEW_CLAIMS
+from .config import (
+    DIALECTIC_VALIDATE_BATCH_SIZE,
+    DIALECTIC_VALIDATE_INTERVAL_S,
+    DIALECTIC_VALIDATE_MIN,
+    DIALECTIC_MAX_NEW_CLAIMS,
+)
 from .db import get_db
 from . import identity
 from .identity import _ensure_session
@@ -21,6 +26,7 @@ from .identity import _ensure_session
 logger = logging.getLogger(__name__)
 
 _started = False
+_CLAIM_TTL_S = 6 * 3600
 
 
 DIALECTIC_VALIDATOR_PROMPT = """\
@@ -104,31 +110,312 @@ def _record_pass(conn: sqlite3.Connection, ts: int, outcome: str) -> None:
         logger.debug("dialectic_validator: record_pass failed", exc_info=True)
 
 
-def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
-    """Inventory of pending observations within the last 30 days."""
-    now = int(time.time())
-    stale_cutoff = now - 30 * 86400
+def _resolve_stale_pending(conn: sqlite3.Connection, stale_cutoff: int) -> int:
+    """Terminally skip observations too old for validation."""
     try:
         rows = conn.execute(
-            "SELECT id, user_quote, context, source_cid, created_at "
-            "FROM dialectic_observations WHERE status='pending' AND created_at > ? "
-            "ORDER BY created_at ASC",
+            "SELECT id FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL AND created_at <= ?",
             (stale_cutoff,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return ("", 0)
+        return 0
     if not rows:
-        return ("", 0)
-    parts = [f"PENDING OBSERVATIONS (n={len(rows)})\n"]
+        return 0
+    now_t = int(time.time())
+    ids = [int(r["id"]) for r in rows]
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in ids],
+    )
+    _record_pass(conn, now_t, f"stale_skip processed={len(ids)}")
+    return len(ids)
+
+
+def _resolve_noise_pending(conn: sqlite3.Connection) -> int:
+    """Terminally skip mechanical captures that are CLI/system artifacts."""
+    try:
+        rows = conn.execute(
+            "SELECT id, user_quote FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+
+    from .dialectic_miner import _is_noise_user_message
+
+    ids = [int(r["id"]) for r in rows if _is_noise_user_message(r["user_quote"])]
+    if not ids:
+        return 0
+    now_t = int(time.time())
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in ids],
+    )
+    _record_pass(conn, now_t, f"noise_skip processed={len(ids)}")
+    return len(ids)
+
+
+def _resolve_low_value_pending(conn: sqlite3.Connection) -> int:
+    """Terminally skip observations that cannot affect the compact user model."""
+    try:
+        rows = conn.execute(
+            "SELECT id, user_quote FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+
+    from .dialectic_miner import _is_low_value_observation
+
+    ids = [
+        int(r["id"]) for r in rows
+        if _is_low_value_observation(r["user_quote"] or "")
+    ]
+    if not ids:
+        return 0
+    now_t = int(time.time())
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in ids],
+    )
+    _record_pass(conn, now_t, f"low_value_skip processed={len(ids)}")
+    return len(ids)
+
+
+def _resolve_duplicate_pending(conn: sqlite3.Connection,
+                               keep_per_key: int = 4) -> int:
+    """Collapse repeated pending observations to a small evidence frontier."""
+    try:
+        rows = conn.execute(
+            "SELECT id, user_quote, created_at FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL "
+            "ORDER BY created_at ASC, id ASC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+
+    from .dialectic_miner import _observation_compaction_key
+
+    seen: dict[str, int] = {}
+    skip_ids: list[int] = []
+    keep_n = max(1, int(keep_per_key))
     for r in rows:
+        key = _observation_compaction_key(r["user_quote"] or "")
+        if not key:
+            skip_ids.append(int(r["id"]))
+            continue
+        n = seen.get(key, 0)
+        if n >= keep_n:
+            skip_ids.append(int(r["id"]))
+        else:
+            seen[key] = n + 1
+    if not skip_ids:
+        return 0
+    now_t = int(time.time())
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in skip_ids],
+    )
+    _record_pass(conn, now_t, f"duplicate_skip processed={len(skip_ids)}")
+    return len(skip_ids)
+
+
+def _spawned_session_marker_predicate() -> tuple[str, list]:
+    from .shadow_review import (
+        _INTERNAL_PROMPT_PREFIXES,
+        _SPAWNED_SESSION_MARKERS,
+    )
+
+    clauses: list[str] = []
+    params: list = []
+    for prefix in _INTERNAL_PROMPT_PREFIXES:
+        clauses.append("substr(content, 1, ?) = ?")
+        params.extend([len(prefix), prefix])
+    for marker in _SPAWNED_SESSION_MARKERS:
+        clauses.append("instr(content, ?) > 0")
+        params.append(marker)
+    return " OR ".join(clauses), params
+
+
+def _resolve_spawned_pending(conn: sqlite3.Connection) -> int:
+    """Terminally skip observations from spawned child sessions.
+
+    The miner avoids creating new observations from spawned children, but old
+    observations can already be in the pending queue. Treat provenance as the
+    authority here: if the source session is a spawned child, or the linked
+    dialog row belongs to a spawned/internal session, the observation must
+    never be shown to the dialectic LLM.
+    """
+    try:
+        marker_sql, marker_params = _spawned_session_marker_predicate()
+        rows = conn.execute(
+            "WITH spawned_sessions(session_id) AS ("
+            "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL "
+            "  UNION "
+            "  SELECT DISTINCT session_id FROM dialog_messages "
+            "  WHERE session_id IS NOT NULL AND role='user' "
+            f"  AND ({marker_sql})"
+            ") "
+            "SELECT o.id "
+            "FROM dialectic_observations o "
+            "LEFT JOIN dialog_messages d ON d.uuid = o.dialog_uuid "
+            "WHERE o.status='pending' AND o.claimed_at IS NULL "
+            "AND ("
+            "  coalesce(d.project, '') = 'subagents' "
+            "  OR o.source_cid IN (SELECT session_id FROM spawned_sessions) "
+            "  OR d.session_id IN (SELECT session_id FROM spawned_sessions)"
+            ")",
+            marker_params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    now_t = int(time.time())
+    ids = [int(r["id"]) for r in rows]
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in ids],
+    )
+    _record_pass(conn, now_t, f"spawned_skip processed={len(ids)}")
+    return len(ids)
+
+
+def _release_stale_claims(conn: sqlite3.Connection, now: int) -> int:
+    """Requeue pending observations claimed by a dead/stuck validator."""
+    try:
+        rows = conn.execute(
+            "SELECT id FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NOT NULL "
+            "AND claimed_at <= ?",
+            (now - _CLAIM_TTL_S,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    ids = [int(r["id"]) for r in rows]
+    conn.executemany(
+        "UPDATE dialectic_observations SET claimed_at=NULL, claimed_by_task=NULL "
+        "WHERE id=?",
+        [(oid,) for oid in ids],
+    )
+    _record_pass(conn, now, f"claim_requeue n={len(ids)}")
+    return len(ids)
+
+
+def _release_finished_claims(conn: sqlite3.Connection, now: int) -> int:
+    """Requeue pending observations left behind by completed validator tasks."""
+    try:
+        rows = conn.execute(
+            "SELECT o.id, o.claimed_by_task "
+            "FROM dialectic_observations o "
+            "JOIN tasks t ON t.id = o.claimed_by_task "
+            "WHERE o.status='pending' AND o.claimed_by_task IS NOT NULL "
+            "AND t.ended_at IS NOT NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    ids = [int(r["id"]) for r in rows]
+    task_count = len({str(r["claimed_by_task"]) for r in rows})
+    conn.executemany(
+        "UPDATE dialectic_observations SET claimed_at=NULL, claimed_by_task=NULL "
+        "WHERE id=?",
+        [(oid,) for oid in ids],
+    )
+    _record_pass(conn, now, f"claim_requeue_finished n={len(ids)} tasks={task_count}")
+    return len(ids)
+
+
+def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int, int, list[int]]:
+    """Inventory of a bounded high-signal pending batch within the last 30 days."""
+    now = int(time.time())
+    stale_cutoff = now - 30 * 86400
+    limit = max(1, int(DIALECTIC_VALIDATE_BATCH_SIZE or 1))
+    try:
+        rows = conn.execute(
+            "SELECT id, user_quote, context, source_cid, created_at "
+            "FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL AND created_at > ? "
+            "ORDER BY created_at DESC",
+            (stale_cutoff,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return ("", 0, 0, [])
+    total_pending = len(rows)
+    if not rows:
+        return ("", 0, total_pending, [])
+
+    from .dialectic_miner import _dialectic_signal_score
+
+    scored = [
+        (_dialectic_signal_score(r["user_quote"] or ""), int(r["created_at"] or 0), r)
+        for r in rows
+    ]
+    scored = [item for item in scored if item[0] > 0]
+    scored.sort(key=lambda item: (-item[0], -item[1], int(item[2]["id"])))
+    max_per_source = limit if limit < 10 else max(10, limit // 5)
+    per_source: dict[str, int] = {}
+    picked = []
+    for score, _, r in scored:
+        source = r["source_cid"] or ""
+        if per_source.get(source, 0) >= max_per_source:
+            continue
+        picked.append((score, r))
+        per_source[source] = per_source.get(source, 0) + 1
+        if len(picked) >= limit:
+            break
+    if not picked:
+        return ("", 0, total_pending, [])
+    rows = [r for _, r in picked]
+    parts = [
+        f"PENDING OBSERVATIONS (batch={len(rows)} total={total_pending})\n"
+    ]
+    ids: list[int] = []
+    for score, r in picked:
+        ids.append(int(r["id"]))
         quote = (r["user_quote"] or "")[:400].replace("\n", " ")
         ctx = (r["context"] or "")[:200].replace("\n", " ")
         parts.append(
-            f"  #{r['id']} cid={(r['source_cid'] or '-')[:8]}\n"
+            f"  #{r['id']} cid={(r['source_cid'] or '-')[:8]} score={score}\n"
             f"    context: {ctx}\n"
             f"    user: {quote}"
         )
-    return ("\n".join(parts), len(rows))
+    return ("\n".join(parts), len(rows), total_pending, ids)
+
+
+def _task_id_from_spawn_result(result: str) -> str:
+    match = re.search(r"\b(?:task|task_id)=([A-Za-z0-9_.-]+)", result or "")
+    return match.group(1) if match else ""
+
+
+def _claim_batch(conn: sqlite3.Connection, ids: list[int], task_id: str, now: int) -> int:
+    if not ids:
+        return 0
+    claimed = 0
+    for oid in ids:
+        cur = conn.execute(
+            "UPDATE dialectic_observations SET claimed_at=?, claimed_by_task=? "
+            "WHERE id=? AND status='pending' AND claimed_at IS NULL",
+            (now, task_id, oid),
+        )
+        claimed += max(0, cur.rowcount)
+    conn.commit()
+    return claimed
 
 
 def _current_model_dump(conn: sqlite3.Connection) -> str:
@@ -138,18 +425,60 @@ def _current_model_dump(conn: sqlite3.Connection) -> str:
     return out if out and not out.startswith("no_claims") else "(model is empty)"
 
 
+def _running_validator_children(conn: sqlite3.Connection) -> list[str]:
+    """Running validator task ids, reaping dead rows for single-flight."""
+    from .helpers import alive
+    try:
+        rows = conn.execute(
+            "SELECT id, pid FROM tasks WHERE ended_at IS NULL "
+            "AND prompt LIKE 'You are a DIALECTIC VALIDATOR%'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now = int(time.time())
+    running: list[str] = []
+    touched = False
+    for r in rows:
+        pid = int(r["pid"] or 0)
+        if pid > 0 and not alive(pid):
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            touched = True
+            continue
+        running.append(r["id"])
+    if touched:
+        conn.commit()
+    return running
+
+
 def run_validate_pass(force: bool = False) -> str:
     if DIALECTIC_VALIDATE_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
-    inventory, n_pending = _collect_pending(conn)
-    if n_pending < DIALECTIC_VALIDATE_MIN:
+    running = _running_validator_children(conn)
+    _release_finished_claims(conn, now)
+    _resolve_spawned_pending(conn)
+    if running:
+        return f"validator_running n={len(running)} (single-flight)"
+    stale_cutoff = now - 30 * 86400
+    _release_stale_claims(conn, now)
+    _resolve_noise_pending(conn)
+    _resolve_low_value_pending(conn)
+    _resolve_duplicate_pending(conn)
+    _resolve_stale_pending(conn, stale_cutoff)
+    inventory, batch_n, total_pending, batch_ids = _collect_pending(conn)
+    if total_pending > 0 and batch_n == 0:
+        _record_pass(conn, now, f"no_eligible pending={total_pending}")
+        return f"no_eligible n={total_pending}"
+    if total_pending < DIALECTIC_VALIDATE_MIN:
         _record_pass(conn, now,
-                     f"below_threshold pending={n_pending} "
+                     f"below_threshold pending={total_pending} "
                      f"min={DIALECTIC_VALIDATE_MIN}")
-        return f"below_threshold n={n_pending}"
+        return f"below_threshold n={total_pending}"
 
     prompt = DIALECTIC_VALIDATOR_PROMPT % {
         "max_new": DIALECTIC_MAX_NEW_CLAIMS,
@@ -179,8 +508,25 @@ def run_validate_pass(force: bool = False) -> str:
         _record_pass(conn, now, f"spawn_error: {e}")
         return f"spawn_error: {e}"
 
-    _record_pass(conn, now, f"spawned pending={n_pending} :: {str(result)[:140]}")
-    return str(result)
+    result_s = str(result)
+    if result_s.startswith("ERR"):
+        _record_pass(
+            conn,
+            now,
+            f"spawn_error pending_batch={batch_n} total={total_pending} "
+            f":: {result_s[:180]}",
+        )
+        return result_s
+
+    task_id = _task_id_from_spawn_result(result_s)
+    claimed = _claim_batch(conn, batch_ids, task_id, now) if task_id else 0
+    _record_pass(
+        conn,
+        now,
+        f"spawned pending_batch={batch_n} total={total_pending} claimed={claimed} "
+        f":: {result_s[:140]}",
+    )
+    return result_s
 
 
 def _serve_loop() -> None:

@@ -113,6 +113,55 @@ def test_mcp_lesson_append_validates_inputs(tmp_path, monkeypatch):
     assert out.startswith("ok slug=ok-one")
 
 
+def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    body = "word " * 451
+    out = la(title="compact rules only", body=body, source="shadow")
+    assert out.startswith("ERR shadow_lesson_too_long")
+    assert "max=450" in out
+
+
+def test_shadow_lesson_append_rejects_near_duplicate_slug(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    first = la(
+        title="better auth jwks poisoning recovery",
+        body="Delete poisoned JWKS via the stage shell.",
+        source="shadow",
+    )
+    assert first.startswith("ok")
+    second = la(
+        title="better auth jwks poisoning diagnosis and recovery",
+        body="Diagnose and delete poisoned JWKS via the stage shell.",
+        source="shadow",
+    )
+    assert second.startswith("ERR likely_duplicate_lesson")
+    assert "better-auth-jwks-poisoning-recovery" in second
+
+
+def test_foreground_lesson_append_allows_near_duplicate_slug(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    la(
+        title="better auth jwks poisoning recovery",
+        body="Delete poisoned JWKS via the stage shell.",
+        source="shadow",
+    )
+    out = la(
+        title="better auth jwks poisoning diagnosis and recovery",
+        body="User-authored foreground correction may be intentionally close.",
+        source="foreground",
+    )
+    assert out.startswith(
+        "ok slug=better-auth-jwks-poisoning-diagnosis-and-recovery"
+    )
+
+
 def test_mcp_lesson_list_returns_summary(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -134,3 +183,32 @@ def test_mcp_lesson_get_returns_body(tmp_path, monkeypatch):
     out = lg(slug="retry-strategy")
     assert "exponential backoff" in out
     assert lg(slug="does-not-exist").startswith("ERR not_found")
+
+
+def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    lg = _tool(pkg, "lesson_get")
+    la(title="stale duplicate", body="old duplicate rule", source="shadow")
+
+    out = lr(slug="stale-duplicate")
+
+    assert out == "ok removed=stale-duplicate"
+    assert lg(slug="stale-duplicate").startswith("ERR not_found")
+    assert "stale-duplicate" not in pkg["path"].read_text()
+
+
+def test_mcp_lesson_remove_refuses_protected_without_force(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    la(title="human policy", body="keep this", source="foreground")
+
+    out = lr(slug="human-policy")
+
+    assert out.startswith("ERR protected_lesson")
+    assert "human-policy" in pkg["path"].read_text()
+    assert lr(slug="human-policy", force=True) == "ok removed=human-policy"

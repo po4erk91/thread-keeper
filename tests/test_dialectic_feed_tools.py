@@ -38,7 +38,7 @@ def test_mine_run_forces_capture(tmp_path, monkeypatch):
     conn.execute(
         "INSERT INTO dialog_messages (uuid, source, project, session_id, role, "
         "content, model, created_at) VALUES "
-        "('uX','claude-code','p','real-sess','user','I prefer X', 'm', ?)",
+            "('uX','claude-code','p','real-sess','user','я предпочитаю X', 'm', ?)",
         (now - 30,),
     )
     conn.commit()
@@ -60,4 +60,6 @@ def test_validate_status_reports_pending(tmp_path, monkeypatch):
     tool = pkg["mcp"]._tool_manager._tools["dialectic_validate_status"].fn
     out = tool()
     assert "pending_now=1" in out
+    assert "claimed_now=0" in out
     assert "min=5" in out
+    assert "batch_size=50" in out

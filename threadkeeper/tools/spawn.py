@@ -438,10 +438,15 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         sys_extra += "\n\n" + append_system
     child_env = {
         **os.environ,
+        "THREADKEEPER_DB": str(DB_PATH),
+        "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
+        "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
         "THREADKEEPER_FORCE_CID": child_cid,
         "THREADKEEPER_SPAWNED_CHILD": "1",
         "THREADKEEPER_TZ": os.environ.get("THREADKEEPER_TZ", "UTC"),
     }
+    if "THREADKEEPER_ENV_FILE" in os.environ:
+        child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
         child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
     # slim spawn → child loads NO embeddings (delegates semantic search to
@@ -454,6 +459,10 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         for k in (
             "THREADKEEPER_FORCE_CID",
             "THREADKEEPER_SPAWNED_CHILD",
+            "THREADKEEPER_DB",
+            "THREADKEEPER_ENV_FILE",
+            "THREADKEEPER_TASK_LOG_DIR",
+            "CLAUDE_PROJECTS_DIR",
             "THREADKEEPER_TZ",
             "THREADKEEPER_WRITE_ORIGIN",
             "THREADKEEPER_NO_EMBEDDINGS",
@@ -468,6 +477,8 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     from .. import spawn_config as _sc, identity as _id
     chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
+    stdin_text: Optional[str] = None
+    stdin_path: Optional[Path] = None
     if chosen_cli != "claude":
         from ..adapters import get_adapter
         _ad = get_adapter(chosen_cli)
@@ -477,6 +488,8 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         # non-Claude CLIs have no per-invocation --append-system-prompt.
         full_prompt = (sys_extra + "\n\n---\n\n" + prompt
                        if sys_extra else prompt)
+        if getattr(_ad, "uses_stdin_prompt", False):
+            stdin_text = full_prompt
         cmd = _ad.spawn_argv(
             full_prompt,
             model=chosen_model,
@@ -579,6 +592,13 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
                         "--strict-mcp-config"]
     log_path: Optional[Path] = None
     TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if stdin_text is not None:
+        stdin_path = TASK_LOG_DIR / f"{task_id}.stdin.txt"
+        try:
+            stdin_path.write_text(stdin_text, encoding="utf-8")
+            stdin_path.chmod(0o600)
+        except OSError as e:
+            return f"ERR prompt_stdin_write_failed={e}"
     if capture_output and not visible:
         log_path = TASK_LOG_DIR / f"{task_id}.log"
     proc_pid = 0
@@ -589,6 +609,8 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             # then `read` so the window stays open for inspection.
             script_path = TASK_LOG_DIR / f"{task_id}.command"
             cmd_line = " \\\n    ".join(shlex.quote(a) for a in cmd)
+            if stdin_path is not None:
+                cmd_line = f"{cmd_line} < {shlex.quote(str(stdin_path))}"
             # After the child exits in this shell, persist its real exit code
             # to the DB (the visible/pid=0 path is invisible to the parent
             # reaper's waitpid). Best-effort; never blocks window teardown.
@@ -681,12 +703,15 @@ exit $rc
                     sys.executable, str(_WRAP), str(DB_PATH), task_id,
                     "--", *cmd,
                 ]
+            stdin_f = None
+            if stdin_path is not None:
+                stdin_f = stdin_path.open("rb")
             if log_path is not None:
                 log_f = log_path.open("wb")
                 proc = subprocess.Popen(
                     launch_cmd,
                     cwd=cwd,
-                    stdin=subprocess.DEVNULL,
+                    stdin=stdin_f or subprocess.DEVNULL,
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -697,12 +722,14 @@ exit $rc
                 proc = subprocess.Popen(
                     launch_cmd,
                     cwd=cwd,
-                    stdin=subprocess.DEVNULL,
+                    stdin=stdin_f or subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                     env=child_env,
                 )
+            if stdin_f is not None:
+                stdin_f.close()
             proc_pid = proc.pid
     except (FileNotFoundError, OSError) as e:
         return f"ERR spawn_failed={e}"

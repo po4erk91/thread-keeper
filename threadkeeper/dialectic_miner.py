@@ -9,6 +9,7 @@ filtering mirrors extract_recent so only the REAL user's turns are captured
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -22,6 +23,275 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _CONTEXT_MAX = 600
+_NOISE_CONTENT_PREFIXES: tuple[str, ...] = (
+    "# AGENTS.md instructions",
+    "# Context from my IDE setup:",
+    "<command-name>",
+    "<command-message>",
+    "<environment_context>",
+    "<goal_context>",
+    "<ide_opened_file>",
+    "<ide_selection>",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<subagent_notification>",
+    "<system-reminder>",
+    "<task-notification>",
+    "<turn_aborted>",
+    "Base directory for this skill:",
+    "Context: This summary will be shown in a list",
+    "Reply with exactly",
+    "This session is being continued from a previous conversation",
+    "You were spawned in the background by parent conversation",
+    "Your task is to create a detailed summary of the conversation so far",
+    "[Request interrupted by user",
+    "[SUGGESTION MODE:",
+    "[tool_result]",
+    "[tool_call]",
+    "[tool_use]",
+)
+_NOISE_CONTENT_MARKERS: tuple[str, ...] = (
+    "<!-- THREADKEEPER:BEGIN",
+    "<!-- THREADKEEPER:END",
+)
+_ARTIFACT_CONTENT_PREFIXES: tuple[str, ...] = (
+    "+- ",
+    "[adb]",
+    "[CDP]",
+    "[SegmentPlugin]",
+    "[Layout children]:",
+    "Briefing audio error:",
+    "DEBUG  ",
+    "ERROR  ",
+    "Error: Agent CLI ",
+    "Google: ",
+    "INFO  ",
+    "Path to P8 file:",
+    "Revenue Cat API:",
+    "Run command:",
+    "LOG  ",
+    "VM",
+    "WARN  ",
+    "iOS Bundled ",
+    "document.cookie.match(",
+    "Your tool call was malformed",
+    "-----BEGIN ",
+    "✓ ",
+    "✖ ",
+    "⏺ ",
+)
+_SENSITIVE_CONTENT_MARKERS: tuple[str, ...] = (
+    "-----BEGIN",
+    "PRIVATE KEY",
+    "Secret:",
+    "apps.googleusercontent.com",
+)
+_TERMINAL_PROMPT_RE = re.compile(r"^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+ .{0,120} % ")
+_ISO_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s")
+_JS_ARRAY_DUMP_RE = re.compile(r"^(?:\(\d+\)\s*)?\[.+\]\s*$")
+_TASK_PROMPT_MARKERS: tuple[str, ...] = (
+    "working directory",
+    "package manager",
+    "task description",
+    "read these files",
+    "you have three jobs",
+    "focus on:",
+    "read-only review",
+    "do not make any edits",
+    "based on the exploration results",
+    "## context",
+    "## task",
+    "files:",
+    "validate the following",
+    "reviewing code quality",
+)
+_LOW_VALUE_EXACT: tuple[str, ...] = (
+    "ок",
+    "окей",
+    "да",
+    "нет",
+    "ну что там?",
+    "что там?",
+    "что не так?",
+    "задеплоил?",
+    "перезапустил",
+    "рестартанул",
+    "коммит и пуш",
+    "коммит и пуш всех чейнжей",
+    "коммит и пуш всех изменений",
+    "деплой, коммит и пуш",
+)
+_LOW_VALUE_PREFIXES: tuple[str, ...] = (
+    "а статус",
+    "статус?",
+)
+_HIGH_SIGNAL_MARKERS: tuple[str, ...] = (
+    "always",
+    "do not",
+    "don't",
+    "i prefer",
+    "i want",
+    "must",
+    "never",
+    "prefer",
+    "should",
+    "важно",
+    "всегда",
+    "должен",
+    "должна",
+    "должно",
+    "должны",
+    "запомни",
+    "никогда",
+    "нужно",
+    "надо",
+    "нельзя",
+    "не делай",
+    "не должен",
+    "не должно",
+    "не используй",
+    "предпочитаю",
+    "хочу",
+)
+_MEDIUM_SIGNAL_MARKERS: tuple[str, ...] = (
+    "better",
+    "instead",
+    "wrong",
+    "лучше",
+    "не так",
+    "ошиб",
+    "почему",
+    "убери",
+    "убирать",
+)
+_STOP_HOOK_RE = re.compile(r"^Stop hook feedback:\s*\[(.*?)\]", re.DOTALL)
+
+
+def _is_agent_task_prompt(text: str) -> bool:
+    """Detect role/task prompts accidentally ingested as user dialog."""
+    sample = text[:1200].lower()
+    if not sample.startswith("you are "):
+        return False
+    if any(marker in sample for marker in _TASK_PROMPT_MARKERS):
+        return True
+    first_line = sample.splitlines()[0]
+    return any(
+        marker in first_line
+        for marker in (
+            " expert",
+            "developer",
+            "reviewer",
+            "reviewing",
+            "curator",
+            "implementing",
+            "designing",
+            "conducting",
+            "completing",
+            "extending",
+            "renaming",
+            "fixing",
+            "validating",
+            "auditing",
+            "analyzing",
+            "running",
+            "security engineer",
+            "doing",
+            "isolating",
+            "fact-checker",
+            "lead",
+            "native",
+        )
+    )
+
+
+def _is_cli_artifact(text: str) -> bool:
+    """Detect terminal/IDE/browser dumps that adapters record as user text."""
+    if any(text.startswith(prefix) for prefix in _ARTIFACT_CONTENT_PREFIXES):
+        return True
+    if _TERMINAL_PROMPT_RE.match(text):
+        return True
+    if any(marker in text[:1000] for marker in _SENSITIVE_CONTENT_MARKERS):
+        return True
+    if _ISO_LOG_RE.match(text):
+        return True
+    if _JS_ARRAY_DUMP_RE.match(text[:500]):
+        return True
+    sample = text[:2000]
+    markers = (
+        "[CDP]",
+        "Command failed:",
+        "Error Command exited",
+        "Exit code ",
+        "Traceback (most recent call last)",
+        "runFixture:",
+        "✓ ",
+        "✖ ",
+    )
+    return sum(sample.count(marker) for marker in markers) >= 3
+
+
+def _is_noise_user_message(content: str) -> bool:
+    text = (content or "").lstrip()
+    if not text:
+        return True
+    if any(text.startswith(prefix) for prefix in _NOISE_CONTENT_PREFIXES):
+        return True
+    if _is_cli_artifact(text):
+        return True
+    if _is_agent_task_prompt(text):
+        return True
+    return any(marker in text for marker in _NOISE_CONTENT_MARKERS)
+
+
+def _normalize_observation_quote(content: str) -> str:
+    """Stable normalization for exact/repeated candidate compaction."""
+    return re.sub(r"\s+", " ", (content or "").strip().lower())
+
+
+def _observation_compaction_key(content: str) -> str:
+    """Return the signal key used to collapse repeated observations.
+
+    Stop-hook feedback often repeats the same human correction with different
+    trailing runner diagnostics. The bracketed human feedback is the durable
+    signal; the trailing test count/log fragment is incidental.
+    """
+    norm = _normalize_observation_quote(content)
+    match = _STOP_HOOK_RE.match((content or "").strip())
+    if match:
+        return "stop_hook:" + _normalize_observation_quote(match.group(1))
+    return norm
+
+
+def _dialectic_signal_score(content: str) -> int:
+    """Cheap deterministic score for whether a user turn can change the
+    compact Dialectic user model.
+
+    Scores <= 0 are terminal noise for Dialectic. Positive scores remain
+    eligible; the validator consumes higher scores first.
+    """
+    norm = _normalize_observation_quote(content)
+    if not norm:
+        return 0
+    if norm in _LOW_VALUE_EXACT:
+        return 0
+    if any(norm.startswith(prefix) for prefix in _LOW_VALUE_PREFIXES):
+        return 0
+    score = 1
+    if norm.startswith("stop hook feedback:"):
+        score += 3
+    if "?" in norm:
+        score -= 1
+    score += 4 * sum(1 for marker in _HIGH_SIGNAL_MARKERS if marker in norm)
+    score += 2 * sum(1 for marker in _MEDIUM_SIGNAL_MARKERS if marker in norm)
+    if len(norm) >= 1200 and score < 6:
+        score -= 2
+    if re.fullmatch(r"[\W_0-9]+", norm):
+        return 0
+    return max(0, score)
+
+
+def _is_low_value_observation(content: str) -> bool:
+    return _dialectic_signal_score(content) <= 0
 
 
 def _last_mine_ts(conn: sqlite3.Connection) -> int:
@@ -76,28 +346,40 @@ def run_mine_pass(force: bool = False) -> str:
     now = int(time.time())
     cursor = _last_mine_ts(conn)
 
-    from .shadow_review import _INTERNAL_PROMPT_PREFIXES
+    from .shadow_review import (
+        _INTERNAL_PROMPT_PREFIXES,
+        _SPAWNED_SESSION_MARKERS,
+    )
     sess_prefix_clauses = " OR ".join(
         ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
     )
     sess_prefix_params: list = []
     for p in _INTERNAL_PROMPT_PREFIXES:
         sess_prefix_params.extend([len(p), p])
+    spawned_marker_clauses = " OR ".join(
+        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
+    )
+    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
 
     rows = conn.execute(
         "SELECT uuid, session_id, content, created_at FROM dialog_messages "
         "WHERE role='user' AND created_at >= ? "
+        "AND coalesce(project, '') != 'subagents' "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
         "AND length(content) >= 1 "
         "AND session_id NOT IN ("
         "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE role='user' AND ({sess_prefix_clauses})"
+        f"  WHERE session_id IS NOT NULL AND role='user' AND ({sess_prefix_clauses})"
+        ") "
+        "AND session_id NOT IN ("
+        "  SELECT DISTINCT session_id FROM dialog_messages "
+        f"  WHERE session_id IS NOT NULL AND role='user' AND ({spawned_marker_clauses})"
         ") "
         "AND session_id NOT IN ("
         "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ") "
         "ORDER BY created_at ASC",
-        (cursor, *sess_prefix_params),
+        (cursor, *sess_prefix_params, *spawned_marker_params),
     ).fetchall()
 
     if not rows:
@@ -105,9 +387,26 @@ def run_mine_pass(force: bool = False) -> str:
         return "no_user_dialog"
 
     captured = skipped = 0
+    seen_keys = {
+        _observation_compaction_key(r["user_quote"] or "")
+        for r in conn.execute(
+            "SELECT user_quote FROM dialectic_observations "
+            "WHERE status='pending'"
+        ).fetchall()
+    }
     max_ts = cursor
     for r in rows:
         max_ts = max(max_ts, r["created_at"])
+        if _is_noise_user_message(r["content"] or ""):
+            skipped += 1
+            continue
+        if _is_low_value_observation(r["content"] or ""):
+            skipped += 1
+            continue
+        key = _observation_compaction_key(r["content"] or "")
+        if key in seen_keys:
+            skipped += 1
+            continue
         ctx = _preceding_context(conn, r["session_id"] or "", r["created_at"])
         cur = conn.execute(
             "INSERT OR IGNORE INTO dialectic_observations "
@@ -117,6 +416,7 @@ def run_mine_pass(force: bool = False) -> str:
         )
         if cur.rowcount:
             captured += 1
+            seen_keys.add(key)
         else:
             skipped += 1
     _emit(conn, "dialectic_mine_capture", summary=f"captured={captured}")

@@ -56,7 +56,11 @@ from .tools import candidate_reviewer  # noqa: F401
 from .tools import evolve_applier  # noqa: F401
 from .tools import dialectic_feed  # noqa: F401
 from .tools import dashboard  # noqa: F401
+from .tools import agent_status  # noqa: F401
 
 
 if __name__ == "__main__":
+    from .menubar_app import ensure_menubar_app
+
+    ensure_menubar_app()
     mcp.run()

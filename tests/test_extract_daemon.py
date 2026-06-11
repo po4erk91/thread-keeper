@@ -460,6 +460,58 @@ def test_extract_filters_spawned_child_sessions(tmp_path, monkeypatch):
         "spawned-child session must be fully excluded"
 
 
+def test_extract_filters_codex_spawned_marker_without_task_link(
+    tmp_path, monkeypatch,
+):
+    """Codex child transcript session_id is the rollout UUID, not always the
+    forced child cid stored in tasks.spawned_cid. The spawn preamble still
+    identifies the whole session as agent work."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    codex_rollout = "019eb584-bee1-72a3-ada5-89eaaeab8b8f"
+    _seed_dialog(
+        conn,
+        "user",
+        "You were spawned in the background by parent conversation abc. "
+        "Your own cid is child-xyz.",
+        now - 100,
+        session_id=codex_rollout,
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "I want you to record the fake child rule as a durable preference.",
+        now - 90,
+        session_id=codex_rollout,
+    )
+    _seed_dialog(
+        conn,
+        "assistant",
+        "## Findings\n\nWe want every future run to keep this child output. "
+        "Therefore this is a durable rule. In conclusion, save it.",
+        now - 85,
+        session_id=codex_rollout,
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "I want you to record real foreground decisions automatically "
+        "when I state them as standing rules.",
+        now - 60,
+        session_id="real-sess",
+    )
+    conn.commit()
+
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out
+    rows = conn.execute(
+        "SELECT source_cid FROM extract_candidates WHERE status='pending'"
+    ).fetchall()
+    assert any(r["source_cid"] == "real-sess" for r in rows)
+    assert not any(r["source_cid"] == codex_rollout for r in rows)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Daemon lifecycle
 # ──────────────────────────────────────────────────────────────────────

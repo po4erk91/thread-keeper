@@ -24,6 +24,47 @@ _ingest_thread: Optional[threading.Thread] = None
 _ingest_lock = threading.Lock()
 _ingest_interval_s = INGEST_INTERVAL_S
 _ingest_recent_window_s = INGEST_RECENT_WINDOW_S
+_last_ingest_event_at = 0
+_INGEST_EVENT_IDLE_THROTTLE_S = 60
+_SPAWNED_SESSION_MARKER = (
+    "You were spawned in the background by parent conversation"
+)
+
+
+def _record_ingest_pass(
+    conn: sqlite3.Connection,
+    *,
+    mode: str,
+    new_msgs: int,
+    files_seen: int,
+) -> None:
+    """Emit a lightweight telemetry event for status/UI clients.
+
+    The live ingester can tick every few seconds, so empty passes are throttled
+    while non-empty passes are always recorded.
+    """
+    global _last_ingest_event_at
+    now = int(time.time())
+    if new_msgs <= 0 and now < _last_ingest_event_at + _INGEST_EVENT_IDLE_THROTTLE_S:
+        return
+    try:
+        from . import identity
+
+        session_id = identity._session_id or ""
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, 'ingest_pass', ?, ?, ?)",
+            (
+                session_id,
+                str(now),
+                f"ok mode={mode} new={int(new_msgs)} files={int(files_seen)}",
+                now,
+            ),
+        )
+        conn.commit()
+        _last_ingest_event_at = now
+    except sqlite3.OperationalError:
+        return
 
 
 def _backfill_dialog_fts_if_empty(conn: sqlite3.Connection) -> None:
@@ -139,11 +180,74 @@ def _is_spawned_child_session(conn: sqlite3.Connection,
     if not session_id:
         return False
     try:
-        return conn.execute(
+        if conn.execute(
             "SELECT 1 FROM tasks WHERE spawned_cid=? LIMIT 1", (session_id,)
+        ).fetchone() is not None:
+            return True
+        return conn.execute(
+            "SELECT 1 FROM dialog_messages "
+            "WHERE session_id=? AND role='user' AND instr(content, ?) > 0 "
+            "LIMIT 1",
+            (session_id, _SPAWNED_SESSION_MARKER),
         ).fetchone() is not None
     except sqlite3.OperationalError:
         return False
+
+
+def _normalize_codex_spawned_session_ids(conn: sqlite3.Connection) -> int:
+    """Backfill Codex spawned transcripts from rollout UUID to forced cid.
+
+    New ingest gets this directly from CodexAdapter.iter_messages(). This keeps
+    older rows consistent so tasks.spawned_cid joins work without depending on
+    the preamble-content fallback forever.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT session_id, content FROM dialog_messages "
+            "WHERE source='codex' AND role='user' "
+            "AND instr(content, 'You were spawned in the background') > 0"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+
+    from .adapters.codex import _forced_cid_from_text
+
+    mappings: dict[str, str] = {}
+    for row in rows:
+        old = row["session_id"] or ""
+        forced = _forced_cid_from_text(row["content"] or "")
+        if old and forced and old != forced:
+            mappings[old] = forced
+    if not mappings:
+        return 0
+
+    changed = 0
+    for old, forced in mappings.items():
+        cur = conn.execute(
+            "UPDATE dialog_messages SET session_id=? "
+            "WHERE source='codex' AND session_id=?",
+            (forced, old),
+        )
+        changed += cur.rowcount if cur.rowcount else 0
+        try:
+            conn.execute(
+                "UPDATE dialectic_observations SET source_cid=? "
+                "WHERE source_cid=?",
+                (forced, old),
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "UPDATE extract_candidates SET source_cid=? "
+                "WHERE source_cid=?",
+                (forced, old),
+            )
+        except sqlite3.OperationalError:
+            pass
+    return changed
 
 
 def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
@@ -313,7 +417,9 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
             if total >= max_msgs:
                 break
             total += _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+    _normalize_codex_spawned_session_ids(conn)
     conn.commit()
+    _record_ingest_pass(conn, mode="all", new_msgs=total, files_seen=files_seen)
     return (total, files_seen)
 
 
@@ -349,6 +455,13 @@ def _ingest_recent_only(conn: sqlite3.Connection,
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+    normalized = _normalize_codex_spawned_session_ids(conn)
+    if normalized:
+        try:
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    _record_ingest_pass(conn, mode="recent", new_msgs=total, files_seen=len(fresh))
     return (total, len(fresh))
 
 

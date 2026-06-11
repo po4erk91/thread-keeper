@@ -7,8 +7,21 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.9.0 — 2026-06-11
+
 ### Added
 
+- **Autonomous loop status feed + macOS menu-bar widget.** New `tk-agent-status`
+  console command and `agent_status(json_output=False, refresh=True)` MCP tool
+  expose every autonomous learning loop as stable text/JSON: enabled/off,
+  running/idle/ready, last pass, backlog, and active spawned-child RSS. Running
+  child agents are still included as JSON detail. Added
+  `apps/macos-agent-status/`, a SwiftUI `MenuBarExtra` app that polls
+  `tk-agent-status --json` every 5 seconds. Active loops are sorted first, and
+  the app sends macOS notifications for newly completed autonomous child tasks
+  that produced useful `recent_results`. On macOS, MCP server startup now
+  installs/refreshes the app, registers its LaunchAgent, and launches it
+  automatically; disable with `THREADKEEPER_MENUBAR_AUTO_LAUNCH=0`.
 - **Evolve applier — closes the format-evolution loop, PR-gated.** Promoted
   `evolve_format` suggestions used to just sit in the brief with a ★ until a
   human hand-edited `brief.py`. The new `evolve_apply(evolve_id)` MCP tool
@@ -18,14 +31,32 @@ version bumps follow semver per the policy in
   the suggestion in `render_brief`, adds/extends a **golden brief test**
   (asserts the new behavior appears AND the existing brief still renders), runs
   the full suite until green, and opens a **pull request** on a feature branch.
-  Autonomy is PR-gated only: the child never pushes or commits to main; a human
-  reviews + merges. On a successful PR the child calls
+  PR titles and commits use the repo's allowed Conventional Commit types
+  (`feat:`/`fix:` etc.), not the internal `evolve:` label, so `pr-title` CI can
+  pass. Autonomy is PR-gated only: the child never pushes or commits to main; a
+  human reviews + merges. On a successful PR the child calls
   `evolve_mark_applied(evolve_id, pr_url)` → `applied=1` so it stops
   resurfacing. New tools: `evolve_apply`, `evolve_mark_applied`,
   `evolve_apply_status`. Optional daemon knob
   `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` (0 = off, default) periodically fires
   the apply for the oldest promoted+unapplied suggestion; mirrors the
   evolve_reviewer daemon (foreground-only, machine-wide single-flight).
+- **Evolve applier now applies Curator reports too.** Curator remains an
+  advisory report generator by default; the existing `evolve_applier` role now
+  consumes the latest complete `REPORT-*.md` before code-evolve work, applies
+  only safe memory maintenance through MCP tools, and records
+  `curator_report_applied` so the same report is not replayed. New tools:
+  `evolve_apply_curator_report`, `evolve_mark_curator_report_applied`, and
+  `lesson_remove`. Applier dispatch also takes a short cross-process lock so a
+  daemon tick and a manual trigger cannot spawn duplicate appliers for the same
+  work item. The status feed now prefers the latest completion event over a
+  stale `applier_running` pass summary.
+- **Codex code-evolve PR gate can write Git refs.** Codex-spawned
+  `permission_mode="bypassPermissions"` children now run
+  `codex exec --dangerously-bypass-approvals-and-sandbox`, while normal Codex
+  children stay on `--sandbox workspace-write`. `spawn()` also forwards the
+  parent `THREADKEEPER_DB` and task/project env into children so fallback
+  Python/MCP calls write to the same store.
 - **Single-file config: `~/.threadkeeper/.env` via pydantic-settings.** Every
   `THREADKEEPER_*` knob plus spawn routing now loads from one `.env` (path
   overridable with `THREADKEEPER_ENV_FILE`) through a typed, validated `Settings`
@@ -48,6 +79,7 @@ version bumps follow semver per the policy in
   `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` (0 = off),
   `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` (0 = off),
   `THREADKEEPER_DIALECTIC_VALIDATE_MIN` (5),
+  `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` (50),
   `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` (3).
 - **Role-keyed agent/model settings** (`[agents.<role>]` in
   `spawn.toml`) — first-class per-role `cli` + `model` assignment, e.g.
@@ -69,6 +101,27 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Probe status and cadence.** The agent-status feed now reports Probe backlog
+  as due objective probes only, instead of all enabled probe definitions, and
+  treats Probe as `ready` only when a due probe exists. Recommended active
+  operation is a 30-minute probe tick with a one-day per-category cooldown, so
+  finished probe answers are graded promptly without repeatedly testing the
+  same category.
+- **Ingest visibility in agent status.** The live transcript ingester already
+  updated `dialog_messages`, but it never emitted `ingest_pass`, so the menu-bar
+  status showed `Ingest last=never`. Ingest now records throttled
+  `ingest_pass` telemetry for initial and recent scans.
+- **Dialectic validator queue drain.** The validator now sends a bounded
+  `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` batch (default 50) to each child
+  instead of putting the entire `dialectic_observations` backlog into one
+  prompt, which caused `Argument list too long` spawn failures and left every
+  observation `pending`. Stale pending observations outside the validation
+  window are terminally skipped as `processed`, and spawn `ERR ...` results are
+  recorded as errors instead of being shown as successful reviewer launches.
+  Validator batches are now single-flight and leased with
+  `claimed_at`/`claimed_by_task`, so rows handed to a child leave the visible
+  pending queue immediately and stale leases are requeued instead of getting
+  stuck forever.
 - **Tier recompute on startup** — dialectic claims frozen at
   `tier='hypothesis'` now self-heal. `recompute_all_tiers()` runs at
   server startup so any claims that accumulated evidence while the daemon

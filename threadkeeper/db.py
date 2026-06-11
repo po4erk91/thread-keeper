@@ -356,7 +356,9 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
     status       TEXT NOT NULL DEFAULT 'pending'
                  CHECK(status IN ('pending','processed')),
     created_at   INTEGER NOT NULL,
-    processed_at INTEGER
+    processed_at INTEGER,
+    claimed_at   INTEGER,
+    claimed_by_task TEXT
 );
 
 -- Reciprocal-rank-fusion-friendly FTS over dialog content. Mirror table
@@ -524,6 +526,12 @@ def get_db() -> sqlite3.Connection:
         # so `tk-migrate-embeddings` can find stale vectors and skip done ones.
         "ALTER TABLE notes ADD COLUMN embed_backend TEXT",
         "ALTER TABLE dialog_messages ADD COLUMN embed_backend TEXT",
+        # Dialectic validator lease: rows are still status='pending' until the
+        # child resolves them, but claimed rows are no longer visible backlog.
+        # If the child dies, the validator requeues stale claims by clearing
+        # these columns.
+        "ALTER TABLE dialectic_observations ADD COLUMN claimed_at INTEGER",
+        "ALTER TABLE dialectic_observations ADD COLUMN claimed_by_task TEXT",
         # Evolve triage: the autonomous evolve reviewer moves a suggestion
         # from 'pending' to 'promoted' (still relevant, surface it sharply
         # for the foreground agent / human to APPLY) or 'dismissed' (dup /
@@ -543,6 +551,8 @@ def get_db() -> sqlite3.Connection:
     for idx in (
         "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
         "ON user_dialectic(tier)",
+        "CREATE INDEX IF NOT EXISTS idx_dialectic_obs_claimed "
+        "ON dialectic_observations(status, claimed_at)",
         "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
         "ON skill_usage(tier)",
     ):

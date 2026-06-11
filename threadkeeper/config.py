@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     # test monkeypatching MEMORY_GUARD_POLL_S to exercise status output) cannot
     # accidentally spin up a live thread. Tests set THREADKEEPER_DISABLE_BG_DAEMONS=1.
     disable_bg_daemons: bool = False
+    menubar_auto_launch: bool = True
 
     # ── Ingest ───────────────────────────────────────────────────────────────
     # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
@@ -204,6 +205,7 @@ class Settings(BaseSettings):
     dialectic_mine_interval_s: float = 0.0
     dialectic_validate_interval_s: float = 0.0
     dialectic_validate_min: int = 5
+    dialectic_validate_batch_size: int = 50
     dialectic_max_new_claims: int = 3
 
     # ── Nested spawn config ───────────────────────────────────────────────────
@@ -269,6 +271,7 @@ CLIENT_LABEL: str = settings.client
 WRITE_ORIGIN: str = settings.write_origin
 SPAWNED_CHILD: bool = settings.spawned_child
 DISABLE_BG_DAEMONS: bool = settings.disable_bg_daemons
+MENUBAR_AUTO_LAUNCH: bool = settings.menubar_auto_launch
 CLAUDE_SKILLS_DIR: Path = settings.claude_skills_dir
 CLAUDE_PROJECTS_DIR: Path = settings.claude_projects_dir
 TASK_LOG_DIR: Path = settings.task_log_dir
@@ -324,6 +327,7 @@ THREAD_IDLE_CLOSE_DAYS: float = settings.thread_idle_close_days
 DIALECTIC_MINE_INTERVAL_S: float = settings.dialectic_mine_interval_s
 DIALECTIC_VALIDATE_INTERVAL_S: float = settings.dialectic_validate_interval_s
 DIALECTIC_VALIDATE_MIN: int = settings.dialectic_validate_min
+DIALECTIC_VALIDATE_BATCH_SIZE: int = settings.dialectic_validate_batch_size
 DIALECTIC_MAX_NEW_CLAIMS: int = settings.dialectic_max_new_claims
 
 # ── Derived constants (unchanged logic, computed after settings) ──────────────

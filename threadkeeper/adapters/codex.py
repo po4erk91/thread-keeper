@@ -22,6 +22,11 @@ from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage
 
+_FORCED_CID_RE = re.compile(
+    r"Your own cid is ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+)
+
 
 def _ts(s: str) -> int:
     try:
@@ -55,10 +60,72 @@ def _extract_text(payload: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _forced_cid_from_text(text: str) -> str:
+    if "You were spawned in the background by parent conversation" not in text:
+        return ""
+    m = _FORCED_CID_RE.search(text)
+    return m.group(1) if m else ""
+
+
 # --- minimal TOML R/W ---------------------------------------------------
 # We don't want to depend on tomllib for writes (Python's stdlib has
 # tomllib for reads only). The shape we touch is one section:
 # `[mcp_servers.<name>]` with key=value lines. Implement just enough.
+
+_THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
+    "brief",
+    "context",
+    "open_thread",
+    "close_thread",
+    "note",
+    "search",
+    "dialog_search",
+    "broadcast",
+    "whisper",
+    "wait",
+    "inbox",
+    "accept_candidate",
+    "reject_candidate",
+    "lesson_list",
+    "lesson_get",
+    "lesson_append",
+    "lesson_remove",
+    "skill_list",
+    "skill_manage",
+    "evolve_review",
+    "evolve_decide",
+    "evolve_apply",
+    "evolve_apply_curator_report",
+    "evolve_mark_applied",
+    "evolve_mark_curator_report_applied",
+    "dialectic_claim",
+    "dialectic_evidence",
+    "dialectic_review",
+    "dialectic_synthesis",
+    "dialectic_supersede",
+    "dialectic_observation_resolve",
+)
+
+
+def _thread_keeper_tools_config() -> dict:
+    return {
+        "tools": {
+            tool: {"approval_mode": "approve"}
+            for tool in _THREAD_KEEPER_AUTO_APPROVED_TOOLS
+        }
+    }
+
+
+def _approval_blocks(name: str) -> str:
+    if name != "thread-keeper":
+        return ""
+    lines: list[str] = []
+    for tool in _THREAD_KEEPER_AUTO_APPROVED_TOOLS:
+        lines.append("")
+        lines.append(f"[mcp_servers.{name}.tools.{tool}]")
+        lines.append('approval_mode = "approve"')
+    return "\n".join(lines) + "\n"
+
 
 def _read_toml(fp: Path) -> dict:
     if not fp.exists():
@@ -86,7 +153,7 @@ def _serialize_mcp_section(name: str, command: str,
         lines.append("[mcp_servers." + name + ".env]")
         for k, v in env.items():
             lines.append(f"{k} = {json.dumps(v)}")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + _approval_blocks(name)
 
 
 _SECTION_HEADER_RE = re.compile(
@@ -128,6 +195,7 @@ def _replace_or_append_mcp_block(
 
 class CodexAdapter(CLIAdapter):
     name = "codex"
+    uses_stdin_prompt = True
 
     def __init__(self) -> None:
         self.config_path = Path("~/.codex/config.toml").expanduser()
@@ -152,17 +220,28 @@ class CodexAdapter(CLIAdapter):
 
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
                    extra_allowed_tools="", mcp_config_path=None):
-        """Codex non-interactive: `codex exec [-m MODEL] <prompt>`.
+        """Codex non-interactive: `codex exec [-m MODEL] -`.
         Codex reads MCP servers from ~/.codex/config.toml which the
         thread-keeper-setup installer already wires up — no
-        per-invocation MCP config file needed."""
+        per-invocation MCP config file needed. Prompt text is supplied via
+        stdin so large autonomous-loop inventories do not hit ARG_MAX.
+
+        Code-evolve children need to create branches/commits. Codex's default
+        sandbox can write ordinary workspace files but blocks `.git` refs, so
+        map Claude's `bypassPermissions` request to Codex's explicit
+        no-sandbox flag.
+        """
         bin_path = shutil.which("codex")
         if not bin_path:
             return None
         argv = [bin_path, "exec"]
         if model:
             argv += ["-m", model]
-        argv.append(prompt)
+        if permission_mode == "bypassPermissions":
+            argv.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            argv += ["--sandbox", "workspace-write"]
+        argv.append("-")
         return argv
 
     def instructions_path(self):
@@ -191,6 +270,8 @@ class CodexAdapter(CLIAdapter):
             want = {"command": command, "args": list(args)}
             if env:
                 want["env"] = dict(env)
+            if name == "thread-keeper":
+                want.update(_thread_keeper_tools_config())
             if already == want:
                 return "codex: already current"
         new_body = _replace_or_append_mcp_block(body, name, block)
@@ -222,8 +303,39 @@ class CodexAdapter(CLIAdapter):
             return []
         return list(self.sessions_dir.glob("**/rollout-*.jsonl"))
 
+    def _forced_session_id(self, fp: Path) -> str:
+        """Return THREADKEEPER_FORCE_CID encoded in our spawn preamble.
+
+        Codex records its own rollout UUID in session_meta.payload.id even
+        when the child process has THREADKEEPER_FORCE_CID. For thread-keeper
+        provenance we want every message from that spawned transcript grouped
+        under the forced child cid, matching tasks.spawned_cid and Claude's
+        --session-id behavior.
+        """
+        try:
+            with fp.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "You were spawned in the background" not in line:
+                        continue
+                    try:
+                        env = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = env.get("payload") or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload.get("type") != "message":
+                        continue
+                    cid = _forced_cid_from_text(_extract_text(payload))
+                    if cid:
+                        return cid
+        except OSError:
+            return ""
+        return ""
+
     def iter_messages(self, fp: Path) -> Iterator[NormalizedMessage]:
         sess_id = ""
+        forced_session_id = self._forced_session_id(fp)
         try:
             with fp.open("r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -258,7 +370,7 @@ class CodexAdapter(CLIAdapter):
                     uuid = payload.get("id") or f"codex:{fp.name}:{env.get('timestamp', '')}"
                     yield NormalizedMessage(
                         uuid=uuid,
-                        session_id=sess_id,
+                        session_id=forced_session_id or sess_id,
                         role=role,
                         content=text,
                         model=payload.get("model") or "",

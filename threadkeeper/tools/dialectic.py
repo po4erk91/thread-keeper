@@ -632,8 +632,8 @@ def dialectic_observation_resolve(id: int, note: str = "") -> str:
         return f"ok already_processed #{id}"
     now_t = int(time.time())
     conn.execute(
-        "UPDATE dialectic_observations SET status='processed', processed_at=? "
-        "WHERE id=?",
+        "UPDATE dialectic_observations SET status='processed', processed_at=?, "
+        "claimed_at=NULL, claimed_by_task=NULL WHERE id=?",
         (now_t, int(id)),
     )
     _emit(conn, "dialectic_observation_resolve", target=str(id), summary=note[:140])

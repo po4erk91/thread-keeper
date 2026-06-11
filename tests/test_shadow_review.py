@@ -147,6 +147,47 @@ def test_collect_window_excludes_shadow_observer_sessions(
     assert n_chars < 500  # would be much larger if pollution leaked through
 
 
+def test_collect_window_excludes_codex_spawned_marker_sessions(
+    tmp_path, monkeypatch,
+):
+    """Codex spawned transcripts can have a rollout UUID as session_id instead
+    of tasks.spawned_cid. The injected spawn preamble is the reliable session
+    boundary marker."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    codex_rollout = "019eb584-bee1-72a3-ada5-89eaaeab8b8f"
+    _seed_dialog(
+        conn,
+        "user",
+        "You were spawned in the background by parent conversation abc. "
+        "Your own cid is child-xyz.",
+        now - 40,
+        session_id=codex_rollout,
+    )
+    _seed_dialog(
+        conn,
+        "assistant",
+        "MATERIALIZED: fake-child-learning",
+        now - 35,
+        session_id=codex_rollout,
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "real foreground English prompt about the current task",
+        now - 20,
+        session_id="real-sess",
+    )
+    conn.commit()
+
+    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    assert "foreground English prompt" in dump
+    assert "fake-child-learning" not in dump
+    assert "You were spawned" not in dump
+    assert n_chars > 0
+
+
 def test_collect_window_strips_tool_results_keeps_thinking(
     tmp_path, monkeypatch,
 ):
@@ -256,6 +297,9 @@ def test_run_shadow_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert kw["visible"] is False
     assert kw["write_origin"] == "shadow_review"
     assert "SHADOW LEARNING OBSERVER" in kw["prompt"]
+    assert "lesson_list(k=80)" in kw["prompt"]
+    assert "hard cap 450" in kw["prompt"]
+    assert "mcp__thread-keeper__lesson_get" in kw["extra_allowed_tools"]
     assert long_msg.strip()[:40] in kw["prompt"]
 
 

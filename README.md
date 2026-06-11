@@ -159,6 +159,36 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
 
+`tk-agent-status` exposes autonomous learning loop status as structured JSON
+or compact text for external monitors:
+
+```sh
+tk-agent-status
+tk-agent-status --json
+```
+
+`apps/macos-agent-status/` contains a small macOS menu-bar app that polls this
+command every 5 seconds and shows every autonomous learning loop: enabled/off,
+running/idle/ready, last pass, backlog, and active child RSS when that loop has
+spawned a worker. Active loops are sorted first (`running`, then `ready`), so
+background work stays at the top of the panel. The app also requests macOS
+notification permission and sends a notification when a newly completed
+autonomous child task produces a useful result in `recent_results`; the first
+poll only marks existing results as seen, so old completions do not spam
+notifications. Probe backlog is due objective probes only, not every registered
+probe, so a healthy cooldown shows `0 due probes` instead of looking stuck. On
+macOS, `python -m threadkeeper.server` automatically installs and launches it
+on MCP startup. Set `THREADKEEPER_MENUBAR_AUTO_LAUNCH=0` to disable that
+behavior.
+
+Manual fallback:
+
+```sh
+cd apps/macos-agent-status
+./build.sh
+open build/ThreadKeeperAgentStatus.app
+```
+
 ### Learning loops
 
 Five loops turn raw agent dialog into a curated, multi-CLI-mirrored
@@ -213,7 +243,7 @@ shows agents focused on their primary task rarely do).
 | 2 | shadow_review daemon | every 15 min (env knob) | recent `dialog_messages` window | SKILL.md, lessons.md |
 | 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
-| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md (advisory) or direct PATCH/PRUNE/CONSOLIDATE |
+| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md; Evolve applier applies the latest complete report |
 | 6 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 7 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
 
@@ -253,6 +283,10 @@ another one and does not advance the cursor. Shadow observer children are
 marked as spawned/background processes, so they cannot start their own shadow
 daemon even if a CLI drops the no-embeddings env. Idempotent through
 `events.kind='shadow_review_pass'`.
+
+Before writing memory, the observer now checks existing lessons/skills and
+prefers patching broad skills. Shadow-origin `lesson_append` is a compact
+fallback only: oversized bodies and near-duplicate slugs are rejected.
 
 #### 3. Extract daemon
 
@@ -302,11 +336,16 @@ CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
 never proposes destructive changes against them.
 
-Phase 1 is advisory-only (REPORT only); flip
-`THREADKEEPER_CURATOR_DESTRUCTIVE=1` once trust builds to let the
-child apply its own recommendations directly.
+Curator itself stays advisory-only by default. The existing Evolve applier is
+the apply worker: on its next pass it first looks for the latest complete
+Curator report (`CURATOR_PASS_COMPLETE`) that has not been marked applied, then
+spawns an `evolve_applier` child to apply only safe, still-current memory
+maintenance through `lesson_append` / `lesson_remove` / `skill_manage`. It never
+touches `[PROTECTED]`, foreground/user, pinned, or validated entries. Only after
+the child finishes does it call `evolve_mark_curator_report_applied(...)`, which
+prevents replaying the same report.
 
-#### 6. Evolve applier — self-improving brief format, PR-gated
+#### 6. Evolve applier — code evolution + curator report apply
 
 The brief format is not fixed: any session can file a change to it with
 `evolve_format(suggestion, rationale)`. The `evolve_reviewer` daemon triages
@@ -324,7 +363,9 @@ writes code) that:
    a format change can't silently break the brief;
 3. runs the full suite (`.venv/bin/python -m pytest -q`) until green;
 4. opens a **pull request** on a feature branch via `gh`, body quoting the
-   suggestion + rationale.
+   suggestion + rationale. The generated commit and PR title use the repo's
+   allowed Conventional Commit types (`feat:`/`fix:` etc.), never the internal
+   `evolve:` label.
 
 **Autonomy is the PR gate, nothing more.** The child never pushes or commits to
 `main` (which has branch protection); a human reviews and merges. On a
@@ -333,12 +374,19 @@ sets `applied=1` so the suggestion stops resurfacing. Validation inside the
 child (golden render_brief test + full suite green) is the objective gate the
 loop otherwise lacks.
 
+The same applier role also drains Curator reports. `evolve_apply_curator_report`
+manually applies the latest complete report, or a specific report path. This
+path does **not** edit code or open a PR; it uses memory MCP tools only and
+marks the report applied with `evolve_mark_curator_report_applied(...)`.
+
 Manual: `evolve_apply(#id)` (get ids from `evolve_review()`). Optional daemon:
 set `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S>0` (default 0 = off) to periodically
-implement the oldest promoted+unapplied suggestion. Pin the agent/model with
+apply the latest complete Curator report first, then implement the oldest
+promoted+unapplied suggestion. Pin the agent/model with
 `THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
 `THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`. Single-flight (one applier child at
-a time) keeps two children from colliding on `brief.py`.
+a time, enforced by a short dispatch file lock plus running-task detection)
+keeps code edits and memory maintenance from colliding.
 
 #### Honest take
 
@@ -427,7 +475,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |
+| `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
+| `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log when a server crosses this RSS |
 | `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |
@@ -447,8 +498,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
+| `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); triages the format-evolution queue (promote/dismiss) |
-| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements the oldest promoted+unapplied suggestion behind a PR. Manual `evolve_apply` works regardless |
+| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); applies latest complete Curator report first, then oldest promoted+unapplied suggestion behind a PR. Manual `evolve_apply` / `evolve_apply_curator_report` work regardless |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
@@ -529,6 +581,13 @@ them with `dry_run=False` to apply:
   a loop firing constantly while its outcomes stay flat, or a queue
   backing up. Complements the per-loop `*_status` tools (`mp_health`,
   `spawn_budget_status`, `shadow_review_status`).
+- **`agent_status(json_output=False, refresh=True)`** — autonomous learning
+  loop status, shaped for UI clients. Shows every loop's enabled/running/ready
+  state, last pass, backlog, and active spawned-child RSS; running child agents
+  are included as detail rows in the JSON. The JSON also includes
+  `recent_results` for useful completed loop tasks, which the macOS menu-bar app
+  uses for notifications. The `tk-agent-status` console command and macOS
+  menu-bar app use the same underlying snapshot.
 
 ---
 

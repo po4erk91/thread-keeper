@@ -203,7 +203,9 @@ def test_codex_spawn_argv_uses_exec_subcommand(tmp_path, monkeypatch):
     assert "exec" in argv
     assert "-m" in argv
     assert "gpt-5.4" in argv
-    assert "hello" in argv
+    assert argv[-1] == "-"
+    assert "hello" not in argv
+    assert ADAPTER.uses_stdin_prompt is True
 
 
 def test_gemini_spawn_argv_uses_p_flag(tmp_path, monkeypatch):

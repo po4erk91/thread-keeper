@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from .._mcp import mcp
 from ..config import CLAUDE_SKILLS_DIR, WRITE_ORIGIN
 from ..db import get_db
@@ -54,10 +56,6 @@ MAX_SKILL_CONTENT_CHARS = 100_000
 MAX_SKILL_FILE_BYTES = 1_048_576  # 1 MiB
 
 _VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-_FRONTMATTER_FIELD_RE = re.compile(
-    r"^(name|description):\s*(.+?)\s*$", re.MULTILINE
-)
-
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
@@ -77,9 +75,9 @@ def _validate_name(name: str) -> Optional[str]:
 def _parse_frontmatter(body: str) -> tuple[Optional[dict], Optional[str]]:
     """Extract name and description from leading --- ... --- block.
 
-    Returns (fields, error). Minimal — handles single-line scalars only.
-    A SKILL.md with multi-line YAML values won't parse here; for our use
-    case (name + description) that's fine.
+    Returns (fields, error). Uses a strict YAML parser because Codex and
+    other skill loaders do the same; accepting lenient frontmatter here
+    writes skills that later disappear at startup.
     """
     if not body.startswith("---"):
         return None, "frontmatter must start with '---' at byte 0"
@@ -87,9 +85,17 @@ def _parse_frontmatter(body: str) -> tuple[Optional[dict], Optional[str]]:
     if not m:
         return None, "frontmatter missing closing '\\n---\\n'"
     front = body[3:m.start() + 3]
+    try:
+        parsed = yaml.safe_load(front)
+    except yaml.YAMLError as e:
+        return None, f"frontmatter invalid YAML: {e}"
+    if not isinstance(parsed, dict):
+        return None, "frontmatter must be a YAML mapping"
     fields: dict[str, str] = {}
-    for fm in _FRONTMATTER_FIELD_RE.finditer(front):
-        fields[fm.group(1)] = fm.group(2).strip('"').strip("'")
+    for key in ("name", "description"):
+        val = parsed.get(key)
+        if val is not None:
+            fields[key] = str(val)
     if "name" not in fields:
         return None, "frontmatter missing 'name' field"
     if "description" not in fields:
@@ -99,6 +105,13 @@ def _parse_frontmatter(body: str) -> tuple[Optional[dict], Optional[str]]:
     if not rest:
         return None, "skill body empty after frontmatter"
     return fields, None
+
+
+def _yaml_str(value: str) -> str:
+    """Emit a single-line double-quoted YAML scalar."""
+    return yaml.safe_dump(
+        value, default_style='"', allow_unicode=True, width=100000,
+    ).strip()
 
 
 def _validate_skill_md(content: str, expected_name: str) -> Optional[str]:
@@ -560,8 +573,8 @@ def _action_create(name: str, content: str, description: str) -> str:
             return "ERR content_required (body markdown after frontmatter)"
         body = (
             f"---\n"
-            f"name: {name}\n"
-            f"description: {description.strip()}\n"
+            f"name: {_yaml_str(name)}\n"
+            f"description: {_yaml_str(description.strip())}\n"
             f"---\n\n"
             f"{content.strip()}\n"
         )

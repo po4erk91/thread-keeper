@@ -115,3 +115,89 @@ def test_is_spawned_child_session(pkg):
     assert ingest._is_spawned_child_session(conn, "foreground-x") is False
     assert ingest._is_spawned_child_session(conn, "") is False
     assert ingest._is_spawned_child_session(conn, None) is False
+
+
+def test_is_spawned_child_session_detects_codex_spawn_preamble(pkg):
+    ingest, db = pkg["ingest"], pkg["db"]
+    conn = db.get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO dialog_messages (uuid, source, project, session_id, "
+        "role, content, model, created_at) VALUES "
+        "(?, 'codex', 'ai-memory', ?, 'user', ?, 'gpt-5.5', ?)",
+        (
+            "codex-preamble-1",
+            "codex-rollout-session",
+            "You were spawned in the background by parent conversation abc. "
+            "Your own cid is child-xyz.",
+            now,
+        ),
+    )
+    conn.commit()
+    assert ingest._is_spawned_child_session(
+        conn, "codex-rollout-session",
+    ) is True
+
+
+def test_normalize_codex_spawned_session_ids_backfills_existing_rows(pkg):
+    ingest, db = pkg["ingest"], pkg["db"]
+    conn = db.get_db()
+    now = int(time.time())
+    rollout = "019eb5d0-6753-7c31-bce6-b887761090c6"
+    forced = "af389b3f-8e17-46b5-87f1-402769a74e58"
+    conn.execute(
+        "INSERT INTO dialog_messages (uuid, source, project, session_id, "
+        "role, content, model, created_at) VALUES "
+        "(?, 'codex', 'codex-2026', ?, 'user', ?, 'gpt-5.5', ?)",
+        (
+            "codex-agents-1",
+            rollout,
+            "# AGENTS.md instructions",
+            now,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO dialog_messages (uuid, source, project, session_id, "
+        "role, content, model, created_at) VALUES "
+        "(?, 'codex', 'codex-2026', ?, 'user', ?, 'gpt-5.5', ?)",
+        (
+            "codex-spawn-1",
+            rollout,
+            "You were spawned in the background by parent conversation abc. "
+            f"Your own cid is {forced} (forced via --session-id and "
+            "THREADKEEPER_FORCE_CID env).",
+            now + 1,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO dialectic_observations (dialog_uuid, user_quote, context, "
+        "source_cid, status, created_at) VALUES "
+        "('codex-spawn-1', 'q', '', ?, 'pending', ?)",
+        (rollout, now),
+    )
+    conn.execute(
+        "INSERT INTO extract_candidates (kind, source_uuid, source_cid, "
+        "content, rationale, status, created_at) VALUES "
+        "('verbatim', 'codex-spawn-1', ?, 'q', 'test', 'pending', ?)",
+        (rollout, now),
+    )
+    conn.commit()
+
+    changed = ingest._normalize_codex_spawned_session_ids(conn)
+    conn.commit()
+
+    assert changed == 2
+    assert {
+        r["session_id"]
+        for r in conn.execute(
+            "SELECT session_id FROM dialog_messages WHERE source='codex'"
+        )
+    } == {forced}
+    obs = conn.execute(
+        "SELECT source_cid FROM dialectic_observations"
+    ).fetchone()
+    assert obs["source_cid"] == forced
+    cand = conn.execute(
+        "SELECT source_cid FROM extract_candidates"
+    ).fetchone()
+    assert cand["source_cid"] == forced

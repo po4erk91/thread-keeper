@@ -22,10 +22,12 @@ threadkeeper/
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
+├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
 ├── process_health.py  orphan-detection (ppid + heartbeat)
+├── menubar_app.py     macOS MenuBarExtra app autoinstall/autolaunch
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
@@ -35,6 +37,7 @@ threadkeeper/
     ├── threads.py     open/note/close/idle, brief, context, search, …
     ├── peers.py       broadcast/whisper/ask/respond/wait/inbox/live_status
     ├── spawn.py       spawn/tournament/tasks/task_logs/spawn_status/budget
+    ├── agent_status.py autonomous loop status JSON/text for menu-bar app
     ├── skills.py      skill_manage/skill_record/skill_list/curator_run/review_thread
     ├── dialectic.py   claim/evidence/review/synthesis/supersede (tier + discount)
     ├── core_memory.py set/get/list/remove (Letta-tier RAM)
@@ -57,7 +60,13 @@ threadkeeper/
     ├── invariants.py, missed_spawns.py, consolidate.py, session.py, …
 ```
 
-Launch: `python -m threadkeeper.server`. Stdio-MCP, no ports.
+Launch: `python -m threadkeeper.server`. Stdio-MCP, no ports. On macOS, the
+entry point also best-effort installs and launches the loop-status menu-bar
+app before `mcp.run()`; all subprocess output is captured so stdout remains
+reserved for MCP frames. The menu-bar app polls `tk-agent-status --json`,
+receives loops sorted by active state (`running` → `ready` → `idle` → `off`),
+shows Probe backlog as due objective probes only, and posts macOS notifications
+for newly observed useful `recent_results`.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -92,6 +101,9 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
 6. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
    confidence; brief() renders medium+high grouped by domain.
+   `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
+   backlog, `claimed_at`/`claimed_by_task` means a validator child owns the
+   batch, and `processed` is terminal. Stale claims are requeued.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
@@ -144,16 +156,23 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) picks the oldest promoted +
-  unapplied `evolve_format` suggestion and spawns an `evolve_applier` child that
-  implements the brief-format change in `render_brief`, adds a golden brief test,
-  runs the full suite, and opens a **pull request** (never commits to main).
-  PR-gated: a human reviews + merges; on a successful PR the child calls
-  `evolve_mark_applied(evolve_id, pr_url)` → `applied=1`. Machine-wide
-  single-flight via the `"You are an EVOLVE APPLIER"` prompt prefix. The manual
-  `evolve_apply(evolve_id)` tool fires the same path regardless of the interval.
-  Distinct from `evolve_reviewer`, which only triages (promote/dismiss) and
-  never edits code.
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first looks for the latest
+  complete Curator `REPORT-*.md` that has not been marked applied, then falls
+  back to the oldest promoted + unapplied `evolve_format` suggestion. Curator
+  report apply uses the same `evolve_applier` child but only memory MCP tools
+  (`lesson_append`, `lesson_remove`, `skill_manage`) and records
+  `curator_report_applied`; no code edit or PR. Code-evolve apply still edits
+  `render_brief`, adds a golden brief test, runs the full suite, and opens a
+  **pull request** (never commits to main). The generated branch PR title uses
+  an allowed Conventional Commit type (`feat:`/`fix:` etc.) rather than the
+  internal `evolve:` label. PR-gated: a human reviews + merges; on a successful
+  PR the child calls `evolve_mark_applied(evolve_id, pr_url)` → `applied=1`.
+  Machine-wide single-flight via a short
+  `evolve-applier.lock` dispatch file lock plus the `"You are an EVOLVE
+  APPLIER"` prompt prefix. Manual tools `evolve_apply(evolve_id)` and
+  `evolve_apply_curator_report(report_path="")` fire the same paths regardless
+  of the interval. Distinct from `evolve_reviewer`, which only triages
+  (promote/dismiss) and never edits code.
 
 Autonomous learning daemons only run in foreground parent processes. Spawned
 children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
@@ -165,11 +184,20 @@ The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
 
 ## Spawn architecture
 
-`spawn(prompt, slim=True, role=…, visible=False, …)` brings up a child
-Claude session via a `claude -p <prompt>` subprocess. **Architectural principle:
-children are hands, not heads.** The parent (the only thread-keeper with full
-state and embeddings) plans and makes decisions; spawned children are
-light-executors. Trigger: **N≥2 modular independent units, ≥5 min each**.
+`spawn(prompt, slim=True, role=…, visible=False, …)` brings up a child agent
+session via the configured CLI adapter (`claude -p`, `codex exec`, etc.).
+**Architectural principle: children are hands, not heads.** The parent (the
+only thread-keeper with full state and embeddings) plans and makes decisions;
+spawned children are light-executors. Trigger: **N≥2 modular independent units,
+≥5 min each**.
+
+For Codex children, normal `permission_mode="auto"` spawns use
+`codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
+`permission_mode="bypassPermissions"`, which maps to Codex's
+`--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
+for branch/commit/PR creation. All spawned children receive the parent's
+`THREADKEEPER_DB`, task log dir, project dir, forced cid, and write-origin env
+so their direct Python/MCP calls hit the same store as the parent.
 
 ### Slim vs full child
 
@@ -254,9 +282,11 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
 5. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
-   allowed_tools = skill_manage + skill_list + mark_skill_materialized.
+   allowed_tools = lesson_append + lesson_list + lesson_get + skill_manage
+   + skill_list + mark_skill_materialized.
 6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
-   calls skill_manage. Otherwise prints `SKIP: <reason>`.
+   first checks existing lessons/skills, then prefers patching or creating a
+   broad skill. `lesson_append(source='shadow')` is the compact fallback.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
 8. Write events.kind='shadow_review_pass' with new high_water_ts.
@@ -265,7 +295,10 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 Dedupe — via a cursor in `events.target` (timestamp of the last evaluated
 message). Idempotent: a repeated tick will not re-evaluate what it has already
 seen. SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
-false positives (false negatives are "cheaper").
+false positives (false negatives are "cheaper"). Shadow-origin lessons have
+a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
+or oversized writes are rejected so the child patches existing memory instead
+of growing the flat lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`.
@@ -278,8 +311,11 @@ subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
   `create | edit | patch | write_file | remove_file | delete`.
-  Frontmatter validator: `name` regex + ≤64 chars, `description` ≤1024 chars,
-  total ≤100k chars. `write_file/remove_file` are restricted to subfolders
+  Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
+  `description` ≤1024 chars, total ≤100k chars. Generated frontmatter writes
+  `name` and `description` as quoted YAML scalars so colon-containing
+  descriptions load in Codex and other strict parsers. `write_file/remove_file`
+  are restricted to subfolders
   `references|templates|scripts|assets` with path-traversal blocking.
   `patch` revalidates the result before writing. Every successful write
   mirrors the whole skill directory into all configured roots:
@@ -527,7 +563,7 @@ backend in `embed_backend` (NULL = legacy). The two backends are not
 numerically identical, so after a switch run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (92 total)
+## MCP tools (107 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations.
@@ -547,14 +583,15 @@ auto-generates JSON-Schema from annotations.
 | concepts | 3 | register_concept, list_concepts, expand_concept |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 3 | lesson_append, lesson_list, lesson_get |
+| lessons | 4 | lesson_append, lesson_list, lesson_get, lesson_remove |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
-| evolve_applier | 3 | evolve_apply, evolve_mark_applied, evolve_apply_status |
+| evolve_applier | 5 | evolve_apply, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
+| agent_status | 1 | agent_status |
 | memory_guard | 2 | memory_guard_status, memory_guard_check |
 | correlation | 2 | tag_signal, task_thread |
 | consolidate | 1 | consolidate |
@@ -610,6 +647,7 @@ having to add tests.
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
+| `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log above this server RSS |
 | `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |
@@ -624,6 +662,8 @@ having to add tests.
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
+| `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |
 | `THREADKEEPER_WRITE_ORIGIN` | foreground | provenance tag for curator |
 | `THREADKEEPER_SPAWNED_CHILD` | off | spawn-internal marker; disables autonomous child daemons |

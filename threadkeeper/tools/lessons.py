@@ -11,6 +11,10 @@
   lesson_get(slug)
     Return the full body of a single lesson by slug.
 
+  lesson_remove(slug, force=False)
+    Remove one lesson section by slug. Refuses foreground/user lessons unless
+    force=True, so autonomous cleanup cannot delete protected memory.
+
 The learning loop (review_thread + shadow_review) writes here instead
 of (or in addition to) ~/.claude/skills/*/SKILL.md so non-Claude CLIs
 share the procedural-knowledge surface. Each CLI's per-user
@@ -20,17 +24,70 @@ block written by `_setup.py`.
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Optional
 
 from .._mcp import mcp
+from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
 from ..lessons import (
+    _slugify,
     append_lesson,
     iter_lessons,
     count_lessons,
     get_path,
+    remove_lesson,
 )
+
+
+SHADOW_LESSON_MAX_WORDS = 450
+SHADOW_DUPLICATE_SLUG_THRESHOLD = 0.70
+_LESSON_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_LESSON_SLUG_STOPWORDS = {
+    "a", "an", "and", "as", "before", "for", "in", "is", "not", "of",
+    "on", "or", "the", "to", "via", "with",
+}
+
+
+def _lesson_slug_tokens(slug: str) -> set[str]:
+    return {
+        t for t in _LESSON_TOKEN_RE.findall(slug.lower())
+        if len(t) > 2 and t not in _LESSON_SLUG_STOPWORDS
+    }
+
+
+def _similar_lesson_slug(title: str) -> tuple[str, float] | None:
+    """Return an existing lesson whose slug is too close to title.
+
+    This is intentionally cheap and conservative. The goal is not semantic
+    clustering; it catches the common Shadow Review failure mode where a
+    later child appends a slightly reworded slug for the same lesson instead
+    of replacing or patching the original one.
+    """
+    candidate_slug = _slugify(title)
+    candidate_tokens = _lesson_slug_tokens(candidate_slug)
+    if len(candidate_tokens) < 3:
+        return None
+    best_slug = ""
+    best_score = 0.0
+    for item in iter_lessons():
+        slug = item["slug"]
+        if slug == candidate_slug:
+            continue
+        tokens = _lesson_slug_tokens(slug)
+        if len(tokens) < 3:
+            continue
+        overlap = candidate_tokens & tokens
+        if len(overlap) < 3:
+            continue
+        score = len(overlap) / len(candidate_tokens | tokens)
+        if score > best_score:
+            best_slug = slug
+            best_score = score
+    if best_slug and best_score >= SHADOW_DUPLICATE_SLUG_THRESHOLD:
+        return best_slug, best_score
+    return None
 
 
 @mcp.tool()
@@ -61,6 +118,22 @@ def lesson_append(
         return "ERR empty_title"
     if not body.strip():
         return "ERR empty_body"
+    if source.strip().lower() == "shadow":
+        words = len(body.split())
+        if words > SHADOW_LESSON_MAX_WORDS:
+            return (
+                f"ERR shadow_lesson_too_long words={words} "
+                f"max={SHADOW_LESSON_MAX_WORDS}; write a compact rule or "
+                "patch/write_file an existing skill instead"
+            )
+        duplicate = _similar_lesson_slug(title)
+        if duplicate:
+            slug, score = duplicate
+            return (
+                f"ERR likely_duplicate_lesson slug={slug} "
+                f"score={score:.2f}; use lesson_get/skill_manage to patch "
+                "existing memory instead"
+            )
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
@@ -108,3 +181,37 @@ def lesson_get(slug: str) -> str:
         if it["slug"] == slug:
             return it["body"]
     return f"ERR not_found slug={slug}"
+
+
+@mcp.tool()
+def lesson_remove(slug: str, force: bool = False) -> str:
+    """Remove one materialized lesson section by slug.
+
+    Refuses `source=foreground` / `source=user` lessons unless `force=True`.
+    Curator/evolve cleanup should never pass force; it exists only for an
+    explicit human-initiated correction.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    slug = _slugify(slug.strip())
+    if not slug:
+        return "ERR empty_slug"
+    found = None
+    for it in iter_lessons():
+        if it["slug"] == slug:
+            found = it
+            break
+    if not found:
+        return f"ERR not_found slug={slug}"
+    source = (found.get("source") or "").strip().lower()
+    if source in {"foreground", "user"} and not force:
+        return f"ERR protected_lesson slug={slug} source={source}"
+    if not remove_lesson(slug):
+        return f"ERR remove_failed slug={slug}"
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'lesson_remove', ?, ?, strftime('%s','now'))",
+        (identity._session_id or "", slug, f"source={source or '?'}"),
+    )
+    conn.commit()
+    return f"ok removed={slug}"

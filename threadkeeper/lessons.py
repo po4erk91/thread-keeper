@@ -132,6 +132,26 @@ def append_lesson(
     return slug
 
 
+def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:
+    """Remove one lesson section by exact slug. Returns True when removed."""
+    fp = path or _LESSONS_PATH
+    if not fp.exists():
+        return False
+    body_existing = fp.read_text()
+    target_begin = f"<!-- LESSON:BEGIN slug={slug} "
+    target_end = f"<!-- LESSON:END slug={slug} -->"
+    if target_begin not in body_existing or target_end not in body_existing:
+        return False
+    head, _, rest = body_existing.partition(target_begin)
+    end_idx = rest.find(target_end)
+    if end_idx < 0:
+        return False
+    tail = rest[end_idx + len(target_end):]
+    new_body = head.rstrip() + "\n\n" + tail.lstrip("\n")
+    fp.write_text(new_body.rstrip() + "\n")
+    return True
+
+
 def iter_lessons(path: Optional[Path] = None) -> Iterator[dict]:
     """Yield every lesson section as a dict with keys:
        slug, body (raw markdown between BEGIN/END), ts, source.

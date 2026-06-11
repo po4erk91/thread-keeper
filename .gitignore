@@ -57,3 +57,4 @@ htmlcov/
 tests/__pycache__/
 /test-results/
 /coverage/
+/outputs

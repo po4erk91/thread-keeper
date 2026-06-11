@@ -18,6 +18,7 @@ from ..dialectic_validator import (
 )
 from ..config import (
     DIALECTIC_MINE_INTERVAL_S,
+    DIALECTIC_VALIDATE_BATCH_SIZE,
     DIALECTIC_VALIDATE_INTERVAL_S,
     DIALECTIC_VALIDATE_MIN,
 )
@@ -39,10 +40,12 @@ def dialectic_validate_run(force: bool = True, dry_run: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     if dry_run:
-        _, n = _collect_pending(conn)
-        below = n < DIALECTIC_VALIDATE_MIN
+        _, batch_n, total_n, _ = _collect_pending(conn)
+        below = total_n < DIALECTIC_VALIDATE_MIN
         return (
-            f"dry_run: pending={n} min={DIALECTIC_VALIDATE_MIN} "
+            f"dry_run: pending={total_n} batch={batch_n} "
+            f"batch_size={DIALECTIC_VALIDATE_BATCH_SIZE} "
+            f"min={DIALECTIC_VALIDATE_MIN} "
             f"would_spawn={'no (below_threshold)' if below else 'yes'}"
         )
     return run_validate_pass(force=force)
@@ -88,14 +91,21 @@ def dialectic_validate_status() -> str:
     now = int(time.time())
     try:
         pending = conn.execute(
-            "SELECT COUNT(*) FROM dialectic_observations WHERE status='pending'"
+            "SELECT COUNT(*) FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL"
+        ).fetchone()[0]
+        claimed = conn.execute(
+            "SELECT COUNT(*) FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NOT NULL"
         ).fetchone()[0]
     except Exception:
-        pending = "?"
+        pending = claimed = "?"
     floor = _last_validate_ts(conn)
     lines = [
         f"interval_s={DIALECTIC_VALIDATE_INTERVAL_S:.0f} "
-        f"min={DIALECTIC_VALIDATE_MIN} pending_now={pending}",
+        f"min={DIALECTIC_VALIDATE_MIN} "
+        f"batch_size={DIALECTIC_VALIDATE_BATCH_SIZE} "
+        f"pending_now={pending} claimed_now={claimed}",
         f"cursor_ts={floor}" if floor else "cursor_ts=0 (no prior pass)",
         "",
         "recent passes (newest first):",

@@ -143,7 +143,10 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     # observer + close_thread auto-reviewer + curator) — otherwise their
     # promp text becomes extract candidates, the same self-pollution
     # we fixed in shadow_review._collect_window.
-    from ..shadow_review import _INTERNAL_PROMPT_PREFIXES
+    from ..shadow_review import (
+        _INTERNAL_PROMPT_PREFIXES,
+        _SPAWNED_SESSION_MARKERS,
+    )
     # Session-level filter — drop entire sessions started by our own
     # spawn prompts.
     sess_prefix_clauses = " OR ".join(
@@ -152,6 +155,10 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     sess_prefix_params: list = []
     for p in _INTERNAL_PROMPT_PREFIXES:
         sess_prefix_params.extend([len(p), p])
+    spawned_marker_clauses = " OR ".join(
+        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
+    )
+    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
     # Message-level filter — drop individual noise messages (compaction
     # summaries, SKILL injections, subagent prompts) inside otherwise
     # valid sessions. SQL LIKE with '%' suffix on user-controlled prefix
@@ -171,19 +178,25 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     rows = conn.execute(
         "SELECT uuid, role, content, session_id, created_at, embedding "
         "FROM dialog_messages WHERE created_at >= ? "
+        "AND coalesce(project, '') != 'subagents' "
         "AND role IN ('user','assistant') "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
         f"AND {msg_noise_clauses} "
         "AND length(content) >= 30 "
         "AND session_id NOT IN ("
         "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE role = 'user' AND ({sess_prefix_clauses})"
+        f"  WHERE session_id IS NOT NULL AND role = 'user' AND ({sess_prefix_clauses})"
+        ") "
+        "AND session_id NOT IN ("
+        "  SELECT DISTINCT session_id FROM dialog_messages "
+        f"  WHERE session_id IS NOT NULL AND role = 'user' AND ({spawned_marker_clauses})"
         ") "
         "AND session_id NOT IN ("
         "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ") "
         "ORDER BY created_at ASC LIMIT ?",
         (cutoff, *msg_noise_params, *sess_prefix_params,
+         *spawned_marker_params,
          max(10, int(max_messages))),
     ).fetchall()
     if not rows:

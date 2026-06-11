@@ -78,20 +78,28 @@ NOT class-level (skip):
 PROCEDURE
 1. Read the dialog window below.
 2. If nothing class-level emerges → output exactly `SKIP: <one-line reason>` and stop.
-3. If class-level learning is present:
-   a. PRIMARY: call `mcp__thread-keeper__lesson_append(title, body, summary, source='shadow')`
-      to write into ~/.threadkeeper/lessons.md (shared by every CLI).
-      - title: lowercase-hyphens slug describing a CLASS of task, not the incident
-      - body: markdown rationale + procedure
-      - summary: optional one-line TL;DR
-   b. OPTIONAL: also call `mcp__thread-keeper__skill_manage(...)` to mirror
-      SKILL.md into every configured skills root when frontmatter
-      auto-triggering adds value beyond the lesson alone.
-   c. Output `MATERIALIZED: <slug>` on success.
+3. If class-level learning is present, run the duplicate gate BEFORE writing:
+   a. Call `mcp__thread-keeper__lesson_list(k=80)` and
+      `mcp__thread-keeper__skill_list()`.
+   b. If a close slug/skill already exists, read it with `lesson_get` when
+      needed and PATCH the existing skill, or reuse the exact existing
+      lesson title so lesson_append replaces in-place. Do not append a
+      second overlapping lesson.
+   c. Only create new memory if no existing lesson/skill covers the rule.
+4. Materialization preference order:
+   a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an
+      existing auto-triggered skill covers the rule.
+   b. NEXT: `skill_manage(action='create')` for a new broad umbrella skill.
+   c. FALLBACK: `lesson_append(title, body, summary, source='shadow')`.
+      The lesson body must be compact: target <220 words, hard cap 450.
+      For larger detail, write a skill reference file instead.
+   d. Output `MATERIALIZED: <slug-or-skill>` on success.
 
 CONSTRAINTS
 - Be conservative. False negatives (skipping) cost nothing; false
   positives pollute the skill store.
+- Patch existing memory before creating new memory. Near-duplicate lessons
+  are pollution, even when each individual lesson is true.
 - Do NOT open/close memory threads. Your sole output is a skill write
   or SKIP.
 - Do NOT cite internal IDs in human-readable output (no T-codes, cids,
@@ -210,6 +218,14 @@ _INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
     "You are a CANDIDATE REVIEWER",
 )
 
+# Codex spawned children do not reliably use THREADKEEPER_FORCE_CID as the
+# transcript session_id, so tasks.spawned_cid is not enough. The spawn tool
+# injects this exact preamble into every child; if it appears anywhere in a
+# user turn, the whole session is agent work, not foreground user dialog.
+_SPAWNED_SESSION_MARKERS: tuple[str, ...] = (
+    "You were spawned in the background by parent conversation",
+)
+
 
 # Lines starting with these markers carry no semantic signal for
 # class-level learning — they're verbose adapter-side renderings of
@@ -273,16 +289,28 @@ def _collect_window(conn: sqlite3.Connection,
     prefix_params: list = []
     for p in _INTERNAL_PROMPT_PREFIXES:
         prefix_params.extend([len(p), p])
+    spawned_marker_clauses = " OR ".join(
+        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
+    )
+    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
     rows = conn.execute(
         "SELECT role, content, created_at, session_id "
         "FROM dialog_messages "
         "WHERE created_at > ? "
+        "  AND coalesce(project, '') != 'subagents' "
         "  AND session_id NOT IN ("
         "    SELECT DISTINCT session_id FROM dialog_messages "
-        f"    WHERE role = 'user' AND ({prefix_clauses})"
+        f"    WHERE session_id IS NOT NULL AND role = 'user' AND ({prefix_clauses})"
+        "  ) "
+        "  AND session_id NOT IN ("
+        "    SELECT DISTINCT session_id FROM dialog_messages "
+        f"    WHERE session_id IS NOT NULL AND role = 'user' AND ({spawned_marker_clauses})"
+        "  ) "
+        "  AND session_id NOT IN ("
+        "    SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         "  ) "
         "ORDER BY created_at ASC",
-        (cutoff, *prefix_params),
+        (cutoff, *prefix_params, *spawned_marker_params),
     ).fetchall()
     if not rows:
         return ("", cutoff, 0)
@@ -357,6 +385,7 @@ def run_shadow_pass(force: bool = False) -> str:
             extra_allowed_tools=(
                 "mcp__thread-keeper__lesson_append,"
                 "mcp__thread-keeper__lesson_list,"
+                "mcp__thread-keeper__lesson_get,"
                 "mcp__thread-keeper__skill_manage,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__mark_skill_materialized,"
