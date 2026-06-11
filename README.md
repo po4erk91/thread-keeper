@@ -324,7 +324,10 @@ Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
 foreground-authored) skills off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
-`accept_candidate()` manually.
+`accept_candidate()` manually. The loop is machine-wide single-flight:
+while one reviewer child is running, other foreground servers/ticks report
+`candidate_review_running` instead of spawning another child for the same
+queue.
 
 #### 5. Autonomous Curator
 

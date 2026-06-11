@@ -7,6 +7,18 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.9.1 — 2026-06-11
+
+### Fixed
+
+- **Candidate reviewer single-flight.** Multiple foreground MCP server
+  processes could see the same pending extract queue and each spawn a
+  `candidate_reviewer` child before spawn-budget telemetry caught up. The loop
+  now uses a machine-wide running-child check plus a short
+  `candidate-reviewer.lock` dispatch lock, so duplicate reviewers report
+  `candidate_review_running` instead of consuming several GB of duplicate Codex
+  child RSS.
+
 ## v0.9.0 — 2026-06-11
 
 ### Added

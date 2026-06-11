@@ -7,6 +7,7 @@ fork.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -203,6 +204,41 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "accept_candidate" in allowed
     assert "reject_candidate" in allowed
     assert "Bash" not in allowed
+
+
+def test_single_flight_when_reviewer_child_running(tmp_path, monkeypatch):
+    """Candidate review consumes one global queue; don't spawn duplicates."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="3")
+    conn = pkg["db"].get_db()
+    for i in range(4):
+        _seed_pending(conn, "verbatim", f"candidate {i}", age_s=60 + i)
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, pid, parent_cid, spawned_cid, cwd, prompt, started_at) "
+        "VALUES ('tk_running_review', ?, 'p', 'c', '/x', ?, ?)",
+        (
+            os.getpid(),
+            "You are a CANDIDATE REVIEWER for thread-keeper's extract queue.",
+            int(time.time()) - 30,
+        ),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_spawn(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("spawn should not run while reviewer is active")
+
+    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+
+    assert out == "candidate_review_running n=1 (single-flight)"
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind='candidate_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert "candidate_review_running n=1" in row["summary"]
 
 
 # ──────────────────────────────────────────────────────────────────────

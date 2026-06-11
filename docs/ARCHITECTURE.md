@@ -155,6 +155,11 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   if the file was changed outside `skill_manage`.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
+- **candidate_reviewer** — once per `CANDIDATE_REVIEW_INTERVAL_S` (default
+  0 = off) reviews pending `extract_candidates` through one slim child. The
+  queue is machine-wide single-flight: running-task detection plus
+  `candidate-reviewer.lock` prevents multiple foreground MCP servers from
+  spawning duplicate reviewers for the same pending candidates.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first looks for the latest
   complete Curator `REPORT-*.md` that has not been marked applied, then falls

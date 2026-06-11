@@ -35,6 +35,7 @@ Hardstops:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import sqlite3
 import threading
@@ -43,6 +44,7 @@ import time
 from .config import (
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
+    DB_PATH,
 )
 from .db import get_db
 from . import identity
@@ -51,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 _started = False
 
+CANDIDATE_REVIEW_PROMPT_PREFIX = "You are a CANDIDATE REVIEWER"
 
 CANDIDATE_REVIEW_PROMPT = """\
 You are a CANDIDATE REVIEWER for thread-keeper's extract queue.
@@ -247,6 +250,67 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     return ("\n".join(parts), len(rows))
 
 
+def _running_reviewer_children(conn: sqlite3.Connection) -> list[str]:
+    """Running candidate-review task ids, reaping dead rows.
+
+    Candidate review consumes one global queue. Two reviewers launched from
+    different foreground MCP servers will read the same candidates and burn
+    memory doing duplicate work, so this loop is machine-wide single-flight.
+    """
+    from .helpers import alive
+    try:
+        rows = conn.execute(
+            "SELECT id, pid FROM tasks WHERE ended_at IS NULL "
+            "AND prompt LIKE ?",
+            (CANDIDATE_REVIEW_PROMPT_PREFIX + "%",),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now = int(time.time())
+    running: list[str] = []
+    touched = False
+    for r in rows:
+        pid = int(r["pid"] or 0)
+        if pid > 0 and not alive(pid):
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            touched = True
+            continue
+        running.append(r["id"])
+    if touched:
+        conn.commit()
+    return running
+
+
+@contextmanager
+def _review_spawn_lock():
+    """Cross-process guard for check-running-then-spawn.
+
+    The tasks-table running check is not atomic across foreground MCP
+    processes. A short file lock prevents two daemon ticks from both observing
+    no reviewer and spawning duplicate children for the same pending queue.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
+        yield True
+        return
+    lock_path = DB_PATH.parent / "candidate-reviewer.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
@@ -263,53 +327,63 @@ def run_review_pass(force: bool = False) -> str:
     """
     if CANDIDATE_REVIEW_INTERVAL_S <= 0 and not force:
         return "disabled"
-    conn = get_db()
-    inventory, n_pending = _collect_pending(conn)
-    now = int(time.time())
-    if n_pending < CANDIDATE_REVIEW_MIN:
+    with _review_spawn_lock() as locked:
+        if not locked:
+            return "candidate_review_running n=1 (single-flight lock)"
+
+        conn = get_db()
+        now = int(time.time())
+        running = _running_reviewer_children(conn)
+        if running:
+            out = f"candidate_review_running n={len(running)} (single-flight)"
+            _record_review_pass(conn, now, out)
+            return out
+
+        inventory, n_pending = _collect_pending(conn)
+        if n_pending < CANDIDATE_REVIEW_MIN:
+            _record_review_pass(
+                conn, now,
+                f"below_threshold pending={n_pending} "
+                f"min={CANDIDATE_REVIEW_MIN}",
+            )
+            return f"below_threshold n={n_pending}"
+
+        active_skills = _active_skills_dump(conn)
+        full_prompt = (
+            CANDIDATE_REVIEW_PROMPT
+            + active_skills
+            + inventory
+        )
+
+        from .tools.spawn import spawn  # type: ignore
+        try:
+            result = spawn(
+                prompt=full_prompt,
+                visible=False,
+                capture_output=True,
+                permission_mode="auto",
+                role="candidate_reviewer",
+                write_origin="candidate_review",
+                slim=True,
+                extra_allowed_tools=(
+                    "mcp__thread-keeper__skill_manage,"
+                    "mcp__thread-keeper__skill_list,"
+                    "mcp__thread-keeper__accept_candidate,"
+                    "mcp__thread-keeper__reject_candidate,"
+                    "mcp__thread-keeper__lesson_append,"
+                    "mcp__thread-keeper__mark_skill_materialized,"
+                    "Read,Write"
+                ),
+            )
+        except Exception as e:
+            _record_review_pass(conn, now, f"spawn_error: {e}")
+            return f"spawn_error: {e}"
+
         _record_review_pass(
             conn, now,
-            f"below_threshold pending={n_pending} "
-            f"min={CANDIDATE_REVIEW_MIN}",
+            f"spawned pending={n_pending} :: {str(result)[:140]}",
         )
-        return f"below_threshold n={n_pending}"
-
-    active_skills = _active_skills_dump(conn)
-    full_prompt = (
-        CANDIDATE_REVIEW_PROMPT
-        + active_skills
-        + inventory
-    )
-
-    from .tools.spawn import spawn  # type: ignore
-    try:
-        result = spawn(
-            prompt=full_prompt,
-            visible=False,
-            capture_output=True,
-            permission_mode="auto",
-            role="candidate_reviewer",
-            write_origin="candidate_review",
-            slim=True,
-            extra_allowed_tools=(
-                "mcp__thread-keeper__skill_manage,"
-                "mcp__thread-keeper__skill_list,"
-                "mcp__thread-keeper__accept_candidate,"
-                "mcp__thread-keeper__reject_candidate,"
-                "mcp__thread-keeper__lesson_append,"
-                "mcp__thread-keeper__mark_skill_materialized,"
-                "Read,Write"
-            ),
-        )
-    except Exception as e:
-        _record_review_pass(conn, now, f"spawn_error: {e}")
-        return f"spawn_error: {e}"
-
-    _record_review_pass(
-        conn, now,
-        f"spawned pending={n_pending} :: {str(result)[:140]}",
-    )
-    return str(result)
+        return str(result)
 
 
 def _serve_loop() -> None:
