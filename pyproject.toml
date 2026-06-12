@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.9.1"
+version = "0.9.2"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini, Copilot, VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -77,6 +77,15 @@ tk-agent-status = "threadkeeper.agent_status:main"
 [tool.setuptools.packages.find]
 include = ["threadkeeper*"]
 exclude = ["tests*", "scripts*"]
+
+[tool.setuptools.package-data]
+threadkeeper = [
+    "assets/macos-agent-status/Info.plist",
+    "assets/macos-agent-status/README.md",
+    "assets/macos-agent-status/ThreadKeeperAgentStatus.swift",
+    "assets/macos-agent-status/build.sh",
+    "assets/macos-agent-status/install.sh",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

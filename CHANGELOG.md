@@ -7,6 +7,19 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.9.2 — 2026-06-12
+
+### Fixed
+
+- **macOS menu-bar widget packaging.** v0.9.0/v0.9.1 shipped the Python
+  autoinstall/autolaunch hook, but the PyPI wheel and sdist omitted the Swift
+  app sources, so installed packages logged `source_missing` and could not
+  build or open the widget. The widget source now ships as package data under
+  `threadkeeper/assets/macos-agent-status/`; autoinstall copies it to a scratch
+  build directory under `~/.threadkeeper/tasks/` and runs `build.sh` through
+  `/bin/bash`, so executable bits and read-only `site-packages` installs do not
+  block startup.
+
 ## v0.9.1 — 2026-06-11
 
 ### Fixed

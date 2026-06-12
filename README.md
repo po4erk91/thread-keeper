@@ -170,18 +170,20 @@ tk-agent-status --json
 `apps/macos-agent-status/` contains a small macOS menu-bar app that polls this
 command every 5 seconds and shows every autonomous learning loop: enabled/off,
 running/idle/ready, last pass, backlog, and active child RSS when that loop has
-spawned a worker. Active loops are sorted first (`running`, then `ready`), so
-background work stays at the top of the panel. The app also requests macOS
-notification permission and sends a notification when a newly completed
-autonomous child task produces a useful result in `recent_results`; the first
-poll only marks existing results as seen, so old completions do not spam
-notifications. Probe backlog is due objective probes only, not every registered
-probe, so a healthy cooldown shows `0 due probes` instead of looking stuck. On
-macOS, `python -m threadkeeper.server` automatically installs and launches it
-on MCP startup. Set `THREADKEEPER_MENUBAR_AUTO_LAUNCH=0` to disable that
-behavior.
+spawned a worker. PyPI wheels and sdists also bundle the same Swift source under
+`threadkeeper/assets/macos-agent-status/`, so a normal `pipx`/`uv tool` install
+does not need a git checkout for the widget to build. Active loops are sorted
+first (`running`, then `ready`), so background work stays at the top of the
+panel. The app also requests macOS notification permission and sends a
+notification when a newly completed autonomous child task produces a useful
+result in `recent_results`; the first poll only marks existing results as seen,
+so old completions do not spam notifications. Probe backlog is due objective
+probes only, not every registered probe, so a healthy cooldown shows `0 due
+probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
+automatically installs and launches it on MCP startup. Set
+`THREADKEEPER_MENUBAR_AUTO_LAUNCH=0` to disable that behavior.
 
-Manual fallback:
+Manual fallback from a source checkout:
 
 ```sh
 cd apps/macos-agent-status

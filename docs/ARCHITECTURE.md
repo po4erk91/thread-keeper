@@ -28,6 +28,8 @@ threadkeeper/
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
 ├── process_health.py  orphan-detection (ppid + heartbeat)
 ├── menubar_app.py     macOS MenuBarExtra app autoinstall/autolaunch
+├── assets/macos-agent-status/
+│                     Swift MenuBarExtra source bundled in wheel/sdist
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
@@ -63,7 +65,11 @@ threadkeeper/
 Launch: `python -m threadkeeper.server`. Stdio-MCP, no ports. On macOS, the
 entry point also best-effort installs and launches the loop-status menu-bar
 app before `mcp.run()`; all subprocess output is captured so stdout remains
-reserved for MCP frames. The menu-bar app polls `tk-agent-status --json`,
+reserved for MCP frames. Source checkouts keep the Swift app at
+`apps/macos-agent-status/`; packaged installs use the bundled copy under
+`threadkeeper/assets/macos-agent-status/` and build from a scratch directory
+under `~/.threadkeeper/tasks/`, so the widget does not depend on a repo clone or
+writes inside `site-packages`. The menu-bar app polls `tk-agent-status --json`,
 receives loops sorted by active state (`running` → `ready` → `idle` → `off`),
 shows Probe backlog as due objective probes only, and posts macOS notifications
 for newly observed useful `recent_results`.

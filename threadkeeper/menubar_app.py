@@ -32,8 +32,29 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _source_dir() -> Path:
+def _package_source_dir() -> Path:
+    return Path(__file__).resolve().parent / "assets" / "macos-agent-status"
+
+
+def _dev_source_dir() -> Path:
     return _repo_root() / "apps" / "macos-agent-status"
+
+
+def _source_dir() -> Path:
+    dev = _dev_source_dir()
+    if dev.exists():
+        return dev
+    return _package_source_dir()
+
+
+def _prepare_build_source(src: Path) -> Path:
+    build_src = TASK_LOG_DIR / "menubar-build" / "source"
+    if build_src.exists():
+        shutil.rmtree(build_src)
+    build_src.mkdir(parents=True, exist_ok=True)
+    for name in ("ThreadKeeperAgentStatus.swift", "Info.plist", "build.sh"):
+        shutil.copy2(src / name, build_src / name)
+    return build_src
 
 
 def _installed_app() -> Path:
@@ -128,7 +149,12 @@ def _install_app(src: Path, app: Path) -> bool:
         _log(f"build_script_missing path={build}")
         return False
     try:
-        r = _run([str(build)], timeout=120, cwd=src)
+        build_src = _prepare_build_source(src)
+    except OSError as e:
+        _log(f"build_source_prepare_failed err={e}")
+        return False
+    try:
+        r = _run(["/bin/bash", str(build_src / "build.sh")], timeout=120, cwd=build_src)
     except (OSError, subprocess.SubprocessError) as e:
         _log(f"build_failed err={e}")
         return False
