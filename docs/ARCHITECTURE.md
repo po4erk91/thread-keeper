@@ -27,10 +27,11 @@ threadkeeper/
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
 ├── process_health.py  orphan-detection (ppid + heartbeat)
-├── menubar_app.py     macOS MenuBarExtra app autoinstall/autolaunch
+├── menubar_app.py     macOS NSStatusItem app autoinstall/autolaunch
 ├── assets/macos-agent-status/
-│                     Swift MenuBarExtra source bundled in wheel/sdist
+│                     Swift NSStatusItem source bundled in wheel/sdist
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
+├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
@@ -69,10 +70,21 @@ reserved for MCP frames. Source checkouts keep the Swift app at
 `apps/macos-agent-status/`; packaged installs use the bundled copy under
 `threadkeeper/assets/macos-agent-status/` and build from a scratch directory
 under `~/.threadkeeper/tasks/`, so the widget does not depend on a repo clone or
-writes inside `site-packages`. The menu-bar app polls `tk-agent-status --json`,
-receives loops sorted by active state (`running` → `ready` → `idle` → `off`),
-shows Probe backlog as due objective probes only, and posts macOS notifications
-for newly observed useful `recent_results`.
+writes inside `site-packages`. The menu-bar app uses AppKit `NSStatusItem` for
+an icon-only status-bar item and a SwiftUI popover for the panel. It polls
+`tk-agent-status --json`, receives loops sorted by active state (`running` →
+`ready` → `idle` → `off`), shows Probe backlog as due objective probes only,
+updates the idle chip / running gears directly on the status button, keeps loop
+counts in the popover/tooltip, and posts macOS notifications for newly observed
+useful `recent_results`.
+Foreground parent MCP sessions also start `auto_update.py` when
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S>0` (86400 seconds by default). Each due pass
+is single-flight across live servers, records `events.kind='auto_update_pass'`,
+and applies the install-appropriate update path: clean git checkouts fetch and
+fast-forward their tracked branch, then reinstall editable; package installs run
+`pip install --upgrade` in the current interpreter environment. Successful
+updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
+default true) so the host reconnects to the new code.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -544,6 +556,10 @@ Tools:
   pass `dry_run=False` to SIGTERM processes over the hard memory limit.
 - `memory_guard_reclaim(scope='self')` — immediately unload local
   embedding/caches; with `scope='all'` also queues peer trim requests.
+- `agent_memory_cleanup(dry_run=False)` / `tk-agent-status --cleanup-memory` —
+  run the unified safe cleanup path: request server cache trims, apply the
+  memory guard, and remove orphan MCP servers without killing active spawned
+  child agents.
 
 The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 `mcp.run()`) is closed; daemon tests disable background loops explicitly.
@@ -654,11 +670,15 @@ having to add tests.
 | `THREADKEEPER_AUTO_REVIEW` | off | enable auto-review on close_thread |
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
+| `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after applying an update |
+| `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
+| `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log above this server RSS |
 | `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |

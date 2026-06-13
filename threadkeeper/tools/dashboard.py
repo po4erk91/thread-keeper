@@ -73,6 +73,7 @@ _LOOP_KINDS = (
     ("curator", "curator_pass"),
     ("probe", "probe_pass"),
     ("evolve", "evolve_review_pass"),
+    ("auto_update", "auto_update_pass"),
 )
 
 # Outcome event kinds the loops are supposed to PRODUCE.

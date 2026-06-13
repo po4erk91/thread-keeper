@@ -31,6 +31,8 @@ def test_defaults_match(monkeypatch):
     assert c.SKILL_NUDGE_INTERVAL == 10
     assert c.BRIEF_LEAN is False
     assert c.SPAWN_BUDGET_MB == 3072
+    assert c.AUTO_UPDATE_INTERVAL_S == 86400
+    assert c.AUTO_UPDATE_RESTART is True
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
 
 
@@ -70,6 +72,9 @@ def test_all_exported_names_present(monkeypatch):
     c = _fresh_config(monkeypatch)
     required = [
         "AUTO_REVIEW_ENABLED",
+        "AUTO_UPDATE_INTERVAL_S",
+        "AUTO_UPDATE_RESTART",
+        "AUTO_UPDATE_TIMEOUT_S",
         "BACKGROUND_DAEMONS_ALLOWED",
         "BRIEF_LEAN",
         "BRIEF_NO_THREAD_NUDGE",

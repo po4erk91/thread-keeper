@@ -53,6 +53,11 @@ PLIST
 
 launchctl unload "$agent_plist" >/dev/null 2>&1 || true
 launchctl load "$agent_plist"
+pkill -x ThreadKeeperAgentStatus >/dev/null 2>&1 || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pgrep -x ThreadKeeperAgentStatus >/dev/null 2>&1 || break
+  sleep 0.2
+done
 open "$installed_app"
 
 echo "$installed_app"

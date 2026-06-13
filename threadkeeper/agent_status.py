@@ -68,6 +68,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "Scans recent dialog for durable lessons, workflow corrections, and "
         "skill materialization opportunities."
     ),
+    "auto_update": (
+        "Checks the installed thread-keeper package or git checkout and applies "
+        "safe daily updates when a newer version is available."
+    ),
 }
 
 _LOOP_DEFS: tuple[dict[str, Any], ...] = (
@@ -212,6 +216,14 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "work": "Closes stale threads so review/learning can fire",
         "backlog_sql": "SELECT COUNT(*) FROM threads WHERE state IN ('active','idle')",
         "backlog_label": "open or idle threads",
+    },
+    {
+        "id": "auto_update",
+        "name": "Auto update",
+        "event": "auto_update_pass",
+        "interval": "AUTO_UPDATE_INTERVAL_S",
+        "description": _ROLE_DESCRIPTIONS["auto_update"],
+        "work": "Checks for and applies safe thread-keeper updates",
     },
 )
 
@@ -651,6 +663,98 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     return results
 
 
+def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]:
+    """Run the safe ThreadKeeper memory cleanup path.
+
+    This trims peer server caches, applies the configured memory guard, and
+    removes orphaned MCP server processes. It does not kill active spawned child
+    agents; use task_kill() when ending active agent work is intentional.
+    """
+    conn = get_db()
+    _refresh_rss(conn)
+
+    from . import memory_guard, process_health
+
+    before = agent_status_snapshot(refresh=False)
+    if dry_run:
+        trim_request = {
+            "requested": [],
+            "count": 0,
+            "reason": "agent_status_cleanup",
+        }
+    else:
+        trim_request = memory_guard.request_reclaim(reason="agent_status_cleanup")
+    guard = memory_guard.check_once(dry_run=dry_run, notify=False)
+    orphan_cleanup = process_health.cleanup(dry_run=dry_run, force=force)
+    after = agent_status_snapshot(refresh=True)
+
+    return {
+        "dry_run": dry_run,
+        "force": force,
+        "before": {
+            "running_count": before["running_count"],
+            "child_rss_mb": before["total_rss_mb"],
+        },
+        "after": {
+            "running_count": after["running_count"],
+            "child_rss_mb": after["total_rss_mb"],
+        },
+        "peer_trim_requested": trim_request,
+        "guard": {
+            "warn": len(guard.get("warn", [])),
+            "kill": len(guard.get("kill", [])),
+            "killed": guard.get("killed", []),
+            "retired": guard.get("retired", []),
+            "failed": guard.get("failed", []),
+            "aggregate": guard.get("aggregate", {}),
+            "reclaim_requests": guard.get("reclaim_requests", {}),
+            "local_reclaim": guard.get("local_reclaim"),
+            "handled_controls": guard.get("handled_controls", []),
+        },
+        "orphans": {
+            "count": len(orphan_cleanup.get("orphans", [])),
+            "killed": orphan_cleanup.get("killed", []),
+            "failed": orphan_cleanup.get("failed", []),
+        },
+    }
+
+
+def format_memory_cleanup(result: dict[str, Any]) -> str:
+    action = "dry_run" if result.get("dry_run") else "applied"
+    before = result["before"]
+    after = result["after"]
+    trim = result["peer_trim_requested"]
+    guard = result["guard"]
+    orphans = result["orphans"]
+    lines = [
+        (
+            f"{action}: child_agents "
+            f"{before['running_count']}->{after['running_count']} "
+            f"child_rss {before['child_rss_mb']}MB->{after['child_rss_mb']}MB"
+        ),
+        (
+            f"peer_trim_requested={trim.get('count', 0)} "
+            f"pids={','.join(str(p) for p in trim.get('requested', [])) or '-'}"
+        ),
+        (
+            f"guard warn={guard['warn']} kill={guard['kill']} "
+            f"killed={len(guard['killed'])} retired={len(guard['retired'])} "
+            f"failed={len(guard['failed'])}"
+        ),
+        (
+            f"orphans={orphans['count']} killed={len(orphans['killed'])} "
+            f"failed={len(orphans['failed'])}"
+        ),
+    ]
+    local = guard.get("local_reclaim")
+    if local:
+        lines.append(
+            f"local_reclaim before={local['before_mb']}MB "
+            f"after={local['after_mb']}MB freed={local['freed_mb']}MB"
+        )
+    return "\n".join(lines)
+
+
 def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, Any]:
     """Return a JSON-ready snapshot of autonomous loops and running children."""
     conn = get_db()
@@ -733,7 +837,30 @@ def main(argv: list[str] | None = None) -> int:
         default=5.0,
         help="seconds between --watch refreshes",
     )
+    parser.add_argument(
+        "--cleanup-memory",
+        action="store_true",
+        help="trim ThreadKeeper caches and retire orphan/over-limit server processes",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --cleanup-memory, show the cleanup plan without applying it",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="with --cleanup-memory, use SIGKILL for orphan cleanup",
+    )
     args = parser.parse_args(argv)
+
+    if args.cleanup_memory:
+        result = memory_cleanup(dry_run=args.dry_run, force=args.force)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        else:
+            print(format_memory_cleanup(result))
+        return 0
 
     while True:
         snap = agent_status_snapshot(

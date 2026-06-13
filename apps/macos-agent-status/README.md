@@ -1,10 +1,16 @@
 # ThreadKeeper Agent Status
 
 Small macOS menu-bar app for live thread-keeper autonomous learning loop status.
+The status-bar item itself is AppKit `NSStatusItem`; the popover content is
+SwiftUI. That lets the app update the menu-bar image directly instead of relying
+on SwiftUI `MenuBarExtra` label animation.
 
 It polls `tk-agent-status --json` every 5 seconds and shows:
 
-- running/enabled loop count in the menu bar,
+- an icon-only menu-bar status item, with loop counts in the popover and
+  tooltip,
+- a black chip icon while idle, replaced by fixed-center, synchronized spinning
+  gear frames while at least one autonomous loop is running,
 - every autonomous learning loop,
 - a stable role description for what each loop/agent is responsible for,
 - running / idle / ready / off state,
@@ -12,23 +18,35 @@ It polls `tk-agent-status --json` every 5 seconds and shows:
 - last pass summary,
 - backlog count,
 - active spawned-child RSS when a loop has a worker running,
+- a Clean memory button that runs `tk-agent-status --cleanup-memory`,
 - macOS notifications for newly completed autonomous child tasks that produced
   a useful result.
 
 The first poll primes the seen-result list, so the app does not notify for old
 completed tasks that existed before it started.
 
+The app also watches its own RSS and self-restarts when it crosses
+`THREADKEEPER_MENUBAR_RESTART_RSS_MB` (1024 MB default, `0` disables). That
+keeps the menu-bar helper from becoming the memory-pressure offender.
+
 ## Automatic startup
 
 On macOS, `python -m threadkeeper.server` installs and launches this app
 automatically when the MCP server starts. The startup hook is idempotent: it
 rebuilds only when the installed app is missing or older than the source,
-registers the LaunchAgent, and opens the app if it is not already running.
+registers the LaunchAgent, and restarts the app when a rebuild or stale running
+process means the menu-bar process is still using older code.
 
 Disable automatic startup with:
 
 ```sh
 THREADKEEPER_MENUBAR_AUTO_LAUNCH=0
+```
+
+Tune or disable the widget self-restart threshold with:
+
+```sh
+THREADKEEPER_MENUBAR_RESTART_RSS_MB=1536  # MB; 0 disables
 ```
 
 ## Build

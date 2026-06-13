@@ -87,6 +87,8 @@ def test_agent_status_snapshot_reports_running_agents(mp_with_cid):
     assert by_id["tk_generic"]["name"] == "child-tk"
     assert by_id["tk_generic"]["description"].startswith("Spawned child task")
     by_loop = {loop["id"]: loop for loop in snap["loops"]}
+    assert "auto_update" in by_loop
+    assert "daily updates" in by_loop["auto_update"]["description"]
     assert "Reviews extracted conversation candidates" in by_loop[
         "candidate_reviewer"
     ]["description"]
@@ -271,6 +273,145 @@ def test_agent_status_mcp_json_output(mp_with_cid):
     assert "loops" in data
     assert data["agents"][0]["task_id"] == "tk_status"
     assert data["agents"][0]["rss_mb"] == 100
+
+
+def test_agent_memory_cleanup_runs_guard_and_orphan_cleanup(mp_with_cid, monkeypatch):
+    pkg = mp_with_cid(_FAKE_CID)
+    from threadkeeper import agent_status, memory_guard, process_health
+
+    _insert_task(pkg, "tk_status", "Build a compact menu-bar status app.", rss_mb=100)
+    calls = []
+    monkeypatch.setattr(agent_status, "_refresh_rss", lambda conn: calls.append("refresh"))
+    monkeypatch.setattr(
+        memory_guard,
+        "request_reclaim",
+        lambda reason: calls.append(("trim", reason)) or {
+            "requested": [11, 22],
+            "count": 2,
+            "reason": reason,
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "check_once",
+        lambda dry_run, notify: calls.append(("guard", dry_run, notify)) or {
+            "warn": [{}],
+            "kill": [{}],
+            "killed": [33],
+            "retired": [44],
+            "failed": [],
+            "aggregate": {"warn": True, "rss_mb": 2048},
+            "reclaim_requests": {"count": 1, "requested": [55]},
+            "local_reclaim": {
+                "before_mb": 1500,
+                "after_mb": 900,
+                "freed_mb": 600,
+            },
+            "handled_controls": [],
+        },
+    )
+    monkeypatch.setattr(
+        process_health,
+        "cleanup",
+        lambda dry_run, force: calls.append(("orphans", dry_run, force)) or {
+            "orphans": [{"pid": 66}],
+            "killed": [66],
+            "failed": [],
+        },
+    )
+
+    result = agent_status.memory_cleanup(dry_run=False, force=True)
+    text = agent_status.format_memory_cleanup(result)
+
+    assert result["peer_trim_requested"]["count"] == 2
+    assert result["guard"]["killed"] == [33]
+    assert result["guard"]["retired"] == [44]
+    assert result["orphans"]["killed"] == [66]
+    assert ("guard", False, False) in calls
+    assert ("orphans", False, True) in calls
+    assert "local_reclaim before=1500MB after=900MB freed=600MB" in text
+
+
+def test_agent_memory_cleanup_dry_run_does_not_request_peer_trim(
+    mp_with_cid,
+    monkeypatch,
+):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import agent_status, memory_guard, process_health
+
+    calls = []
+    monkeypatch.setattr(agent_status, "_refresh_rss", lambda conn: None)
+    monkeypatch.setattr(
+        memory_guard,
+        "request_reclaim",
+        lambda reason: calls.append(("trim", reason)) or {
+            "requested": [11],
+            "count": 1,
+            "reason": reason,
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "check_once",
+        lambda dry_run, notify: {
+            "warn": [],
+            "kill": [],
+            "killed": [],
+            "retired": [],
+            "failed": [],
+            "aggregate": {},
+            "reclaim_requests": {},
+            "local_reclaim": None,
+            "handled_controls": [],
+        },
+    )
+    monkeypatch.setattr(
+        process_health,
+        "cleanup",
+        lambda dry_run, force: {"orphans": [], "killed": [], "failed": []},
+    )
+
+    result = agent_status.memory_cleanup(dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["peer_trim_requested"]["count"] == 0
+    assert calls == []
+
+
+def test_agent_memory_cleanup_tool_json_output(mp_with_cid, monkeypatch):
+    pkg = mp_with_cid(_FAKE_CID)
+    from threadkeeper import agent_status as agent_status_mod
+
+    monkeypatch.setattr(
+        "threadkeeper.tools.agent_status.memory_cleanup",
+        lambda dry_run, force: {
+            "dry_run": dry_run,
+            "force": force,
+            "before": {"running_count": 0, "child_rss_mb": 0},
+            "after": {"running_count": 0, "child_rss_mb": 0},
+            "peer_trim_requested": {"requested": [], "count": 0},
+            "guard": {
+                "warn": 0,
+                "kill": 0,
+                "killed": [],
+                "retired": [],
+                "failed": [],
+                "local_reclaim": None,
+            },
+            "orphans": {"count": 0, "killed": [], "failed": []},
+        },
+    )
+
+    raw = _tool(pkg, "agent_memory_cleanup")(
+        json_output=True,
+        dry_run=True,
+        force=True,
+    )
+    data = json.loads(raw)
+
+    assert data["dry_run"] is True
+    assert data["force"] is True
+    assert agent_status_mod.format_memory_cleanup(data).startswith("dry_run:")
 
 
 def test_agent_status_text_output(mp_with_cid):

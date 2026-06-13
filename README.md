@@ -55,6 +55,12 @@ make it more than a memory store:
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`),
   with lessons.md as a fallback for CLIs without a native skills loader.
 
+Foreground MCP servers also run a daily self-update check by default. Source
+checkouts fast-forward their tracked git branch and reinstall the editable
+package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
+interpreter environment. Dirty or diverged git checkouts are skipped rather
+than overwritten.
+
 ---
 
 ## Quickstart
@@ -165,6 +171,7 @@ or compact text for external monitors:
 ```sh
 tk-agent-status
 tk-agent-status --json
+tk-agent-status --cleanup-memory
 ```
 
 `apps/macos-agent-status/` contains a small macOS menu-bar app that polls this
@@ -174,14 +181,44 @@ spawned a worker. PyPI wheels and sdists also bundle the same Swift source under
 `threadkeeper/assets/macos-agent-status/`, so a normal `pipx`/`uv tool` install
 does not need a git checkout for the widget to build. Active loops are sorted
 first (`running`, then `ready`), so background work stays at the top of the
-panel. The app also requests macOS notification permission and sends a
-notification when a newly completed autonomous child task produces a useful
-result in `recent_results`; the first poll only marks existing results as seen,
-so old completions do not spam notifications. Probe backlog is due objective
+panel. `tk-agent-status --cleanup-memory` runs the safe cleanup path used by the
+widget: request server cache trims, apply the RSS guard, and remove orphan MCP
+server processes without killing active spawned child agents. The menu-bar
+status item is backed by AppKit `NSStatusItem`: it shows the black `memorychip`
+icon while idle, then swaps fixed-center, synchronized gear frames whenever
+`running_loop_count` reports at least one active autonomous loop. The status item is
+icon-only; loop counts live in the popover and tooltip. The app also has a Clean
+memory button, self-restarts when its own RSS crosses
+`THREADKEEPER_MENUBAR_RESTART_RSS_MB` (1024 MB default), requests macOS
+notification permission, and sends a notification when a newly completed
+autonomous child task produces a useful result in `recent_results`; the first
+poll only marks existing results as seen, so old completions do not spam
+notifications. Probe backlog is due objective
 probes only, not every registered probe, so a healthy cooldown shows `0 due
 probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
-automatically installs and launches it on MCP startup. Set
+automatically installs and launches it on MCP startup, and restarts the app when
+the installed bundle has changed while an older menu-bar process is still
+running. Set
 `THREADKEEPER_MENUBAR_AUTO_LAUNCH=0` to disable that behavior.
+
+### Auto Update
+
+The MCP server starts an auto-update daemon in foreground parent processes.
+By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
+
+- editable git checkout: skip if tracked files are dirty, otherwise fetch the
+  tracked remote branch, fast-forward with `git pull --ff-only`, reinstall the
+  editable package, and rerun `threadkeeper._setup`;
+- installed package: run `pip install --upgrade threadkeeper` or
+  `threadkeeper[semantic]` in the current interpreter environment, preserving
+  semantic extras when they are already installed, then rerun setup when the
+  installed version changes.
+
+After a successful update, the daemon exits the current MCP process by default
+so the host can restart it on the new code. Disable that with
+`THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. Each real check records an
+`auto_update_pass` event that appears in dashboard/status telemetry.
 
 Manual fallback from a source checkout:
 
@@ -471,6 +508,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
+| `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
@@ -484,6 +524,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
+| `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log when a server crosses this RSS |
 | `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |

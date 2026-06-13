@@ -120,6 +120,7 @@ final class AgentStatusStore: ObservableObject {
 
     private var timer: Timer?
     private var didPrimeResults = false
+    private var didRequestSelfRestart = false
     private var seenResultIds: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: "seenResultIds") ?? []
     )
@@ -139,11 +140,26 @@ final class AgentStatusStore: ObservableObject {
 
     func refresh() {
         do {
-            let data = try runStatusCommand()
-            let newSnapshot = try JSONDecoder().decode(AgentStatusSnapshot.self, from: data)
+            let newSnapshot = try autoreleasepool {
+                let data = try runStatusCommand(arguments: ["--json"])
+                return try JSONDecoder().decode(AgentStatusSnapshot.self, from: data)
+            }
             handleUsefulResults(newSnapshot.recentResults)
             snapshot = newSnapshot
             lastError = nil
+            checkAppMemoryPressure(reason: "poll")
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func cleanMemory() {
+        do {
+            _ = try autoreleasepool {
+                try runStatusCommand(arguments: ["--cleanup-memory"])
+            }
+            refresh()
+            checkAppMemoryPressure(reason: "manual-cleanup")
         } catch {
             lastError = error.localizedDescription
         }
@@ -195,16 +211,21 @@ final class AgentStatusStore: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func runStatusCommand() throws -> Data {
+    private func runStatusCommand(arguments: [String]) throws -> Data {
         let process = Process()
         let pipe = Pipe()
         let errPipe = Pipe()
         let command = statusCommand()
 
         process.executableURL = URL(fileURLWithPath: command.executable)
-        process.arguments = command.arguments + ["--json"]
+        process.arguments = command.arguments + arguments
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
         process.standardError = errPipe
+        defer {
+            pipe.fileHandleForReading.closeFile()
+            errPipe.fileHandleForReading.closeFile()
+        }
 
         try process.run()
         process.waitUntilExit()
@@ -241,6 +262,78 @@ final class AgentStatusStore: ObservableObject {
         }
 
         return ("/usr/bin/env", ["tk-agent-status"])
+    }
+
+    private var memoryRestartThresholdMB: Int {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["THREADKEEPER_MENUBAR_RESTART_RSS_MB"],
+              let value = Int(raw) else {
+            return 1024
+        }
+        return max(0, value)
+    }
+
+    private func checkAppMemoryPressure(reason: String) {
+        let threshold = memoryRestartThresholdMB
+        guard threshold > 0, !didRequestSelfRestart else {
+            return
+        }
+        let rssMb = currentRSSMB()
+        guard rssMb >= threshold else {
+            return
+        }
+        didRequestSelfRestart = true
+        restartSelf(reason: reason, rssMb: rssMb, thresholdMb: threshold)
+    }
+
+    private func currentRSSMB() -> Int {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = [
+            "-o",
+            "rss=",
+            "-p",
+            String(ProcessInfo.processInfo.processIdentifier),
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return 0
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8),
+              let rssKb = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return 0
+        }
+        return rssKb / 1024
+    }
+
+    private func restartSelf(reason: String, rssMb: Int, thresholdMb: Int) {
+        do {
+            _ = try? runStatusCommand(arguments: ["--cleanup-memory"])
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = ["-n", Bundle.main.bundlePath]
+            try process.run()
+        } catch {
+            lastError = (
+                "memory cleanup restart failed "
+                + "rss=\(rssMb)MB threshold=\(thresholdMb)MB "
+                + "reason=\(reason): \(error.localizedDescription)"
+            )
+            didRequestSelfRestart = false
+            return
+        }
+        NSApplication.shared.terminate(nil)
     }
 }
 
@@ -426,6 +519,14 @@ struct AgentStatusMenu: View {
                 MetricLabel(systemImage: "memorychip", text: "\(store.snapshot.totalRssMb) MB child RSS")
                 Spacer()
                 Button {
+                    store.cleanMemory()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Clean memory")
+                Button {
                     NSApplication.shared.terminate(nil)
                 } label: {
                     Image(systemName: "xmark.circle")
@@ -442,41 +543,218 @@ struct AgentStatusMenu: View {
     }
 }
 
-struct AgentStatusLabel: View {
-    @EnvironmentObject var store: AgentStatusStore
+private let gearSpinInterval: TimeInterval = 0.075
+private let gearFrameStepDegrees = 17.0
+private let statusIconSize = NSSize(width: 22, height: 18)
+private let largeGearDiameter: CGFloat = 12.0
+private let smallGearDiameter: CGFloat = 9.0
+private let gearMeshPhaseDegrees: CGFloat = 15.0
 
-    var body: some View {
-        Group {
-            if store.lastError != nil {
-                Label("TK !", systemImage: "exclamationmark.triangle")
-            } else if store.snapshot.runningLoopCount == 0 {
-                Label("TK \(store.snapshot.enabledLoopCount)", systemImage: "gearshape.2")
-            } else {
-                Label(
-                    "TK \(store.snapshot.runningLoopCount)/\(store.snapshot.enabledLoopCount)",
-                    systemImage: "memorychip"
-                )
+@MainActor
+final class StatusItemController: NSObject {
+    private let store = AgentStatusStore()
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private let idleImage: NSImage
+    private let errorImage: NSImage
+    private let gearFrames: [NSImage]
+    private var animationTimer: Timer?
+    private var frameIndex = 0
+
+    override init() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        popover = NSPopover()
+        idleImage = Self.makeTemplateSymbolImage("memorychip")
+        errorImage = Self.makeTemplateSymbolImage("exclamationmark.triangle")
+        gearFrames = Self.makeGearFrames()
+        super.init()
+
+        configureStatusButton()
+        configurePopover()
+        store.start()
+        updateStatusButton()
+        animationTimer = Timer(timeInterval: gearSpinInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateStatusButton()
             }
         }
-        .onAppear {
-            store.start()
+        if let animationTimer {
+            RunLoop.main.add(animationTimer, forMode: .common)
+        }
+    }
+
+    func invalidate() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    private func configureStatusButton() {
+        guard let button = statusItem.button else {
+            return
+        }
+        button.target = self
+        button.action = #selector(togglePopover(_:))
+        button.imagePosition = .imageOnly
+        button.font = .systemFont(ofSize: 14, weight: .medium)
+    }
+
+    private func configurePopover() {
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: panelWidth, height: 560)
+        popover.contentViewController = NSHostingController(
+            rootView: AgentStatusMenu()
+                .environmentObject(store)
+        )
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        guard let button = statusItem.button else {
+            return
+        }
+        if popover.isShown {
+            popover.performClose(sender)
+            return
+        }
+        store.refresh()
+        updateStatusButton()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func updateStatusButton() {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        if store.lastError != nil {
+            frameIndex = 0
+            button.image = errorImage
+            button.title = ""
+            button.toolTip = "ThreadKeeper status error"
+            button.setAccessibilityLabel("ThreadKeeper status error")
+            return
+        }
+
+        let summary = statusSummary
+        if store.snapshot.runningLoopCount > 0 {
+            button.image = gearFrames[frameIndex % gearFrames.count]
+            button.title = ""
+            button.toolTip = "ThreadKeeper loops running: \(summary)"
+            button.setAccessibilityLabel("ThreadKeeper loops running: \(summary)")
+            frameIndex = (frameIndex + 1) % gearFrames.count
+        } else {
+            frameIndex = 0
+            button.image = idleImage
+            button.title = ""
+            button.toolTip = "ThreadKeeper idle: \(summary)"
+            button.setAccessibilityLabel("ThreadKeeper idle: \(summary)")
+        }
+    }
+
+    private var statusSummary: String {
+        if store.snapshot.runningLoopCount == 0 {
+            return "\(store.snapshot.enabledLoopCount) loops enabled"
+        }
+        return "\(store.snapshot.runningLoopCount)/\(store.snapshot.enabledLoopCount) loops running"
+    }
+
+    private static func makeGearFrames() -> [NSImage] {
+        // Avoid 45-degree steps: gearshape.fill is rotationally symmetric, so
+        // one-tooth increments can render as the same frame.
+        stride(from: 0.0, to: 360.0, by: gearFrameStepDegrees).map { angle in
+            makeGearFrame(angle: CGFloat(angle))
+        }
+    }
+
+    private static func makeGearFrame(angle: CGFloat) -> NSImage {
+        let image = NSImage(size: statusIconSize)
+        image.lockFocus()
+        defer {
+            image.unlockFocus()
+            image.isTemplate = true
+        }
+
+        let smallAngle = (
+            -angle * largeGearDiameter / smallGearDiameter
+        ) + gearMeshPhaseDegrees
+
+        drawGearSymbol(
+            center: NSPoint(x: 7.0, y: 11.0),
+            diameter: largeGearDiameter,
+            angle: angle
+        )
+        drawGearSymbol(
+            center: NSPoint(x: 15.0, y: 6.0),
+            diameter: smallGearDiameter,
+            angle: smallAngle
+        )
+        return image
+    }
+
+    private static func drawGearSymbol(
+        center: NSPoint,
+        diameter: CGFloat,
+        angle: CGFloat
+    ) {
+        guard let gear = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: nil) else {
+            return
+        }
+
+        let rect = NSRect(
+            x: center.x - diameter / 2.0,
+            y: center.y - diameter / 2.0,
+            width: diameter,
+            height: diameter
+        )
+
+        NSGraphicsContext.saveGraphicsState()
+        defer {
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        NSGraphicsContext.current?.imageInterpolation = .high
+        let transform = NSAffineTransform()
+        transform.translateX(by: center.x, yBy: center.y)
+        transform.rotate(byDegrees: angle)
+        transform.translateX(by: -center.x, yBy: -center.y)
+        transform.concat()
+        gear.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+    }
+
+    private static func makeTemplateSymbolImage(_ symbolName: String) -> NSImage {
+        if let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+            symbol.isTemplate = true
+            return symbol
+        }
+        let fallback = NSImage(size: statusIconSize)
+        fallback.isTemplate = true
+        return fallback
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItemController: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in
+            statusItemController = StatusItemController()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Task { @MainActor in
+            statusItemController?.invalidate()
+            statusItemController = nil
         }
     }
 }
 
 @main
 struct ThreadKeeperAgentStatusApp: App {
-    @StateObject private var store = AgentStatusStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            AgentStatusMenu()
-                .environmentObject(store)
-                .onAppear { store.start() }
-        } label: {
-            AgentStatusLabel()
-                .environmentObject(store)
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
     }
 }

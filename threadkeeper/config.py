@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     disable_bg_daemons: bool = False
     menubar_auto_launch: bool = True
 
+    # ── Auto-update daemon ──────────────────────────────────────────────────
+    auto_update_interval_s: float = 86400.0
+    auto_update_restart: bool = True
+    auto_update_timeout_s: int = 600
+
     # ── Ingest ───────────────────────────────────────────────────────────────
     # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
     ingest_cap: int = Field(
@@ -272,6 +277,9 @@ WRITE_ORIGIN: str = settings.write_origin
 SPAWNED_CHILD: bool = settings.spawned_child
 DISABLE_BG_DAEMONS: bool = settings.disable_bg_daemons
 MENUBAR_AUTO_LAUNCH: bool = settings.menubar_auto_launch
+AUTO_UPDATE_INTERVAL_S: float = settings.auto_update_interval_s
+AUTO_UPDATE_RESTART: bool = settings.auto_update_restart
+AUTO_UPDATE_TIMEOUT_S: int = settings.auto_update_timeout_s
 CLAUDE_SKILLS_DIR: Path = settings.claude_skills_dir
 CLAUDE_PROJECTS_DIR: Path = settings.claude_projects_dir
 TASK_LOG_DIR: Path = settings.task_log_dir

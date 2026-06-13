@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .config import (
@@ -91,12 +92,76 @@ def _run(args: list[str], timeout: int = 60, cwd: Path | None = None) -> subproc
     )
 
 
-def _app_running() -> bool:
+def _app_pids() -> list[int]:
     try:
         r = _run(["pgrep", "-x", APP_NAME], timeout=5)
     except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    pids = []
+    for line in (r.stdout or "").splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            continue
+    return pids
+
+
+def _app_running() -> bool:
+    return bool(_app_pids())
+
+
+def _process_start_time(pid: int) -> float | None:
+    try:
+        r = _run(["ps", "-o", "lstart=", "-p", str(pid)], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    raw = (r.stdout or "").strip()
+    if not raw:
+        return None
+    try:
+        return time.mktime(datetime.strptime(raw, "%a %b %d %H:%M:%S %Y").timetuple())
+    except ValueError:
+        _log(f"process_start_parse_failed pid={pid} raw={raw!r}")
+        return None
+
+
+def _running_app_is_stale(app: Path) -> bool:
+    binary = app / "Contents" / "MacOS" / APP_NAME
+    if not binary.exists():
         return False
-    return r.returncode == 0
+    binary_mtime = binary.stat().st_mtime
+    for pid in _app_pids():
+        started_at = _process_start_time(pid)
+        if started_at is not None and started_at + 1.0 < binary_mtime:
+            return True
+    return False
+
+
+def _terminate_running_app() -> None:
+    if not _app_running():
+        return
+    for args in (
+        ["osascript", "-e", f'tell application "{APP_NAME}" to quit'],
+        ["pkill", "-x", APP_NAME],
+    ):
+        try:
+            r = _run(args, timeout=5)
+        except (OSError, subprocess.SubprocessError) as e:
+            _log(f"terminate_failed args={args} err={e}")
+            continue
+        if r.returncode != 0 and _app_running():
+            _log(f"terminate_failed args={args} rc={r.returncode} output={r.stdout[-1000:]}")
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if not _app_running():
+                return
+            time.sleep(0.1)
+    if _app_running():
+        _log("terminate_timeout")
 
 
 def _source_mtime(src: Path) -> float:
@@ -252,13 +317,18 @@ def ensure_menubar_app() -> None:
             except OSError:
                 return
 
-            _ensure_status_command()
             app = _installed_app()
+            was_current = _app_is_current(src, app)
+            was_running = _app_running()
+            was_stale = was_running and _running_app_is_stale(app)
+            _ensure_status_command()
             if not _install_app(src, app):
                 return
             plist = _write_launch_agent(app)
             if plist is None:
                 return
+            if (not was_current and was_running) or was_stale:
+                _terminate_running_app()
             if not _app_running():
                 _bootstrap_launch_agent(plist)
                 if not _app_running():

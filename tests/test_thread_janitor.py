@@ -20,6 +20,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", idle_days="1"):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
+        "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
         "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",

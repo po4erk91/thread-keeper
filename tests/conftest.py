@@ -23,6 +23,7 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
+    monkeypatch.setenv("THREADKEEPER_AUTO_UPDATE_INTERVAL_S", "0")
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
 
 
@@ -68,6 +69,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         # memory_guard status test). A leaked daemon=True thread outlives the
         # per-test sys.modules re-import and SIGTERMs real processes.
         "THREADKEEPER_DISABLE_BG_DAEMONS": "1",
+        "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": "0",  # disable auto-update daemon
         "THREADKEEPER_INGEST_INTERVAL_S": "0",   # disable bg ingest daemon
         "THREADKEEPER_INGEST_CAP": "0",          # don't ingest at session start
         "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",  # disable skill_watcher

@@ -7,6 +7,36 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.10.0 — 2026-06-13
+
+### Changed
+
+- **MCP server auto-update.** Foreground MCP servers now start a daily
+  self-update daemon by default (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`).
+  Clean editable git checkouts fast-forward and reinstall themselves; package
+  installs run `pip install --upgrade` in the current interpreter environment.
+  Successful updates rerun setup and exit the current server by default so the
+  host can reconnect on the new code.
+- **macOS menu-bar widget.** The widget now keeps the gear icon visible and
+  uses an AppKit `NSStatusItem` with fixed-center, synchronized spinning gear
+  frames whenever `tk-agent-status --json` reports at least one running
+  autonomous loop; while idle, it shows the existing black `memorychip` icon. The
+  status item is now icon-only, with counts in the popover/tooltip instead of
+  `TK ...` text in the menu bar. It also has a Clean memory button and
+  self-restarts when its own RSS crosses
+  `THREADKEEPER_MENUBAR_RESTART_RSS_MB` (1024 MB default).
+- **ThreadKeeper memory cleanup.** `tk-agent-status --cleanup-memory` and the
+  `agent_memory_cleanup` MCP tool now run the safe cleanup path: request server
+  cache trims, apply the RSS guard, and remove orphan MCP server processes
+  without killing active spawned child agents.
+
+### Fixed
+
+- **macOS menu-bar widget autolaunch.** Rebuilding the app now restarts a
+  running `ThreadKeeperAgentStatus` process, including the stale-process case
+  where the installed bundle is current but the menu-bar process started before
+  that binary was copied into place.
+
 ## v0.9.2 — 2026-06-12
 
 ### Fixed
