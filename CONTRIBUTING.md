@@ -270,16 +270,25 @@ typically prevents this), pick the highest bump that applies.
 ### Tagging recipe
 
 ```bash
-# Update pyproject.toml `version` per the bump table; add a CHANGELOG.md
-# entry under a new `## vX.Y.Z — YYYY-MM-DD` heading.
+# Update pyproject.toml `version` per the bump table; bump server.json
+# `version` AND `packages[0].version` to the same value (MCP Registry
+# ownership verification matches PyPI version); add a CHANGELOG.md entry
+# under a new `## vX.Y.Z — YYYY-MM-DD` heading.
 
-git add pyproject.toml CHANGELOG.md <other files for this change>
+git add pyproject.toml server.json CHANGELOG.md <other files for this change>
 git commit -m "feat: <imperative summary>"
 git tag -a vX.Y.Z -m "release vX.Y.Z"
 git push && git push --tags
 ```
 
-The tag push fans out to `publish.yml` automatically.
+The tag push fans out to `publish.yml` automatically. After PyPI
+upload completes, republish the MCP Registry entry so the new version
+shows up there too:
+
+```bash
+mcp-publisher login github
+mcp-publisher publish
+```
 
 ### Promoting to 1.0.0
 

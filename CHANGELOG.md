@@ -25,6 +25,14 @@ version bumps follow semver per the policy in
   `--strict`, `--window-hours`. Turns the previously ad-hoc, prose-only
   verification into a single reproducible command with a structured
   verdict. Closes #1.
+- **MCP Registry metadata.** Added `server.json` at the repo root (PyPI
+  package metadata for `io.github.po4erk91/thread-keeper`) and an
+  `<!-- mcp-name: io.github.po4erk91/thread-keeper -->` marker at the
+  bottom of `README.md` for PyPI-side ownership verification. Enables
+  submission to the official [MCP Server Registry](https://github.com/modelcontextprotocol/registry)
+  and downstream auto-ingestion by PulseMCP. Remember to bump
+  `server.json` `version` (root + `packages[0].version`) alongside
+  `pyproject.toml` on every release — see CONTRIBUTING → Releases.
 
 ## v0.12.0 — 2026-06-14
 
