@@ -806,3 +806,5 @@ locale. Look for the `good-first-issue` label.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- mcp-name: io.github.po4erk91/thread-keeper -->
