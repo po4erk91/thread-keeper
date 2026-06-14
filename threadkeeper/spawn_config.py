@@ -6,6 +6,7 @@ keys (double-underscore), dict keys lowercased:
 
     THREADKEEPER_SPAWN__DEFAULT=claude
     THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=codex     # role -> cli
+    THREADKEEPER_SPAWN__LOOP__CURATOR=agy               # alias -> antigravity
     THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet            # cli or role -> model
 
 Agent resolution per role (highest first):
@@ -24,7 +25,10 @@ from typing import Optional
 
 from . import config
 
-SUPPORTED_CLIS = ("claude", "codex", "gemini", "copilot")
+SUPPORTED_CLIS = ("claude", "codex", "antigravity", "gemini", "copilot")
+CLI_ALIASES = {
+    "agy": "antigravity",
+}
 
 
 def _spawn():
@@ -37,19 +41,25 @@ def _norm(v) -> str:
     return v.strip().lower() if isinstance(v, str) else ""
 
 
+def _norm_cli(v) -> str:
+    cli = _norm(v)
+    return CLI_ALIASES.get(cli, cli)
+
+
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Which CLI runs the spawned child for this role. Priority:
     spawn.loop[role] -> spawn.default -> active CLI -> 'claude'.
     'auto' in loop/default defers to the active CLI."""
     sp = _spawn()
-    cli = _norm(sp.loop.get((role or "").lower()))
+    cli = _norm_cli(sp.loop.get((role or "").lower()))
     if cli and cli != "auto" and cli in SUPPORTED_CLIS:
         return cli
-    default = _norm(sp.default)
+    default = _norm_cli(sp.default)
     if default and default != "auto" and default in SUPPORTED_CLIS:
         return default
-    if active_cli and active_cli in SUPPORTED_CLIS:
-        return active_cli
+    active = _norm_cli(active_cli)
+    if active and active in SUPPORTED_CLIS:
+        return active
     return "claude"
 
 
@@ -62,8 +72,16 @@ def resolve_model(cli: str, role: str = "") -> str:
         v = models.get(role.lower())
         if isinstance(v, str) and v.strip():
             return v.strip()
-    v = models.get((cli or "").lower())
-    return v.strip() if isinstance(v, str) and v.strip() else ""
+    keys = [_norm_cli(cli), _norm(cli)]
+    for key in dict.fromkeys(k for k in keys if k):
+        v = models.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if _norm_cli(cli) == "antigravity":
+        v = models.get("agy")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
 
 
 def summary_table(active_cli: Optional[str]) -> str:
@@ -81,9 +99,12 @@ def summary_table(active_cli: Optional[str]) -> str:
     out = []
     for role in roles:
         chosen = resolve_agent(role, active_cli)
-        if _norm(sp.loop.get(role.lower())) in SUPPORTED_CLIS:
+        if _norm_cli(sp.loop.get(role.lower())) in SUPPORTED_CLIS:
             src = "spawn config"
-        elif _norm(sp.default) in SUPPORTED_CLIS and _norm(sp.default) != "auto":
+        elif (
+            _norm_cli(sp.default) in SUPPORTED_CLIS
+            and _norm(sp.default) != "auto"
+        ):
             src = "spawn default"
         elif active_cli:
             src = "active CLI"

@@ -229,8 +229,9 @@ _UUID_RE = re.compile(
 # Which CLI process is hosting this thread-keeper instance. Set once
 # at startup by _detect_active_cli() walking the process tree. Used by
 # spawn_config.resolve_agent() as the auto-fallback when no manual
-# per-role override is present. Values: 'claude' / 'codex' / 'gemini' /
-# 'copilot' / None (no recognised host detected).
+# per-role override is present. Values: 'claude' / 'codex' /
+# 'antigravity' / 'gemini' / 'copilot' / None (no recognised host
+# detected).
 _active_cli: Optional[str] = None
 
 
@@ -241,14 +242,15 @@ _active_cli: Optional[str] = None
 _CLI_BINARIES = {
     "claude":  (("claude", "claude-code"),   "Claude Code / Claude Desktop"),
     "codex":   (("codex",),                   "OpenAI Codex CLI / desktop"),
-    "gemini":  (("gemini",),                  "Google Gemini CLI"),
+    "antigravity": (("agy", "antigravity"),   "Google Antigravity CLI"),
+    "gemini":  (("gemini",),                  "Google Gemini CLI (legacy)"),
     "copilot": (("copilot",),                 "GitHub Copilot CLI"),
 }
 
 
 def _detect_active_cli() -> Optional[str]:
     """Walk up the process tree until we find a known CLI binary
-    (claude / codex / gemini / copilot). Returns the short name
+    (claude / codex / antigravity / gemini / copilot). Returns the short name
     ('claude' etc.), or None if no recognised host.
 
     Identical strategy to _resolve_self_cid_via_ppid — `ps -p $pid -o

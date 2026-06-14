@@ -47,6 +47,18 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
         del sys.modules[name]
     import threadkeeper.server  # noqa: F401
     from threadkeeper import _mcp, db, evolve_applier, identity
+    monkeypatch.setattr(
+        evolve_applier, "_fetch_open_issues",
+        lambda repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        evolve_applier, "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        evolve_applier, "_comment_issue_claim",
+        lambda issue, repo_root=None: "",
+    )
     return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier, "identity": identity}
 
 
@@ -86,6 +98,23 @@ def _write_report(pkg, name="REPORT-20260611T120000.md", complete=True):
         encoding="utf-8",
     )
     return path
+
+
+def _issue(number, title, labels=("roadmap",), body="Issue body"):
+    return {
+        "number": number,
+        "title": title,
+        "labels": [{"name": name} for name in labels],
+        "body": body,
+        "url": f"https://github.com/o/r/issues/{number}",
+    }
+
+
+def _claim_comment(created_at="2026-06-14T12:00:00Z"):
+    return {
+        "body": "<!-- thread-keeper:evolve-applier-claim -->\nclaimed",
+        "createdAt": created_at,
+    }
 
 
 # ── apply_evolve rejects bad / non-actionable ids ──────────────────────────
@@ -260,6 +289,274 @@ def test_evolve_apply_status_includes_curator_completion_events(
     assert out.index("curator_report_applied") < out.index("evolve_apply_pass")
 
 
+def test_open_roadmap_issues_prioritizes_roadmap_and_skips_applied(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(3, "adapter fallback", labels=("enhancement",)),
+                _issue(2, "hot config", labels=("roadmap", "enhancement")),
+                _issue(1, "ingest verification", labels=("roadmap",)),
+            ],
+            "",
+        ),
+    )
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 1, "https://github.com/o/r/pull/10"
+    )
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [2, 3]
+
+
+def test_open_roadmap_issues_skips_active_issue_claim(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(1, "claimed issue"),
+                _issue(2, "free issue"),
+            ],
+            "",
+        ),
+    )
+
+    def _comments(issue_number, repo_root=None):
+        if int(issue_number) == 1:
+            return ([_claim_comment()], "")
+        return ([], "")
+
+    monkeypatch.setattr(pkg["ea"], "_fetch_issue_comments", _comments)
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [2]
+
+
+def test_open_roadmap_issues_allows_stale_issue_claim(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(1, "stale claim")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [_claim_comment("2026-06-12T12:00:00Z")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [1]
+
+
+def test_apply_roadmap_issue_builds_evolve_applier_spawn(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(6, "Telemetry dashboard", body="Need 24h counters")],
+            "",
+        ),
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out.startswith("spawned roadmap_issue=#6"), out
+    assert calls["role"] == "evolve_applier"
+    assert calls["write_origin"] == "evolve_apply"
+    assert calls["permission_mode"] == "bypassPermissions"
+    assert calls["cwd"] == str(pkg["ea"]._repo_root())
+    tools = calls["extra_allowed_tools"]
+    assert "Bash" in tools and "Edit" in tools and "Write" in tools
+    assert "evolve_mark_roadmap_issue_applied" in tools
+    prompt = calls["prompt"]
+    assert "ISSUE #6: Telemetry dashboard" in prompt
+    assert "Need 24h counters" in prompt
+    assert "Closes #6" in prompt
+    assert "Implement one issue only" in prompt
+    assert "evolve_mark_roadmap_issue_applied" in prompt
+    assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
+    assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
+
+
+def test_apply_roadmap_issue_comments_before_spawn(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    order = []
+
+    def _claim(issue, repo_root=None):
+        order.append(f"claim#{int(issue['number'])}")
+        return ""
+
+    def _spawn(**kw):
+        order.append("spawn")
+        return "ok task=tk_ap pid=1 child_cid=abcd parent_cid=ef"
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _spawn)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out.startswith("spawned roadmap_issue=#6"), out
+    assert order == ["claim#6", "spawn"]
+
+
+def test_apply_roadmap_issue_queue_reports_no_startable_when_claim_fails(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: "gh_issue_comment_failed: denied",
+    )
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn without an issue claim")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out.startswith("no_roadmap_issue_startable"), out
+    assert "ERR roadmap_issue_claim_failed=#6" in out
+
+
+def test_apply_roadmap_issue_queue_tries_next_when_claim_fails(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(1, "Blocked issue"), _issue(2, "Startable issue")],
+            "",
+        ),
+    )
+    claimed = []
+
+    def _claim(issue, repo_root=None):
+        num = int(issue["number"])
+        claimed.append(num)
+        if num == 1:
+            return "gh_issue_comment_failed: locked"
+        return ""
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+    assert "after_skipping=1" in out
+    assert claimed == [1, 2]
+    assert "ISSUE #2: Startable issue" in calls["prompt"]
+
+
+def test_apply_roadmap_issue_exact_issue_does_not_switch_tasks(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(1, "Blocked issue"), _issue(2, "Startable issue")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: "gh_issue_comment_failed: locked",
+    )
+
+    def _boom(**kw):
+        raise AssertionError("exact issue mode must not spawn another issue")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=1)
+
+    assert out.startswith("ERR roadmap_issue_claim_failed=#1"), out
+
+
+def test_apply_roadmap_issue_aborts_when_issue_already_claimed(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: ([_claim_comment()], ""),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn for an already claimed issue")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out == "ERR roadmap_issue_claimed=6"
+
+
+def test_mark_roadmap_issue_applied_tool_requires_pr_url(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    tool = _tool(pkg, "evolve_mark_roadmap_issue_applied")
+    assert tool(issue_number=6, pr_url="").startswith("ERR pr_url_required")
+    assert "applied=1" in tool(
+        issue_number=6, pr_url="https://github.com/o/r/pull/6"
+    )
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind='roadmap_issue_applied'"
+    ).fetchone()
+    assert row["target"] == "6"
+    assert row["summary"] == "https://github.com/o/r/pull/6"
+
+
 # ── single-flight: refuse while an applier child runs ──────────────────────
 
 def test_apply_evolve_single_flight(tmp_path, monkeypatch):
@@ -383,6 +680,45 @@ def test_run_apply_pass_no_promoted(tmp_path, monkeypatch):
     assert pkg["ea"].run_evolve_apply_pass(force=True) == "no_apply_work"
 
 
+def test_run_apply_pass_skips_empty_until_interval(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_apply_pass', ?, 'no_apply_work', ?)",
+        ("s_prev", str(now), now),
+    )
+    conn.commit()
+
+    assert pkg["ea"].run_evolve_apply_pass() == "not_due"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_apply_pass'"
+    ).fetchone()[0] == 1
+
+
+def test_run_apply_pass_skips_promoted_backlog_until_interval(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_apply_pass', ?, 'no_apply_work', ?)",
+        ("s_prev", str(now), now),
+    )
+    older = _add_evolve(conn, "older promoted", status="promoted",
+                        created_at=1000)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass()
+
+    assert out == "not_due"
+    assert calls == {}
+
+
 def test_run_apply_pass_picks_curator_report_before_evolve(
     tmp_path, monkeypatch,
 ):
@@ -404,6 +740,79 @@ def test_run_apply_pass_picks_curator_report_before_evolve(
         "ORDER BY id DESC LIMIT 1"
     ).fetchone()
     assert f"curator_report={report.name}" in ev["summary"]
+
+
+def test_run_apply_pass_picks_roadmap_issue_before_curator_and_evolve(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "older promoted code change", status="promoted",
+                created_at=1000)
+    _write_report(pkg)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+    assert "ISSUE #2: Hot config" in calls["prompt"]
+    assert "Curator REPORT" not in calls["prompt"]
+
+
+def test_run_apply_pass_skips_unstartable_issue_and_spawns_next(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(1, "Locked issue"), _issue(2, "Startable issue")],
+            "",
+        ),
+    )
+
+    def _claim(issue, repo_root=None):
+        if int(issue["number"]) == 1:
+            return "gh_issue_comment_failed: locked"
+        return ""
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+    assert "after_skipping=1" in out
+    assert "ISSUE #2: Startable issue" in calls["prompt"]
+
+
+def test_run_apply_pass_falls_back_to_curator_when_no_issue_startable(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    report = _write_report(pkg)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(1, "Locked issue")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: "gh_issue_comment_failed: locked",
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert f"curator_report={report.name}" in out
+    assert "Curator REPORT" in calls["prompt"]
+    assert "ISSUE #1" not in calls["prompt"]
 
 
 def test_run_apply_pass_picks_oldest_promoted(tmp_path, monkeypatch):

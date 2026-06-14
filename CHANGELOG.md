@@ -7,6 +7,43 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.11.0 — 2026-06-14
+
+### Added
+
+- **Antigravity CLI (`agy`) integration.** Added a first-class adapter for
+  Google's Antigravity CLI successor path: setup writes MCP config to
+  `~/.gemini/config/mcp_config.json`, managed instructions to
+  `~/.gemini/config/AGENTS.md`, mirrors skills into
+  `~/.gemini/config/skills/`, and supports `agy -p` spawn routing with
+  `antigravity` as the canonical key plus `agy` as an alias. Gemini remains as
+  a legacy adapter.
+- **macOS menu-bar settings.** The popover header now uses a Settings gear
+  instead of the manual refresh button. It opens a separate window for guided
+  `~/.threadkeeper/.env` editing, raw `.env` edits, three local presets, and
+  Save & Restart, which writes the file and asks live `threadkeeper.server`
+  processes to restart so hosts reconnect with the new environment.
+
+### Changed
+
+- **Evolve loop is now issue-backed roadmap evolution.** Evolve reviewer now
+  runs as a thread-keeper product/engineering audit: security/privacy, memory
+  leaks, daemon/cost waste, reliability, optimization, and current agent/MCP
+  research. Its durable outputs are `docs/ROADMAP.md` updates and GitHub issues
+  with acceptance criteria. Evolve applier now drains one open GitHub issue at a
+  time (`roadmap` label first, then FIFO), skips active issue claim comments,
+  posts its own claim comment before spawning the implementer, advances to the
+  next issue when an issue-local dispatch failure prevents startup, opens a PR
+  with `Closes #N`, and only then records `roadmap_issue_applied`. Curator
+  reports and legacy promoted `evolve_format` suggestions remain fallback apply
+  paths. New tools: `evolve_apply_roadmap_issue` and
+  `evolve_mark_roadmap_issue_applied`.
+- **Curator can feed Evolve reviewer candidates.** The lessons/skills Curator
+  may now call `evolve_format(...)` when a skill or lesson reveals an important
+  improvement to thread-keeper itself, and records the handoff as an
+  `EVOLVE_CANDIDATE:` line in its report. It still does not implement the item;
+  reviewer/applier own that downstream loop.
+
 ## v0.10.0 — 2026-06-13
 
 ### Changed
@@ -96,6 +133,11 @@ version bumps follow semver per the policy in
   `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` (0 = off, default) periodically fires
   the apply for the oldest promoted+unapplied suggestion; mirrors the
   evolve_reviewer daemon (foreground-only, machine-wide single-flight).
+- **Evolve empty-pass telemetry is throttled.** Evolve reviewer/applier no
+  longer write repeated `no_pending` / `no_apply_work` pass events from every
+  foreground MCP server startup before the configured interval elapses.
+  Real backlog still bypasses that empty-check throttle and dispatches
+  immediately.
 - **Evolve applier now applies Curator reports too.** Curator remains an
   advisory report generator by default; the existing `evolve_applier` role now
   consumes the latest complete `REPORT-*.md` before code-evolve work, applies

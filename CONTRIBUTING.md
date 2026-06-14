@@ -30,6 +30,7 @@ threadkeeper/            # the package
 │   ├── claude_code.py
 │   ├── claude_desktop.py
 │   ├── codex.py
+│   ├── antigravity.py
 │   ├── gemini.py
 │   ├── copilot.py
 │   ├── vscode.py

@@ -184,12 +184,15 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "PATCH" in kw["prompt"]
     assert "CONSOLIDATE" in kw["prompt"]
     assert "PRUNE" in kw["prompt"]
+    assert "EVOLVE_CANDIDATE" in kw["prompt"]
+    assert "evolve_format" in kw["prompt"]
     assert "lesson-one" in kw["prompt"]
     assert "lesson-two" in kw["prompt"]
     # Scoped toolset — no shell, no spawn, no destructive lesson_append
     allowed = kw["extra_allowed_tools"]
     assert "lesson_list" in allowed
     assert "lesson_get" in allowed
+    assert "evolve_format" in allowed
     assert "Read" in allowed
     assert "Write" in allowed
     assert "lesson_append" not in allowed
@@ -285,6 +288,7 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     # Destructive mode → widened toolset
     assert "skill_manage" in allowed
     assert "lesson_append" in allowed
+    assert "evolve_format" in allowed
     # Prompt explicitly flips into destructive mode
     assert "DESTRUCTIVE MODE ENABLED" in kw["prompt"]
     assert "audit trail first" in kw["prompt"]
@@ -319,6 +323,7 @@ def test_advisory_mode_default_excludes_destructive_tools(
     allowed = kw["extra_allowed_tools"]
     assert "skill_manage" not in allowed
     assert "lesson_append" not in allowed
+    assert "evolve_format" in allowed
     assert "ADVISORY MODE" in kw["prompt"]
     assert "DESTRUCTIVE MODE ENABLED" not in kw["prompt"]
 

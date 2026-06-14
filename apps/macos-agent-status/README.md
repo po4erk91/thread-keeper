@@ -19,6 +19,8 @@ It polls `tk-agent-status --json` every 5 seconds and shows:
 - backlog count,
 - active spawned-child RSS when a loop has a worker running,
 - a Clean memory button that runs `tk-agent-status --cleanup-memory`,
+- a Settings gear that opens a separate `~/.threadkeeper/.env` editor with
+  guided controls, raw text editing, three saved presets, and Save & Restart,
 - macOS notifications for newly completed autonomous child tasks that produced
   a useful result.
 
@@ -48,6 +50,12 @@ Tune or disable the widget self-restart threshold with:
 ```sh
 THREADKEEPER_MENUBAR_RESTART_RSS_MB=1536  # MB; 0 disables
 ```
+
+The Settings gear edits `~/.threadkeeper/.env` by default, or the path in
+`THREADKEEPER_ENV_FILE` when the app was launched with that override. Save &
+Restart writes the file, runs the safe cleanup command, and sends TERM to
+running `threadkeeper.server` processes so MCP hosts reconnect with the new
+environment.
 
 ## Build
 

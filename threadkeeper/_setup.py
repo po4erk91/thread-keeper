@@ -1,15 +1,14 @@
 """thread-keeper installer / updater.
 
-Idempotently wires thread-keeper into a Claude Code installation:
-  1. Registers `thread-keeper` MCP server in ~/.claude.json
-  2. Installs hooks (SessionStart, PostToolUse, UserPromptSubmit, Stop,
-     PreToolUse) in ~/.claude/settings.json
+Idempotently wires thread-keeper into every detected CLI adapter:
+  1. Registers `thread-keeper` MCP server in each CLI's native config
+  2. Installs hooks for adapters whose hook schema is supported
   3. Copies hook scripts to ~/.threadkeeper/hooks/
-  4. Updates the managed block in ~/.claude/CLAUDE.md between sentinel
-     markers — content outside the markers is preserved.
+  4. Updates the managed instructions block between sentinel markers —
+     content outside the markers is preserved.
 
 Re-run any time: the script reads existing config, merges its own
-contribution, and writes back. Other MCP servers / hooks / CLAUDE.md
+contribution, and writes back. Other MCP servers / hooks / instructions
 content are left untouched.
 
 Console entry point:
@@ -53,7 +52,7 @@ MARK_END = "<!-- THREADKEEPER:END -->"
 
 
 # ----------------------------------------------------------------------
-# Content of the managed CLAUDE.md block
+# Content of the managed per-CLI instructions block
 # ----------------------------------------------------------------------
 
 CLAUDE_MD_BLOCK = """\
@@ -64,8 +63,9 @@ At session start:
   * On Claude Code, the SessionStart hook
     (`~/.threadkeeper/hooks/tk-brief.sh`) auto-injects `brief()` +
     `context()` — and `live_status()` if `live=N>0`.
-  * On other CLIs (Codex, Gemini, …) the hook mechanism may not exist;
-    call `brief()` and `context()` yourself before the first answer.
+  * On CLIs without thread-keeper hooks (Codex, Antigravity CLI/`agy`,
+    Gemini legacy, …), call `brief()` and `context()` yourself before
+    the first answer.
     If the user's opening message is substantive, pass it as `query`
     to `brief()` to inline relevant past notes.
 
@@ -89,7 +89,8 @@ that gives you enough context):
 
   1. `thread-keeper.search()` — stored partner notes
   2. `thread-keeper.dialog_search()` — full transcripts ingested from
-     ALL connected CLIs (Claude Code, Codex, Gemini, Copilot)
+     ALL connected CLIs (Claude Code, Codex, Antigravity CLI/agy,
+     Gemini legacy, Copilot)
   3. CLI-native conversation history search (e.g. `conversation_search`
      for Claude Desktop), if available
 
@@ -277,7 +278,7 @@ def _install_managed_block(fp: Path, dry_run: bool) -> str:
 def install_instructions(dry_run: bool) -> list[str]:
     """Write the managed thread-keeper block to every detected CLI's
     per-user instructions file (CLAUDE.md, AGENTS.md, GEMINI.md). CLIs
-    without a global instructions convention (e.g. Copilot) are skipped."""
+    without a global instructions convention are skipped."""
     from .adapters import installed_adapters
     lines: list[str] = []
     for adapter in installed_adapters():
@@ -325,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in install_hooks(args.dry_run):
         print(f"  [hooks] {line}")
     print()
-    print("Done. Restart Claude Code for hooks + MCP changes to take effect.")
+    print("Done. Restart connected CLIs for instructions + MCP changes to take effect.")
     return 0
 
 

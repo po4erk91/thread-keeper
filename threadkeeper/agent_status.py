@@ -49,12 +49,12 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "about preferences, constraints, and working style."
     ),
     "evolve_applier": (
-        "Implements promoted brief-format improvements and applies Curator "
-        "memory-maintenance reports through the same single-flight worker."
+        "Implements one open roadmap issue at a time, then falls back to "
+        "Curator memory-maintenance reports and promoted evolve suggestions."
     ),
     "evolve_reviewer": (
-        "Triages suggested brief-format changes and promotes only the ones "
-        "worth implementing."
+        "Audits thread-keeper for safety, leaks, optimization, and new ideas; "
+        "updates the roadmap and opens GitHub issues."
     ),
     "extract": (
         "Converts decision-shaped conversation moments into pending review "
@@ -168,12 +168,13 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "threshold": "EVOLVE_REVIEW_MIN",
         "role": "evolve_reviewer",
         "description": _ROLE_DESCRIPTIONS["evolve_reviewer"],
-        "work": "Triages brief-format improvement suggestions",
+        "work": "Audits thread-keeper and creates roadmap issues",
         "backlog_sql": (
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='pending'"
         ),
-        "backlog_label": "pending suggestions",
+        "backlog_label": "legacy pending suggestions",
+        "ready_on_due": True,
     },
     {
         "id": "evolve_apply",
@@ -187,7 +188,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "interval": "EVOLVE_APPLY_INTERVAL_S",
         "role": "evolve_applier",
         "description": _ROLE_DESCRIPTIONS["evolve_applier"],
-        "work": "Applies promoted suggestions or curator reports",
+        "work": "Implements one open roadmap issue",
         "backlog_metric": "evolve_apply",
         "backlog_label": "apply work items",
         "ready_backlog_min": 1,
@@ -229,6 +230,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
 
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
+_ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
 
 
 def _detect_role(prompt: str) -> str:
@@ -361,6 +363,22 @@ def _curator_report_apply_count(conn) -> int:
         return 0
 
 
+def _roadmap_issue_apply_count(conn, now: int) -> int:
+    if now - _ISSUE_BACKLOG_CACHE["at"] < 300:
+        return _ISSUE_BACKLOG_CACHE["count"]
+    try:
+        from .evolve_applier import _open_roadmap_issues
+
+        issues, err = _open_roadmap_issues(conn)
+    except Exception:
+        return _ISSUE_BACKLOG_CACHE["count"]
+    if err:
+        return _ISSUE_BACKLOG_CACHE["count"]
+    _ISSUE_BACKLOG_CACHE["at"] = int(now)
+    _ISSUE_BACKLOG_CACHE["count"] = len(issues)
+    return len(issues)
+
+
 def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
@@ -369,7 +387,9 @@ def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",
-        ) + _curator_report_apply_count(conn)
+        ) + _curator_report_apply_count(conn) + _roadmap_issue_apply_count(
+            conn, now
+        )
     if loop.get("backlog_sql"):
         return _scalar(conn, loop["backlog_sql"])
     return 0
@@ -489,9 +509,11 @@ def _loop_status(
         status = "running"
     elif interval_s <= 0:
         status = "off"
-    elif threshold and backlog >= threshold and due:
+    elif loop.get("ready_on_due") and due:
         status = "ready"
-    elif ready_backlog_min and backlog >= ready_backlog_min and due:
+    elif ready_backlog_min and backlog >= ready_backlog_min:
+        status = "ready"
+    elif threshold and backlog >= threshold and due:
         status = "ready"
     else:
         status = "idle"
@@ -500,6 +522,8 @@ def _loop_status(
     last_summary = last["summary"]
     if running:
         work = running[0]["work"]
+    elif status == "ready":
+        work = loop["work"]
     elif last_summary:
         work = _human_summary(last_summary, loop["work"])
 

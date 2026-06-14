@@ -119,7 +119,8 @@ class CLIAdapter(ABC):
     def supports_spawn(self) -> bool:
         """True iff this CLI can be spawned non-interactively from a
         thread-keeper daemon. Implies a working headless invocation
-        (`claude -p` / `codex exec` / `gemini -p` / `copilot -p`) AND
+        (`claude -p` / `codex exec` / `agy -p` / `gemini -p` /
+        `copilot -p`) AND
         a way to inject our MCP server config so the spawned child
         can call back into thread-keeper. Default: False (loops will
         gracefully skip this CLI)."""
@@ -145,10 +146,11 @@ class CLIAdapter(ABC):
 
             Claude (Code/Desktop/IDE) → ~/.claude/skills/
             Codex (CLI/desktop)       → ~/.codex/skills/
+            Antigravity CLI (agy)     → ~/.gemini/config/skills/
 
         Return None when the CLI doesn't natively consume Skills
-        (Gemini, Copilot, generic MCP clients) — those fall back to
-        the CLI-agnostic ~/.threadkeeper/lessons.md store.
+        (Gemini legacy, Copilot, generic MCP clients) — those fall
+        back to the CLI-agnostic ~/.threadkeeper/lessons.md store.
 
         Multi-mirror writes in skill_manage use this to propagate one
         SKILL.md across every native skills-store on the machine so a

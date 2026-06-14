@@ -76,7 +76,12 @@ an icon-only status-bar item and a SwiftUI popover for the panel. It polls
 `ready` → `idle` → `off`), shows Probe backlog as due objective probes only,
 updates the idle chip / running gears directly on the status button, keeps loop
 counts in the popover/tooltip, and posts macOS notifications for newly observed
-useful `recent_results`.
+useful `recent_results`. The popover header gear opens a separate AppKit window
+for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`): SwiftUI guided
+controls cover common daemon, memory, and spawn-routing knobs, an advanced tab
+preserves raw `.env` text, three presets are stored in `UserDefaults`, and
+Save & Restart writes the file before terminating live `threadkeeper.server`
+processes so MCP hosts restart them with the new environment.
 Foreground parent MCP sessions also start `auto_update.py` when
 `THREADKEEPER_AUTO_UPDATE_INTERVAL_S>0` (86400 seconds by default). Each due pass
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
@@ -178,24 +183,43 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   queue is machine-wide single-flight: running-task detection plus
   `candidate-reviewer.lock` prevents multiple foreground MCP servers from
   spawning duplicate reviewers for the same pending candidates.
+- **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
+  `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) spawns an audit/research child
+  that reviews thread-keeper itself for security/privacy risks, memory leaks,
+  runaway daemons, cost waste, reliability gaps, optimizations, and current
+  agent/MCP/memory tooling ideas. It may update `docs/ROADMAP.md` through a PR
+  and create/update GitHub issues with acceptance criteria and research
+  sources. It does not implement roadmap issues.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first looks for the latest
-  complete Curator `REPORT-*.md` that has not been marked applied, then falls
-  back to the oldest promoted + unapplied `evolve_format` suggestion. Curator
-  report apply uses the same `evolve_applier` child but only memory MCP tools
-  (`lesson_append`, `lesson_remove`, `skill_manage`) and records
-  `curator_report_applied`; no code edit or PR. Code-evolve apply still edits
-  `render_brief`, adds a golden brief test, runs the full suite, and opens a
-  **pull request** (never commits to main). The generated branch PR title uses
-  an allowed Conventional Commit type (`feat:`/`fix:` etc.) rather than the
-  internal `evolve:` label. PR-gated: a human reviews + merges; on a successful
-  PR the child calls `evolve_mark_applied(evolve_id, pr_url)` → `applied=1`.
-  Machine-wide single-flight via a short
-  `evolve-applier.lock` dispatch file lock plus the `"You are an EVOLVE
-  APPLIER"` prompt prefix. Manual tools `evolve_apply(evolve_id)` and
-  `evolve_apply_curator_report(report_path="")` fire the same paths regardless
-  of the interval. Distinct from `evolve_reviewer`, which only triages
-  (promote/dismiss) and never edits code.
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues with
+  `gh issue list`, prioritizes `roadmap`-labeled issues then FIFO, and spawns
+  one `evolve_applier` child to implement exactly one issue. Before spawning,
+  the parent checks issue comments for
+  `<!-- thread-keeper:evolve-applier-claim -->`, skips active claims, and posts
+  the same marker as a claim comment; claims expire after 24 hours so crashed
+  workers do not block issues forever. In queue mode, issue-local dispatch
+  failures advance to the next issue; exact
+  `evolve_apply_roadmap_issue(issue_number=N)` calls report the specific
+  failure instead of switching tasks. The PR body must include `Closes #N`;
+  after `gh pr create` prints a real URL, the child calls
+  `evolve_mark_roadmap_issue_applied(issue_number, pr_url)` so the daemon does
+  not pick it again while human review/merge is pending. If no issue is pending,
+  it falls back to the latest complete Curator `REPORT-*.md`, then to the oldest
+  promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
+  uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
+  and records `curator_report_applied`; no code edit or PR. Legacy code-evolve
+  apply still opens a PR and calls `evolve_mark_applied(evolve_id, pr_url)`.
+  Machine-wide single-flight uses `evolve-applier.lock` plus the `"You are an
+  EVOLVE APPLIER"` prompt prefix. Automatic apply passes respect the configured
+  interval to avoid duplicate issue workers across foreground server startups;
+  manual apply tools still dispatch immediately. If no roadmap issue is
+  startable, the pass falls back to Curator reports and then legacy promoted
+  `evolve_format` suggestions.
+- **curator → evolve bridge** — the Curator's lessons/skills audit remains
+  report-first, but when a skill or lesson exposes a concrete improvement for
+  thread-keeper itself it may call `evolve_format(...)` and record an
+  `EVOLVE_CANDIDATE:` line in the report. That candidate is input for
+  `evolve_reviewer`, not something the Curator implements directly.
 
 Autonomous learning daemons only run in foreground parent processes. Spawned
 children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
@@ -329,8 +353,8 @@ Manual hook: `shadow_review_run(force=True)`, observability:
 ## Skills system
 
 `~/.claude/skills/<name>/SKILL.md` is the primary write target. The same
-skill directory is mirrored to Codex/shared/canonical roots. Optional
-subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
+skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
+Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
   `create | edit | patch | write_file | remove_file | delete`.
@@ -342,7 +366,8 @@ subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `references|templates|scripts|assets` with path-traversal blocking.
   `patch` revalidates the result before writing. Every successful write
   mirrors the whole skill directory into all configured roots:
-  `~/.claude/skills/`, `~/.codex/skills/`, existing `~/.agents/skills/`,
+  `~/.claude/skills/`, `~/.codex/skills/`,
+  `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
 
 - **skill_record(name, kind, outcome)** — manual bump of
@@ -515,10 +540,11 @@ adapter that reports `hooks_supported()`. The wiring shape is identical
 | CLI            | hooks file                  | open-thread nudge path |
 |----------------|-----------------------------|------------------------|
 | Claude Code    | `~/.claude/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
-| Gemini         | `~/.gemini/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
+| Gemini legacy  | `~/.gemini/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
 | Copilot        | `~/.copilot/hooks.json`     | `tk-thread-nudge.sh` (UserPromptSubmit) |
 | Claude Desktop | — (no hook mechanism)       | in-`brief()` fallback  |
 | Codex          | — (no hook mechanism)       | in-`brief()` fallback  |
+| Antigravity CLI (`agy`) | — (hook schema not wired yet) | in-`brief()` fallback  |
 | VS Code        | — (no hook mechanism)       | in-`brief()` fallback  |
 
 Events that a given CLI doesn't fire (e.g. `PreToolUse`/`Stop` on a CLI
@@ -614,7 +640,7 @@ auto-generates JSON-Schema from annotations.
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
-| evolve_applier | 5 | evolve_apply, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_curator_report_applied, evolve_apply_status |
+| evolve_applier | 7 | evolve_apply, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
@@ -729,11 +755,14 @@ real-estate cost.
 
 - No authentication / access control (see ROADMAP.md).
 - No federation: one database file, one machine.
-- Heavily Claude-Code-specific: ppid walk, jsonl parser, settings.json hooks,
-  ~/.claude.json as MCP-config template.
+- Some legacy paths are still Claude-Code-specific: ppid walk, jsonl parser,
+  settings.json hooks, ~/.claude.json as MCP-config template. Antigravity CLI
+  (`agy`) is wired for MCP/instructions/skills/spawn, but its sqlite/protobuf
+  conversation history and hook schema are not parsed/wired yet.
 - Extraction heuristics are simple regexes; no ML quality classifier.
-- No hot-config reload: changing an env-knob requires restarting the MCP
-  process.
+- No hot-config reload: changing an env-knob still requires restarting the MCP
+  process. The macOS menu-bar Settings window can request that restart after
+  writing `.env`, but daemons do not yet re-read config in-process.
 - MCP-native `sampling/createMessage` (a native review fork without
   pay-per-use tokens) is not yet implemented in Claude Code
   (anthropics/claude-code#1785). spawn-subprocess is the fallback, slim-config

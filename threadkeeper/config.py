@@ -8,6 +8,7 @@ override .env values, which override field defaults.
 Nested spawn config uses double-underscore notation:
   THREADKEEPER_SPAWN__DEFAULT=claude
   THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=codex
+  THREADKEEPER_SPAWN__LOOP__CURATOR=agy
   THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet
 """
 from __future__ import annotations

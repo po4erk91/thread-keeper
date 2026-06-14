@@ -4,17 +4,17 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/threadkeeper.svg)](https://pypi.org/project/threadkeeper/)
-[![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Gemini%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
+[![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Antigravity%20%7C%20Gemini%20legacy%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
 
-**Multi-agent shared brain across Claude Code/Desktop, Codex, Gemini,
-Copilot, and VS Code.** Cross-session memory, self-improving skill
-loops, and inter-agent signaling — one local MCP server turns parallel
-agent instances into a coordinated multi-agent system instead of N
-isolated chats.
+**Multi-agent shared brain across Claude Code/Desktop, Codex,
+Antigravity CLI (`agy`), Gemini legacy, Copilot, and VS Code.**
+Cross-session memory, self-improving skill loops, and inter-agent signaling —
+one local MCP server turns parallel agent instances into a coordinated
+multi-agent system instead of N isolated chats.
 
-Every connected client (Claude Code, Claude Desktop, Codex CLI +
-desktop, Gemini, Copilot, every MCP-aware VS Code extension) shares
-one SQLite store, one set of threads, one user model, and one learning
+Every connected client (Claude Code, Claude Desktop, Codex CLI + desktop,
+Antigravity CLI, Gemini legacy, Copilot, every MCP-aware VS Code extension)
+shares one SQLite store, one set of threads, one user model, and one learning
 loop that improves the skill library autonomously over time.
 
 The brief format is dense — structural tags, opaque IDs, ~6 KB per
@@ -26,7 +26,7 @@ session-start injection. Optimized for agent consumption, not human reading.
 
 Every agent CLI starts cold. Context dies at session boundaries.
 Skills you taught Claude don't transfer to Codex. Threads you closed
-in yesterday's Gemini chat are invisible to today's Copilot. Parallel
+in yesterday's Antigravity chat are invisible to today's Copilot. Parallel
 agent instances running the same task don't know about each other and
 duplicate work or step on each other's writes.
 
@@ -51,9 +51,10 @@ make it more than a memory store:
   materialize class-level skills as the agents work. Adapted to multi-CLI:
   SKILL.md is the primary write target and gets mirrored to every
   known/configured skills root simultaneously (`~/.claude/skills/`,
-  `~/.codex/skills/`, existing `~/.agents/skills/`, extra roots from
-  `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`),
-  with lessons.md as a fallback for CLIs without a native skills loader.
+  `~/.codex/skills/`, `~/.gemini/config/skills/` for Antigravity,
+  existing `~/.agents/skills/`, extra roots from
+  `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`), with
+  lessons.md as a fallback for CLIs without a native skills loader.
 
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
@@ -72,15 +73,17 @@ pipx install 'threadkeeper[semantic]' && thread-keeper-setup
 ```
 
 `thread-keeper-setup` detects every CLI you have installed (Claude
-Code / Claude Desktop / Codex CLI + desktop / Gemini / Copilot / VS
-Code), registers the MCP server in each one's config, copies hooks to
+Code / Claude Desktop / Codex CLI + desktop / Antigravity CLI `agy` /
+Gemini legacy / Copilot / VS Code), registers the MCP server in each one's
+config, copies hooks to
 `~/.threadkeeper/hooks/`, and writes a managed instructions block into
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 `GEMINI.md` / `copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
 
-Restart your CLI of choice. The SessionStart hook injects a brief on
-first message; no manual `brief()` call required.
+Restart your CLI of choice. Hook-capable clients inject a brief on the first
+message; hookless clients such as Codex and Antigravity CLI follow the managed
+instructions block and call `brief()` / `context()` manually before answering.
 
 ### Alternative installs
 
@@ -127,16 +130,18 @@ thread-keeper-setup --dry-run
 | Claude Code | `~/.claude.json` `mcpServers` | `~/.claude/CLAUDE.md` | `~/.claude/settings.json` `hooks` | `~/.claude/projects/**/*.jsonl` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` `mcpServers` (macOS); `%APPDATA%\Claude\…` (Win); `~/.config/Claude/…` (Linux) | none (GUI-only) | not supported by the app | none — chats live in Electron IndexedDB |
 | Codex (CLI + desktop) | `~/.codex/config.toml` `[mcp_servers]` (shared between CLI and `Codex.app`) | `~/.codex/AGENTS.md` | not supported | `~/.codex/sessions/**/rollout-*.jsonl` |
-| Gemini | `~/.gemini/settings.json` `mcpServers` | `~/.gemini/GEMINI.md` | `~/.gemini/settings.json` `hooks` | `~/.gemini/tmp/<user>/chats/session-*.jsonl` |
+| Antigravity CLI (`agy`) | `~/.gemini/config/mcp_config.json` `mcpServers` | `~/.gemini/config/AGENTS.md` | not wired yet | not yet parsed — sqlite/protobuf under `~/.gemini/antigravity-cli/conversations/*.db` |
+| Gemini legacy | `~/.gemini/settings.json` `mcpServers` | `~/.gemini/GEMINI.md` | `~/.gemini/settings.json` `hooks` | `~/.gemini/tmp/<user>/chats/session-*.jsonl` |
 | Copilot | `~/.copilot/mcp-config.json` `mcpServers` | `~/.copilot/copilot-instructions.md` | `~/.copilot/hooks.json` | `~/.copilot/session-store.db` (sqlite) |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` `servers` (macOS); `%APPDATA%\Code\User\mcp.json` (Win); `~/.config/Code/User/mcp.json` (Linux) | none (per-workspace only) | not supported | none — extensions own their history |
 
 Every CLI that produces parseable transcripts feeds the same
 `dialog_messages` table with a `source` tag, so `dialog_search()` finds
-matches regardless of where the conversation happened. Claude Desktop
-and the VS Code adapter are the exceptions — MCP registration only;
-their chats don't reach the table for now (Electron IndexedDB on the
-Claude Desktop side; per-extension stores on the VS Code side).
+matches regardless of where the conversation happened. Claude Desktop,
+Antigravity CLI, and the VS Code adapter are the exceptions — MCP registration
+only; their chats don't reach the table for now (Electron IndexedDB on the
+Claude Desktop side; sqlite/protobuf on the Antigravity side; per-extension
+stores on the VS Code side).
 
 VS Code's user-level `mcp.json` is the central host that **every
 MCP-aware VS Code extension** consumes — GitHub Copilot Chat, the
@@ -193,7 +198,12 @@ memory button, self-restarts when its own RSS crosses
 notification permission, and sends a notification when a newly completed
 autonomous child task produces a useful result in `recent_results`; the first
 poll only marks existing results as seen, so old completions do not spam
-notifications. Probe backlog is due objective
+notifications. The header gear opens a separate Settings window for
+`~/.threadkeeper/.env`: common knobs are grouped into guided controls, the raw
+`.env` remains editable for advanced values, three local presets can be saved
+and loaded, and Save & Restart writes the file then asks existing
+`threadkeeper.server` processes to exit so MCP hosts reconnect with the new
+configuration. Probe backlog is due objective
 probes only, not every registered probe, so a healthy cooldown shows `0 due
 probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
 automatically installs and launches it on MCP startup, and restarts the app when
@@ -282,16 +292,19 @@ shows agents focused on their primary task rarely do).
 | 2 | shadow_review daemon | every 15 min (env knob) | recent `dialog_messages` window | SKILL.md, lessons.md |
 | 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
-| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | REPORT-`<date>`.md; Evolve applier applies the latest complete report |
-| 6 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
-| 7 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
+| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | `REPORT-<date>.md`; Evolve applier applies it after roadmap issues |
+| 6 | evolve_reviewer daemon | configurable (env knob; 0=off) | code/docs/issues + web research when useful | roadmap updates + GitHub issues |
+| 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
+| 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
+| 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
 
-All five write into the universal Skill format (`SKILL.md` under each
+Learning loops write into the universal Skill format (`SKILL.md` under each
 known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
-existing `~/.agents/skills/`, optional `THREADKEEPER_EXTRA_SKILLS_DIRS`,
-plus the canonical `~/.threadkeeper/skills/` mirror), with
-`~/.threadkeeper/lessons.md` as a CLI-agnostic fallback for clients
-without a native skills loader (Gemini, Copilot, bare MCP).
+`~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
+optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
+`~/.threadkeeper/skills/` mirror), with `~/.threadkeeper/lessons.md` as a
+CLI-agnostic fallback for clients without a native skills loader (Gemini
+legacy, Copilot, bare MCP).
 
 #### 1. Auto-review on close_thread
 
@@ -379,56 +392,63 @@ entries are marked `[PROTECTED]` in the inventory so the curator
 never proposes destructive changes against them.
 
 Curator itself stays advisory-only by default. The existing Evolve applier is
-the apply worker: on its next pass it first looks for the latest complete
-Curator report (`CURATOR_PASS_COMPLETE`) that has not been marked applied, then
-spawns an `evolve_applier` child to apply only safe, still-current memory
-maintenance through `lesson_append` / `lesson_remove` / `skill_manage`. It never
-touches `[PROTECTED]`, foreground/user, pinned, or validated entries. Only after
-the child finishes does it call `evolve_mark_curator_report_applied(...)`, which
-prevents replaying the same report.
+also the Curator apply worker: after the roadmap issue queue is empty, it looks
+for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
+been marked applied, then spawns an `evolve_applier` child to apply only safe,
+still-current memory maintenance through `lesson_append` / `lesson_remove` /
+`skill_manage`. It never touches `[PROTECTED]`, foreground/user, pinned, or
+validated entries. Only after the child finishes does it call
+`evolve_mark_curator_report_applied(...)`, which prevents replaying the same
+report.
 
-#### 6. Evolve applier — code evolution + curator report apply
+Curator can also feed the roadmap loop upstream: when a skill or lesson exposes
+an important way to improve thread-keeper itself, the curator child may call
+`evolve_format(...)` and add an `EVOLVE_CANDIDATE:` line to its report. Evolve
+reviewer then audits that candidate and turns it into a GitHub issue when it is
+worth doing.
 
-The brief format is not fixed: any session can file a change to it with
-`evolve_format(suggestion, rationale)`. The `evolve_reviewer` daemon triages
-the queue and **promotes** the good ones — promoted suggestions surface in the
-brief with a ★. Until now that's where it stopped: a human had to hand-edit
-`render_brief` in `brief.py`.
+#### 6. Evolve reviewer/applier — roadmap evolution loop
 
-`evolve_apply(evolve_id)` closes the loop. It spawns an `evolve_applier` child
-(resolved through the normal spawn role/model config — recommend opus, it
-writes code) that:
+The Evolve reviewer is thread-keeper's upstream product/engineering auditor. On
+its interval it audits thread-keeper itself for security/privacy risks, memory
+leaks, runaway daemons, cost waste, reliability gaps, optimizations, and new
+ideas from current agent/MCP/memory tooling research. It does **not** implement
+code. Its durable outputs are updates to `docs/ROADMAP.md` and GitHub issues
+with problem statement, proposed direction, acceptance criteria, test/docs
+impact, and research sources when applicable. Legacy `evolve_format(...)`
+suggestions are still included as audit input, but durable implementation work
+should become GitHub issues.
 
-1. edits `render_brief()` to implement the suggestion;
-2. adds/extends a **golden brief test** asserting both that the new
-   behavior/field appears *and* that the existing brief sections still render —
-   a format change can't silently break the brief;
-3. runs the full suite (`.venv/bin/python -m pytest -q`) until green;
-4. opens a **pull request** on a feature branch via `gh`, body quoting the
-   suggestion + rationale. The generated commit and PR title use the repo's
-   allowed Conventional Commit types (`feat:`/`fix:` etc.), never the internal
-   `evolve:` label.
+The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
+picks one open GitHub issue at a time (`roadmap` label first, then FIFO), skips
+issues with an active Evolve claim comment, posts its own claim comment before
+spawning, and advances to the next issue when an issue-local dispatch failure
+prevents startup. The child implements exactly that issue, runs the full suite,
+opens a PR whose body includes `Closes #N`, and only then calls
+`evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
+pushes to `main`, and it never marks an issue applied without a real PR URL. A
+manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
+why that issue cannot start instead of silently switching to another issue.
 
-**Autonomy is the PR gate, nothing more.** The child never pushes or commits to
-`main` (which has branch protection); a human reviews and merges. On a
-successful PR the child calls `evolve_mark_applied(evolve_id, pr_url)`, which
-sets `applied=1` so the suggestion stops resurfacing. Validation inside the
-child (golden render_brief test + full suite green) is the objective gate the
-loop otherwise lacks.
+Fallback/manual paths remain:
 
-The same applier role also drains Curator reports. `evolve_apply_curator_report`
-manually applies the latest complete report, or a specific report path. This
-path does **not** edit code or open a PR; it uses memory MCP tools only and
-marks the report applied with `evolve_mark_curator_report_applied(...)`.
+- `evolve_apply_curator_report(report_path="")` applies safe Curator memory
+  maintenance when no roadmap issue is being drained.
+- `evolve_apply(evolve_id)` still implements legacy promoted
+  `evolve_format(...)` suggestions behind a PR and calls
+  `evolve_mark_applied(evolve_id, pr_url)`.
 
-Manual: `evolve_apply(#id)` (get ids from `evolve_review()`). Optional daemon:
-set `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S>0` (default 0 = off) to periodically
-apply the latest complete Curator report first, then implement the oldest
-promoted+unapplied suggestion. Pin the agent/model with
-`THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
+Set `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S>0` to run periodic audit/research
+passes and `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S>0` to drain one issue per pass.
+Pin the agent/model with `THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
 `THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`. Single-flight (one applier child at
 a time, enforced by a short dispatch file lock plus running-task detection)
 keeps code edits and memory maintenance from colliding.
+Automatic apply passes respect the configured interval so multiple foreground
+MCP server startups do not repeatedly spawn workers for the same open issue.
+Manual tools such as `evolve_apply_roadmap_issue()` dispatch immediately. If no
+roadmap issue is startable, the pass falls back to Curator reports and then
+legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
 
@@ -545,12 +565,14 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
-| `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); triages the format-evolution queue (promote/dismiss) |
-| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); applies latest complete Curator report first, then oldest promoted+unapplied suggestion behind a PR. Manual `evolve_apply` / `evolve_apply_curator_report` work regardless |
+| `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, researches current approaches, updates roadmap/issues, and includes legacy evolve suggestions as input |
+| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
-read via pydantic-settings; real environment variables still override it.
+read via pydantic-settings; real environment variables still override it. On
+macOS, the menu-bar app's gear button can edit the same file visually, save up
+to three local presets, and request a ThreadKeeper restart after saving.
 Hot-config reload is
 [tracked](https://github.com/po4erk91/thread-keeper/issues/2).
 
@@ -581,7 +603,8 @@ THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR=opus
 Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI →
 `claude`; `"auto"` (or unset) defers to the active CLI. Real environment
 variables override the `.env`. Force host detection with
-`THREADKEEPER_ACTIVE_CLI=claude`. See `.env.example` for the full knob list.
+`THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
+`gemini`, `copilot`). See `.env.example` for the full knob list.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
@@ -719,6 +742,7 @@ threadkeeper/
 │   ├── claude_code.py
 │   ├── claude_desktop.py
 │   ├── codex.py
+│   ├── antigravity.py
 │   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py

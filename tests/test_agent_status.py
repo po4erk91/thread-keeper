@@ -179,6 +179,56 @@ def test_agent_status_evolve_applier_ready_when_curator_report_exists(
     assert loop["status"] == "ready"
 
 
+def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
+    mp_with_cid, monkeypatch,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    pkg["config"].EVOLVE_APPLY_INTERVAL_S = 604800
+    import threadkeeper.agent_status as status_mod
+    import threadkeeper.evolve_applier as applier_mod
+
+    status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+    monkeypatch.setattr(
+        applier_mod, "_fetch_open_issues",
+        lambda repo_root=None: (
+            [{
+                "number": 6,
+                "title": "Telemetry dashboard",
+                "labels": [{"name": "roadmap"}],
+                "body": "Need counters",
+                "url": "https://github.com/o/r/issues/6",
+            }],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: ([], ""),
+    )
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snap = agent_status_snapshot(refresh=False)
+    loop = {l["id"]: l for l in snap["loops"]}["evolve_apply"]
+    assert loop["backlog_count"] == 1
+    assert loop["status"] == "ready"
+
+
+def test_agent_status_evolve_reviewer_ready_when_due_without_legacy_backlog(
+    mp_with_cid,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    pkg["config"].EVOLVE_REVIEW_INTERVAL_S = 604800
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snap = agent_status_snapshot(refresh=False)
+    loop = {l["id"]: l for l in snap["loops"]}["evolve_review"]
+    assert loop["backlog_count"] == 0
+    assert loop["backlog_label"] == "legacy pending suggestions"
+    assert loop["status"] == "ready"
+
+
 def test_agent_status_evolve_applier_prefers_completion_event(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     pkg["config"].EVOLVE_APPLY_INTERVAL_S = 604800

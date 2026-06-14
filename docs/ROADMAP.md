@@ -44,15 +44,21 @@ remains a live question.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
+- Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
+  leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
+  creates/updates roadmap issues; Evolve applier drains one open issue at a
+  time behind a visible GitHub issue claim comment and PR, advances past
+  unstartable issues, and falls back to Curator reports and legacy
+  `evolve_format` suggestions when no issue is startable.
 
 ---
 
 ## Open
 
 **More IDE / agent adapters — Cursor, Windsurf, JetBrains, Zed, etc.**
-Current registry covers six clients (Claude Code / Claude Desktop /
-Codex CLI + desktop / Gemini / Copilot / VS Code). The MCP ecosystem
-is wider:
+Current registry covers seven clients (Claude Code / Claude Desktop /
+Codex CLI + desktop / Antigravity CLI `agy` / Gemini legacy / Copilot /
+VS Code). The MCP ecosystem is wider:
 
 - **Cursor** — AI-first VS Code fork, has its own MCP config at
   `~/.cursor/mcp.json`. Schema close to VS Code's but a separate file.
@@ -136,9 +142,11 @@ deployment is the more concrete need; cross-machine CRDT-based sync
 between independent installs is a strictly harder problem and
 probably never the right answer here.
 
-**Hot-config reload.** `settings.json` and env require server restart.
-Ideally — pickup without restarting daemons. Scope: S (env via periodic
-re-read in the config object, daemons already read per-tick).
+**Hot-config reload.** `.env` can be edited from the macOS menu-bar Settings
+window and that UI can request an MCP server restart after saving, but true
+in-process reload is not implemented. Ideally — pickup without restarting
+daemons. Scope: S (env via periodic re-read in the config object, daemons
+already read per-tick).
 
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,

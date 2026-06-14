@@ -472,7 +472,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     # Resolve which CLI agent should run this child. Claude is the
     # historical default and the only path with full MCP-config
     # injection + session-id + append-system-prompt translation; for
-    # codex/gemini/copilot we take a simpler path via the adapter's
+    # codex/antigravity/gemini/copilot we take a simpler path via the adapter's
     # spawn_argv that builds basic argv only.
     from .. import spawn_config as _sc, identity as _id
     chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())

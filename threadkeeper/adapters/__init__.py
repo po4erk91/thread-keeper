@@ -18,6 +18,7 @@ from .base import CLIAdapter, NormalizedMessage
 from .claude_code import ADAPTER as _CLAUDE_CODE
 from .claude_desktop import ADAPTER as _CLAUDE_DESKTOP
 from .codex import ADAPTER as _CODEX
+from .antigravity import ADAPTER as _ANTIGRAVITY
 from .gemini import ADAPTER as _GEMINI
 from .copilot import ADAPTER as _COPILOT
 from .vscode import ADAPTER as _VSCODE
@@ -26,6 +27,7 @@ ADAPTERS: list[CLIAdapter] = [
     _CLAUDE_CODE,
     _CLAUDE_DESKTOP,
     _CODEX,
+    _ANTIGRAVITY,
     _GEMINI,
     _COPILOT,
     _VSCODE,
@@ -38,14 +40,17 @@ def installed_adapters() -> list[CLIAdapter]:
 
 
 def get_adapter(name: str) -> CLIAdapter | None:
-    """Lookup adapter by short name ('claude' / 'codex' / 'gemini' /
-    'copilot' / 'claude-desktop' / 'vscode'). Returns None on unknown
-    name. Used by spawn() dispatcher and the startup validator."""
+    """Lookup adapter by short name ('claude' / 'codex' / 'antigravity' /
+    'agy' / 'gemini' / 'copilot' / 'claude-desktop' / 'vscode').
+    Returns None on unknown name. Used by spawn() dispatcher and the
+    startup validator."""
     aliases = {
         "claude": "claude-code",      # short name for the spawn adapter
         "claude-code": "claude-code",
         "claude-desktop": "claude-desktop",
         "codex": "codex",
+        "antigravity": "antigravity",
+        "agy": "antigravity",
         "gemini": "gemini",
         "copilot": "copilot",
         "vscode": "vscode",

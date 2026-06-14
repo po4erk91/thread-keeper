@@ -39,6 +39,7 @@ def _bootstrap(tmp_path, monkeypatch):
         claude_code as cc_mod,
         claude_desktop as cd_mod,
         codex as codex_mod,
+        antigravity as agy_mod,
         gemini as gem_mod,
         copilot as cop_mod,
         vscode as vsc_mod,
@@ -50,6 +51,7 @@ def _bootstrap(tmp_path, monkeypatch):
         "claude": cc_mod.ADAPTER,
         "claude_desktop": cd_mod.ADAPTER,
         "codex": codex_mod.ADAPTER,
+        "antigravity": agy_mod.ADAPTER,
         "gemini": gem_mod.ADAPTER,
         "copilot": cop_mod.ADAPTER,
         "vscode": vsc_mod.ADAPTER,
@@ -60,12 +62,12 @@ def _bootstrap(tmp_path, monkeypatch):
 # Registry shape
 # ---------------------------------------------------------------------
 
-def test_registry_lists_six_adapters(tmp_path, monkeypatch):
+def test_registry_lists_seven_adapters(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     names = {a.name for a in pkg["ADAPTERS"]}
     assert names == {
-        "claude-code", "claude-desktop", "codex", "gemini", "copilot",
-        "vscode",
+        "claude-code", "claude-desktop", "codex", "antigravity",
+        "gemini", "copilot", "vscode",
     }
 
 
@@ -412,7 +414,44 @@ def test_codex_iter_messages_uses_forced_child_cid_from_spawn_preamble(
 
 
 # ---------------------------------------------------------------------
-# Gemini
+# Antigravity
+# ---------------------------------------------------------------------
+
+def test_antigravity_register_mcp_writes_mcp_config_json(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp_config.json"
+    monkeypatch.setattr(pkg["antigravity"], "config_path", cfg)
+    result = pkg["antigravity"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={"PYTHONPATH": "/repo"},
+    )
+    body = json.loads(cfg.read_text())
+    assert "add" in result
+    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
+    assert body["mcpServers"]["thread-keeper"]["env"]["PYTHONPATH"] == "/repo"
+
+
+def test_antigravity_register_mcp_accepts_empty_config_file(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / "mcp_config.json"
+    cfg.write_text("")
+    monkeypatch.setattr(pkg["antigravity"], "config_path", cfg)
+    result = pkg["antigravity"].register_mcp_server(
+        name="thread-keeper",
+        command="/opt/python",
+        args=["-m", "threadkeeper.server"],
+        env={},
+    )
+    body = json.loads(cfg.read_text())
+    assert "add" in result
+    assert body["mcpServers"]["thread-keeper"]["args"] == [
+        "-m", "threadkeeper.server",
+    ]
+
+
+# Gemini legacy
 # ---------------------------------------------------------------------
 
 def test_gemini_register_mcp_writes_settings_json(tmp_path, monkeypatch):
@@ -497,7 +536,7 @@ def test_copilot_register_mcp_migrates_legacy_servers_key(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------
-# Hooks: shared Claude-style format used by claude-code, gemini, copilot
+# Hooks: shared Claude-style format used by claude-code, gemini legacy, copilot
 # ---------------------------------------------------------------------
 
 def _specs():

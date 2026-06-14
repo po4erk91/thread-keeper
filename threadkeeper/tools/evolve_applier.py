@@ -10,6 +10,10 @@
     through the same single-flight evolve_applier role. This mutates memory
     stores directly through MCP tools; no code PR.
 
+  evolve_apply_roadmap_issue(issue_number=0)
+    Implement one open GitHub issue, prioritized by roadmap label then FIFO.
+    Opens a PR and marks the issue handed off only after the PR exists.
+
   evolve_mark_applied(evolve_id, pr_url)
     Called BY the applier child after `gh pr create` succeeds. Sets applied=1
     so the suggestion stops resurfacing. Requires a non-empty pr_url (the gate).
@@ -34,8 +38,11 @@ from ..config import EVOLVE_APPLY_INTERVAL_S
 from ..evolve_applier import (
     apply_curator_report,
     apply_evolve,
+    apply_roadmap_issue,
     mark_curator_report_applied,
     mark_applied,
+    mark_roadmap_issue_applied,
+    _open_roadmap_issues,
     _pending_curator_reports,
     _promoted_unapplied,
     _running_applier_children,
@@ -80,6 +87,19 @@ def evolve_apply_curator_report(report_path: str = "") -> str:
 
 
 @mcp.tool()
+def evolve_apply_roadmap_issue(issue_number: int = 0) -> str:
+    """Implement one open GitHub issue through the evolve_applier role.
+
+    With `issue_number=0`, picks the next open issue: `roadmap`-labeled issues
+    first, then FIFO by issue number. The child implements exactly one issue,
+    runs the suite, opens a PR with `Closes #N`, then calls
+    evolve_mark_roadmap_issue_applied(issue_number, pr_url)."""
+    conn = get_db()
+    _ensure_session(conn)
+    return apply_roadmap_issue(int(issue_number or 0))
+
+
+@mcp.tool()
 def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     """Mark a format-evolution suggestion as APPLIED — called by the
     evolve_applier child after it has opened the PR.
@@ -94,6 +114,20 @@ def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     return mark_applied(conn, int(evolve_id), pr_url.strip())
+
+
+@mcp.tool()
+def evolve_mark_roadmap_issue_applied(issue_number: int, pr_url: str) -> str:
+    """Mark a roadmap issue as handed off — called by evolve_applier only
+    after it has opened a real pull request for that issue."""
+    if not (pr_url or "").strip():
+        return ("ERR pr_url_required (PR gate: only mark issue applied once a "
+                "real pull request exists)")
+    conn = get_db()
+    _ensure_session(conn)
+    return mark_roadmap_issue_applied(
+        conn, int(issue_number), pr_url.strip()
+    )
 
 
 @mcp.tool()
@@ -118,18 +152,28 @@ def evolve_apply_status() -> str:
     _ensure_session(conn)
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
+    issues, issue_err = _open_roadmap_issues(conn)
     running = _running_applier_children(conn)
     floor = _last_apply_ts(conn)
     now = int(time.time())
     age_s = (now - floor) if floor else None
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
+        f"roadmap_issues={len(issues)} "
         f"curator_reports={len(reports)} "
         f"promoted_unapplied={len(pending)} "
         f"applier_running={len(running)}",
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
     ]
+    if issue_err:
+        lines.append(f"roadmap_issue_fetch_error={issue_err}")
+    if issues:
+        lines.append("")
+        lines.append("roadmap issues (next first):")
+        for issue in issues[:10]:
+            title = str(issue.get("title") or "")[:90].replace("\n", " ")
+            lines.append(f"  #{int(issue['number'])}  {title}")
     if reports:
         lines.append("")
         lines.append("curator report pending:")
@@ -147,7 +191,7 @@ def evolve_apply_status() -> str:
         rows = conn.execute(
             "SELECT kind, created_at, summary FROM events "
             "WHERE kind IN ('evolve_apply_pass', 'curator_report_applied', "
-            "'evolve_applied') "
+            "'evolve_applied', 'roadmap_issue_applied') "
             "ORDER BY created_at DESC, id DESC LIMIT 5"
         ).fetchall()
     except Exception:

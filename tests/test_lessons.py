@@ -1,7 +1,8 @@
 """CLI-agnostic lessons store at ~/.threadkeeper/lessons.md.
 
-Backs the materialization side of the learning loop for non-Claude
-CLIs (Codex, Gemini, Copilot) — see issue #7.
+Backs the materialization side of the learning loop for clients that
+still need a CLI-agnostic fallback (Gemini legacy, Copilot, bare MCP) —
+see issue #7.
 """
 from __future__ import annotations
 

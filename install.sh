@@ -104,7 +104,7 @@ cat <<DONE
 ${GREEN}thread-keeper installed.${RESET}
 
 Next steps:
-  ${CYAN}1.${RESET} Restart your CLI of choice (Claude Code, Claude Desktop, Codex, Gemini, Copilot, VS Code) — the SessionStart hook auto-injects brief() on the first message of a new conversation.
+  ${CYAN}1.${RESET} Restart your CLI of choice (Claude Code, Claude Desktop, Codex, Antigravity CLI/agy, Gemini legacy, Copilot, VS Code) — hook-capable clients auto-inject brief(); hookless clients should call brief() on the first message.
 
   ${CYAN}2.${RESET} (Optional, recommended) Enable the background learning daemons by adding to ~/.claude/settings.json under "env":
       "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "900",   # extract class-level skills every 15 min

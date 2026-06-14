@@ -59,9 +59,33 @@ def test_menubar_status_item_uses_idle_chip_and_running_gears():
     assert "store.snapshot.runningCount > 0" not in swift
     assert "button.image = gearFrames" in swift
     assert "TimelineView" not in swift
+    assert "store.openEnvSettings()" in swift
+    assert '.help("Settings")' in swift
+    assert '.help("Refresh")' not in swift
     assert 'THREADKEEPER_MENUBAR_RESTART_RSS_MB' in swift
     assert 'runStatusCommand(arguments: ["--cleanup-memory"])' in swift
     assert '.help("Clean memory")' in swift
+
+
+def test_menubar_env_settings_window_edits_env_and_presets():
+    repo = Path(__file__).resolve().parents[1]
+    swift = (
+        repo / "apps" / "macos-agent-status" / "ThreadKeeperAgentStatus.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "EnvSettingsWindowController" in swift
+    assert "ThreadKeeper Settings" in swift
+    assert "THREADKEEPER_ENV_FILE" in swift
+    assert "~/.threadkeeper/.env" in swift
+    assert "threadkeeperEnvPresetSlotsV1" in swift
+    assert "(1...3).map" in swift
+    assert "EnvPresetCard" in swift
+    assert "mergeEnvText(raw:" in swift
+    assert "THREADKEEPER_DISABLE_BG_DAEMONS" in swift
+    assert "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S" in swift
+    assert "THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER" in swift
+    assert 'Label("Save & Restart", systemImage: "arrow.clockwise.circle")' in swift
+    assert 'process.arguments = ["-TERM", "-f", "threadkeeper.server"]' in swift
 
 
 def test_menubar_source_falls_back_to_packaged_assets(fresh_mp, tmp_path, monkeypatch):

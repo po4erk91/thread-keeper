@@ -160,9 +160,9 @@ def _archive_dir() -> Path:
 # ──────────────────────────────────────────────────────────────────────────
 # Multi-mirror — propagate a whole skill directory across every known
 # native skills/ root so a single materialization reaches Claude, Codex,
-# shared ~/.agents skills, and the canonical ~/.threadkeeper/skills/
-# fallback at once. Best-effort: per-mirror failures are logged but
-# don't fail the canonical write.
+# Antigravity, shared ~/.agents skills, and the canonical
+# ~/.threadkeeper/skills/ fallback at once. Best-effort: per-mirror
+# failures are logged but don't fail the canonical write.
 # ──────────────────────────────────────────────────────────────────────────
 
 def _extra_skill_roots() -> list[Path]:

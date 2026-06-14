@@ -1,21 +1,16 @@
-"""Evolve reviewer daemon — autonomous triage of the format-evolution queue.
+"""Evolve reviewer daemon — autonomous roadmap audit for thread-keeper.
 
-`evolve_format()` lets any session file a suggestion to improve thread-keeper's
-own format/protocol. The audit found the predictable failure: 5 filed, 0 ever
-actioned — a write-only graveyard, because nothing reviewed it and applying a
-suggestion is friction nobody picks up mid-task.
+The reviewer is the upstream half of thread-keeper's self-improvement loop. It
+does not implement code. On each interval it spawns a research/audit child that
+reviews thread-keeper itself for security, innovation, memory leaks, cost/
+performance, reliability, and integration opportunities; researches current
+external ideas when useful; updates docs/ROADMAP.md through a PR if the roadmap
+needs edits; and creates or updates GitHub issues for actionable work.
 
-This daemon keeps the queue HONEST (it does not — must not — apply suggestions;
-applying edits format/code, a foreground/human action). Each pass spawns a
-context-free child that reviews the pending suggestions and, per item, calls
-evolve_decide():
-  - PROMOTE — still relevant + worth doing → brief surfaces it sharply (★) so
-    the foreground agent / human actually applies it.
-  - DISMISS — duplicate, superseded, or stale → drops out of the queue.
-
-Mirror of probe_daemon / curator: weekly cadence, foreground-only,
-machine-wide single-flight via the prompt prefix, advisory child with a
-narrow tool surface (evolve_review + evolve_decide, no code/format mutation).
+Legacy `evolve_format()` suggestions are still included as audit input. The
+child can promote/dismiss them for brief visibility, but durable implementation
+work should be represented as GitHub issues. The evolve_applier drains those
+issues one at a time.
 """
 
 from __future__ import annotations
@@ -39,35 +34,68 @@ _started = False
 EVOLVE_PROMPT_PREFIX = "You are an EVOLVE REVIEWER"
 
 EVOLVE_PROMPT = """\
-You are an EVOLVE REVIEWER for thread-keeper. Below is the queue of PENDING
-format-evolution suggestions — proposals to improve thread-keeper's own
-brief format, note kinds, nudges, or tool surface, filed by past sessions.
+You are an EVOLVE REVIEWER for thread-keeper. Your job is product/engineering
+roadmap audit, not implementation.
 
-Your job is TRIAGE, not implementation. You do NOT apply any suggestion
-(applying edits format/code — that's a foreground/human action). For EACH
-pending suggestion call exactly one:
+MISSION
+-------
+Audit thread-keeper itself for:
+  - security and privacy risks;
+  - memory leaks, runaway daemons, spawn/cost waste, and telemetry blind spots;
+  - reliability gaps in learning loops, issue flow, tests, and adapters;
+  - optimizations and simplifications;
+  - integration of new ideas from current agent/MCP/memory tooling research;
+  - stale or missing roadmap items.
 
-  evolve_decide(evolve_id=<id>, decision='promote', reason='<why>')
-     — the suggestion is still relevant and worth doing. Promoting surfaces
-       it sharply in the brief (★) so the foreground agent / human applies it.
+You may do web research. Use it only when it can produce a concrete improvement
+for this repo. Prefer primary/current sources when researching APIs or platform
+behavior. Any issue based on web research must cite its source URLs in the body.
 
-  evolve_decide(evolve_id=<id>, decision='dismiss', reason='<why>')
-     — the suggestion is a DUPLICATE of another (say which id), already
-       superseded, or STALE (references a brief field / behavior that no
-       longer exists). Be specific in the reason.
+REPO AND BACKLOG CHECKS
+-----------------------
+Run from the repo root:
+  - Read README.md, docs/ARCHITECTURE.md, docs/ROADMAP.md, CHANGELOG.md.
+  - Inspect threadkeeper/evolve_daemon.py, threadkeeper/evolve_applier.py,
+    threadkeeper/agent_status.py, threadkeeper/curator.py, and relevant tests.
+  - Run `gh issue list --state open --limit 50` and avoid duplicate issues.
+  - Review pending legacy evolve suggestions below. For each clear suggestion,
+    create or link a GitHub issue; then call evolve_decide(promote|dismiss) only
+    when that helps keep the legacy queue honest.
 
-Guidance:
-- When two suggestions overlap, PROMOTE the clearest one and DISMISS the
-  rest as "duplicate of #<id>".
-- Prefer DISMISS for vague or one-off ergonomic gripes; PROMOTE only
-  concrete, durable improvements.
-- If genuinely unsure, leave it (don't call evolve_decide for that id).
+OUTPUTS
+-------
+1. Create/update GitHub issues for actionable roadmap work:
+     gh issue create --title "..." --label enhancement --label roadmap --body "..."
+   Use existing labels when possible. If the item is docs-only or i18n/adapter,
+   use fitting labels too. The issue body must contain: Problem, Proposed
+   direction, Acceptance criteria, Test/docs impact, and Sources if researched.
 
-When done, output the single line EVOLVE_REVIEW_COMPLETE. Do NOT cite
-internal IDs other than the evolve #ids in the queue. No other tools.
+2. If docs/ROADMAP.md is stale, update it on a branch and open a PR. Do not
+   commit to main. Do not implement product/code fixes in reviewer; only roadmap
+   documentation changes are allowed.
 
-PENDING SUGGESTIONS
-===================
+3. If no new issue/doc change is warranted, say so and explain the audit signal
+   briefly.
+
+HARD CONSTRAINTS
+----------------
+  - Do not implement roadmap issues. That is evolve_applier's job.
+  - Do not close issues unless they are exact duplicates and you state which
+    issue supersedes them.
+  - Do not create duplicate issues. Search open and closed issues first.
+  - Never write secrets, tokens, local private paths, or transcript content into
+    GitHub issues.
+  - If credentials/network block GitHub writes, output a concise blocked summary
+    and do not pretend issues were created.
+
+When done, output exactly:
+  EVOLVE_REVIEW_COMPLETE created=<n> updated=<n> roadmap_pr=<url-or-none>
+or:
+  EVOLVE_REVIEW_ABORTED reason=<why>
+
+PENDING LEGACY EVOLVE SUGGESTIONS
+---------------------------------
+{queue}
 """
 
 
@@ -100,6 +128,11 @@ def _record_evolve_pass(conn: sqlite3.Connection, ts: int,
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("evolve_daemon: failed to record pass", exc_info=True)
+
+
+def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
+    last = _last_evolve_ts(conn)
+    return last <= 0 or now_t >= last + int(EVOLVE_REVIEW_INTERVAL_S)
 
 
 def _pending(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -145,14 +178,13 @@ def _running_evolve_children(conn: sqlite3.Connection) -> list[str]:
 
 
 def run_evolve_pass(force: bool = False) -> str:
-    """One evolve-review pass.
+    """One evolve-review/audit pass.
 
     Status strings:
       'disabled'                  — knob off and not forced
-      'no_pending'                — nothing to triage
-      'below_min n=<k>'           — fewer than EVOLVE_REVIEW_MIN pending
+      'not_due'                   — audit checked recently and no legacy input
       'reviewer_running n=<k>'    — a reviewer child is already in flight
-      'spawned n=<k> …'           — launched the reviewer child
+      'spawned audit pending=<k>' — launched the audit/research child
       'spawn_error: …'            — spawn rejected
     """
     if EVOLVE_REVIEW_INTERVAL_S <= 0 and not force:
@@ -160,13 +192,8 @@ def run_evolve_pass(force: bool = False) -> str:
     conn = get_db()
     now_t = int(time.time())
     pending = _pending(conn)
-    if not pending:
-        _record_evolve_pass(conn, now_t, "no_pending")
-        return "no_pending"
-    if len(pending) < EVOLVE_REVIEW_MIN:
-        out = f"below_min n={len(pending)}"
-        _record_evolve_pass(conn, now_t, out)
-        return out
+    if not force and not _pass_due(conn, now_t):
+        return "not_due"
 
     running = _running_evolve_children(conn)
     if running:
@@ -174,12 +201,15 @@ def run_evolve_pass(force: bool = False) -> str:
         _record_evolve_pass(conn, now_t, out)
         return out
 
-    queue = "\n".join(
-        f"#{r['id']}: {r['suggestion']}"
-        + (f"\n    rationale: {r['rationale']}" if r["rationale"] else "")
-        for r in pending
+    queue = (
+        "\n".join(
+            f"#{r['id']}: {r['suggestion']}"
+            + (f"\n    rationale: {r['rationale']}" if r["rationale"] else "")
+            for r in pending
+        )
+        if pending else "(none)"
     )
-    prompt = EVOLVE_PROMPT + queue
+    prompt = EVOLVE_PROMPT.format(queue=queue)
 
     from .tools.spawn import spawn  # late import — avoids import cycle
     try:
@@ -187,20 +217,22 @@ def run_evolve_pass(force: bool = False) -> str:
             prompt=prompt,
             visible=False,
             capture_output=True,
-            permission_mode="auto",
+            permission_mode="bypassPermissions",
             role="evolve_reviewer",
             write_origin="evolve",
             slim=True,
             extra_allowed_tools=(
+                "Bash,Edit,Write,Read,Glob,Grep,WebSearch,WebFetch,"
                 "mcp__thread-keeper__evolve_review,"
-                "mcp__thread-keeper__evolve_decide"
+                "mcp__thread-keeper__evolve_decide,"
+                "mcp__thread-keeper__broadcast"
             ),
         )
     except Exception as e:  # noqa: BLE001 — never crash the daemon
         out = f"spawn_error: {e}"
         _record_evolve_pass(conn, now_t, out)
         return out
-    out = f"spawned n={len(pending)} {str(result)[:120]}"
+    out = f"spawned audit pending={len(pending)} {str(result)[:120]}"
     _record_evolve_pass(conn, now_t, out)
     return out
 

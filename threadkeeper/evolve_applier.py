@@ -1,38 +1,35 @@
-"""Evolve applier — closes the format-evolution self-improvement loop, PR-gated.
+"""Evolve applier — PR-gated implementation worker for roadmap issues.
 
-`evolve_format()` files a suggestion to improve thread-keeper's brief format (the
-session-start memory snapshot rendered by `render_brief` in `brief.py`). The
-`evolve_reviewer` daemon PROMOTES the good ones — and the brief surfaces them
-with a ★. Until now that's where it stopped: a human had to hand-edit `brief.py`.
+Primary path:
 
-This module automates the IMPLEMENTATION, with a pull request as the human gate:
+  apply_roadmap_issue(issue_number=0) — pick the first startable open GitHub
+  issue (`roadmap` label first, then FIFO; skip/advance past issues that cannot
+  be claimed), build an implementer prompt, spawn an `evolve_applier` child that
+  edits code/docs, runs the full suite, opens a PR with `Closes #N`, then calls
+  `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`.
 
-  apply_evolve(evolve_id)  — look up a PROMOTED + not-applied suggestion, build
-  an implementer prompt, and spawn() an `evolve_applier` child that EDITS
-  `brief.py` (`render_brief`), adds/extends a GOLDEN render_brief test, runs the
-  FULL suite, and opens a PR on a feature branch. The child NEVER pushes or
-  commits to main (main has branch protection); a human reviews + merges.
+Fallback paths:
 
-On a successful `gh pr create`, the child calls
-`evolve_mark_applied(evolve_id, pr_url)` → `applied=1`, so the suggestion stops
-resurfacing in the brief / `evolve_review`.
+  apply_curator_report(report_path="") — apply safe Curator memory-maintenance
+  recommendations using memory MCP tools only; no code PR.
 
-The optional daemon (`THREADKEEPER_EVOLVE_APPLY_INTERVAL_S > 0`, default 0 = off)
-periodically picks the oldest promoted+unapplied suggestion and fires
-apply_evolve for it. Mirror of evolve_daemon / candidate_reviewer: foreground-
-only, machine-wide single-flight via the prompt prefix, child runs with
-`write_origin='evolve_apply'` so it can't recursively start daemons.
+  apply_evolve(evolve_id) — implement a legacy promoted `evolve_format`
+  suggestion behind a PR and call `evolve_mark_applied(evolve_id, pr_url)`.
 
-The objective gate the loop has lacked: the child must make a golden
-render_brief test pass AND keep the full suite green before it may open the PR.
+All code-changing paths are PR-gated. The child never commits to main or marks
+work applied without a real PR URL. The file lock plus prompt-prefix running
+task check enforce one applier child at a time across foreground servers.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
+import json
 import logging
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -59,7 +56,7 @@ PROMOTED it. Your job: IMPLEMENT it in code, VALIDATE with the test suite, and
 open a PULL REQUEST. A human reviews and merges — you NEVER merge or touch main.
 
 SUGGESTION #{evolve_id}
-=======================
+-----------------------
 {suggestion}
 {rationale_block}
 REPO: {repo}   (run everything from here; the project venv is .venv/)
@@ -132,6 +129,10 @@ When finished, output exactly ONE final line:
 
 CURATOR_REPORT_MARKER = "CURATOR_PASS_COMPLETE"
 CURATOR_REPORT_APPLIED_KIND = "curator_report_applied"
+ROADMAP_ISSUE_APPLIED_KIND = "roadmap_issue_applied"
+ROADMAP_ISSUE_FETCH_LIMIT = 50
+ROADMAP_ISSUE_CLAIM_MARKER = "<!-- thread-keeper:evolve-applier-claim -->"
+ROADMAP_ISSUE_CLAIM_TTL_S = 24 * 60 * 60
 
 CURATOR_REPORT_APPLY_PROMPT = """\
 You are an EVOLVE APPLIER for thread-keeper. This work item is NOT a brief-code
@@ -140,7 +141,7 @@ lessons, skills, and concepts. Your job is to apply ONLY the safe, still-valid
 memory maintenance recommendations, then mark the report applied.
 
 AUTHORIZATION AND SESSION DISCIPLINE
-====================================
+------------------------------------
 The human user explicitly authorized Evolve applier to process Curator reports
 automatically. This is routine memory maintenance, not a new user-facing thread.
 Do NOT call brief(), context(), open_thread(), close_thread(), note(),
@@ -148,11 +149,11 @@ session_end(), search(), or dialog_search(). The report plus the cross-check
 tools below are the complete task context.
 
 REPORT_PATH
-===========
+-----------
 {report_path}
 
 REPORT_TEXT
-===========
+-----------
 {report_text}
 
 REPO: {repo}
@@ -202,6 +203,78 @@ or:
   CURATOR_REPORT_APPLY_ABORTED reason=<why>
 """
 
+ROADMAP_ISSUE_APPLY_PROMPT = """\
+You are an EVOLVE APPLIER for thread-keeper. This work item is a GitHub issue
+from the project roadmap/backlog. Your job is to implement exactly ONE issue,
+validate it, open a pull request, then mark the issue work as handed off.
+
+ISSUE #{issue_number}: {issue_title}
+---------------------
+URL: {issue_url}
+LABELS: {issue_labels}
+
+ISSUE BODY
+----------
+{issue_body}
+
+REPO: {repo}   (run everything from here; the project venv is .venv/)
+
+DO, strictly in order:
+
+1. Re-check current issue state:
+     gh issue view {issue_number} --json number,title,state,labels,body,url
+   Abort if it is no longer open, or if it is clearly already implemented by
+   current code/docs. If it is already implemented, comment on the issue with
+   the evidence and stop without marking it applied.
+
+CLAIM
+-----
+Before spawning you, the parent Evolve applier already posted a GitHub issue
+comment containing `{claim_marker}`. Treat that as your active work claim so
+other agents do not start the same issue in parallel. Do not remove it. If you
+abort after doing meaningful investigation, leave a normal issue comment with
+the blocker/status so a later agent has enough context.
+
+2. Read the relevant code and docs before editing. Also read docs/ROADMAP.md
+   and the issue body so the implementation matches the tracked roadmap item.
+
+3. Implement only this issue. Keep the change surgical, update README /
+   docs/ARCHITECTURE.md / docs/ROADMAP.md / CHANGELOG.md when behavior or
+   documented state changes, and add focused tests proportional to risk.
+
+4. Run the full suite from the repo root and read the FINAL summary line:
+     env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
+   It MUST report 0 failed. Fix related failures and re-run until green.
+
+5. Open a PR on a new branch; never commit on main:
+     git checkout -b {branch}
+     git add <only files you changed>
+     git commit -m "<type>: <short imperative summary>"
+     git push -u origin {branch}
+     gh pr create --title "<type>: <short>" --body "<body incl. Closes #{issue_number}>"
+   Use an allowed Conventional Commit type (`feat`, `fix`, `docs`, `test`,
+   etc.). The PR body MUST include `Closes #{issue_number}` so GitHub closes
+   the issue after human merge.
+
+6. ONLY after gh prints a real PR URL, call:
+     evolve_mark_roadmap_issue_applied(
+       issue_number={issue_number},
+       pr_url="<the PR url>"
+     )
+
+HARD CONSTRAINTS:
+  • Implement one issue only; do not batch multiple roadmap items.
+  • Never push or commit to main, never merge the PR.
+  • Do not mark the issue applied without a real PR URL.
+  • If blocked by credentials/network/permissions, comment on the issue with
+    the blocker and stop without marking it applied.
+
+When finished, output exactly ONE final line:
+  ROADMAP_ISSUE_APPLY_COMPLETE issue=#{issue_number} pr=<url>
+or:
+  ROADMAP_ISSUE_APPLY_ABORTED issue=#{issue_number} reason=<why>
+"""
+
 
 def _repo_root() -> Path:
     """Repository root = the package's parent dir (threadkeeper/.. )."""
@@ -217,6 +290,10 @@ def _slug(text: str, maxlen: int = 32) -> str:
 
 def branch_name(evolve_id: int, suggestion: str) -> str:
     return f"evolve/apply-{int(evolve_id)}-{_slug(suggestion)}"
+
+
+def roadmap_issue_branch_name(issue_number: int, title: str) -> str:
+    return f"roadmap/issue-{int(issue_number)}-{_slug(title)}"
 
 
 def _report_key(path: Path) -> str:
@@ -292,6 +369,249 @@ def _pending_curator_reports(conn: sqlite3.Connection) -> list[Path]:
     return [latest] if latest else []
 
 
+def _issue_labels(issue: dict) -> list[str]:
+    labels = issue.get("labels") or []
+    out: list[str] = []
+    for label in labels:
+        if isinstance(label, dict):
+            name = label.get("name")
+        else:
+            name = str(label)
+        if name:
+            out.append(str(name))
+    return out
+
+
+def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], str]:
+    """Fetch open GitHub issues via gh. Returns (issues, error)."""
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "issue", "list",
+        "--state", "open",
+        "--limit", str(ROADMAP_ISSUE_FETCH_LIMIT),
+        "--json", "number,title,labels,body,url,createdAt,updatedAt",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_issue_list_timeout"
+    except OSError as e:
+        return [], f"gh_issue_list_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_issue_list_failed: {msg[:180]}"
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as e:
+        return [], f"gh_issue_list_bad_json: {e}"
+    if not isinstance(data, list):
+        return [], "gh_issue_list_bad_shape"
+    return data, ""
+
+
+def _fetch_issue_comments(
+    issue_number: int,
+    repo_root: Optional[Path] = None,
+) -> tuple[list[dict], str]:
+    """Fetch issue comments via gh. Returns (comments, error)."""
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "issue", "view", str(int(issue_number)),
+        "--json", "comments",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_issue_comments_timeout"
+    except OSError as e:
+        return [], f"gh_issue_comments_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_issue_comments_failed: {msg[:180]}"
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as e:
+        return [], f"gh_issue_comments_bad_json: {e}"
+    comments = data.get("comments") if isinstance(data, dict) else None
+    if not isinstance(comments, list):
+        return [], "gh_issue_comments_bad_shape"
+    return comments, ""
+
+
+def _parse_gh_timestamp(value: object) -> Optional[float]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _issue_comment_is_active_claim(comment: dict, now_t: float) -> bool:
+    body = str(comment.get("body") or "")
+    if ROADMAP_ISSUE_CLAIM_MARKER not in body:
+        return False
+    created_at = _parse_gh_timestamp(comment.get("createdAt"))
+    if created_at is None:
+        return True
+    return now_t < created_at + ROADMAP_ISSUE_CLAIM_TTL_S
+
+
+def _issue_has_active_claim(
+    issue_number: int,
+    repo_root: Optional[Path] = None,
+    now_t: Optional[float] = None,
+) -> tuple[bool, str]:
+    comments, err = _fetch_issue_comments(issue_number, repo_root)
+    if err:
+        return False, err
+    now = float(now_t if now_t is not None else time.time())
+    return any(_issue_comment_is_active_claim(c, now) for c in comments), ""
+
+
+def _roadmap_issue_claim_body(
+    issue: dict,
+    now_t: Optional[float] = None,
+) -> str:
+    num = int(issue["number"])
+    title = str(issue.get("title") or f"issue {num}")
+    ts = datetime.fromtimestamp(
+        float(now_t if now_t is not None else time.time()),
+        timezone.utc,
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    ttl_h = int(ROADMAP_ISSUE_CLAIM_TTL_S // 3600)
+    return (
+        f"{ROADMAP_ISSUE_CLAIM_MARKER}\n"
+        "Evolve applier is starting work on this issue.\n\n"
+        f"- Issue: #{num} {title}\n"
+        "- Agent role: evolve_applier\n"
+        f"- Started: {ts}\n"
+        f"- Claim TTL: {ttl_h}h\n\n"
+        "Other agents should not start parallel implementation while this "
+        "claim is active. If no PR or status update appears after the TTL, "
+        "treat the claim as stale."
+    )
+
+
+def _comment_issue_claim(
+    issue: dict,
+    repo_root: Optional[Path] = None,
+) -> str:
+    """Post the GitHub issue claim comment. Empty string means success."""
+    repo = str(repo_root or _repo_root())
+    num = int(issue["number"])
+    cmd = [
+        "gh", "issue", "comment", str(num),
+        "--body", _roadmap_issue_claim_body(issue),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "gh_issue_comment_timeout"
+    except OSError as e:
+        return f"gh_issue_comment_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return f"gh_issue_comment_failed: {msg[:180]}"
+    return ""
+
+
+def _roadmap_issue_applied(conn: sqlite3.Connection, issue_number: int) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM events WHERE kind=? AND target=? LIMIT 1",
+            (ROADMAP_ISSUE_APPLIED_KIND, str(int(issue_number))),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
+
+
+def _open_roadmap_issues(
+    conn: sqlite3.Connection,
+    repo_root: Optional[Path] = None,
+    *,
+    skip_claimed: bool = True,
+) -> tuple[list[dict], str]:
+    """Open GitHub issues not already handed off by evolve_applier.
+
+    The user treats all open issues as roadmap backlog; issues with the
+    explicit `roadmap` label are prioritized first, then FIFO by number. Active
+    issue-claim comments are skipped so multiple appliers do not start the same
+    item in parallel.
+    """
+    issues, err = _fetch_open_issues(repo_root)
+    if err:
+        return [], err
+    out: list[dict] = []
+    claim_errors: list[str] = []
+    now_t = time.time()
+    for issue in issues:
+        try:
+            num = int(issue.get("number"))
+        except (TypeError, ValueError):
+            continue
+        if _roadmap_issue_applied(conn, num):
+            continue
+        if skip_claimed:
+            claimed, claim_err = _issue_has_active_claim(
+                num, repo_root, now_t
+            )
+            if claim_err:
+                claim_errors.append(f"#{num}: {claim_err}")
+                continue
+            if claimed:
+                continue
+        out.append(issue)
+    out.sort(
+        key=lambda issue: (
+            0 if "roadmap" in _issue_labels(issue) else 1,
+            int(issue.get("number") or 0),
+        )
+    )
+    if not out and claim_errors:
+        return [], "roadmap_issue_claim_check_failed: " + "; ".join(
+            claim_errors
+        )[:240]
+    return out, ""
+
+
 def build_apply_prompt(evolve_id: int, suggestion: str,
                        rationale: Optional[str],
                        repo_root: Optional[Path] = None) -> str:
@@ -321,6 +641,26 @@ def build_curator_report_apply_prompt(
         report_name=report_path.name,
         report_text=report_text,
         repo=repo,
+    )
+
+
+def build_roadmap_issue_apply_prompt(
+    issue: dict,
+    repo_root: Optional[Path] = None,
+) -> str:
+    repo = str(repo_root or _repo_root())
+    number = int(issue["number"])
+    title = str(issue.get("title") or f"issue {number}")
+    labels = ", ".join(_issue_labels(issue)) or "(none)"
+    return ROADMAP_ISSUE_APPLY_PROMPT.format(
+        issue_number=number,
+        issue_title=title,
+        issue_url=str(issue.get("url") or ""),
+        issue_labels=labels,
+        issue_body=str(issue.get("body") or "").strip() or "(no body)",
+        claim_marker=ROADMAP_ISSUE_CLAIM_MARKER,
+        repo=repo,
+        branch=roadmap_issue_branch_name(number, title),
     )
 
 
@@ -467,6 +807,134 @@ def mark_curator_report_applied(
     )
     conn.commit()
     return f"ok report={path.name} applied=1"
+
+
+def mark_roadmap_issue_applied(
+    conn: sqlite3.Connection,
+    issue_number: int,
+    pr_url: str,
+) -> str:
+    """Record that an evolve_applier child opened a PR for a roadmap issue."""
+    num = int(issue_number)
+    if _roadmap_issue_applied(conn, num):
+        return f"ok issue=#{num} already_applied=1"
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            identity._session_id or "",
+            ROADMAP_ISSUE_APPLIED_KIND,
+            str(num),
+            (pr_url or "")[:300],
+            int(time.time()),
+        ),
+    )
+    conn.commit()
+    return f"ok issue=#{num} applied=1 pr={pr_url}"
+
+
+def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]:
+    """Try to claim and spawn one roadmap issue.
+
+    Returns (started, status). Claim-related failures are issue-local and let
+    automatic queue drains advance to the next issue. Spawn errors are returned
+    as non-started too, but callers should treat them as infrastructure-level:
+    a claim has already been posted, so retrying every issue would create noisy
+    stale claims.
+    """
+    num = int(issue["number"])
+    claimed, claim_err = _issue_has_active_claim(num, repo_root)
+    if claim_err:
+        return False, f"ERR roadmap_issue_claim_check_failed=#{num}: {claim_err}"
+    if claimed:
+        return False, f"ERR roadmap_issue_claimed={num}"
+    claim_err = _comment_issue_claim(issue, repo_root)
+    if claim_err:
+        return False, f"ERR roadmap_issue_claim_failed=#{num}: {claim_err}"
+
+    prompt = build_roadmap_issue_apply_prompt(issue, repo_root)
+
+    from .tools.spawn import spawn  # late import — avoids import cycle
+    try:
+        result = spawn(
+            prompt=prompt,
+            cwd=str(repo_root),
+            visible=False,
+            capture_output=True,
+            permission_mode="bypassPermissions",
+            role="evolve_applier",
+            write_origin="evolve_apply",
+            slim=True,
+            extra_allowed_tools=(
+                "Bash,Edit,Write,Read,Glob,Grep,"
+                "mcp__thread-keeper__evolve_mark_roadmap_issue_applied,"
+                "mcp__thread-keeper__broadcast"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
+        return False, f"spawn_error issue=#{num}: {e}"
+    return True, f"spawned roadmap_issue=#{num} {str(result)[:140]}"
+
+
+def _roadmap_dispatch_can_try_next(status: str) -> bool:
+    """Whether an automatic issue drain should advance after this failure."""
+    return status.startswith((
+        "ERR roadmap_issue_claim_check_failed",
+        "ERR roadmap_issue_claimed=",
+        "ERR roadmap_issue_claim_failed",
+    ))
+
+
+def apply_roadmap_issue(issue_number: int = 0) -> str:
+    """Spawn an evolve_applier child to implement one open GitHub issue.
+
+    With issue_number=0, this is queue mode: try candidates in roadmap/FIFO
+    order and advance past issue-local dispatch failures. With a specific
+    issue_number, this is exact mode and returns that issue's failure directly.
+    """
+    with _apply_spawn_lock() as locked:
+        if not locked:
+            return "applier_running n=1 (single-flight lock)"
+
+        conn = get_db()
+        exact = bool(issue_number)
+        issues, err = _open_roadmap_issues(
+            conn, skip_claimed=not exact
+        )
+        if err:
+            return f"ERR roadmap_issue_fetch_failed: {err}"
+        if exact:
+            if _roadmap_issue_applied(conn, int(issue_number)):
+                return f"ERR roadmap_issue_already_applied={int(issue_number)}"
+            issue = next(
+                (i for i in issues if int(i.get("number") or 0) == int(issue_number)),
+                None,
+            )
+            if issue is None:
+                return f"ERR roadmap_issue_not_open={int(issue_number)}"
+            candidates = [issue]
+        else:
+            if not issues:
+                return "no_roadmap_issue"
+            candidates = issues
+
+        running = _running_applier_children(conn)
+        if running:
+            return f"applier_running n={len(running)} (single-flight)"
+
+        repo_root = _repo_root()
+        failures: list[str] = []
+        for issue in candidates:
+            started, status = _start_roadmap_issue_child(issue, repo_root)
+            if started:
+                if failures:
+                    return f"{status} after_skipping={len(failures)}"
+                return status
+            failures.append(status)
+            if exact or not _roadmap_dispatch_can_try_next(status):
+                return status
+
+        return "no_roadmap_issue_startable " + " | ".join(failures)[:240]
 
 
 def apply_curator_report(report_path: str = "") -> str:
@@ -640,13 +1108,20 @@ def _record_apply_pass(conn: sqlite3.Connection, ts: int,
         logger.debug("evolve_applier: failed to record pass", exc_info=True)
 
 
+def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
+    last = _last_apply_ts(conn)
+    return last <= 0 or now_t >= last + int(EVOLVE_APPLY_INTERVAL_S)
+
+
 def run_evolve_apply_pass(force: bool = False) -> str:
-    """One apply pass: apply the latest complete Curator report first, then
-    pick the oldest promoted+unapplied suggestion.
+    """One apply pass: pick one open roadmap issue first, then fall back to
+    Curator reports and finally promoted+unapplied evolve suggestions.
 
     Status strings:
       'disabled'                  — knob off and not forced
+      'not_due'                   — automatic apply pass checked recently
       'no_apply_work'             — no Curator report or promoted suggestion
+      'spawned roadmap_issue=<id>' — launched a GitHub issue implementer child
       'applier_running n=<k>'     — an applier child is already in flight
       'spawned curator_report=…'  — launched the memory-maintenance child
       'spawned evolve_id=<id> …'  — launched the implementer child
@@ -662,6 +1137,18 @@ def run_evolve_apply_pass(force: bool = False) -> str:
         out = f"applier_running n={len(running)}"
         _record_apply_pass(conn, now_t, out)
         return out
+    if not force and not _pass_due(conn, now_t):
+        return "not_due"
+
+    issues, issue_err = _open_roadmap_issues(conn)
+    if issues:
+        out = apply_roadmap_issue()
+        if out.startswith("spawned roadmap_issue=") or out.startswith(
+            "applier_running"
+        ):
+            _record_apply_pass(conn, now_t, f"roadmap_issue {out}")
+            return out
+        issue_err = out
 
     reports = _pending_curator_reports(conn)
     if reports:
@@ -672,6 +1159,12 @@ def run_evolve_apply_pass(force: bool = False) -> str:
 
     pending = _promoted_unapplied(conn)
     if not pending:
+        if issue_err:
+            out = f"roadmap_issue_fetch_error: {issue_err}"
+            _record_apply_pass(conn, now_t, out)
+            return out
+        if not force and not _pass_due(conn, now_t):
+            return "not_due"
         _record_apply_pass(conn, now_t, "no_apply_work")
         return "no_apply_work"
 

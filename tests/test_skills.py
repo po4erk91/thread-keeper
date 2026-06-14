@@ -564,7 +564,7 @@ def test_skill_manage_mirrors_skill_across_detected_clis(
 ):
     """skill_manage(create) must write SKILL.md not only to the canonical
     primary skills root but also to every configured skills_dir() —
-    so one materialization reaches Claude AND Codex at once."""
+    so one materialization reaches every native skill consumer at once."""
     # Pin two mirror targets that we own (in tmp_path) so the test is
     # hermetic — don't touch the developer's ~/.codex/ or ~/.threadkeeper/.
     mirror_codex = skills_pkg["tmp"] / "fake_codex_skills"

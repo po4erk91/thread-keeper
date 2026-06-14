@@ -25,7 +25,7 @@ Schema (note `servers`, NOT `mcpServers` — VS Code chose its own key):
     }
 
 Hooks: VS Code has no SessionStart-style shell hook the way Claude Code
-or Gemini does. Instructions file: per-workspace `.github/instructions/*`
+or Gemini legacy does. Instructions file: per-workspace `.github/instructions/*`
 or `copilot-instructions.md`, not a single global file we can write. So
 this adapter is MCP-registration-only — no hooks, no instructions, no
 transcript ingest.

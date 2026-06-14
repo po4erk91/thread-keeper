@@ -1,9 +1,9 @@
-"""Evolve reviewer daemon — autonomous triage of the format-evolution queue.
+"""Evolve reviewer daemon — autonomous roadmap audit.
 
-The daemon never APPLIES a suggestion (that edits format/code). It spawns a
-child that calls evolve_decide(promote|dismiss) to keep the queue honest.
-Tests exercise the pure logic + dispatch with spawn monkeypatched; no real
-child is launched.
+The daemon never implements code. It spawns a child that audits thread-keeper,
+does web research where useful, creates/updates GitHub roadmap issues, and may
+triage legacy evolve suggestions. Tests exercise dispatch with spawn
+monkeypatched; no real child is launched.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2"):
         "THREADKEEPER_PROBE_INTERVAL_S": "0",
         "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": interval,
         "THREADKEEPER_EVOLVE_REVIEW_MIN": review_min,
+        "THREADKEEPER_DISABLE_BG_DAEMONS": "1",
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
@@ -111,16 +112,79 @@ def test_run_evolve_pass_disabled(tmp_path, monkeypatch):
     assert pkg["ed"].run_evolve_pass() == "disabled"
 
 
-def test_run_evolve_pass_no_pending(tmp_path, monkeypatch):
+def test_run_evolve_pass_force_spawns_audit_without_pending(
+    tmp_path, monkeypatch,
+):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    assert pkg["ed"].run_evolve_pass(force=True) == "no_pending"
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit pending=0")
+    assert "Audit thread-keeper itself" in calls["prompt"]
+    assert "gh issue create" in calls["prompt"]
+    assert "web research" in calls["prompt"]
+
+
+def test_run_evolve_pass_skips_empty_until_interval(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_review_pass', ?, 'no_pending', ?)",
+        ("s_prev", str(now), now),
+    )
+    conn.commit()
+
+    assert pkg["ed"].run_evolve_pass() == "not_due"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0] == 1
 
 
 def test_run_evolve_pass_below_min(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
     conn = pkg["db"].get_db()
     _add_evolve(conn, "only one")
-    assert pkg["ed"].run_evolve_pass(force=True) == "below_min n=1"
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit pending=1")
+    assert "only one" in calls["prompt"]
+
+
+def test_run_evolve_pass_skips_legacy_backlog_until_interval(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800", review_min="2")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_review_pass', ?, 'no_pending', ?)",
+        ("s_prev", str(now), now),
+    )
+    _add_evolve(conn, "suggestion alpha")
+    _add_evolve(conn, "suggestion beta")
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1",
+    )
+
+    out = pkg["ed"].run_evolve_pass()
+
+    assert out == "not_due"
+    assert calls == {}
 
 
 def test_run_evolve_pass_spawns_reviewer(tmp_path, monkeypatch):
@@ -133,16 +197,19 @@ def test_run_evolve_pass_spawns_reviewer(tmp_path, monkeypatch):
     monkeypatch.setattr(spawn_mod, "spawn",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
-    assert out.startswith("spawned n=2")
+    assert out.startswith("spawned audit pending=2")
     # both suggestions reached the child prompt
     assert "suggestion alpha" in calls["prompt"]
     assert "suggestion beta" in calls["prompt"]
     assert "friction A" in calls["prompt"]
     assert calls["write_origin"] == "evolve"
     assert calls["role"] == "evolve_reviewer"
-    # narrow tool surface: triage only, never applies
+    # reviewer can audit/research/create issues, but still cannot apply issues
     assert "evolve_decide" in calls["extra_allowed_tools"]
     assert "skill_manage" not in calls["extra_allowed_tools"]
+    assert "Bash" in calls["extra_allowed_tools"]
+    assert "WebSearch" in calls["extra_allowed_tools"]
+    assert "evolve_mark_roadmap_issue_applied" not in calls["extra_allowed_tools"]
     assert pkg["ed"]._last_evolve_ts(conn) > 0
 
 

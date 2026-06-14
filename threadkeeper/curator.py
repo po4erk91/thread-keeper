@@ -66,6 +66,23 @@ OUTPUT: write a REPORT.md to ~/.threadkeeper/curator/REPORT-<isodate>.md
 via Write tool. The REPORT.md is your sole user-visible output; the
 human reads it later and decides which recommendations to apply.
 
+EVOLVE CANDIDATES — if a lesson or skill reveals an important improvement for
+thread-keeper itself (security, privacy, memory leaks, daemon/cost waste,
+reliability, roadmap automation, adapter correctness, or a strong workflow
+lesson that should change thread-keeper code/docs), create exactly one
+candidate for Evolve reviewer by calling:
+
+  evolve_format(
+    suggestion="<concrete thread-keeper improvement to audit/turn into issue>",
+    rationale="<which lesson/skill exposed it and why it matters>"
+  )
+
+Do this sparingly. Do NOT create evolve candidates for ordinary skill-library
+maintenance, duplicate cleanup, style nits, or project-specific lessons that do
+not improve thread-keeper itself. Also include a short `EVOLVE_CANDIDATE:` line
+in the REPORT.md for every candidate you created so the human audit trail shows
+why it was filed.
+
 RUBRIC (per-entry decision matrix — answer for every lesson and every
 recently-active skill):
 
@@ -367,6 +384,7 @@ def run_curator_pass(force: bool = False) -> str:
             "mcp__thread-keeper__lesson_append,"
             "mcp__thread-keeper__skill_list,"
             "mcp__thread-keeper__skill_manage,"
+            "mcp__thread-keeper__evolve_format,"
             "Read,Write"
         )
     else:
@@ -382,6 +400,7 @@ def run_curator_pass(force: bool = False) -> str:
             "mcp__thread-keeper__lesson_list,"
             "mcp__thread-keeper__lesson_get,"
             "mcp__thread-keeper__skill_list,"
+            "mcp__thread-keeper__evolve_format,"
             "Read,Write"
         )
 

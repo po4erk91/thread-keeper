@@ -165,8 +165,8 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     Pass the absolute path to the SKILL.md (or skill directory) when known;
     leave empty if you only want to silence the hint without recording a path.
     When a path is provided, thread-keeper also mirrors that skill directory
-    into every configured native skills root (Claude, Codex, shared agents,
-    and ~/.threadkeeper/skills) on a best-effort basis."""
+    into every configured native skills root (Claude, Codex, Antigravity,
+    shared agents, and ~/.threadkeeper/skills) on a best-effort basis."""
     conn = get_db()
     _ensure_session(conn)
     if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():

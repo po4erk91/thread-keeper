@@ -368,12 +368,13 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             out.append(f"  {t['id']} out={q((t['outcome'] or '-')[:120])}")
 
     # ── thread_hint (open-thread nudge for hook-less clients) ─────────────
-    # Claude Code / Gemini / Copilot get the open-thread reminder from the
+    # Claude Code / Gemini legacy / Copilot get the open-thread reminder from the
     # UserPromptSubmit hook (tk-thread-nudge.sh); their SessionStart hook
     # sets THREADKEEPER_BRIEF_NO_THREAD_NUDGE so this path stays quiet and
     # doesn't double-fire. Clients with NO hook mechanism (Claude Desktop,
-    # Codex, VS Code) call brief() directly — they have no env set, so the
-    # nudge surfaces here instead. See nudges.compute_thread_nudge.
+    # Codex, Antigravity CLI, VS Code) call brief() directly — they have no
+    # env set, so the nudge surfaces here instead. See
+    # nudges.compute_thread_nudge.
     if not eff_lean and not os.environ.get("THREADKEEPER_BRIEF_NO_THREAD_NUDGE"):
         try:
             from .nudges import compute_thread_nudge

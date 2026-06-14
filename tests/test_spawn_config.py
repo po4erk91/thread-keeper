@@ -43,6 +43,7 @@ def test_resolve_falls_back_to_claude_without_overrides(tmp_path, monkeypatch):
 def test_resolve_uses_active_cli_when_no_override(tmp_path, monkeypatch):
     sc = _reset(monkeypatch, tmp_path)
     assert sc.resolve_agent("shadow_observer", "codex") == "codex"
+    assert sc.resolve_agent("shadow_observer", "agy") == "antigravity"
     assert sc.resolve_agent("shadow_observer", "gemini") == "gemini"
 
 
@@ -52,9 +53,9 @@ def test_resolve_unknown_active_cli_falls_back_to_claude(tmp_path, monkeypatch):
 
 
 def test_resolve_default_override(tmp_path, monkeypatch):
-    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__DEFAULT": "gemini"})
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__DEFAULT": "agy"})
     # No per-role override → spawn.default wins over active CLI
-    assert sc.resolve_agent("shadow_observer", "codex") == "gemini"
+    assert sc.resolve_agent("shadow_observer", "codex") == "antigravity"
 
 
 def test_resolve_per_role_beats_default(tmp_path, monkeypatch):
@@ -81,11 +82,11 @@ def test_resolve_from_dotenv_file(tmp_path, monkeypatch):
     envf.write_text(
         "THREADKEEPER_SPAWN__DEFAULT=claude\n"
         "THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=codex\n"
-        "THREADKEEPER_SPAWN__LOOP__CURATOR=gemini\n"
+        "THREADKEEPER_SPAWN__LOOP__CURATOR=antigravity\n"
     )
     sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
     assert sc.resolve_agent("shadow_observer", "claude") == "codex"
-    assert sc.resolve_agent("curator", "claude") == "gemini"
+    assert sc.resolve_agent("curator", "claude") == "antigravity"
     assert sc.resolve_agent("archivist", "claude") == "claude"  # active CLI
 
 
@@ -113,10 +114,12 @@ def test_resolve_model_from_dotenv(tmp_path, monkeypatch):
     envf = tmp_path / "tk.env"
     envf.write_text(
         "THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.4\n"
+        "THREADKEEPER_SPAWN__MODEL__AGY=gemini-3.1-pro\n"
         "THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-2.5-pro\n"
     )
     sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
     assert sc.resolve_model("codex") == "gpt-5.4"
+    assert sc.resolve_model("antigravity") == "gemini-3.1-pro"
     assert sc.resolve_model("gemini") == "gemini-2.5-pro"
     assert sc.resolve_model("claude") == ""  # no entry
 
@@ -167,7 +170,7 @@ def test_active_cli_invalid_env_ignored(tmp_path, monkeypatch):
     from threadkeeper import identity
     identity._active_cli = None
     detected = identity.active_cli()
-    assert detected in (None, "claude", "codex", "gemini", "copilot")
+    assert detected in (None, "claude", "codex", "antigravity", "gemini", "copilot")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -206,6 +209,19 @@ def test_codex_spawn_argv_uses_exec_subcommand(tmp_path, monkeypatch):
     assert argv[-1] == "-"
     assert "hello" not in argv
     assert ADAPTER.uses_stdin_prompt is True
+
+
+def test_antigravity_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+    from threadkeeper.adapters.antigravity import ADAPTER
+    argv = ADAPTER.spawn_argv("hello", model="gemini-3.1-pro")
+    if argv is None:
+        pytest.skip("agy binary not installed in test env")
+    assert "-p" in argv
+    assert "--model" in argv
+    assert "gemini-3.1-pro" in argv
 
 
 def test_gemini_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
@@ -263,6 +279,8 @@ def test_get_adapter_recognises_short_names(tmp_path, monkeypatch):
     assert get_adapter("claude").name == "claude-code"
     assert get_adapter("claude-code").name == "claude-code"
     assert get_adapter("codex").name == "codex"
+    assert get_adapter("antigravity").name == "antigravity"
+    assert get_adapter("agy").name == "antigravity"
     assert get_adapter("gemini").name == "gemini"
     assert get_adapter("copilot").name == "copilot"
     assert get_adapter("claude-desktop").name == "claude-desktop"
@@ -283,10 +301,10 @@ def test_summary_table_shows_active_cli(tmp_path, monkeypatch):
 
 
 def test_summary_table_shows_overrides(tmp_path, monkeypatch):
-    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "gemini"})
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "agy"})
     out = sc.summary_table("claude")
     assert "curator" in out
-    assert "gemini" in out
+    assert "antigravity" in out
     assert "spawn config" in out
 
 
