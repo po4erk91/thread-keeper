@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.po4erk91/thread-keeper",
   "title": "thread-keeper",
-  "description": "Multi-agent shared brain across Claude Code/Desktop, Codex, Antigravity CLI, Gemini, Copilot, and VS Code. One local SQLite store for threads, notes, verbatim quotes, and a dialectic user model; spawn/broadcast/whisper/inbox multi-agent coordination; autonomous loops that materialize SKILL.md skills into every connected CLI's skills root.",
+  "description": "Multi-agent shared brain across Claude, Codex, Antigravity, Gemini, Copilot, and VS Code.",
   "repository": {
     "url": "https://github.com/po4erk91/thread-keeper",
     "source": "github"
