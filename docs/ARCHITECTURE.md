@@ -194,10 +194,18 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues with
   `gh issue list`, prioritizes `roadmap`-labeled issues then FIFO, and spawns
   one `evolve_applier` child to implement exactly one issue. Before spawning,
-  the parent checks issue comments for
-  `<!-- thread-keeper:evolve-applier-claim -->`, skips active claims, and posts
-  the same marker as a claim comment; claims expire after 24 hours so crashed
-  workers do not block issues forever. In queue mode, issue-local dispatch
+  the parent runs five multi-host conflict guards in order: (1) skip if an
+  active `<!-- thread-keeper:evolve-applier-claim -->` comment already exists;
+  (2) skip if `gh pr list --search "in:body Closes #N"` shows an open PR
+  already closing the issue; (3) post the parent's own claim comment (body
+  carries hostname + PID + git-rev for triage); (4) wait
+  `ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetch claims, and delete the
+  parent's own claim when a competing host got there first (earliest
+  `createdAt` wins); (5) on `spawn()` failure, retract the just-posted claim
+  so the next pass can retry immediately. Claims expire after 24 hours as a
+  fallback so crashed workers do not block issues forever; the implementer
+  branch carries a 6-char hostname-hash suffix so two hosts past the claim
+  check do not collide on `git push`. In queue mode, issue-local dispatch
   failures advance to the next issue; exact
   `evolve_apply_roadmap_issue(issue_number=N)` calls report the specific
   failure instead of switching tasks. The PR body must include `Closes #N`;

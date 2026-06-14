@@ -35,7 +35,12 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .config import CURATOR_REPORTS_DIR, DB_PATH, EVOLVE_APPLY_INTERVAL_S
+from .config import (
+    CURATOR_REPORTS_DIR,
+    DB_PATH,
+    EVOLVE_APPLY_INTERVAL_S,
+    ROADMAP_CLAIM_RACE_WINDOW_S,
+)
 from .db import get_db
 from . import identity
 
@@ -293,7 +298,11 @@ def branch_name(evolve_id: int, suggestion: str) -> str:
 
 
 def roadmap_issue_branch_name(issue_number: int, title: str) -> str:
-    return f"roadmap/issue-{int(issue_number)}-{_slug(title)}"
+    """Branch name for a roadmap-issue PR. Includes a 6-char hostname hash so
+    two hosts racing on the same issue do not collide on `git push -u origin`."""
+    return (
+        f"roadmap/issue-{int(issue_number)}-{_slug(title)}-{_host_branch_slug()}"
+    )
 
 
 def _report_key(path: Path) -> str:
@@ -495,6 +504,48 @@ def _issue_has_active_claim(
     return any(_issue_comment_is_active_claim(c, now) for c in comments), ""
 
 
+def _host_identity() -> dict:
+    """Hostname, PID, git-rev block that identifies which machine/process owns
+    a claim. Bare-best-effort: any field may be empty if probing fails."""
+    import socket
+    import os as _os
+    git_rev = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(_repo_root()),
+             "rev-parse", "--short", "HEAD"],
+            text=True, capture_output=True, timeout=5, check=False,
+        )
+        if proc.returncode == 0:
+            git_rev = (proc.stdout or "").strip()[:12]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+    return {
+        "hostname": (hostname or "")[:60],
+        "pid": _os.getpid(),
+        "git_rev": git_rev,
+    }
+
+
+def _host_branch_slug() -> str:
+    """Short, stable hostname-derived slug for branch names so two hosts
+    racing on the same issue do not collide on `git push -u origin <branch>`.
+
+    Six hex chars from sha1(hostname) — visible enough for the human reviewer
+    to tell two PRs apart, short enough not to bloat the branch name."""
+    import hashlib
+    import socket
+    try:
+        name = socket.gethostname() or "unknown"
+    except OSError:
+        name = "unknown"
+    return hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+
+
 def _roadmap_issue_claim_body(
     issue: dict,
     now_t: Optional[float] = None,
@@ -506,11 +557,15 @@ def _roadmap_issue_claim_body(
         timezone.utc,
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     ttl_h = int(ROADMAP_ISSUE_CLAIM_TTL_S // 3600)
+    ident = _host_identity()
     return (
         f"{ROADMAP_ISSUE_CLAIM_MARKER}\n"
         "Evolve applier is starting work on this issue.\n\n"
         f"- Issue: #{num} {title}\n"
         "- Agent role: evolve_applier\n"
+        f"- Host: {ident['hostname'] or '?'}\n"
+        f"- PID: {ident['pid']}\n"
+        f"- Git rev: {ident['git_rev'] or '?'}\n"
         f"- Started: {ts}\n"
         f"- Claim TTL: {ttl_h}h\n\n"
         "Other agents should not start parallel implementation while this "
@@ -522,8 +577,10 @@ def _roadmap_issue_claim_body(
 def _comment_issue_claim(
     issue: dict,
     repo_root: Optional[Path] = None,
-) -> str:
-    """Post the GitHub issue claim comment. Empty string means success."""
+) -> tuple[str, str]:
+    """Post the GitHub issue claim comment. Returns (comment_url, error).
+    Empty error means success; comment_url is the URL of the posted comment
+    used by race-detection and spawn-failure retraction."""
     repo = str(repo_root or _repo_root())
     num = int(issue["number"])
     cmd = [
@@ -540,16 +597,162 @@ def _comment_issue_claim(
             check=False,
         )
     except FileNotFoundError:
-        return "gh_not_found"
+        return "", "gh_not_found"
     except subprocess.TimeoutExpired:
-        return "gh_issue_comment_timeout"
+        return "", "gh_issue_comment_timeout"
     except OSError as e:
-        return f"gh_issue_comment_error: {e}"
+        return "", f"gh_issue_comment_error: {e}"
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
         msg = err[-1] if err else f"exit={proc.returncode}"
-        return f"gh_issue_comment_failed: {msg[:180]}"
+        return "", f"gh_issue_comment_failed: {msg[:180]}"
+    url_lines = [
+        ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()
+    ]
+    url = url_lines[0] if url_lines else ""
+    return url, ""
+
+
+_COMMENT_URL_ID_RE = re.compile(r"issuecomment[-_](\d+)")
+
+
+def _comment_url_to_id(url: str) -> str:
+    """Extract the numeric comment id from a GitHub issue-comment URL."""
+    m = _COMMENT_URL_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+def _delete_issue_comment(
+    comment_url: str,
+    repo_root: Optional[Path] = None,
+) -> str:
+    """Delete an issue comment by URL via the GitHub REST API. Empty string
+    means success."""
+    cid = _comment_url_to_id(comment_url)
+    if not cid:
+        return "gh_delete_bad_url"
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "api",
+        "-X", "DELETE",
+        f"repos/{{owner}}/{{repo}}/issues/comments/{cid}",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "gh_delete_timeout"
+    except OSError as e:
+        return f"gh_delete_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return f"gh_delete_failed: {msg[:180]}"
     return ""
+
+
+def _open_prs_for_issue(
+    issue_number: int,
+    repo_root: Optional[Path] = None,
+) -> tuple[list[dict], str]:
+    """Open PRs that close this issue (via `Closes #N`/`Fixes #N` in body or
+    a GitHub-linked PR). Returns (prs, error)."""
+    repo = str(repo_root or _repo_root())
+    num = int(issue_number)
+    cmd = [
+        "gh", "pr", "list",
+        "--state", "open",
+        "--search", f"in:body Closes #{num}",
+        "--json", "number,url,headRefName,title,author",
+        "--limit", "5",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_pr_list_timeout"
+    except OSError as e:
+        return [], f"gh_pr_list_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_pr_list_failed: {msg[:180]}"
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as e:
+        return [], f"gh_pr_list_bad_json: {e}"
+    if not isinstance(data, list):
+        return [], "gh_pr_list_bad_shape"
+    return data, ""
+
+
+def _resolve_claim_race(
+    issue_number: int,
+    my_comment_url: str,
+    repo_root: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """Cross-host TOCTOU resolver.
+
+    After posting our own claim, wait briefly and re-fetch comments to detect a
+    parallel claim from another host. Tie-break by earliest createdAt: if ours
+    is not first, retract our own claim (best-effort delete) and report the loss
+    so the queue advances.
+
+    Returns (won, error). won=True → we own the issue and can spawn.
+    won=False → another host raced ahead; our claim was retracted (or attempted
+    to be retracted) so they are unblocked. error non-empty → could not decide
+    the race; caller should treat that as a transient failure.
+    """
+    if not my_comment_url:
+        return False, "missing_comment_url"
+    wait_s = float(ROADMAP_CLAIM_RACE_WINDOW_S)
+    if wait_s > 0:
+        try:
+            time.sleep(wait_s)
+        except Exception:
+            pass
+    comments, err = _fetch_issue_comments(issue_number, repo_root)
+    if err:
+        return False, err
+    now_t = time.time()
+    active = [c for c in comments if _issue_comment_is_active_claim(c, now_t)]
+    if len(active) <= 1:
+        return True, ""
+    my_id = _comment_url_to_id(my_comment_url)
+
+    def cid(c: dict) -> str:
+        return _comment_url_to_id(str(c.get("url") or ""))
+
+    def ts(c: dict) -> float:
+        v = _parse_gh_timestamp(c.get("createdAt"))
+        return v if v is not None else 0.0
+
+    mine_present = my_id and any(cid(c) == my_id for c in active)
+    if not mine_present:
+        # Our claim is no longer visible. Treat as already retracted; abort.
+        return False, ""
+    earliest = min(active, key=ts)
+    if cid(earliest) == my_id:
+        return True, ""
+    # We lost — best-effort delete our own claim so the winner is unblocked.
+    _delete_issue_comment(my_comment_url, repo_root)
+    return False, ""
 
 
 def _roadmap_issue_applied(conn: sqlite3.Connection, issue_number: int) -> bool:
@@ -836,11 +1039,20 @@ def mark_roadmap_issue_applied(
 def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]:
     """Try to claim and spawn one roadmap issue.
 
-    Returns (started, status). Claim-related failures are issue-local and let
-    automatic queue drains advance to the next issue. Spawn errors are returned
-    as non-started too, but callers should treat them as infrastructure-level:
-    a claim has already been posted, so retrying every issue would create noisy
-    stale claims.
+    Multi-host safe. Order of checks:
+      1. Is there already an active claim comment? (cheap, single gh call)
+      2. Is there already an open PR closing this issue? (cross-host duplicate
+         guard; also handles the case where a previous applier crashed after
+         opening the PR but before marking it applied)
+      3. Post our claim, capture comment URL.
+      4. TOCTOU race: re-fetch claims, retract own if we lost.
+      5. Spawn the child.
+      6. On spawn failure, retract our claim so the next pass can retry
+         immediately instead of waiting for the 24h TTL.
+
+    Returns (started, status). Claim/PR/race failures are issue-local and let
+    automatic queue drains advance to the next issue. Spawn errors retract the
+    just-posted claim before returning.
     """
     num = int(issue["number"])
     claimed, claim_err = _issue_has_active_claim(num, repo_root)
@@ -848,9 +1060,33 @@ def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]
         return False, f"ERR roadmap_issue_claim_check_failed=#{num}: {claim_err}"
     if claimed:
         return False, f"ERR roadmap_issue_claimed={num}"
-    claim_err = _comment_issue_claim(issue, repo_root)
+
+    open_prs, pr_err = _open_prs_for_issue(num, repo_root)
+    if pr_err:
+        return False, f"ERR roadmap_issue_pr_check_failed=#{num}: {pr_err}"
+    if open_prs:
+        urls = ", ".join(
+            str(p.get("url") or "") for p in open_prs[:3] if p.get("url")
+        )
+        return False, f"ERR roadmap_issue_open_pr=#{num}: {urls[:160]}"
+
+    comment_url, claim_err = _comment_issue_claim(issue, repo_root)
     if claim_err:
         return False, f"ERR roadmap_issue_claim_failed=#{num}: {claim_err}"
+
+    won, race_err = _resolve_claim_race(num, comment_url, repo_root)
+    if race_err:
+        # Couldn't decide the race (e.g. transient gh failure on re-fetch).
+        # Best-effort retract our own claim so we don't block other hosts
+        # for 24h on a single transient blip.
+        _delete_issue_comment(comment_url, repo_root)
+        return False, (
+            f"ERR roadmap_issue_race_check_failed=#{num}: {race_err}"
+        )
+    if not won:
+        # Another host got there first. Our claim was retracted by
+        # _resolve_claim_race. Advance to the next candidate.
+        return False, f"ERR roadmap_issue_lost_race=#{num}"
 
     prompt = build_roadmap_issue_apply_prompt(issue, repo_root)
 
@@ -872,6 +1108,9 @@ def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]
             ),
         )
     except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
+        # Retract the claim we just posted so the next pass can retry the
+        # issue immediately (no 24h-TTL hold on a transient spawn failure).
+        _delete_issue_comment(comment_url, repo_root)
         return False, f"spawn_error issue=#{num}: {e}"
     return True, f"spawned roadmap_issue=#{num} {str(result)[:140]}"
 
@@ -882,6 +1121,10 @@ def _roadmap_dispatch_can_try_next(status: str) -> bool:
         "ERR roadmap_issue_claim_check_failed",
         "ERR roadmap_issue_claimed=",
         "ERR roadmap_issue_claim_failed",
+        "ERR roadmap_issue_pr_check_failed",
+        "ERR roadmap_issue_open_pr=",
+        "ERR roadmap_issue_race_check_failed",
+        "ERR roadmap_issue_lost_race=",
     ))
 
 

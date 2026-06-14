@@ -57,8 +57,26 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     )
     monkeypatch.setattr(
         evolve_applier, "_comment_issue_claim",
-        lambda issue, repo_root=None: "",
+        lambda issue, repo_root=None: ("https://x/issues/0#issuecomment-1", ""),
     )
+    monkeypatch.setattr(
+        evolve_applier, "_open_prs_for_issue",
+        lambda issue_number, repo_root=None: ([], ""),
+    )
+    # Note: _resolve_claim_race is NOT monkeypatched here so the new
+    # multi-host tests can exercise the real implementation. With the default
+    # _fetch_issue_comments returning [], the race resolver sees ≤1 active
+    # claim and returns (True, "") — existing tests behave the same.
+    monkeypatch.setattr(
+        evolve_applier, "_delete_issue_comment",
+        lambda comment_url, repo_root=None: "",
+    )
+    # Skip the real-time race-detection sleep in unit tests so the suite stays
+    # snappy. The bootstrap defaults already make the race resolver return True
+    # in the "no competing claim" common path.
+    import threadkeeper.config as _cfg
+    monkeypatch.setattr(_cfg, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
+    monkeypatch.setattr(evolve_applier, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
     return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier, "identity": identity}
 
 
@@ -415,7 +433,10 @@ def test_apply_roadmap_issue_comments_before_spawn(
 
     def _claim(issue, repo_root=None):
         order.append(f"claim#{int(issue['number'])}")
-        return ""
+        return (
+            f"https://x/issues/{int(issue['number'])}#issuecomment-99",
+            "",
+        )
 
     def _spawn(**kw):
         order.append("spawn")
@@ -441,7 +462,7 @@ def test_apply_roadmap_issue_queue_reports_no_startable_when_claim_fails(
     )
     monkeypatch.setattr(
         pkg["ea"], "_comment_issue_claim",
-        lambda issue, repo_root=None: "gh_issue_comment_failed: denied",
+        lambda issue, repo_root=None: ("", "gh_issue_comment_failed: denied"),
     )
 
     def _boom(**kw):
@@ -473,8 +494,8 @@ def test_apply_roadmap_issue_queue_tries_next_when_claim_fails(
         num = int(issue["number"])
         claimed.append(num)
         if num == 1:
-            return "gh_issue_comment_failed: locked"
-        return ""
+            return "", "gh_issue_comment_failed: locked"
+        return f"https://x/issues/{num}#issuecomment-{num}", ""
 
     monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
     calls = {}
@@ -501,7 +522,7 @@ def test_apply_roadmap_issue_exact_issue_does_not_switch_tasks(
     )
     monkeypatch.setattr(
         pkg["ea"], "_comment_issue_claim",
-        lambda issue, repo_root=None: "gh_issue_comment_failed: locked",
+        lambda issue, repo_root=None: ("", "gh_issue_comment_failed: locked"),
     )
 
     def _boom(**kw):
@@ -555,6 +576,263 @@ def test_mark_roadmap_issue_applied_tool_requires_pr_url(
     ).fetchone()
     assert row["target"] == "6"
     assert row["summary"] == "https://github.com/o/r/pull/6"
+
+
+# ── multi-host: cross-machine conflict guards ──────────────────────────────
+
+def test_apply_roadmap_issue_skips_when_open_pr_already_closes_it(
+    tmp_path, monkeypatch,
+):
+    """If another host (or a prior crashed applier) already opened a PR for
+    this issue, do NOT spawn or claim — fall through to the next candidate."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(6, "Telemetry dashboard"), _issue(7, "Free issue")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_open_prs_for_issue",
+        lambda issue_number, repo_root=None: (
+            [{"url": "https://github.com/o/r/pull/42",
+              "number": 42}] if int(issue_number) == 6 else [],
+            "",
+        ),
+    )
+    claimed = []
+
+    def _claim(issue, repo_root=None):
+        num = int(issue["number"])
+        claimed.append(num)
+        return f"https://x/issues/{num}#issuecomment-{num}", ""
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    # advanced past #6 (open PR) to #7
+    assert out.startswith("spawned roadmap_issue=#7"), out
+    # claim was NOT posted for #6 — the open-PR check ran before claim
+    assert claimed == [7]
+
+
+def test_apply_roadmap_issue_exact_mode_returns_open_pr_error(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_open_prs_for_issue",
+        lambda issue_number, repo_root=None: (
+            [{"url": "https://github.com/o/r/pull/42"}], "",
+        ),
+    )
+
+    def _claim(issue, repo_root=None):
+        raise AssertionError("must not claim when an open PR already exists")
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn when an open PR already exists")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out.startswith("ERR roadmap_issue_open_pr=#6"), out
+    assert "pull/42" in out
+
+
+def test_apply_roadmap_issue_retracts_claim_on_lost_race(
+    tmp_path, monkeypatch,
+):
+    """TOCTOU: after we post our claim, a competing host's earlier claim is
+    visible. We retract our own claim and let the queue advance."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(6, "Telemetry dashboard"), _issue(7, "Other issue")],
+            "",
+        ),
+    )
+
+    def _claim(issue, repo_root=None):
+        return (
+            f"https://x/issues/{int(issue['number'])}#issuecomment-mine",
+            "",
+        )
+
+    monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
+
+    def _race(issue_number, my_comment_url, repo_root=None):
+        if int(issue_number) == 6:
+            return False, ""  # lost
+        return True, ""
+
+    monkeypatch.setattr(pkg["ea"], "_resolve_claim_race", _race)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out.startswith("spawned roadmap_issue=#7"), out
+    assert "ISSUE #7: Other issue" in calls["prompt"]
+
+
+def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
+    tmp_path, monkeypatch,
+):
+    """If spawn() raises after we posted our claim, retract the claim so the
+    next pass can retry the issue immediately instead of waiting 24h TTL."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: (
+            "https://x/issues/6#issuecomment-mine", "",
+        ),
+    )
+
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda comment_url, repo_root=None: (
+            deleted.append(comment_url) or ""
+        ),
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("spawn rejected")),
+    )
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out.startswith("spawn_error issue=#6"), out
+    assert "spawn rejected" in out
+    assert deleted == ["https://x/issues/6#issuecomment-mine"]
+
+
+def test_resolve_claim_race_wins_when_oldest_active_claim_is_ours(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [
+                {
+                    "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
+                    "url": "https://x/issues/6#issuecomment-100",
+                    "createdAt": "2026-06-14T12:00:00Z",
+                },
+                {
+                    "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
+                    "url": "https://x/issues/6#issuecomment-200",
+                    "createdAt": "2026-06-14T12:00:03Z",
+                },
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    monkeypatch.setattr(pkg["ea"].time, "sleep", lambda _s: None)
+
+    won, err = pkg["ea"]._resolve_claim_race(
+        6, "https://x/issues/6#issuecomment-100",
+    )
+    assert err == ""
+    assert won is True
+
+
+def test_resolve_claim_race_loses_and_deletes_own_claim(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [
+                {
+                    "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
+                    "url": "https://x/issues/6#issuecomment-100",
+                    "createdAt": "2026-06-14T12:00:00Z",
+                },
+                {
+                    "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
+                    "url": "https://x/issues/6#issuecomment-200",
+                    "createdAt": "2026-06-14T12:00:03Z",
+                },
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    monkeypatch.setattr(pkg["ea"].time, "sleep", lambda _s: None)
+
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda url, repo_root=None: (deleted.append(url) or ""),
+    )
+
+    won, err = pkg["ea"]._resolve_claim_race(
+        6, "https://x/issues/6#issuecomment-200",
+    )
+    assert err == ""
+    assert won is False
+    assert deleted == ["https://x/issues/6#issuecomment-200"]
+
+
+def test_claim_body_includes_host_pid_git_rev(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    issue = _issue(42, "Cross-host check")
+    body = pkg["ea"]._roadmap_issue_claim_body(issue, now_t=1781438400.0)
+    assert pkg["ea"].ROADMAP_ISSUE_CLAIM_MARKER in body
+    # The new identity block fields must be present so multi-host triage works.
+    assert "- Host:" in body
+    assert "- PID:" in body
+    assert "- Git rev:" in body
+    assert "- Started:" in body
+    assert "Claim TTL:" in body
+
+
+def test_roadmap_branch_name_carries_host_suffix(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    branch = pkg["ea"].roadmap_issue_branch_name(7, "Hot config reload")
+    assert branch.startswith("roadmap/issue-7-hot-config-reload-")
+    suffix = branch.rsplit("-", 1)[-1]
+    # 6 hex chars from the hostname sha1
+    assert len(suffix) == 6
+    assert all(c in "0123456789abcdef" for c in suffix)
+
+
+def test_comment_url_to_id_parses_github_url_shape():
+    """The race resolver relies on this to match our own posted claim back to
+    the comments list."""
+    from threadkeeper.evolve_applier import _comment_url_to_id
+    assert _comment_url_to_id(
+        "https://github.com/o/r/issues/6#issuecomment-12345"
+    ) == "12345"
+    assert _comment_url_to_id(
+        "https://github.com/o/r/issues/6#issuecomment_67890"
+    ) == "67890"
+    assert _comment_url_to_id("https://github.com/o/r/issues/6") == ""
+    assert _comment_url_to_id("") == ""
 
 
 # ── single-flight: refuse while an applier child runs ──────────────────────
@@ -777,9 +1055,10 @@ def test_run_apply_pass_skips_unstartable_issue_and_spawns_next(
     )
 
     def _claim(issue, repo_root=None):
-        if int(issue["number"]) == 1:
-            return "gh_issue_comment_failed: locked"
-        return ""
+        num = int(issue["number"])
+        if num == 1:
+            return "", "gh_issue_comment_failed: locked"
+        return f"https://x/issues/{num}#issuecomment-{num}", ""
 
     monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
     calls = {}
@@ -803,7 +1082,7 @@ def test_run_apply_pass_falls_back_to_curator_when_no_issue_startable(
     )
     monkeypatch.setattr(
         pkg["ea"], "_comment_issue_claim",
-        lambda issue, repo_root=None: "gh_issue_comment_failed: locked",
+        lambda issue, repo_root=None: ("", "gh_issue_comment_failed: locked"),
     )
     calls = {}
     _mock_spawn(monkeypatch, calls)

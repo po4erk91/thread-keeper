@@ -202,6 +202,10 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
+    # After posting a roadmap-issue claim comment, wait this long, re-fetch
+    # comments, and retract our claim if another host raced us. Cross-host
+    # TOCTOU guard. Set to 0 in tests to skip the wait.
+    roadmap_claim_race_window_s: float = 3.0
 
     # ── Thread janitor daemon ─────────────────────────────────────────────────
     thread_janitor_interval_s: float = 0.0
@@ -331,6 +335,7 @@ PANEL_EFFORT: str = settings.panel_effort
 EVOLVE_REVIEW_INTERVAL_S: float = settings.evolve_review_interval_s
 EVOLVE_REVIEW_MIN: int = settings.evolve_review_min
 EVOLVE_APPLY_INTERVAL_S: float = settings.evolve_apply_interval_s
+ROADMAP_CLAIM_RACE_WINDOW_S: float = settings.roadmap_claim_race_window_s
 THREAD_JANITOR_INTERVAL_S: float = settings.thread_janitor_interval_s
 THREAD_IDLE_CLOSE_DAYS: float = settings.thread_idle_close_days
 DIALECTIC_MINE_INTERVAL_S: float = settings.dialectic_mine_interval_s

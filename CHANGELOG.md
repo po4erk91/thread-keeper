@@ -7,6 +7,28 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.12.0 — 2026-06-14
+
+### Changed
+
+- **Evolve applier — multi-host conflict guards.** The roadmap-issue applier
+  now coordinates across machines that share the same repo without spawning
+  duplicate work or leaking 24h-TTL claims. Concretely, `_start_roadmap_issue_child`
+  now: (1) checks `gh pr list --search "in:body Closes #N"` BEFORE posting a
+  claim and skips the issue when an open PR already references it; (2) captures
+  the URL of its just-posted claim comment, waits
+  `THREADKEEPER_ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetches comments,
+  and deletes its own claim when a competing host's claim was created first
+  (deterministic earliest-`createdAt` tie-break); (3) retracts the claim if
+  `spawn()` raises after the post so the next pass can retry immediately
+  instead of waiting for the 24h TTL; (4) embeds hostname + PID + git short rev
+  in the claim body so triage can identify which machine owns a stale claim;
+  (5) suffixes the implementer's branch name with a 6-char hash of the
+  hostname so two hosts past the claim check do not collide on `git push -u
+  origin <branch>`. New `_open_prs_for_issue` / `_delete_issue_comment` /
+  `_resolve_claim_race` helpers; new `roadmap_claim_race_window_s` config knob.
+  Closes #23.
+
 ## v0.11.0 — 2026-06-14
 
 ### Added
