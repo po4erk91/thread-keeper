@@ -49,6 +49,9 @@ version bumps follow semver per the policy in
   executable alias for canonical `antigravity` instead of a separate CLI option,
   keeps `gemini` labeled as legacy, and changes spawn model fields from raw text
   inputs to dropdowns with exact CLI model ids/labels.
+- **macOS menu-bar responsiveness.** Status refresh and Clean memory now run off
+  the main actor, and opening the popover no longer waits for
+  `tk-agent-status --json`.
 
 ### Changed
 

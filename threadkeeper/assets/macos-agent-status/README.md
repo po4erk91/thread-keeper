@@ -5,7 +5,7 @@ The status-bar item itself is AppKit `NSStatusItem`; the popover content is
 SwiftUI. That lets the app update the menu-bar image directly instead of relying
 on SwiftUI `MenuBarExtra` label animation.
 
-It polls `tk-agent-status --json` every 5 seconds and shows:
+It polls `tk-agent-status --json` every 15 seconds and shows:
 
 - an icon-only menu-bar status item, with loop counts in the popover and
   tooltip,
@@ -24,6 +24,9 @@ It polls `tk-agent-status --json` every 5 seconds and shows:
   editing, three saved presets, and Save & Restart,
 - macOS notifications for newly completed autonomous child tasks that produced
   a useful result.
+
+Status polling and cleanup commands run in the background, so opening the
+popover does not wait for `tk-agent-status --json`.
 
 The first poll primes the seen-result list, so the app does not notify for old
 completed tasks that existed before it started.

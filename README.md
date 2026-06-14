@@ -180,7 +180,7 @@ tk-agent-status --cleanup-memory
 ```
 
 `apps/macos-agent-status/` contains a small macOS menu-bar app that polls this
-command every 5 seconds and shows every autonomous learning loop: enabled/off,
+command every 15 seconds and shows every autonomous learning loop: enabled/off,
 running/idle/ready, last pass, backlog, and active child RSS when that loop has
 spawned a worker. PyPI wheels and sdists also bundle the same Swift source under
 `threadkeeper/assets/macos-agent-status/`, so a normal `pipx`/`uv tool` install
@@ -198,7 +198,9 @@ memory button, self-restarts when its own RSS crosses
 notification permission, and sends a notification when a newly completed
 autonomous child task produces a useful result in `recent_results`; the first
 poll only marks existing results as seen, so old completions do not spam
-notifications. The header gear opens a separate Settings window for
+notifications. Status polling and cleanup commands run off the main actor, so
+opening the popover does not wait for `tk-agent-status --json`. The header gear
+opens a separate Settings window for
 `~/.threadkeeper/.env`: common knobs are grouped into guided controls, the raw
 `.env` remains editable for advanced values, three local presets can be saved
 and loaded, and Save & Restart writes the file then asks existing

@@ -104,6 +104,7 @@ struct UsefulResult: Decodable, Identifiable {
 private let panelWidth: CGFloat = 380
 private let settingsWindowWidth: CGFloat = 760
 private let settingsWindowHeight: CGFloat = 720
+private let statusPollInterval: TimeInterval = 15.0
 
 enum EnvSettingsTab: String, CaseIterable, Identifiable {
     case guided = "Guided"
@@ -955,9 +956,12 @@ final class AgentStatusStore: ObservableObject {
         agents: []
     )
     @Published var lastError: String?
+    @Published var isRefreshing = false
+    @Published var isCleaningMemory = false
 
     private var timer: Timer?
     private var envSettingsWindowController: EnvSettingsWindowController?
+    private var refreshInFlight = false
     private var didPrimeResults = false
     private var didRequestSelfRestart = false
     private var seenResultIds: Set<String> = Set(
@@ -970,7 +974,7 @@ final class AgentStatusStore: ObservableObject {
         }
         requestNotificationPermission()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: statusPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
@@ -978,29 +982,67 @@ final class AgentStatusStore: ObservableObject {
     }
 
     func refresh() {
-        do {
-            let newSnapshot = try autoreleasepool {
-                let data = try runStatusCommand(arguments: ["--json"])
-                return try JSONDecoder().decode(AgentStatusSnapshot.self, from: data)
+        guard !refreshInFlight else {
+            return
+        }
+        refreshInFlight = true
+        isRefreshing = true
+        let command = statusCommand()
+
+        Task.detached(priority: .utility) {
+            let result = Result {
+                try autoreleasepool {
+                    let data = try Self.runStatusCommand(
+                        command: command,
+                        arguments: ["--json"]
+                    )
+                    return try JSONDecoder().decode(AgentStatusSnapshot.self, from: data)
+                }
             }
-            handleUsefulResults(newSnapshot.recentResults)
-            snapshot = newSnapshot
-            lastError = nil
-            checkAppMemoryPressure(reason: "poll")
-        } catch {
-            lastError = error.localizedDescription
+
+            await MainActor.run {
+                self.refreshInFlight = false
+                self.isRefreshing = false
+                switch result {
+                case .success(let newSnapshot):
+                    self.handleUsefulResults(newSnapshot.recentResults)
+                    self.snapshot = newSnapshot
+                    self.lastError = nil
+                    self.checkAppMemoryPressure(reason: "poll")
+                case .failure(let error):
+                    self.lastError = error.localizedDescription
+                }
+            }
         }
     }
 
     func cleanMemory() {
-        do {
-            _ = try autoreleasepool {
-                try runStatusCommand(arguments: ["--cleanup-memory"])
+        guard !isCleaningMemory else {
+            return
+        }
+        isCleaningMemory = true
+        let command = statusCommand()
+
+        Task.detached(priority: .utility) {
+            let result = Result {
+                try autoreleasepool {
+                    try Self.runStatusCommand(
+                        command: command,
+                        arguments: ["--cleanup-memory"]
+                    )
+                }
             }
-            refresh()
-            checkAppMemoryPressure(reason: "manual-cleanup")
-        } catch {
-            lastError = error.localizedDescription
+
+            await MainActor.run {
+                self.isCleaningMemory = false
+                switch result {
+                case .success:
+                    self.refresh()
+                    self.checkAppMemoryPressure(reason: "manual-cleanup")
+                case .failure(let error):
+                    self.lastError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -1058,10 +1100,16 @@ final class AgentStatusStore: ObservableObject {
     }
 
     func runStatusCommand(arguments: [String]) throws -> Data {
+        try Self.runStatusCommand(command: statusCommand(), arguments: arguments)
+    }
+
+    nonisolated private static func runStatusCommand(
+        command: (executable: String, arguments: [String]),
+        arguments: [String]
+    ) throws -> Data {
         let process = Process()
         let pipe = Pipe()
         let errPipe = Pipe()
-        let command = statusCommand()
 
         process.executableURL = URL(fileURLWithPath: command.executable)
         process.arguments = command.arguments + arguments
@@ -1806,9 +1854,9 @@ final class StatusItemController: NSObject {
             popover.performClose(sender)
             return
         }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         store.refresh()
         updateStatusButton()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
     private func updateStatusButton() {
