@@ -221,6 +221,66 @@ observed precision it would inject garbage. Scope of remainder: S.
 
 ---
 
+## Open — 2026-06-14 audit (issue-backed)
+
+A multi-dimensional self-audit (security/privacy, daemon cost & leaks,
+learning-loop reliability, and current MCP/memory research) surfaced the
+following concrete gaps. Each is tracked as a GitHub issue; the evolve
+applier drains them. Listed here so the roadmap reflects the live backlog.
+
+**Security & privilege hardening.** Two real gaps:
+- The local store is world-readable. `~/.threadkeeper/db.sqlite`, `.env`, and
+  curator reports are created with default perms while the DB holds full
+  transcripts + `verbatim` + the dialectic user model — any local account can
+  read it. chmod 0600/0700 on creation. (#21)
+- The autonomous GitHub-writing daemons run `bypassPermissions` with `gh`,
+  guarded only by a prompt line; untrusted stored/issue content is injected
+  into them and nothing mechanically redacts issue/PR bodies. De-privilege the
+  appliers, fence injected content as data, sanitize bodies for paths/secrets,
+  and role-gate the dangerous spawn mode. (#22) Scope: S–M.
+
+**Evolve issue-flow reliability.** The applier posts a claim comment *before*
+spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
+full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
+can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
+spawn-after-claim test. (#23) Scope: S.
+
+**Daemon robustness under load.** Curator lacks the machine-wide single-flight
+every other spawning daemon has, and `candidate_reviewer`/`curator` dump an
+unbounded queue/inventory into the child prompt argv (the `E2BIG` class already
+fixed for `dialectic_validator`). Add curator single-flight + bound the
+prompts. (#24) Scope: S.
+
+**Spawn cost accounting.** The spawn budget caps child RSS only; there is no
+token/$ accounting, so "is this loop worth the Opus minutes?" (the recurring
+shadow-review-proof question, #6) can't be answered with a number. Capture
+token/cost in the `_spawn_wrap` recorder, add a daily cost/token ceiling in the
+admission path, surface per-loop spend in `mp_dashboard`. (#25, extends #6)
+Scope: M.
+
+**Research-driven memory upgrades** (sourced):
+- MCP **elicitation** — now shipping in Claude Code v2.1.76 — for high-stakes
+  confirmations (supersede, curator apply, the under-used `review_candidates`
+  flow), replacing ignorable text nudges with a real confirm/choose dialog,
+  graceful fallback where unsupported. (#26)
+- **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
+  "invalidate, don't delete") so a superseded preference records *when* it
+  stopped being valid, enabling time-scoped user-model queries. (#28)
+- **Decay/eviction** scoring for the saturating ~1054-section lessons store
+  (the curator ages skills but not lessons; mem0 Ebbinghaus pattern). (#27)
+- Note: MCP **sampling** (host-run completions, which would let daemons skip
+  paid spawn children entirely) remains *unsupported* on Claude Code
+  (anthropics/claude-code#1785) — tracked, not actionable yet. The slim-spawn
+  subprocess model stays correct until a host exposes the capability.
+
+Scope: S–M each.
+
+Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
+(#18), auto-update self-restart with no smoke-check/rollback (#19), and
+Antigravity transcript ingest not yet implemented (#20).
+
+---
+
 ## Principle
 
 Don't add phases for the sake of "architectural completeness". Each open
