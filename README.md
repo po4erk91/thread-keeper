@@ -714,12 +714,34 @@ unchanged.
 ## Verifying ingest across CLIs
 
 ```bash
-python scripts/tk_verify_ingest.py
+python scripts/tk_verify_ingest.py            # both checks below
+python scripts/tk_verify_ingest.py --contract # parse/ingest contract only
+python scripts/tk_verify_ingest.py --live      # production verdict only
+python scripts/tk_verify_ingest.py --live --json   # machine-readable
 ```
 
-Walks every installed CLI adapter, parses recent transcripts in an
-isolated tempdir DB, reports per-source message counts and any silent
-parse failures. Read-only with respect to live state.
+Two read-only checks:
+
+- **Contract test** (`--contract`) — walks every installed CLI adapter,
+  parses recent transcripts into an isolated tempdir DB, reports
+  per-source message counts and flags any adapter that parsed messages
+  but silently failed to persist them. Answers *"does the pipeline
+  work?"*
+- **Production verification** (`--live`) — reads the **live**
+  `dialog_messages` table read-only and scores the three acceptance
+  criteria from [roadmap issue #1](https://github.com/po4erk91/thread-keeper/issues/1):
+  (1) every targeted CLI *slot* has production rows, (2) shadow-review
+  sees more than one adapter in the same recent window, (3) the learning
+  loop has fired on non-Claude sessions. Emits a `PASS` / `PARTIAL` /
+  `FAIL` verdict. The four slots are `claude-code`, `codex`, `copilot`,
+  and `google` — where the Google slot is satisfied by *either* the
+  legacy `gemini` adapter or its successor Antigravity (`agy`), since
+  both live under `~/.gemini`.
+
+`--strict` makes the process exit non-zero unless the live verdict is
+`PASS`, so it can gate CI; `PARTIAL` (e.g. a box that doesn't run all
+four CLIs) is a valid real-world state and exits 0 by default. The
+reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 
 ---
 
@@ -745,6 +767,7 @@ threadkeeper/
 ├── db.py                 # SQLite schema + sqlite-vec loader
 ├── identity.py           # session, self-cid, daemon launchers
 ├── ingest.py             # adapter-driven transcript ingest
+├── verify_ingest.py      # cross-CLI production verification verdict
 ├── brief.py              # render_brief / render_context
 ├── shadow_review.py      # autonomous learning observer
 ├── i18n.py               # 10 locales of regex + prompt bundles
