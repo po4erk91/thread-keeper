@@ -7,6 +7,25 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-CLI ingest — production verification harness.** The contract test
+  (`scripts/tk_verify_ingest.py`) now has a production half: a read-only
+  `--live` mode that inspects the live `dialog_messages` table and scores
+  the three acceptance criteria from roadmap issue #1 — (1) every targeted
+  CLI *slot* has production rows, (2) shadow-review sees more than one
+  adapter in the same recent window, (3) the learning loop has fired on
+  non-Claude sessions — emitting a `PASS` / `PARTIAL` / `FAIL` verdict.
+  New importable, unit-tested verdict logic in `threadkeeper/verify_ingest.py`
+  (pure `evaluate_coverage` / `evaluate_verdict` + a read-only
+  `live_production_report`). The four slots are `claude-code`, `codex`,
+  `copilot`, and `google`, where the Google slot is satisfied by *either*
+  the legacy `gemini` adapter or its Antigravity (`agy`) successor (both
+  under `~/.gemini`). New script flags: `--contract`, `--live`, `--json`,
+  `--strict`, `--window-hours`. Turns the previously ad-hoc, prose-only
+  verification into a single reproducible command with a structured
+  verdict. Closes #1.
+
 ## v0.12.0 — 2026-06-14
 
 ### Changed
@@ -49,6 +68,9 @@ version bumps follow semver per the policy in
   executable alias for canonical `antigravity` instead of a separate CLI option,
   keeps `gemini` labeled as legacy, and changes spawn model fields from raw text
   inputs to dropdowns with exact CLI model ids/labels.
+- **macOS menu-bar responsiveness.** Status refresh and Clean memory now run off
+  the main actor, and opening the popover no longer waits for
+  `tk-agent-status --json`.
 
 ### Changed
 

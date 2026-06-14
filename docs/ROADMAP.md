@@ -50,6 +50,17 @@ remains a live question.
   time behind a visible GitHub issue claim comment and PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
+- Cross-CLI ingest production verification (issue #1): the contract test in
+  `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
+  the three acceptance criteria — all CLI slots have production rows, shadow-
+  review spans >1 adapter in one window, and the learning loop fires on
+  non-Claude sessions — into a `PASS`/`PARTIAL`/`FAIL` verdict
+  (`threadkeeper/verify_ingest.py`). Turns the ad-hoc, one-off manual check
+  into a single reproducible command. Note: the "Google" slot is currently
+  covered by data only when Gemini-legacy transcripts exist; the Antigravity
+  (`agy`) successor adapter does not yet parse its sqlite/protobuf
+  conversation store (tracked below under "more adapters"), so on a
+  migrated-to-`agy` box that slot reports absent until that ingestion lands.
 
 ---
 

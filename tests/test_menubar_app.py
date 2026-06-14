@@ -46,6 +46,8 @@ def test_menubar_status_item_uses_idle_chip_and_running_gears():
     assert 'button.title = ""' in swift
     assert 'button.title = " TK' not in swift
     assert 'return "TK ' not in swift
+    assert "statusPollInterval: TimeInterval = 15.0" in swift
+    assert "Timer.scheduledTimer(withTimeInterval: statusPollInterval" in swift
     assert "Timer(timeInterval: gearSpinInterval" in swift
     assert "gearFrameStepDegrees = 17.0" in swift
     assert "largeGearDiameter: CGFloat = 12.0" in swift
@@ -59,12 +61,28 @@ def test_menubar_status_item_uses_idle_chip_and_running_gears():
     assert "store.snapshot.runningCount > 0" not in swift
     assert "button.image = gearFrames" in swift
     assert "TimelineView" not in swift
+    assert "refreshInFlight" in swift
+    assert "Task.detached(priority: .utility)" in swift
+    assert "nonisolated private static func runStatusCommand" in swift
     assert "store.openEnvSettings()" in swift
     assert '.help("Settings")' in swift
     assert '.help("Refresh")' not in swift
     assert 'THREADKEEPER_MENUBAR_RESTART_RSS_MB' in swift
     assert 'runStatusCommand(arguments: ["--cleanup-memory"])' in swift
     assert '.help("Clean memory")' in swift
+
+
+def test_menubar_popover_shows_before_status_refresh():
+    repo = Path(__file__).resolve().parents[1]
+    swift = (
+        repo / "apps" / "macos-agent-status" / "ThreadKeeperAgentStatus.swift"
+    ).read_text(encoding="utf-8")
+
+    start = swift.index("@objc private func togglePopover")
+    end = swift.index("    private func updateStatusButton", start)
+    body = swift[start:end]
+
+    assert body.index("popover.show(") < body.index("store.refresh()")
 
 
 def test_menubar_env_settings_window_edits_env_and_presets():

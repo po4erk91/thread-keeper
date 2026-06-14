@@ -180,7 +180,7 @@ tk-agent-status --cleanup-memory
 ```
 
 `apps/macos-agent-status/` contains a small macOS menu-bar app that polls this
-command every 5 seconds and shows every autonomous learning loop: enabled/off,
+command every 15 seconds and shows every autonomous learning loop: enabled/off,
 running/idle/ready, last pass, backlog, and active child RSS when that loop has
 spawned a worker. PyPI wheels and sdists also bundle the same Swift source under
 `threadkeeper/assets/macos-agent-status/`, so a normal `pipx`/`uv tool` install
@@ -198,7 +198,9 @@ memory button, self-restarts when its own RSS crosses
 notification permission, and sends a notification when a newly completed
 autonomous child task produces a useful result in `recent_results`; the first
 poll only marks existing results as seen, so old completions do not spam
-notifications. The header gear opens a separate Settings window for
+notifications. Status polling and cleanup commands run off the main actor, so
+opening the popover does not wait for `tk-agent-status --json`. The header gear
+opens a separate Settings window for
 `~/.threadkeeper/.env`: common knobs are grouped into guided controls, the raw
 `.env` remains editable for advanced values, three local presets can be saved
 and loaded, and Save & Restart writes the file then asks existing
@@ -712,12 +714,34 @@ unchanged.
 ## Verifying ingest across CLIs
 
 ```bash
-python scripts/tk_verify_ingest.py
+python scripts/tk_verify_ingest.py            # both checks below
+python scripts/tk_verify_ingest.py --contract # parse/ingest contract only
+python scripts/tk_verify_ingest.py --live      # production verdict only
+python scripts/tk_verify_ingest.py --live --json   # machine-readable
 ```
 
-Walks every installed CLI adapter, parses recent transcripts in an
-isolated tempdir DB, reports per-source message counts and any silent
-parse failures. Read-only with respect to live state.
+Two read-only checks:
+
+- **Contract test** (`--contract`) — walks every installed CLI adapter,
+  parses recent transcripts into an isolated tempdir DB, reports
+  per-source message counts and flags any adapter that parsed messages
+  but silently failed to persist them. Answers *"does the pipeline
+  work?"*
+- **Production verification** (`--live`) — reads the **live**
+  `dialog_messages` table read-only and scores the three acceptance
+  criteria from [roadmap issue #1](https://github.com/po4erk91/thread-keeper/issues/1):
+  (1) every targeted CLI *slot* has production rows, (2) shadow-review
+  sees more than one adapter in the same recent window, (3) the learning
+  loop has fired on non-Claude sessions. Emits a `PASS` / `PARTIAL` /
+  `FAIL` verdict. The four slots are `claude-code`, `codex`, `copilot`,
+  and `google` — where the Google slot is satisfied by *either* the
+  legacy `gemini` adapter or its successor Antigravity (`agy`), since
+  both live under `~/.gemini`.
+
+`--strict` makes the process exit non-zero unless the live verdict is
+`PASS`, so it can gate CI; `PARTIAL` (e.g. a box that doesn't run all
+four CLIs) is a valid real-world state and exits 0 by default. The
+reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 
 ---
 
@@ -743,6 +767,7 @@ threadkeeper/
 ├── db.py                 # SQLite schema + sqlite-vec loader
 ├── identity.py           # session, self-cid, daemon launchers
 ├── ingest.py             # adapter-driven transcript ingest
+├── verify_ingest.py      # cross-CLI production verification verdict
 ├── brief.py              # render_brief / render_context
 ├── shadow_review.py      # autonomous learning observer
 ├── i18n.py               # 10 locales of regex + prompt bundles

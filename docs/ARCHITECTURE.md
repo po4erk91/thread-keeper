@@ -19,6 +19,7 @@ threadkeeper/
 ├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
+├── verify_ingest.py   cross-CLI production verification — slot coverage + PASS/PARTIAL/FAIL verdict (issue #1)
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
@@ -72,11 +73,12 @@ reserved for MCP frames. Source checkouts keep the Swift app at
 under `~/.threadkeeper/tasks/`, so the widget does not depend on a repo clone or
 writes inside `site-packages`. The menu-bar app uses AppKit `NSStatusItem` for
 an icon-only status-bar item and a SwiftUI popover for the panel. It polls
-`tk-agent-status --json`, receives loops sorted by active state (`running` →
-`ready` → `idle` → `off`), shows Probe backlog as due objective probes only,
-updates the idle chip / running gears directly on the status button, keeps loop
-counts in the popover/tooltip, and posts macOS notifications for newly observed
-useful `recent_results`. The popover header gear opens a separate AppKit window
+`tk-agent-status --json` every 15 seconds off the main actor, receives loops
+sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
+backlog as due objective probes only, updates the idle chip / running gears
+directly on the status button, keeps loop counts in the popover/tooltip, and
+posts macOS notifications for newly observed useful `recent_results`. The
+popover header gear opens a separate AppKit window
 for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`): SwiftUI guided
 controls cover common daemon, memory, and spawn-routing knobs, an advanced tab
 preserves raw `.env` text, three presets are stored in `UserDefaults`, and
