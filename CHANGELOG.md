@@ -45,6 +45,10 @@ version bumps follow semver per the policy in
   `~/.threadkeeper/.env` editing, raw `.env` edits, three local presets, and
   Save & Restart, which writes the file and asks live `threadkeeper.server`
   processes to restart so hosts reconnect with the new environment.
+- **macOS spawn routing UX.** The Settings window now treats `agy` as the
+  executable alias for canonical `antigravity` instead of a separate CLI option,
+  keeps `gemini` labeled as legacy, and changes spawn model fields from raw text
+  inputs to dropdowns with exact CLI model ids/labels.
 
 ### Changed
 

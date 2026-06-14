@@ -81,7 +81,10 @@ for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`): SwiftUI guided
 controls cover common daemon, memory, and spawn-routing knobs, an advanced tab
 preserves raw `.env` text, three presets are stored in `UserDefaults`, and
 Save & Restart writes the file before terminating live `threadkeeper.server`
-processes so MCP hosts restart them with the new environment.
+processes so MCP hosts restart them with the new environment. Spawn routing UI
+stores `antigravity` as the canonical CLI key (`agy` is the executable alias),
+keeps `gemini` as a legacy Gemini CLI key, and uses exact dropdown values for
+model pins instead of free-text model strings.
 Foreground parent MCP sessions also start `auto_update.py` when
 `THREADKEEPER_AUTO_UPDATE_INTERVAL_S>0` (86400 seconds by default). Each due pass
 is single-flight across live servers, records `events.kind='auto_update_pass'`,

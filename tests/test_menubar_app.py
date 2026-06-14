@@ -81,6 +81,22 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "(1...3).map" in swift
     assert "EnvPresetCard" in swift
     assert "mergeEnvText(raw:" in swift
+    assert "EnvSettingsTab" in swift
+    assert "case .raw:" in swift
+    assert "saveRaw(restart:" in swift
+    assert ".onChange(of: envStore.rawEnvText)" not in swift
+    assert "syncRawEditsIntoForm" not in swift
+    assert 'ChoiceOption("antigravity", label: "antigravity (agy)")' in swift
+    assert 'ChoiceOption("agy")' not in swift
+    assert 'ChoiceOption("gemini", label: "gemini (legacy)")' in swift
+    assert "antigravityModelChoices" in swift
+    assert "geminiLegacyModelChoices" in swift
+    assert '"Gemini 3.1 Pro (High)"' in swift
+    assert '"Gemini 3.5 Flash (Medium)"' in swift
+    assert '"gemini-3.1-pro-preview"' in swift
+    assert '"gemini-3.1-pro"' not in swift
+    assert "THREADKEEPER_SPAWN__MODEL__CODEX" in swift
+    assert "THREADKEEPER_SPAWN__MODEL__GEMINI" in swift
     assert "THREADKEEPER_DISABLE_BG_DAEMONS" in swift
     assert "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S" in swift
     assert "THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER" in swift

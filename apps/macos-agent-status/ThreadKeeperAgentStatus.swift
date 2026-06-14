@@ -105,11 +105,28 @@ private let panelWidth: CGFloat = 380
 private let settingsWindowWidth: CGFloat = 760
 private let settingsWindowHeight: CGFloat = 720
 
+enum EnvSettingsTab: String, CaseIterable, Identifiable {
+    case guided = "Guided"
+    case raw = "Raw .env"
+
+    var id: String { rawValue }
+}
+
 enum EnvSettingKind {
     case toggle
     case number
     case text
-    case choice([String])
+    case choice([ChoiceOption])
+}
+
+struct ChoiceOption: Hashable {
+    let label: String
+    let value: String
+
+    init(_ value: String, label: String? = nil) {
+        self.value = value
+        self.label = label ?? value
+    }
 }
 
 struct EnvSettingDefinition: Identifiable {
@@ -123,7 +140,64 @@ struct EnvSettingDefinition: Identifiable {
     var id: String { key }
 }
 
-private let cliChoices = ["claude", "codex", "antigravity", "agy", "gemini", "copilot"]
+private func choiceOptions(_ values: [String]) -> [ChoiceOption] {
+    values.map { ChoiceOption($0) }
+}
+
+private let cliChoices = [
+    ChoiceOption("claude"),
+    ChoiceOption("codex"),
+    ChoiceOption("antigravity", label: "antigravity (agy)"),
+    ChoiceOption("gemini", label: "gemini (legacy)"),
+    ChoiceOption("copilot"),
+]
+
+private let claudeModelChoices = choiceOptions([
+    "opus",
+    "sonnet",
+    "fable",
+    "claude-fable-5",
+])
+
+private let codexModelChoices = choiceOptions([
+    "gpt-5.5",
+    "gpt-5.4-mini",
+])
+
+private let antigravityModelChoices = choiceOptions([
+    "Gemini 3.5 Flash (Medium)",
+    "Gemini 3.5 Flash (High)",
+    "Gemini 3.5 Flash (Low)",
+    "Gemini 3.1 Pro (High)",
+    "Gemini 3.1 Pro (Low)",
+    "Claude Opus 4.6 (Thinking)",
+    "Claude Sonnet 4.6 (Thinking)",
+    "GPT-OSS 120B (Medium)",
+])
+
+private let geminiLegacyModelChoices = choiceOptions([
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+])
+
+private let roleModelChoices = (
+    claudeModelChoices
+        + codexModelChoices
+        + antigravityModelChoices
+        + geminiLegacyModelChoices
+).reduce(into: [ChoiceOption]()) { result, option in
+    if !result.contains(where: { $0.value == option.value }) {
+        result.append(option)
+    }
+}
 
 private let envSettingDefinitions: [EnvSettingDefinition] = [
     EnvSettingDefinition(
@@ -325,17 +399,33 @@ private let envSettingDefinitions: [EnvSettingDefinition] = [
         group: "Spawn Routing",
         key: "THREADKEEPER_SPAWN__MODEL__CLAUDE",
         title: "Claude model",
-        detail: "Model pin for Claude-backed spawned agents.",
-        defaultValue: "sonnet",
-        kind: .text
+        detail: "Model pin passed to Claude Code --model.",
+        defaultValue: "opus",
+        kind: .choice(claudeModelChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Spawn Routing",
+        key: "THREADKEEPER_SPAWN__MODEL__CODEX",
+        title: "Codex model",
+        detail: "Model pin passed to codex exec -m.",
+        defaultValue: "gpt-5.5",
+        kind: .choice(codexModelChoices)
     ),
     EnvSettingDefinition(
         group: "Spawn Routing",
         key: "THREADKEEPER_SPAWN__MODEL__AGY",
         title: "Antigravity model",
-        detail: "Model pin for Antigravity/agy spawned agents.",
-        defaultValue: "gemini-3.1-pro",
-        kind: .text
+        detail: "Model label from `agy models`; agy is the executable for Antigravity.",
+        defaultValue: "Gemini 3.1 Pro (High)",
+        kind: .choice(antigravityModelChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Spawn Routing",
+        key: "THREADKEEPER_SPAWN__MODEL__GEMINI",
+        title: "Gemini legacy model",
+        detail: "Model id or routing alias passed to legacy gemini --model.",
+        defaultValue: "auto",
+        kind: .choice(geminiLegacyModelChoices)
     ),
     EnvSettingDefinition(
         group: "Spawn Routing",
@@ -343,7 +433,7 @@ private let envSettingDefinitions: [EnvSettingDefinition] = [
         title: "Evolve applier model",
         detail: "Model pin for the code-writing evolve role.",
         defaultValue: "opus",
-        kind: .text
+        kind: .choice(roleModelChoices)
     ),
     EnvSettingDefinition(
         group: "Spawn Routing",
@@ -351,7 +441,7 @@ private let envSettingDefinitions: [EnvSettingDefinition] = [
         title: "Dialectic validator model",
         detail: "Model pin for claim-validation work.",
         defaultValue: "opus",
-        kind: .text
+        kind: .choice(roleModelChoices)
     ),
 ]
 
@@ -386,6 +476,7 @@ final class EnvSettingsStore: ObservableObject {
     @Published var validationMessages: [String] = []
     @Published var statusMessage = ""
     @Published var isSaving = false
+    @Published var isLoaded = false
 
     private weak var agentStore: AgentStatusStore?
     private let presetDefaultsKey = "threadkeeperEnvPresetSlotsV1"
@@ -403,7 +494,7 @@ final class EnvSettingsStore: ObservableObject {
         self.agentStore = agentStore
         self.envFileURL = Self.resolveEnvFileURL()
         loadPresetSlots()
-        loadEnv()
+        statusMessage = "Ready."
     }
 
     func binding(for key: String) -> Binding<String> {
@@ -437,6 +528,7 @@ final class EnvSettingsStore: ObservableObject {
         } catch {
             statusMessage = "Could not read .env: \(error.localizedDescription)"
         }
+        isLoaded = true
         validate()
     }
 
@@ -444,11 +536,6 @@ final class EnvSettingsStore: ObservableObject {
         values = Self.extractKnownValues(from: rawEnvText)
         validate()
         statusMessage = "Imported raw .env values into the form."
-    }
-
-    func syncRawEditsIntoForm() {
-        values = Self.extractKnownValues(from: rawEnvText)
-        validate()
     }
 
     func syncFormToRaw() {
@@ -477,6 +564,37 @@ final class EnvSettingsStore: ObservableObject {
             )
             try merged.write(to: envFileURL, atomically: true, encoding: .utf8)
             rawEnvText = merged
+            statusMessage = "Saved \(envFileURL.path)"
+
+            if restart {
+                try requestThreadKeeperRestart()
+                statusMessage = "Saved and requested ThreadKeeper restart."
+            }
+            agentStore?.refresh()
+        } catch {
+            statusMessage = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    func saveRaw(restart: Bool) {
+        values = Self.extractKnownValues(from: rawEnvText)
+        validate()
+        guard canSave else {
+            statusMessage = "Fix the highlighted raw .env values before saving."
+            return
+        }
+
+        isSaving = true
+        defer {
+            isSaving = false
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: envFileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try rawEnvText.write(to: envFileURL, atomically: true, encoding: .utf8)
             statusMessage = "Saved \(envFileURL.path)"
 
             if restart {
@@ -557,8 +675,9 @@ final class EnvSettingsStore: ObservableObject {
                     messages.append("\(definition.title) cannot be negative.")
                 }
             case .choice(let choices):
-                if !choices.contains(value) {
-                    messages.append("\(definition.title) must be one of: \(choices.joined(separator: ", ")).")
+                if !choices.contains(where: { $0.value == value }) {
+                    let allowed = choices.map(\.value).joined(separator: ", ")
+                    messages.append("\(definition.title) must be one of: \(allowed).")
                 }
             case .text:
                 break
@@ -1218,31 +1337,42 @@ final class EnvSettingsWindowController: NSWindowController {
     }
 
     func present() {
-        if window?.isVisible != true {
-            envStore.loadEnv()
-        }
+        let shouldReload = window?.isVisible != true
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if shouldReload {
+            DispatchQueue.main.async { [envStore] in
+                envStore.loadEnv()
+            }
+        }
     }
 }
 
 struct EnvSettingsView: View {
     @ObservedObject var envStore: EnvSettingsStore
+    @State private var selectedTab: EnvSettingsTab = .guided
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            TabView {
-                guidedTab
-                    .tabItem {
-                        Label("Guided", systemImage: "slider.horizontal.3")
-                    }
-                rawTab
-                    .tabItem {
-                        Label("Raw .env", systemImage: "doc.text")
-                    }
+            Picker("", selection: $selectedTab) {
+                ForEach(EnvSettingsTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+
+            Group {
+                switch selectedTab {
+                case .guided:
+                    guidedTab
+                case .raw:
+                    rawTab
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -1331,9 +1461,6 @@ struct EnvSettingsView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color(nsColor: .separatorColor).opacity(0.5))
                 )
-                .onChange(of: envStore.rawEnvText) { _ in
-                    envStore.syncRawEditsIntoForm()
-                }
         }
         .padding(.bottom, 14)
     }
@@ -1348,13 +1475,13 @@ struct EnvSettingsView: View {
                 .lineLimit(2)
             Spacer()
             Button {
-                envStore.save(restart: false)
+                save(restart: false)
             } label: {
                 Label("Save", systemImage: "square.and.arrow.down")
             }
             .disabled(!envStore.canSave)
             Button {
-                envStore.save(restart: true)
+                save(restart: true)
             } label: {
                 Label("Save & Restart", systemImage: "arrow.clockwise.circle")
             }
@@ -1362,6 +1489,15 @@ struct EnvSettingsView: View {
             .disabled(!envStore.canSave)
         }
         .padding(16)
+    }
+
+    private func save(restart: Bool) {
+        switch selectedTab {
+        case .guided:
+            envStore.save(restart: restart)
+        case .raw:
+            envStore.saveRaw(restart: restart)
+        }
     }
 
     private var footerMessage: String {
@@ -1502,8 +1638,8 @@ struct EnvSettingRow: View {
         case .choice(let choices):
             Picker("", selection: envStore.binding(for: definition.key)) {
                 Text("Default").tag("")
-                ForEach(choices, id: \.self) { choice in
-                    Text(choice).tag(choice)
+                ForEach(choices, id: \.value) { choice in
+                    Text(choice.label).tag(choice.value)
                 }
             }
             .labelsHidden()
