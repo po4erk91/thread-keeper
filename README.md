@@ -203,7 +203,9 @@ notifications. The header gear opens a separate Settings window for
 `.env` remains editable for advanced values, three local presets can be saved
 and loaded, and Save & Restart writes the file then asks existing
 `threadkeeper.server` processes to exit so MCP hosts reconnect with the new
-configuration. Probe backlog is due objective
+configuration. Spawn CLI selectors collapse `agy` into canonical `antigravity`
+while keeping `gemini` as legacy, and model selectors use dropdowns with exact
+CLI model ids/labels instead of free-text fields. Probe backlog is due objective
 probes only, not every registered probe, so a healthy cooldown shows `0 due
 probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
 automatically installs and launches it on MCP startup, and restarts the app when
@@ -592,11 +594,15 @@ keys are lowercased:
 # default agent for roles with no explicit pin ("" / unset = use the active CLI)
 THREADKEEPER_SPAWN__DEFAULT=claude
 # per-role CLI:  THREADKEEPER_SPAWN__LOOP__<ROLE>=<cli>
+# supported CLI keys: claude, codex, antigravity (agy executable), gemini (legacy), copilot
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=claude   # heaviest reasoning → keep on Claude
 THREADKEEPER_SPAWN__LOOP__CURATOR=codex            # weekly audit → Codex is fine
 THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = follow active CLI
 # model pin per CLI or per role:  THREADKEEPER_SPAWN__MODEL__<KEY>=<model>
 THREADKEEPER_SPAWN__MODEL__CLAUDE=opus
+THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.5
+THREADKEEPER_SPAWN__MODEL__AGY="Gemini 3.1 Pro (High)"
+THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-3.1-pro-preview
 THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR=opus
 ```
 
@@ -604,7 +610,9 @@ Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI �
 `claude`; `"auto"` (or unset) defers to the active CLI. Real environment
 variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
-`gemini`, `copilot`). See `.env.example` for the full knob list.
+`gemini`, `copilot`). `agy` is normalized to `antigravity`; `gemini` remains a
+legacy Gemini CLI adapter for old installs/enterprise paths. See `.env.example`
+for the full knob list.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any

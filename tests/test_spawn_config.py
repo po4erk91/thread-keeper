@@ -114,12 +114,12 @@ def test_resolve_model_from_dotenv(tmp_path, monkeypatch):
     envf = tmp_path / "tk.env"
     envf.write_text(
         "THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.4\n"
-        "THREADKEEPER_SPAWN__MODEL__AGY=gemini-3.1-pro\n"
+        'THREADKEEPER_SPAWN__MODEL__AGY="Gemini 3.1 Pro (High)"\n'
         "THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-2.5-pro\n"
     )
     sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
     assert sc.resolve_model("codex") == "gpt-5.4"
-    assert sc.resolve_model("antigravity") == "gemini-3.1-pro"
+    assert sc.resolve_model("antigravity") == "Gemini 3.1 Pro (High)"
     assert sc.resolve_model("gemini") == "gemini-2.5-pro"
     assert sc.resolve_model("claude") == ""  # no entry
 
@@ -216,12 +216,12 @@ def test_antigravity_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
         del sys.modules[name]
     from threadkeeper.adapters.antigravity import ADAPTER
-    argv = ADAPTER.spawn_argv("hello", model="gemini-3.1-pro")
+    argv = ADAPTER.spawn_argv("hello", model="Gemini 3.1 Pro (High)")
     if argv is None:
         pytest.skip("agy binary not installed in test env")
     assert "-p" in argv
     assert "--model" in argv
-    assert "gemini-3.1-pro" in argv
+    assert "Gemini 3.1 Pro (High)" in argv
 
 
 def test_gemini_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
