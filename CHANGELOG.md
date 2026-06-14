@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.13.0 — 2026-06-14
+
 ### Added
 
 - **Cross-CLI ingest — production verification harness.** The contract test
