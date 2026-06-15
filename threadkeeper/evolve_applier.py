@@ -39,6 +39,7 @@ from .config import (
     CURATOR_REPORTS_DIR,
     DB_PATH,
     EVOLVE_APPLY_INTERVAL_S,
+    EVOLVE_REPO_ROOT,
     ROADMAP_CLAIM_RACE_WINDOW_S,
 )
 from .db import get_db
@@ -283,8 +284,40 @@ or:
 
 
 def _repo_root() -> Path:
-    """Repository root = the package's parent dir (threadkeeper/.. )."""
+    """Git checkout the evolve loops operate on.
+
+    Prefers THREADKEEPER_EVOLVE_REPO_ROOT (config EVOLVE_REPO_ROOT) when set —
+    required when thread-keeper is installed from PyPI into site-packages, where
+    the package's parent dir is not a git tree. Falls back to the package parent
+    (threadkeeper/..), which IS the repo root for the editable-from-checkout
+    install that install.sh performs."""
+    override = (EVOLVE_REPO_ROOT or "").strip()
+    if override:
+        return Path(override).expanduser()
     return Path(__file__).resolve().parent.parent
+
+
+def _is_git_repo(path: Path) -> bool:
+    """True if `path` is inside a git work tree. Best-effort: any probe failure
+    (git missing, path absent, not a repo) yields False rather than raising."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            text=True, capture_output=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and (proc.stdout or "").strip() == "true"
+
+
+def _repo_not_git_error(root: Path) -> str:
+    """Standard error for the code/PR paths when the resolved repo root is not a
+    git checkout — typical of a PyPI/site-packages install with no checkout."""
+    return (
+        f"ERR repo_root_not_git={root} (thread-keeper is installed outside a "
+        "git checkout; set THREADKEEPER_EVOLVE_REPO_ROOT to your thread-keeper "
+        "clone so the evolve applier can branch, test, and open PRs)"
+    )
 
 
 def _slug(text: str, maxlen: int = 32) -> str:
@@ -1141,6 +1174,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
             return "applier_running n=1 (single-flight lock)"
 
         conn = get_db()
+        repo_root = _repo_root()
+        if not _is_git_repo(repo_root):
+            return _repo_not_git_error(repo_root)
         exact = bool(issue_number)
         issues, err = _open_roadmap_issues(
             conn, skip_claimed=not exact
@@ -1166,7 +1202,6 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
         if running:
             return f"applier_running n={len(running)} (single-flight)"
 
-        repo_root = _repo_root()
         failures: list[str] = []
         for issue in candidates:
             started, status = _start_roadmap_issue_child(issue, repo_root)
@@ -1273,6 +1308,9 @@ def apply_evolve(evolve_id: int) -> str:
             return "applier_running n=1 (single-flight lock)"
 
         conn = get_db()
+        repo_root = _repo_root()
+        if not _is_git_repo(repo_root):
+            return _repo_not_git_error(repo_root)
         if not _row_exists(conn, evolve_id):
             return f"ERR evolve_not_found={evolve_id}"
         row = _get_promoted_unapplied(conn, evolve_id)
@@ -1290,7 +1328,6 @@ def apply_evolve(evolve_id: int) -> str:
         if running:
             return f"applier_running n={len(running)} (single-flight)"
 
-        repo_root = _repo_root()
         prompt = build_apply_prompt(
             row["id"], row["suggestion"], row["rationale"], repo_root
         )

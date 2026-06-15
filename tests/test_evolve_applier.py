@@ -1113,6 +1113,57 @@ def test_run_apply_pass_picks_oldest_promoted(tmp_path, monkeypatch):
     assert pkg["ea"]._last_apply_ts(conn) > 0
 
 
+# ── repo-root resolution + git-checkout guard ──────────────────────────────
+
+def test_repo_root_prefers_env_override(tmp_path, monkeypatch):
+    """When installed outside a checkout (PyPI/site-packages), the repo root is
+    taken from THREADKEEPER_EVOLVE_REPO_ROOT instead of the package parent."""
+    external = tmp_path / "external_repo"
+    external.mkdir()
+    monkeypatch.setenv("THREADKEEPER_EVOLVE_REPO_ROOT", str(external))
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["ea"]._repo_root() == external
+
+
+def test_repo_root_defaults_to_package_parent(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    from pathlib import Path as _P
+    expected = _P(pkg["ea"].__file__).resolve().parent.parent
+    assert pkg["ea"]._repo_root() == expected
+
+
+def test_apply_evolve_blocks_when_repo_not_git(tmp_path, monkeypatch):
+    """Code/PR path refuses to dispatch when the repo root is not a git tree —
+    the PyPI/site-packages failure mode — with a clear, actionable error."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    eid = _add_evolve(conn, "some promoted change", status="promoted")
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn without a git checkout")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_evolve(eid)
+    assert out.startswith("ERR repo_root_not_git="), out
+    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in out
+
+
+def test_apply_roadmap_issue_blocks_when_repo_not_git(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn without a git checkout")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue()
+    assert out.startswith("ERR repo_root_not_git="), out
+    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in out
+
+
 def test_run_apply_pass_single_flight(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()

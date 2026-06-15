@@ -250,7 +250,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   interval to avoid duplicate issue workers across foreground server startups;
   manual apply tools still dispatch immediately. If no roadmap issue is
   startable, the pass falls back to Curator reports and then legacy promoted
-  `evolve_format` suggestions.
+  `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
+  operate on a real git checkout: the repo root defaults to the package's parent
+  dir (correct for the editable-from-checkout `install.sh`) but can be pointed
+  elsewhere with `EVOLVE_REPO_ROOT` (`THREADKEEPER_EVOLVE_REPO_ROOT`). When
+  thread-keeper is installed from PyPI into site-packages — where the package
+  parent is not a git tree — these paths return a clear
+  `ERR repo_root_not_git=<path>` until that variable points at a checkout.
+  Curator report apply needs no git tree and runs regardless.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   report-first, but when a skill or lesson exposes a concrete improvement for
   thread-keeper itself it may call `evolve_format(...)` and record an

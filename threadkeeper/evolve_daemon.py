@@ -22,6 +22,7 @@ import time
 
 from .config import EVOLVE_REVIEW_INTERVAL_S, EVOLVE_REVIEW_MIN
 from .db import get_db
+from .evolve_applier import _is_git_repo, _repo_root
 from .helpers import daemon_sleep
 from . import identity
 
@@ -202,6 +203,16 @@ def run_evolve_pass(force: bool = False) -> str:
         _record_evolve_pass(conn, now_t, out)
         return out
 
+    repo_root = _repo_root()
+    if not _is_git_repo(repo_root):
+        out = (
+            f"ERR repo_root_not_git={repo_root} (thread-keeper is installed "
+            "outside a git checkout; set THREADKEEPER_EVOLVE_REPO_ROOT to your "
+            "thread-keeper clone so the reviewer can audit the repo)"
+        )
+        _record_evolve_pass(conn, now_t, out)
+        return out
+
     queue = (
         "\n".join(
             f"#{r['id']}: {r['suggestion']}"
@@ -216,6 +227,7 @@ def run_evolve_pass(force: bool = False) -> str:
     try:
         result = spawn(
             prompt=prompt,
+            cwd=str(repo_root),
             visible=False,
             capture_output=True,
             permission_mode="bypassPermissions",

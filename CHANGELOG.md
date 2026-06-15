@@ -9,6 +9,19 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **`THREADKEEPER_EVOLVE_REPO_ROOT` — make the evolve loops work on a PyPI /
+  site-packages install.** The evolve reviewer and evolve applier branch, run
+  the test suite, and open PRs against a git checkout. They previously assumed
+  the repo root was the package's parent dir, which holds only for the
+  editable-from-checkout `install.sh`. When thread-keeper is installed from
+  PyPI into site-packages, that parent is not a git tree, so both loops would
+  fail with cryptic `gh`/`git` errors. They now resolve the repo root from
+  `EVOLVE_REPO_ROOT` when set, the reviewer child runs with `cwd` pinned to
+  that root instead of the host CLI's working directory, and the reviewer plus
+  the code/PR applier paths fail fast with a clear `ERR repo_root_not_git=<path>`
+  (pointing at the new variable) when the resolved root is not a git checkout.
+  Curator report apply is memory-only and continues to run without a checkout.
+
 - **Hot-config reload — no Claude Code restart on env changes (#2).** A new
   `config_watcher` daemon polls `~/.claude/settings.json`
   (`THREADKEEPER_CONFIG_WATCH_INTERVAL_S`, default 2 s; 0 disables) and, when

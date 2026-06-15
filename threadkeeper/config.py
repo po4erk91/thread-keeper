@@ -211,6 +211,13 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
+    # Absolute path to the thread-keeper git checkout the evolve reviewer and
+    # applier operate on (branch, run tests, open PRs against). Empty => the
+    # package's parent dir, which IS the repo root for the editable-from-checkout
+    # install that install.sh performs. Set this when thread-keeper is installed
+    # from PyPI into site-packages, where the package parent is not a git tree
+    # and the evolve loops would otherwise have no repo to work on.
+    evolve_repo_root: str = ""
     # After posting a roadmap-issue claim comment, wait this long, re-fetch
     # comments, and retract our claim if another host raced us. Cross-host
     # TOCTOU guard. Set to 0 in tests to skip the wait.
@@ -358,6 +365,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_REVIEW_INTERVAL_S": s.evolve_review_interval_s,
         "EVOLVE_REVIEW_MIN": s.evolve_review_min,
         "EVOLVE_APPLY_INTERVAL_S": s.evolve_apply_interval_s,
+        "EVOLVE_REPO_ROOT": s.evolve_repo_root,
         "ROADMAP_CLAIM_RACE_WINDOW_S": s.roadmap_claim_race_window_s,
         "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
         "THREAD_IDLE_CLOSE_DAYS": s.thread_idle_close_days,
