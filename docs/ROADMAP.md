@@ -153,11 +153,19 @@ deployment is the more concrete need; cross-machine CRDT-based sync
 between independent installs is a strictly harder problem and
 probably never the right answer here.
 
-**Hot-config reload.** `.env` can be edited from the macOS menu-bar Settings
-window and that UI can request an MCP server restart after saving, but true
-in-process reload is not implemented. Ideally — pickup without restarting
-daemons. Scope: S (env via periodic re-read in the config object, daemons
-already read per-tick).
+**Hot-config reload.** ✅ DONE (#2). The `config_watcher` daemon polls
+`~/.claude/settings.json` (one mtime stat per tick, default 2 s) and, on a
+change, mirrors the threadkeeper-relevant `env` keys into the live process,
+calls `config.reload_settings()` to re-instantiate `Settings` and re-publish
+the module constants, and propagates each changed value into every loaded
+`threadkeeper.*` module that imported a copy — so daemons and tools pick up
+the new knob without a Claude Code restart. Newly-enabled daemons (interval
+0 → >0) are started; already-running ones self-adjust on their next tick
+(`daemon_sleep` keeps a hot-disabled loop from busy-spinning). Manual trigger
+`config_reload()`; diagnostics `config_watch_status()`; off via
+`THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0`. Does not help host-CLI hooks (those
+are read by the CLI, not us); half-written files are debounced via an
+mtime-cursor + JSON-parse guard.
 
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,

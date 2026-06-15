@@ -184,6 +184,26 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
+- **config_watcher** (`config_watcher.start_config_watcher`) — once per
+  `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
+  `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
+  when its mtime moves, re-reads the file's `env` block, mirrors the
+  threadkeeper-relevant keys (`THREADKEEPER_*` plus the unprefixed
+  `CLAUDE_SKILLS_DIR`/`CLAUDE_PROJECTS_DIR`) into `os.environ` (applying new
+  values, dropping deleted ones), and calls `config.reload_settings()`. That
+  re-instantiates `Settings`, re-publishes the UPPER_CASE module constants,
+  and `_propagate`s each changed value into every loaded `threadkeeper.*`
+  module that did `from .config import X` — which works because a function
+  resolves a module-global name at call time, so the next daemon tick / tool
+  call sees the new value with no restart (the issue-#2 acceptance test:
+  change the shadow interval, `shadow_review_status()` reflects it within
+  ~1 s). A daemon whose interval crossed 0 → >0 is started here; the rest
+  self-adjust (and `daemon_sleep` keeps a hot-disabled loop from busy-spinning
+  on `time.sleep(0)`). Cold start records only a baseline (the env is already
+  applied at spawn); a half-written file is skipped via the mtime-cursor +
+  JSON-parse guard and retried. Manual trigger `config_reload()`; diagnostics
+  `config_watch_status()`. Embedding-backend / process-identity flags are
+  intentionally not hot-reloaded.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
 - **candidate_reviewer** — once per `CANDIDATE_REVIEW_INTERVAL_S` (default

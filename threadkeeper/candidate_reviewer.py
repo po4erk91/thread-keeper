@@ -47,6 +47,7 @@ from .config import (
     DB_PATH,
 )
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -393,7 +394,7 @@ def _serve_loop() -> None:
             run_review_pass()
         except Exception:
             logger.debug("candidate_reviewer tick failed", exc_info=True)
-        time.sleep(CANDIDATE_REVIEW_INTERVAL_S)
+        daemon_sleep(CANDIDATE_REVIEW_INTERVAL_S)
 
 
 def start_candidate_reviewer_daemon() -> None:
