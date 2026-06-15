@@ -7,6 +7,24 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Hot-config reload — no Claude Code restart on env changes (#2).** A new
+  `config_watcher` daemon polls `~/.claude/settings.json`
+  (`THREADKEEPER_CONFIG_WATCH_INTERVAL_S`, default 2 s; 0 disables) and, when
+  its mtime moves, mirrors the threadkeeper-relevant `env` keys into the live
+  process and calls the new `config.reload_settings()`. That re-instantiates
+  `Settings`, re-publishes the module constants, and propagates each changed
+  value into every loaded `threadkeeper.*` module that imported a copy — so
+  daemons and tools pick up a changed knob (e.g.
+  `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S`) without a restart. Newly-enabled
+  daemons (interval 0 → >0) are started automatically; already-running ones
+  self-adjust on their next tick. Manual trigger `config_reload()`; diagnostics
+  `config_watch_status()`. A half-written settings file is debounced via an
+  mtime-cursor + JSON-parse guard. New `helpers.daemon_sleep()` keeps every
+  interval daemon's loop from busy-spinning when a live interval is reloaded
+  to 0.
+
 ## v0.13.1 — 2026-06-15
 
 ### Fixed

@@ -31,6 +31,7 @@ import time
 
 from .config import EXTRACT_INTERVAL_S, EXTRACT_WINDOW_MIN
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def _serve_loop() -> None:
             run_extract_pass()
         except Exception:
             logger.debug("extract_daemon tick failed", exc_info=True)
-        time.sleep(EXTRACT_INTERVAL_S)
+        daemon_sleep(EXTRACT_INTERVAL_S)
 
 
 def start_extract_daemon() -> None:

@@ -20,6 +20,7 @@ from .config import (
     DIALECTIC_MAX_NEW_CLAIMS,
 )
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 from .identity import _ensure_session
 
@@ -535,7 +536,7 @@ def _serve_loop() -> None:
             run_validate_pass()
         except Exception:
             logger.debug("dialectic_validator tick failed", exc_info=True)
-        time.sleep(DIALECTIC_VALIDATE_INTERVAL_S)
+        daemon_sleep(DIALECTIC_VALIDATE_INTERVAL_S)
 
 
 def start_dialectic_validator_daemon() -> None:

@@ -36,7 +36,7 @@ from .config import (
     SHADOW_REVIEW_WINDOW_S,
 )
 from .db import get_db
-from .helpers import alive
+from .helpers import alive, daemon_sleep
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -407,7 +407,7 @@ def _serve_loop() -> None:
             run_shadow_pass()
         except Exception:
             logger.debug("shadow_review tick failed", exc_info=True)
-        time.sleep(SHADOW_REVIEW_INTERVAL_S)
+        daemon_sleep(SHADOW_REVIEW_INTERVAL_S)
 
 
 def start_shadow_daemon() -> None:

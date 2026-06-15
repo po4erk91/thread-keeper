@@ -42,6 +42,7 @@ from .config import (
     ROADMAP_CLAIM_RACE_WINDOW_S,
 )
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -1423,7 +1424,7 @@ def _serve_loop() -> None:
             run_evolve_apply_pass()
         except Exception:
             logger.debug("evolve_applier tick failed", exc_info=True)
-        time.sleep(EVOLVE_APPLY_INTERVAL_S)
+        daemon_sleep(EVOLVE_APPLY_INTERVAL_S)
 
 
 def start_evolve_applier_daemon() -> None:

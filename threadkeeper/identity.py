@@ -151,6 +151,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            from . import config_watcher
+            config_watcher.start_config_watcher()
+        except Exception:
+            pass
+        try:
             from . import shadow_review
             shadow_review.start_shadow_daemon()
         except Exception:

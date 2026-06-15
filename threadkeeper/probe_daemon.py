@@ -254,7 +254,7 @@ def _serve_loop() -> None:
             run_probe_pass()
         except Exception:
             logger.debug("probe_daemon tick failed", exc_info=True)
-        time.sleep(PROBE_INTERVAL_S)
+        daemon_sleep(PROBE_INTERVAL_S)
 
 
 def start_probe_daemon() -> None:
