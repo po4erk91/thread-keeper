@@ -1113,11 +1113,11 @@ def test_run_apply_pass_picks_oldest_promoted(tmp_path, monkeypatch):
     assert pkg["ea"]._last_apply_ts(conn) > 0
 
 
-# ── repo-root resolution + git-checkout guard ──────────────────────────────
+# ── repo-root resolution + auto-provisioning ───────────────────────────────
 
 def test_repo_root_prefers_env_override(tmp_path, monkeypatch):
-    """When installed outside a checkout (PyPI/site-packages), the repo root is
-    taken from THREADKEEPER_EVOLVE_REPO_ROOT instead of the package parent."""
+    """An explicit THREADKEEPER_EVOLVE_REPO_ROOT pins the checkout and skips
+    auto-resolution."""
     external = tmp_path / "external_repo"
     external.mkdir()
     monkeypatch.setenv("THREADKEEPER_EVOLVE_REPO_ROOT", str(external))
@@ -1125,43 +1125,130 @@ def test_repo_root_prefers_env_override(tmp_path, monkeypatch):
     assert pkg["ea"]._repo_root() == external
 
 
-def test_repo_root_defaults_to_package_parent(tmp_path, monkeypatch):
+def test_repo_root_defaults_to_package_checkout(tmp_path, monkeypatch):
+    """With no override, an editable-from-checkout install resolves to the
+    package's parent dir (which carries a .git entry)."""
     pkg = _bootstrap(tmp_path, monkeypatch)
     from pathlib import Path as _P
     expected = _P(pkg["ea"].__file__).resolve().parent.parent
     assert pkg["ea"]._repo_root() == expected
 
 
-def test_apply_evolve_blocks_when_repo_not_git(tmp_path, monkeypatch):
-    """Code/PR path refuses to dispatch when the repo root is not a git tree —
-    the PyPI/site-packages failure mode — with a clear, actionable error."""
+def test_managed_repo_dir_is_under_db_dir(tmp_path, monkeypatch):
+    """The auto-cloned checkout lives next to the DB so it is stable across
+    restarts (PyPI/site-packages installs resolve here)."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["ea"]._managed_repo_dir() == (
+        pkg["ea"].DB_PATH.parent / "evolve-repo"
+    )
+
+
+def test_ensure_repo_ready_uses_existing_checkout(tmp_path, monkeypatch):
+    """The common path: the resolved root is already a git tree (editable
+    install / dev checkout) → ready, no provisioning."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+
+    def _no_provision(dest):
+        raise AssertionError("must not provision when a checkout exists")
+    monkeypatch.setattr(pkg["ea"], "_provision_managed_repo", _no_provision)
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+    assert err == ""
+    assert root == pkg["ea"]._repo_root()
+
+
+def test_ensure_repo_ready_auto_clones_when_missing(tmp_path, monkeypatch):
+    """Default behaviour on a PyPI install: no checkout → auto-provision a
+    managed one. Works out of the box, no env var required."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    managed = tmp_path / "managed-repo"
+    monkeypatch.setattr(pkg["ea"], "_resolve_repo_root", lambda: managed)
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+    provisioned = []
+    monkeypatch.setattr(
+        pkg["ea"], "_provision_managed_repo",
+        lambda dest: provisioned.append(dest) or "",
+    )
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+    assert err == ""
+    assert root == managed
+    assert provisioned == [managed]
+
+
+def test_ensure_repo_ready_disabled_flag_blocks_auto_clone(tmp_path, monkeypatch):
+    """The flag only DISABLES the default: with auto-clone off and no checkout,
+    the loops report a clear error and never provision."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    managed = tmp_path / "managed-repo"
+    monkeypatch.setattr(pkg["ea"], "_resolve_repo_root", lambda: managed)
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTO_CLONE", False)
+
+    def _no_provision(dest):
+        raise AssertionError("must not provision when auto-clone is disabled")
+    monkeypatch.setattr(pkg["ea"], "_provision_managed_repo", _no_provision)
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+    assert root == managed
+    assert err.startswith("ERR evolve_repo_unavailable="), err
+    assert "THREADKEEPER_EVOLVE_AUTO_CLONE" in err
+
+
+def test_ensure_repo_ready_override_not_checkout_errors(tmp_path, monkeypatch):
+    """An explicit override that isn't a checkout is never auto-cloned into —
+    the user is told to fix the path."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    bad = tmp_path / "not-a-repo"
+    bad.mkdir()
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_ROOT", str(bad))
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+
+    def _no_provision(dest):
+        raise AssertionError("must not provision into an explicit override path")
+    monkeypatch.setattr(pkg["ea"], "_provision_managed_repo", _no_provision)
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+    assert root == bad
+    assert err.startswith("ERR repo_root_not_git="), err
+    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in err
+
+
+def test_apply_evolve_blocks_when_repo_unavailable(tmp_path, monkeypatch):
+    """Code/PR path surfaces a repo-provisioning error and never spawns."""
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
     eid = _add_evolve(conn, "some promoted change", status="promoted")
-    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+    from pathlib import Path as _P
+    monkeypatch.setattr(
+        pkg["ea"], "_ensure_repo_ready",
+        lambda: (_P("/x"), "ERR evolve_repo_clone_failed=/x: network down"),
+    )
 
     def _boom(**kw):
-        raise AssertionError("must not spawn without a git checkout")
+        raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn", _boom)
 
     out = pkg["ea"].apply_evolve(eid)
-    assert out.startswith("ERR repo_root_not_git="), out
-    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in out
+    assert out == "ERR evolve_repo_clone_failed=/x: network down"
 
 
-def test_apply_roadmap_issue_blocks_when_repo_not_git(tmp_path, monkeypatch):
+def test_apply_roadmap_issue_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: False)
+    from pathlib import Path as _P
+    monkeypatch.setattr(
+        pkg["ea"], "_ensure_repo_ready",
+        lambda: (_P("/x"), "ERR evolve_repo_unavailable=/x (... auto-clone ...)"),
+    )
 
     def _boom(**kw):
-        raise AssertionError("must not spawn without a git checkout")
+        raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
-    assert out.startswith("ERR repo_root_not_git="), out
-    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in out
+    assert out.startswith("ERR evolve_repo_unavailable="), out
 
 
 def test_run_apply_pass_single_flight(tmp_path, monkeypatch):

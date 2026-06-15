@@ -227,25 +227,29 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
     out = pkg["ed"].run_evolve_pass(force=True)
 
     assert out.startswith("spawned audit")
-    assert calls["cwd"] == str(pkg["ed"]._repo_root())
+    expected = str(Path(pkg["ed"].__file__).resolve().parent.parent)
+    assert calls["cwd"] == expected
 
 
-def test_run_evolve_pass_blocks_when_repo_not_git(tmp_path, monkeypatch):
-    """No checkout (PyPI/site-packages) → reviewer refuses to spawn and returns
-    an actionable error instead of running gh/file reads against the wrong dir."""
+def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
+    """When the checkout can't be provisioned (e.g. auto-clone disabled on a
+    PyPI install), the reviewer refuses to spawn and records an actionable
+    error instead of running gh/file reads against the wrong dir."""
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
     conn = pkg["db"].get_db()
     _add_evolve(conn, "s1")
-    monkeypatch.setattr(pkg["ed"], "_is_git_repo", lambda path: False)
+    monkeypatch.setattr(
+        pkg["ed"], "_ensure_repo_ready",
+        lambda: (Path("/x"), "ERR evolve_repo_unavailable=/x (... auto-clone ...)"),
+    )
 
     def _boom(**kw):
-        raise AssertionError("must not spawn without a git checkout")
+        raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn", _boom)
 
     out = pkg["ed"].run_evolve_pass(force=True)
-    assert out.startswith("ERR repo_root_not_git="), out
-    assert "THREADKEEPER_EVOLVE_REPO_ROOT" in out
+    assert out.startswith("ERR evolve_repo_unavailable="), out
     # the failed pass is recorded so the daemon throttles retries
     assert pkg["ed"]._last_evolve_ts(conn) > 0
 

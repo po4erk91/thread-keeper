@@ -39,7 +39,10 @@ from .config import (
     CURATOR_REPORTS_DIR,
     DB_PATH,
     EVOLVE_APPLY_INTERVAL_S,
+    EVOLVE_AUTO_CLONE,
+    EVOLVE_REPO_BRANCH,
     EVOLVE_REPO_ROOT,
+    EVOLVE_REPO_URL,
     ROADMAP_CLAIM_RACE_WINDOW_S,
 )
 from .db import get_db
@@ -283,18 +286,38 @@ or:
 """
 
 
-def _repo_root() -> Path:
-    """Git checkout the evolve loops operate on.
+EVOLVE_CLONE_TIMEOUT_S = 600
+EVOLVE_VENV_TIMEOUT_S = 1800
 
-    Prefers THREADKEEPER_EVOLVE_REPO_ROOT (config EVOLVE_REPO_ROOT) when set —
-    required when thread-keeper is installed from PyPI into site-packages, where
-    the package's parent dir is not a git tree. Falls back to the package parent
-    (threadkeeper/..), which IS the repo root for the editable-from-checkout
-    install that install.sh performs."""
+
+def _managed_repo_dir() -> Path:
+    """Managed checkout used when thread-keeper is installed without a source
+    tree (PyPI/site-packages). Co-located with the DB so it has a stable home
+    across restarts."""
+    return (DB_PATH.parent / "evolve-repo").expanduser()
+
+
+def _resolve_repo_root() -> Path:
+    """Pure repo-root resolution — no network, no git subprocess.
+
+    Order:
+      1. explicit EVOLVE_REPO_ROOT override;
+      2. the package's parent dir when it is itself a checkout (editable
+         install.sh), detected cheaply by a `.git` entry;
+      3. the managed checkout under the DB dir (PyPI/site-packages installs),
+         which `_ensure_repo_ready()` auto-provisions on first use."""
     override = (EVOLVE_REPO_ROOT or "").strip()
     if override:
         return Path(override).expanduser()
-    return Path(__file__).resolve().parent.parent
+    pkg_parent = Path(__file__).resolve().parent.parent
+    if (pkg_parent / ".git").exists():
+        return pkg_parent
+    return _managed_repo_dir()
+
+
+def _repo_root() -> Path:
+    """Git checkout the evolve loops operate on (see `_resolve_repo_root`)."""
+    return _resolve_repo_root()
 
 
 def _is_git_repo(path: Path) -> bool:
@@ -310,14 +333,125 @@ def _is_git_repo(path: Path) -> bool:
     return proc.returncode == 0 and (proc.stdout or "").strip() == "true"
 
 
-def _repo_not_git_error(root: Path) -> str:
-    """Standard error for the code/PR paths when the resolved repo root is not a
-    git checkout — typical of a PyPI/site-packages install with no checkout."""
+def _override_not_git_error(root: Path) -> str:
+    """The explicit EVOLVE_REPO_ROOT is not a checkout — never auto-clone into a
+    user-chosen path; tell them to fix it."""
     return (
-        f"ERR repo_root_not_git={root} (thread-keeper is installed outside a "
-        "git checkout; set THREADKEEPER_EVOLVE_REPO_ROOT to your thread-keeper "
-        "clone so the evolve applier can branch, test, and open PRs)"
+        f"ERR repo_root_not_git={root} (the path in THREADKEEPER_EVOLVE_REPO_ROOT"
+        " is not a git checkout; point it at a real thread-keeper clone)"
     )
+
+
+def _autoclone_disabled_error(root: Path) -> str:
+    """No checkout and auto-clone is turned off — the only way the evolve loops
+    don't work by default."""
+    return (
+        f"ERR evolve_repo_unavailable={root} (no git checkout and auto-clone is "
+        "disabled via THREADKEEPER_EVOLVE_AUTO_CLONE=0; set "
+        "THREADKEEPER_EVOLVE_REPO_ROOT to a checkout or re-enable auto-clone)"
+    )
+
+
+@contextmanager
+def _repo_provision_lock():
+    """Serialize clone/venv provisioning across foreground servers so two ticks
+    don't race a half-finished clone into the same managed dir. Blocking: the
+    loser waits, then re-checks under the lock and reuses the finished clone."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
+        yield
+        return
+    lock_path = DB_PATH.parent / "evolve-repo-provision.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _run(cmd: list[str], timeout: int, cwd: Optional[Path] = None) -> str:
+    """Run a provisioning subprocess. Returns '' on success or a short error."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            text=True, capture_output=True, timeout=timeout, check=False,
+        )
+    except FileNotFoundError:
+        return f"{cmd[0]}_not_found"
+    except subprocess.TimeoutExpired:
+        return f"{cmd[0]}_timeout"
+    except OSError as e:
+        return f"{cmd[0]}_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return (err[-1] if err else f"exit={proc.returncode}")[:180]
+    return ""
+
+
+def _ensure_managed_venv(dest: Path) -> str:
+    """Create dest/.venv and editable-install thread-keeper with semantic+test
+    extras so the evolve children can run `.venv/bin/python -m pytest`. Idempotent
+    — a present venv python is treated as ready. Returns '' or an ERR string."""
+    import sys
+    venv_py = dest / ".venv" / "bin" / "python"
+    if venv_py.exists():
+        return ""
+    err = _run([sys.executable, "-m", "venv", str(dest / ".venv")],
+               EVOLVE_VENV_TIMEOUT_S)
+    if err:
+        return f"ERR evolve_venv_create_failed={dest}: {err}"
+    pip = dest / ".venv" / "bin" / "pip"
+    err = _run([str(pip), "install", "-q", "-e", f"{dest}[semantic,dev]"],
+               EVOLVE_VENV_TIMEOUT_S)
+    if err:
+        return f"ERR evolve_venv_install_failed={dest}: {err}"
+    return ""
+
+
+def _provision_managed_repo(dest: Path) -> str:
+    """Clone the canonical repo into `dest` and provision its venv. Serialized
+    and idempotent: re-checks under the lock so a concurrent winner's clone is
+    reused. Returns '' on success or an ERR string."""
+    with _repo_provision_lock():
+        if _is_git_repo(dest):
+            return _ensure_managed_venv(dest)
+        if dest.exists() and any(dest.iterdir()):
+            return (
+                f"ERR evolve_repo_dir_not_empty={dest} (cannot auto-clone into a "
+                "non-empty non-git directory; clear it or set "
+                "THREADKEEPER_EVOLVE_REPO_ROOT)"
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        err = _run(
+            ["git", "clone", "--quiet", "--branch", str(EVOLVE_REPO_BRANCH),
+             str(EVOLVE_REPO_URL), str(dest)],
+            EVOLVE_CLONE_TIMEOUT_S,
+        )
+        if err:
+            return f"ERR evolve_repo_clone_failed={dest}: {err}"
+        return _ensure_managed_venv(dest)
+
+
+def _ensure_repo_ready() -> tuple[Path, str]:
+    """Resolve the repo root and make sure it is a usable git checkout, cloning
+    a managed one on first use when needed. Returns (root, error); error is ''
+    on success. This is the gate every code/PR path and the reviewer call."""
+    root = _resolve_repo_root()
+    if _is_git_repo(root):
+        return root, ""
+    if (EVOLVE_REPO_ROOT or "").strip():
+        # Explicit override that isn't a checkout — never auto-clone there.
+        return root, _override_not_git_error(root)
+    if not EVOLVE_AUTO_CLONE:
+        return root, _autoclone_disabled_error(root)
+    err = _provision_managed_repo(root)
+    if err:
+        return root, err
+    return root, ""
 
 
 def _slug(text: str, maxlen: int = 32) -> str:
@@ -1174,9 +1308,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
             return "applier_running n=1 (single-flight lock)"
 
         conn = get_db()
-        repo_root = _repo_root()
-        if not _is_git_repo(repo_root):
-            return _repo_not_git_error(repo_root)
+        repo_root, repo_err = _ensure_repo_ready()
+        if repo_err:
+            return repo_err
         exact = bool(issue_number)
         issues, err = _open_roadmap_issues(
             conn, skip_claimed=not exact
@@ -1251,7 +1385,12 @@ def apply_curator_report(report_path: str = "") -> str:
         report_text = _read_curator_report(path)
         if not report_text:
             return f"ERR report_empty={path.name}"
+        # Curator apply is memory-only — no git tree required. Use the resolved
+        # repo root when it exists, else fall back to the DB dir so the child's
+        # cwd is always valid even before a managed checkout is cloned.
         repo_root = _repo_root()
+        if not repo_root.exists():
+            repo_root = DB_PATH.parent
         prompt = build_curator_report_apply_prompt(path, report_text,
                                                    repo_root)
 
@@ -1308,9 +1447,9 @@ def apply_evolve(evolve_id: int) -> str:
             return "applier_running n=1 (single-flight lock)"
 
         conn = get_db()
-        repo_root = _repo_root()
-        if not _is_git_repo(repo_root):
-            return _repo_not_git_error(repo_root)
+        repo_root, repo_err = _ensure_repo_ready()
+        if repo_err:
+            return repo_err
         if not _row_exists(conn, evolve_id):
             return f"ERR evolve_not_found={evolve_id}"
         row = _get_promoted_unapplied(conn, evolve_id)
@@ -1421,7 +1560,11 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     if not force and not _pass_due(conn, now_t):
         return "not_due"
 
-    issues, issue_err = _open_roadmap_issues(conn)
+    # Provision the checkout before the gh-dependent roadmap peek so the managed
+    # clone exists on PyPI installs. A repo error is non-fatal here: the Curator
+    # fallback below is memory-only and needs no checkout.
+    _, repo_err = _ensure_repo_ready()
+    issues, issue_err = ([], repo_err) if repo_err else _open_roadmap_issues(conn)
     if issues:
         out = apply_roadmap_issue()
         if out.startswith("spawned roadmap_issue=") or out.startswith(

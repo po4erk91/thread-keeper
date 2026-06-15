@@ -9,18 +9,26 @@ version bumps follow semver per the policy in
 
 ### Added
 
-- **`THREADKEEPER_EVOLVE_REPO_ROOT` — make the evolve loops work on a PyPI /
-  site-packages install.** The evolve reviewer and evolve applier branch, run
-  the test suite, and open PRs against a git checkout. They previously assumed
-  the repo root was the package's parent dir, which holds only for the
-  editable-from-checkout `install.sh`. When thread-keeper is installed from
-  PyPI into site-packages, that parent is not a git tree, so both loops would
-  fail with cryptic `gh`/`git` errors. They now resolve the repo root from
-  `EVOLVE_REPO_ROOT` when set, the reviewer child runs with `cwd` pinned to
-  that root instead of the host CLI's working directory, and the reviewer plus
-  the code/PR applier paths fail fast with a clear `ERR repo_root_not_git=<path>`
-  (pointing at the new variable) when the resolved root is not a git checkout.
-  Curator report apply is memory-only and continues to run without a checkout.
+- **Evolve loops work by default on a PyPI / site-packages install (auto-clone).**
+  The evolve reviewer and evolve applier branch, run the test suite, and open
+  PRs against a git checkout. They previously assumed the repo root was the
+  package's parent dir, which holds only for the editable-from-checkout
+  `install.sh`; on a PyPI/site-packages install that parent is not a git tree,
+  so both loops failed with cryptic `gh`/`git` errors. Now a new
+  `_ensure_repo_ready()` resolves the checkout in order — explicit
+  `THREADKEEPER_EVOLVE_REPO_ROOT`, the package parent when it carries `.git`,
+  else a managed checkout under the DB dir (`~/.threadkeeper/evolve-repo`) — and
+  **auto-provisions the managed checkout on first use** (git clone +
+  per-checkout `.venv` with the `[semantic,dev]` extras) so the loops work with
+  no configuration. The reviewer child now runs with `cwd` pinned to that root
+  instead of the host CLI's working directory. Auto-provisioning is ON by
+  default and can be turned off with `THREADKEEPER_EVOLVE_AUTO_CLONE=0`, in
+  which case a non-checkout install reports a clear
+  `ERR evolve_repo_unavailable`; the clone source/branch are configurable via
+  `THREADKEEPER_EVOLVE_REPO_URL` / `THREADKEEPER_EVOLVE_REPO_BRANCH`. An explicit
+  override that is not itself a checkout is never auto-cloned into and reports
+  `ERR repo_root_not_git`. Curator report apply is memory-only and runs without
+  a checkout regardless.
 
 - **Hot-config reload — no Claude Code restart on env changes (#2).** A new
   `config_watcher` daemon polls `~/.claude/settings.json`
