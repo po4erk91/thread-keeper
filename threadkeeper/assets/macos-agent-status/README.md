@@ -39,9 +39,10 @@ keeps the menu-bar helper from becoming the memory-pressure offender.
 
 On macOS, `python -m threadkeeper.server` installs and launches this app
 automatically when the MCP server starts. The startup hook is idempotent: it
-rebuilds only when the installed app is missing or older than the source,
-registers the LaunchAgent, and restarts the app when a rebuild or stale running
-process means the menu-bar process is still using older code.
+rebuilds when the installed app is missing or its recorded source fingerprint no
+longer matches the bundled/source Swift files, registers the LaunchAgent, and
+restarts the app when a rebuild or stale running process means the menu-bar
+process is still using older code.
 
 Disable automatic startup with:
 

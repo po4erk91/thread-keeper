@@ -7,6 +7,24 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.13.1 — 2026-06-15
+
+### Fixed
+
+- **macOS menu-bar helper refresh after package upgrades.** The autoinstall
+  path now records a source fingerprint inside the installed `.app` bundle and
+  treats older bundles without a marker as stale. This forces a rebuild/restart
+  when users upgrade from a wheel whose packaged Swift source is older on disk
+  than their previously copied helper binary, fixing cases where reinstalling
+  still showed the pre-settings-window UI.
+- **Missing `pyyaml` runtime dependency.** `threadkeeper.tools.skills` imports
+  `yaml` to parse SKILL.md frontmatter, but `pyyaml` was never declared in
+  `pyproject.toml` dependencies — bare-pip installs into a clean environment
+  (e.g. the Glama Quality-eval sandbox doing `uv sync`) crashed on server
+  import with `ModuleNotFoundError: No module named 'yaml'`. Local pipx /
+  install.sh installs hid this because pyyaml landed transitively via another
+  tool already in the user's environment.
+
 ## v0.13.0 — 2026-06-14
 
 ### Added

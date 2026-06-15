@@ -71,8 +71,11 @@ reserved for MCP frames. Source checkouts keep the Swift app at
 `apps/macos-agent-status/`; packaged installs use the bundled copy under
 `threadkeeper/assets/macos-agent-status/` and build from a scratch directory
 under `~/.threadkeeper/tasks/`, so the widget does not depend on a repo clone or
-writes inside `site-packages`. The menu-bar app uses AppKit `NSStatusItem` for
-an icon-only status-bar item and a SwiftUI popover for the panel. It polls
+writes inside `site-packages`. Installed bundles store a source fingerprint in
+`Contents/Resources/threadkeeper-source.sha256`; missing or mismatched markers
+force a rebuild even when file mtimes make an older helper look newer than the
+packaged source. The menu-bar app uses AppKit `NSStatusItem` for an icon-only
+status-bar item and a SwiftUI popover for the panel. It polls
 `tk-agent-status --json` every 15 seconds off the main actor, receives loops
 sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
 backlog as due objective probes only, updates the idle chip / running gears

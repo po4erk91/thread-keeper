@@ -6,6 +6,7 @@ failures are non-fatal.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import shutil
@@ -25,6 +26,8 @@ from .config import (
 APP_NAME = "ThreadKeeperAgentStatus"
 APP_BUNDLE = f"{APP_NAME}.app"
 LAUNCH_LABEL = "local.threadkeeper.agent-status"
+SOURCE_FILES = ("ThreadKeeperAgentStatus.swift", "Info.plist", "build.sh")
+SOURCE_FINGERPRINT_FILE = "threadkeeper-source.sha256"
 
 _attempted = False
 
@@ -53,7 +56,7 @@ def _prepare_build_source(src: Path) -> Path:
     if build_src.exists():
         shutil.rmtree(build_src)
     build_src.mkdir(parents=True, exist_ok=True)
-    for name in ("ThreadKeeperAgentStatus.swift", "Info.plist", "build.sh"):
+    for name in SOURCE_FILES:
         shutil.copy2(src / name, build_src / name)
     return build_src
 
@@ -164,13 +167,25 @@ def _terminate_running_app() -> None:
         _log("terminate_timeout")
 
 
-def _source_mtime(src: Path) -> float:
-    newest = 0.0
-    for name in ("ThreadKeeperAgentStatus.swift", "Info.plist", "build.sh"):
-        p = src / name
-        if p.exists():
-            newest = max(newest, p.stat().st_mtime)
-    return newest
+def _source_fingerprint(src: Path) -> str:
+    digest = hashlib.sha256()
+    for name in SOURCE_FILES:
+        path = src / name
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _source_fingerprint_path(app: Path) -> Path:
+    return app / "Contents" / "Resources" / SOURCE_FINGERPRINT_FILE
+
+
+def _write_source_fingerprint(src: Path, app: Path) -> None:
+    marker = _source_fingerprint_path(app)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{_source_fingerprint(src)}\n", encoding="utf-8")
 
 
 def _app_is_current(src: Path, app: Path) -> bool:
@@ -178,7 +193,14 @@ def _app_is_current(src: Path, app: Path) -> bool:
     plist = app / "Contents" / "Info.plist"
     if not binary.exists() or not plist.exists():
         return False
-    return binary.stat().st_mtime >= _source_mtime(src)
+    marker = _source_fingerprint_path(app)
+    if not marker.exists():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == _source_fingerprint(src)
+    except OSError as e:
+        _log(f"source_fingerprint_check_failed err={e}")
+        return False
 
 
 def _ensure_status_command() -> None:
@@ -236,6 +258,7 @@ def _install_app(src: Path, app: Path) -> bool:
         if app.exists():
             shutil.rmtree(app)
         shutil.copytree(built, app)
+        _write_source_fingerprint(src, app)
     except OSError as e:
         _log(f"copy_app_failed err={e}")
         return False

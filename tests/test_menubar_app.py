@@ -130,6 +130,35 @@ def test_menubar_source_falls_back_to_packaged_assets(fresh_mp, tmp_path, monkey
     assert menubar_app._source_dir() == menubar_app._package_source_dir()
 
 
+def test_app_current_requires_matching_source_fingerprint(tmp_path):
+    import threadkeeper.menubar_app as menubar_app
+
+    src = tmp_path / "source"
+    src.mkdir()
+    for name in menubar_app.SOURCE_FILES:
+        (src / name).write_text(f"{name}\n", encoding="utf-8")
+
+    app = tmp_path / menubar_app.APP_BUNDLE
+    binary = app / "Contents" / "MacOS" / menubar_app.APP_NAME
+    plist = app / "Contents" / "Info.plist"
+    binary.parent.mkdir(parents=True)
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("old binary\n", encoding="utf-8")
+    plist.write_text("<plist></plist>\n", encoding="utf-8")
+
+    assert menubar_app._app_is_current(src, app) is False
+
+    marker = menubar_app._source_fingerprint_path(app)
+    marker.parent.mkdir(parents=True)
+    marker.write_text(menubar_app._source_fingerprint(src) + "\n", encoding="utf-8")
+
+    assert menubar_app._app_is_current(src, app) is True
+
+    (src / "ThreadKeeperAgentStatus.swift").write_text("// changed\n", encoding="utf-8")
+
+    assert menubar_app._app_is_current(src, app) is False
+
+
 def test_install_app_builds_from_task_log_scratch_without_executable_bit(
     fresh_mp,
     tmp_path,
@@ -173,6 +202,10 @@ def test_install_app_builds_from_task_log_scratch_without_executable_bit(
     assert calls[0][2] == task_logs / "menubar-build" / "source"
     assert (installed / "Contents" / "Info.plist").exists()
     assert (installed / "Contents" / "MacOS" / menubar_app.APP_NAME).exists()
+    marker = menubar_app._source_fingerprint_path(installed)
+    assert marker.read_text(encoding="utf-8").strip() == menubar_app._source_fingerprint(
+        src
+    )
     assert not (src / "build").exists()
 
 

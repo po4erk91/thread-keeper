@@ -210,9 +210,10 @@ while keeping `gemini` as legacy, and model selectors use dropdowns with exact
 CLI model ids/labels instead of free-text fields. Probe backlog is due objective
 probes only, not every registered probe, so a healthy cooldown shows `0 due
 probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
-automatically installs and launches it on MCP startup, and restarts the app when
-the installed bundle has changed while an older menu-bar process is still
-running. Set
+automatically installs and launches it on MCP startup. The installed app records
+a source fingerprint, so package upgrades rebuild the helper even when an older
+bundle has a newer file timestamp, then restart any stale running menu-bar
+process. Set
 `THREADKEEPER_MENUBAR_AUTO_LAUNCH=0` to disable that behavior.
 
 ### Auto Update
