@@ -22,6 +22,7 @@ import time
 
 from .config import EVOLVE_REVIEW_INTERVAL_S, EVOLVE_REVIEW_MIN
 from .db import get_db
+from .evolve_applier import _ensure_repo_ready
 from .helpers import daemon_sleep
 from . import identity
 
@@ -202,6 +203,11 @@ def run_evolve_pass(force: bool = False) -> str:
         _record_evolve_pass(conn, now_t, out)
         return out
 
+    repo_root, repo_err = _ensure_repo_ready()
+    if repo_err:
+        _record_evolve_pass(conn, now_t, repo_err)
+        return repo_err
+
     queue = (
         "\n".join(
             f"#{r['id']}: {r['suggestion']}"
@@ -216,6 +222,7 @@ def run_evolve_pass(force: bool = False) -> str:
     try:
         result = spawn(
             prompt=prompt,
+            cwd=str(repo_root),
             visible=False,
             capture_output=True,
             permission_mode="bypassPermissions",

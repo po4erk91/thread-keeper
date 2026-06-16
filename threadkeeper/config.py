@@ -211,6 +211,22 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
+    # Absolute path to the thread-keeper git checkout the evolve reviewer and
+    # applier operate on (branch, run tests, open PRs against). Empty => resolve
+    # automatically: the package's parent dir when it is itself a checkout (the
+    # editable-from-checkout install.sh), else a managed checkout under the DB
+    # dir that is auto-cloned on first use (PyPI/site-packages installs). Set
+    # this to pin an explicit checkout and skip auto-provisioning.
+    evolve_repo_root: str = ""
+    # Auto-provision (git clone + .venv with test deps) a managed checkout when
+    # thread-keeper is installed without a source tree. ON by default so the
+    # evolve loops work out of the box; set 0/false to disable — then the loops
+    # require an editable install or an explicit EVOLVE_REPO_ROOT.
+    evolve_auto_clone: bool = True
+    # Canonical repo the managed checkout is cloned from, and the branch it
+    # tracks. Defaults to the upstream thread-keeper project.
+    evolve_repo_url: str = "https://github.com/po4erk91/thread-keeper"
+    evolve_repo_branch: str = "main"
     # After posting a roadmap-issue claim comment, wait this long, re-fetch
     # comments, and retract our claim if another host raced us. Cross-host
     # TOCTOU guard. Set to 0 in tests to skip the wait.
@@ -358,6 +374,10 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_REVIEW_INTERVAL_S": s.evolve_review_interval_s,
         "EVOLVE_REVIEW_MIN": s.evolve_review_min,
         "EVOLVE_APPLY_INTERVAL_S": s.evolve_apply_interval_s,
+        "EVOLVE_REPO_ROOT": s.evolve_repo_root,
+        "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
+        "EVOLVE_REPO_URL": s.evolve_repo_url,
+        "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
         "ROADMAP_CLAIM_RACE_WINDOW_S": s.roadmap_claim_race_window_s,
         "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
         "THREAD_IDLE_CLOSE_DAYS": s.thread_idle_close_days,
