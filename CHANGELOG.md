@@ -9,6 +9,22 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Shadow-review production telemetry in `shadow_review_status()` (#6).** The
+  status tool now appends a production-validation rollup for the 24h and 7d
+  windows: how often the daemon fired, the outcome mix (`no_window` /
+  `too_short` / `spawned` / `deferred` / `error`), the **MATERIALIZED-vs-SKIP
+  hit rate** of the evaluator children it spawned (read from each child's
+  captured log tail), the durable skill writes attributable to
+  `write_origin='shadow_review'`, and the **total Claude-spawn time** spent — so
+  "is this loop earning its Opus minutes or just emitting SKIPs?" is a number
+  instead of a guess. A new pure aggregator `shadow_telemetry()` computes it
+  read-only from the trail each pass already leaves (events / tasks / child
+  logs / skill_usage); `shadow_review_status(snapshot_path=…)` additionally
+  dumps a markdown report for human review. Child logs that have aged out of
+  the ephemeral task-log dir (or are skipped past the per-call read cap) are
+  counted as `unknown` so the hit-rate denominator stays honest. The token/$
+  half of spawn cost is tracked separately as #25.
+
 - **Evolve loops work by default on a PyPI / site-packages install (auto-clone).**
   The evolve reviewer and evolve applier branch, run the test suite, and open
   PRs against a git checkout. They previously assumed the repo root was the

@@ -667,6 +667,17 @@ them with `dry_run=False` to apply:
   a loop firing constantly while its outcomes stay flat, or a queue
   backing up. Complements the per-loop `*_status` tools (`mp_health`,
   `spawn_budget_status`, `shadow_review_status`).
+- **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
+  per-loop **production-validation rollup** for the 24h and 7d windows: how
+  often the daemon fired, the outcome mix (`no_window` / `too_short` /
+  `spawned` / `deferred` / `error`), the **MATERIALIZED-vs-SKIP hit rate** of
+  the evaluator children it spawned, the durable skill writes attributable to
+  `write_origin='shadow_review'`, and the **total Claude-spawn time** spent —
+  so you can tell whether the loop earns its Opus minutes or just emits SKIPs.
+  Pass `snapshot_path` to also dump a markdown report for human review. The
+  verdict is read from each child's captured log tail; logs aged out of the
+  ephemeral task-log dir (or skipped past the read cap) are counted as
+  `unknown` so the hit-rate denominator stays honest.
 - **`agent_status(json_output=False, refresh=True)`** — autonomous learning
   loop status, shaped for UI clients. Shows every loop's enabled/running/ready
   state, last pass, backlog, and active spawned-child RSS; running child agents

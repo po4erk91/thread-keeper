@@ -177,6 +177,17 @@ item below (shadow fires ≫ skills materialized). Possible follow-up:
 periodic dump-to-file for historical trend lines (currently a
 point-in-time snapshot). Scope of follow-up: S.
 
+**Shadow-review production telemetry.** ✅ DONE (#6). `shadow_review_status()`
+now carries a per-loop production-validation rollup for the 24h / 7d windows:
+fire count, outcome mix (no_window / too_short / spawned / deferred / error),
+the MATERIALIZED-vs-SKIP hit rate of spawned evaluator children (read from each
+child's captured log tail), durable skill writes attributable to
+`write_origin='shadow_review'`, and total Claude-spawn time spent — so "is this
+loop earning its Opus minutes or just emitting SKIPs?" is now a number, not a
+guess. Pure aggregator `shadow_telemetry()`; `snapshot_path` dumps a markdown
+table for human review; ephemeral/aged-out child logs count as `unknown` so the
+hit-rate denominator stays honest. The token/$ half of spawn cost remains #25.
+
 **Shadow-review proof in production.** ✅ ANSWERED (~16d of live data,
 read via `mp_dashboard` + an evidence dive). Verdict: **complementary,
 not duplicate — but it was over-firing.** Numbers: 1423 passes, 773
