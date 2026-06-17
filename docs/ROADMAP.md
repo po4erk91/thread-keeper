@@ -322,6 +322,47 @@ Follow-up gaps from the 2026-06-17 audit:
   that) and #22 (GitHub-writing daemons). Verify provenance before upgrade and
   document auto-update as standing consent to run maintainer code (#44).
 
+Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
+verified at the cited file:line, deduplicated against the issues above):
+- Extract H4 paraphrase-cluster path re-harvests **rejected** candidates
+  forever — its inline dedup checks `status IN ('pending','accepted')` only,
+  omitting `'rejected'`, so a rejected cluster reappears on the next
+  overlapping window. Same incident class as the documented #157/#158
+  prod loop, on the one heuristic path that never got the `_candidate_exists`
+  fix (#62).
+- Author-trust boundary on autonomous issue pickup: the applier fetches no
+  `authorAssociation` and treats every open issue on this **public** repo as
+  backlog for a `bypassPermissions` child; separately, the Python-generated
+  claim comment leaks hostname/PID/git-rev even though an opaque
+  `_host_branch_slug()` already exists. Gate pickup by author association and
+  redact the claim body. Complements #22 (fencing) and #50 (skip-label) (#63).
+- Spawn budget is blind to **visible (pid=0)** children: their real RSS is
+  never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
+  never resolves pins its full-estimate budget share forever. (The
+  admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.) (#64).
+- Spawn **slim MCP config** is written world-readable with no `chmod` and
+  embeds the host server `env` block, while the stdin prompt file is correctly
+  `0600` and the `.command` script is `0755`. Restrict modes + minimize the
+  embedded env. (Spool-file retention/cleanup is #42.) (#68).
+- `shadow_review` + `dialectic_miner` advance a single global `created_at`
+  high-water cursor, so **late/out-of-order ingested** messages (resumed
+  sessions, newly-installed adapters, post-downtime backfill) that land below
+  the cursor are evaluated by neither loop. Use a grace lookback or an
+  ingest-order watermark instead of the transcript timestamp (#69).
+- Memory **recall/abstention** eval harness (LongMemEval-style QA + abstention
+  + tokens-per-retrieval) to give the lessons-decay (#27) and bi-temporal
+  (#28) work a number to optimize against — complementary to the learning-loop
+  **decision-quality** harness (#72) (#71).
+- MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
+  structured output across the tool registry (independently confirmed; canonical
+  issue #67) — gives hosts a mechanical read-vs-write signal and composes with
+  #22 and the elicitation work in #26.
+
+Also folded into existing issues rather than filed anew: auto-update restarts
+even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
+the write-time dedup gate `lesson_append` has (→ #34); `agent_status` log-sample
+scraping resurfaces unredacted child `gh`/`git` output (→ #37).
+
 ---
 
 ## Principle
