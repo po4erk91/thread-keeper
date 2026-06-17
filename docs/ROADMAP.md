@@ -314,6 +314,13 @@ Follow-up gaps from the 2026-06-17 audit:
   and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
   PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
   with unrelated working-tree WIP (#43).
+- Auto-update payload integrity/provenance: the on-by-default daily pip/git
+  self-update installs and runs new code with **no version pin, hash, or PyPI
+  attestation/signed-tag verification**, then restarts on it. A compromised
+  release auto-propagates to every install within ~24h. Distinct from #19
+  (reliability smoke-check/rollback — a malicious-but-importable release passes
+  that) and #22 (GitHub-writing daemons). Verify provenance before upgrade and
+  document auto-update as standing consent to run maintainer code (#44).
 
 ---
 
