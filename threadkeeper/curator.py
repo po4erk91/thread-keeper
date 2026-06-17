@@ -39,12 +39,14 @@ import logging
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 
 from .config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    DB_PATH,
 )
 from .db import get_db
 from .helpers import daemon_sleep
@@ -333,6 +335,82 @@ def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Single-flight: one curator pass at a time across ALL processes
+# ──────────────────────────────────────────────────────────────────────
+
+# Stable leading substring of CURATOR_PROMPT — used to find running curator
+# children in the tasks table for the single-flight guard. Keep in sync with
+# the opening line of CURATOR_PROMPT above.
+CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
+
+
+def _running_curator_children(conn: sqlite3.Connection) -> list[str]:
+    """Running curator task ids, reaping dead rows.
+
+    The curator mutates ONE shared store (lessons.md + skill files). Two
+    curators launched from different foreground MCP servers — or a daemon tick
+    racing a manual curator_run — read the same inventory and, in destructive
+    mode, apply overlapping PRUNE/CONSOLIDATE edits that double-apply or clobber
+    each other. So the loop is machine-wide single-flight.
+    """
+    from .helpers import alive
+    try:
+        rows = conn.execute(
+            "SELECT id, pid FROM tasks WHERE ended_at IS NULL "
+            "AND prompt LIKE ?",
+            (CURATOR_PROMPT_PREFIX + "%",),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now = int(time.time())
+    running: list[str] = []
+    touched = False
+    for r in rows:
+        pid = int(r["pid"] or 0)
+        if pid > 0 and not alive(pid):
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            touched = True
+            continue
+        running.append(r["id"])
+    if touched:
+        conn.commit()
+    return running
+
+
+@contextmanager
+def _curator_spawn_lock():
+    """Cross-process guard for check-running-then-spawn.
+
+    The tasks-table running check is necessary but NOT atomic across foreground
+    MCP processes — between the SELECT and the spawn there is a TOCTOU window in
+    which two ticks both observe no curator and both spawn. A non-blocking
+    flock closes it: only one process holds the lock, the rest skip the pass.
+    Manual curator_run(force=True) bypasses the interval but still respects this
+    lock.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
+        yield True
+        return
+    lock_path = DB_PATH.parent / "curator.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
 
@@ -342,112 +420,128 @@ def run_curator_pass(force: bool = False) -> str:
 
     Returns a short status string for observability:
       - 'disabled'        — env knob off and not forced
+      - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
       - 'spawned task_id=…' — curator child launched
       - 'spawn_error: …'  — spawn() rejected
     """
     if CURATOR_INTERVAL_S <= 0 and not force:
         return "disabled"
-    conn = get_db()
-    inventory, n_lessons, n_skills = _collect_inventory(conn)
-    now = int(time.time())
-    if n_lessons < CURATOR_MIN_LESSONS:
+
+    # Single-flight: the flock makes the running-children check + spawn atomic
+    # across every MCP server process, so two ticks (or a tick racing a manual
+    # curator_run) can't both spawn against the same shared store. force=True
+    # bypasses the interval, never the lock.
+    with _curator_spawn_lock() as locked:
+        if not locked:
+            return "curator_running n=1 (single-flight lock)"
+
+        conn = get_db()
+        now = int(time.time())
+        running = _running_curator_children(conn)
+        if running:
+            out = f"curator_running n={len(running)} (single-flight)"
+            _record_curator_pass(conn, now, out)
+            return out
+
+        inventory, n_lessons, n_skills = _collect_inventory(conn)
+        if n_lessons < CURATOR_MIN_LESSONS:
+            _record_curator_pass(
+                conn, now,
+                f"below_threshold lessons={n_lessons} skills={n_skills}",
+            )
+            return f"below_threshold lessons={n_lessons}"
+
+        # Concepts enrich the review but do NOT lower the lesson threshold —
+        # a curator pass is only worth a child spawn when there's a real
+        # lesson/skill inventory to audit; concepts ride along.
+        concepts_text, n_concepts = _collect_concepts(conn)
+        if concepts_text:
+            inventory = inventory + "\n\n" + concepts_text
+
+        # Ensure reports dir exists before the child tries to Write into it.
+        CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Default: destructive — the curator applies its own recommendations
+        # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
+        # to advisory REPORT-only (read-only toolset).
+        if CURATOR_DESTRUCTIVE:
+            destructive_clause = (
+                "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
+                "the REPORT.md you MUST apply your own PATCH / PRUNE / "
+                "CONSOLIDATE recommendations directly:\n"
+                "  • PATCH — lesson_append(...) replaces a same-slug lesson in "
+                "place; skill_manage(action='patch') for skills.\n"
+                "  • PRUNE — lesson_remove(slug=...) for a lesson; "
+                "skill_manage(action='delete') for a skill.\n"
+                "  • CONSOLIDATE — write the umbrella entry first, then "
+                "lesson_remove / skill_manage(action='delete') each merged-away "
+                "slug so the duplicate copies are actually gone.\n"
+                "NEVER pass force=True to lesson_remove — it refuses "
+                "source=foreground/user lessons by design and that refusal is "
+                "your safety net. NEVER touch any entry marked [PROTECTED], even "
+                "in destructive mode. Apply changes ONLY after the REPORT.md is "
+                "written (audit trail first, mutation second)."
+            )
+            allowed_tools = (
+                "mcp__thread-keeper__lesson_list,"
+                "mcp__thread-keeper__lesson_get,"
+                "mcp__thread-keeper__lesson_append,"
+                "mcp__thread-keeper__lesson_remove,"
+                "mcp__thread-keeper__skill_list,"
+                "mcp__thread-keeper__skill_manage,"
+                "mcp__thread-keeper__evolve_format,"
+                "Read,Write"
+            )
+        else:
+            destructive_clause = (
+                "ADVISORY MODE (you explicitly set "
+                "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
+                "lesson_remove, skill_manage with action in "
+                "{create,patch,delete,write_file}, or any other destructive tool. "
+                "Your output is the REPORT.md ONLY — the human reviews and applies "
+                "changes manually. Unset the knob (or set it to 1) to let the "
+                "curator apply its own recommendations directly, the default."
+            )
+            allowed_tools = (
+                "mcp__thread-keeper__lesson_list,"
+                "mcp__thread-keeper__lesson_get,"
+                "mcp__thread-keeper__skill_list,"
+                "mcp__thread-keeper__evolve_format,"
+                "Read,Write"
+            )
+
+        full_prompt = (
+            CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
+            + inventory
+            + "\n\n"
+            + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
+            f"{time.strftime('%Y%m%dT%H%M%S')}.md\n"
+            + "Write the REPORT.md to that exact path."
+        )
+
+        from .tools.spawn import spawn  # type: ignore
+        try:
+            result = spawn(
+                prompt=full_prompt,
+                visible=False,
+                capture_output=True,
+                permission_mode="auto",
+                role="curator",
+                write_origin="curator",
+                slim=True,
+                extra_allowed_tools=allowed_tools,
+            )
+        except Exception as e:
+            _record_curator_pass(conn, now, f"spawn_error: {e}")
+            return f"spawn_error: {e}"
+
         _record_curator_pass(
             conn, now,
-            f"below_threshold lessons={n_lessons} skills={n_skills}",
+            f"spawned lessons={n_lessons} skills={n_skills} "
+            f"concepts={n_concepts} :: {str(result)[:140]}",
         )
-        return f"below_threshold lessons={n_lessons}"
-
-    # Concepts enrich the review but do NOT lower the lesson threshold —
-    # a curator pass is only worth a child spawn when there's a real
-    # lesson/skill inventory to audit; concepts ride along.
-    concepts_text, n_concepts = _collect_concepts(conn)
-    if concepts_text:
-        inventory = inventory + "\n\n" + concepts_text
-
-    # Ensure reports dir exists before the child tries to Write into it.
-    CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Default: destructive — the curator applies its own recommendations
-    # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
-    # to advisory REPORT-only (read-only toolset).
-    if CURATOR_DESTRUCTIVE:
-        destructive_clause = (
-            "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
-            "the REPORT.md you MUST apply your own PATCH / PRUNE / "
-            "CONSOLIDATE recommendations directly:\n"
-            "  • PATCH — lesson_append(...) replaces a same-slug lesson in "
-            "place; skill_manage(action='patch') for skills.\n"
-            "  • PRUNE — lesson_remove(slug=...) for a lesson; "
-            "skill_manage(action='delete') for a skill.\n"
-            "  • CONSOLIDATE — write the umbrella entry first, then "
-            "lesson_remove / skill_manage(action='delete') each merged-away "
-            "slug so the duplicate copies are actually gone.\n"
-            "NEVER pass force=True to lesson_remove — it refuses "
-            "source=foreground/user lessons by design and that refusal is "
-            "your safety net. NEVER touch any entry marked [PROTECTED], even "
-            "in destructive mode. Apply changes ONLY after the REPORT.md is "
-            "written (audit trail first, mutation second)."
-        )
-        allowed_tools = (
-            "mcp__thread-keeper__lesson_list,"
-            "mcp__thread-keeper__lesson_get,"
-            "mcp__thread-keeper__lesson_append,"
-            "mcp__thread-keeper__lesson_remove,"
-            "mcp__thread-keeper__skill_list,"
-            "mcp__thread-keeper__skill_manage,"
-            "mcp__thread-keeper__evolve_format,"
-            "Read,Write"
-        )
-    else:
-        destructive_clause = (
-            "ADVISORY MODE (you explicitly set "
-            "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
-            "lesson_remove, skill_manage with action in "
-            "{create,patch,delete,write_file}, or any other destructive tool. "
-            "Your output is the REPORT.md ONLY — the human reviews and applies "
-            "changes manually. Unset the knob (or set it to 1) to let the "
-            "curator apply its own recommendations directly, the default."
-        )
-        allowed_tools = (
-            "mcp__thread-keeper__lesson_list,"
-            "mcp__thread-keeper__lesson_get,"
-            "mcp__thread-keeper__skill_list,"
-            "mcp__thread-keeper__evolve_format,"
-            "Read,Write"
-        )
-
-    full_prompt = (
-        CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
-        + inventory
-        + "\n\n"
-        + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
-        f"{time.strftime('%Y%m%dT%H%M%S')}.md\n"
-        + "Write the REPORT.md to that exact path."
-    )
-
-    from .tools.spawn import spawn  # type: ignore
-    try:
-        result = spawn(
-            prompt=full_prompt,
-            visible=False,
-            capture_output=True,
-            permission_mode="auto",
-            role="curator",
-            write_origin="curator",
-            slim=True,
-            extra_allowed_tools=allowed_tools,
-        )
-    except Exception as e:
-        _record_curator_pass(conn, now, f"spawn_error: {e}")
-        return f"spawn_error: {e}"
-
-    _record_curator_pass(
-        conn, now,
-        f"spawned lessons={n_lessons} skills={n_skills} "
-        f"concepts={n_concepts} :: {str(result)[:140]}",
-    )
-    return str(result)
+        return str(result)
 
 
 def _serve_loop() -> None:
