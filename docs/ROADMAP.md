@@ -311,6 +311,33 @@ Antigravity transcript ingest not yet implemented (#20).
 
 ---
 
+## Open — 2026-06-17 audit (issue-backed)
+
+A follow-up reviewer pass over the now-saturated backlog (140+ issues) found the
+runtime surface already deeply covered, and surfaced two gaps at the edges of
+the existing coverage:
+
+**CI security scanning (SAST + CVE gate).** CI runs tests, PR-title/label lint,
+and OIDC publish, and Dependabot opens weekly version-bump PRs — but there is no
+static analysis of the project's own Python and no build-time
+dependency-vulnerability gate. For a system whose daemons spawn
+`bypassPermissions` children that shell out to `gh` / `git clone` /
+`pip install` and execute report files as instructions, that's a real blind
+spot. Add a CodeQL workflow + a `pip-audit` CVE gate, and track the `Dockerfile`
+base image in Dependabot. Distinct from the runtime-fetch integrity items
+(#44/#110/#120/#129/#132), which scan code fetched *at runtime*, not the
+project's own code/deps in CI. (#144) Scope: S.
+
+**Pre-ingest privacy denylist.** Ingest auto-imports transcripts from every
+project on the machine with no way to exclude a sensitive repo/path *before*
+anything is written. The existing privacy controls are all post-hoc or partial —
+secret-scrubbing after persist (#37), selective erasure after ingest (#104),
+retention/GC (#45). Add a path-glob denylist applied at the ingest boundary so
+NDA'd/regulated work never enters the store or the learning windows — the
+prevention complement to #104's cure. (#145) Scope: S–M.
+
+---
+
 ## Principle
 
 Don't add phases for the sake of "architectural completeness". Each open
