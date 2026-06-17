@@ -311,6 +311,36 @@ Antigravity transcript ingest not yet implemented (#20).
 
 ---
 
+## Open — 2026-06-17 reviewer follow-up (issue-backed)
+
+A reviewer pass over the autonomous roadmap-automation surface (evolve
+reviewer/applier, curator) surfaced three concrete gaps not covered by the
+existing backlog. Each is tracked as a GitHub issue.
+
+**Evolve applier never refuses inappropriate issues.** `_open_roadmap_issues()`
+treats every open issue as backlog (`roadmap` label first, then FIFO) and only
+skips already-applied / actively-claimed ones — there is no opt-out. The child
+runs `bypassPermissions` + `Bash/Edit/Write`, so it can auto-attempt human-gated
+work (design/discussion questions, the XL multi-user item, the security
+hardening issues #21/#22, `good-first-issue`s). Add a configurable skip-label
+denylist (and optional opt-in posture). (#50) Scope: S.
+
+**Closed-unmerged applier PR strands its issue.** The child records a permanent
+`roadmap_issue_applied` marker once it opens a PR; if a human closes that PR
+without merging, GitHub leaves the issue open but the applier skips it forever.
+Reconcile applied-markers against PR merge state (re-queue closed-unmerged PRs
+with a bounded retry). Distinct from the shipped claim-leak / duplicate-PR
+guards (#23). (#51) Scope: S.
+
+**Lesson removal is irreversible as the curator goes destructive-by-default.**
+`lesson_remove` physically rewrites `lessons.md`; the audit event stores only
+slug + source, not the body. With `curator_destructive` now defaulting on, an
+autonomously-pruned lesson is unrecoverable (unlike threads, which reopen on a
+note). Add soft-delete / tombstone + restore with a retention window.
+Complements decay scoring (#27) and write-time dedup (#34). (#52) Scope: S–M.
+
+---
+
 ## Principle
 
 Don't add phases for the sake of "architectural completeness". Each open
