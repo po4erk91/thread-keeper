@@ -297,6 +297,12 @@ Follow-up gaps from the 2026-06-17 audit:
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
 - Shared GitHub API budget/backoff across roadmap automation (#38).
+- Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
+  the autonomous child now prunes/consolidates lessons + skills in place with no
+  pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
+  records the slug only; `lessons.md` is not version-controlled), and no
+  destructive-action telemetry in `mp_dashboard`. Add a snapshot/restore safety
+  net + structured prune/consolidate counts (#40).
 
 ---
 
