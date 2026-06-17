@@ -388,6 +388,61 @@ even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
 the write-time dedup gate `lesson_append` has (→ #34); `agent_status` log-sample
 scraping resurfaces unredacted child `gh`/`git` output (→ #37).
 
+Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
+read-only subsystem audits, each finding re-verified at the cited file:line and
+deduplicated against the issues above):
+- Per-file **ingest cursor loses messages**: `_ingest_file` advances
+  `last_mtime` even when the `max_msgs` cap truncates the read (default 50 at
+  session start), and the skip guard compares only mtime — never the stored
+  `last_size` — so same-second appends are dropped. Distinct from the global
+  out-of-order cursor #69 (#89).
+- Two learning daemons **drop dialog windows**: `shadow_review` records its
+  high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string
+  (a value, not an exception, so the `try/except` misses it), and the `extract`
+  daemon scans a fixed wall-clock window with a dead cursor, leaving an
+  uncovered gap whenever `interval > window` (#90).
+- `lessons.md` append/remove is an **unlocked read-modify-write**, so concurrent
+  loop writers (shadow / candidate / auto-review / foreground) last-writer-win
+  and silently clobber each other's edits — the new curator single-flight only
+  serializes curators against each other (#91).
+- `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
+  lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
+  every slim child runs a perpetual `ps`-polling thread it was explicitly
+  designed not to run (#92).
+- Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
+  needed retire/kill, or freeing in-use budget), and the liveness refresh caps
+  at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
+  of unrefreshed rows pins the budget. Complements #64/#66 (#93).
+- Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
+  with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
+  create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
+  content on shared hosts. Distinct from #21 (`~/.threadkeeper`) and #68 (#94).
+- Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
+  `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
+  can produce a torn/corrupt DB at the new path (#95).
+- **Pickup claims leak**: `threads.claimed_at` has no TTL/reaper and the
+  `auto_spawn` child is never told to `release_pickup`, so even a successful
+  pickup pins the thread out of the candidate pool forever (#96).
+- Codex adapter: the fallback message **UUID** has no per-line offset, so
+  timestamp-colliding messages collapse to one uuid and the later ones are
+  deduped away; separately, each rollout file is fully scanned twice per ingest
+  pass (#97).
+- The candidate-reviewer's "max 2 new skills per pass" cap is **prompt-only**;
+  `skill_manage(create)` has no server-side per-pass counter, so an injected or
+  confused (injection-prone) child can mass-create skills in one pass (#98).
+
+Also extended existing issues with verified file:line detail rather than filing
+anew: `get_db` re-runs the full schema + ~25 migrations per call and leaks
+connections (→ #59); the `project='subagents'` exclusion is dead across six
+modules (→ #36); pid-reuse also hits `task_kill`/`_reap_finished_tasks` (→ #66);
+a SIGKILL'd `_spawn_wrap` leaves a budget row pinned (→ #64); applied markers key
+on issue number, not PR url (→ #51); the roadmap apply pass double-fetches the
+issue list and churns per-candidate claim comments (→ #38); `agent_status`
+re-reads up to ~30 task logs per menu-bar poll (→ #18); `extract_candidates` is
+another unbounded table with a full-scan dedup probe (→ #45); the auto-update
+due-gate reads the prunable `events` table and `_setup` re-registration can
+drift the launch interpreter (→ #19).
+
 ---
 
 ## Principle
