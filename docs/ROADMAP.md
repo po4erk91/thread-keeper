@@ -303,6 +303,17 @@ Follow-up gaps from the 2026-06-17 audit:
   records the slug only; `lessons.md` is not version-controlled), and no
   destructive-action telemetry in `mp_dashboard`. Add a snapshot/restore safety
   net + structured prune/consolidate counts (#40).
+- Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool files — every
+  spawn leaves a permanent `tasks` row (full `prompt`) plus
+  `.log`/`.stdin.txt`/`.command` files that nothing prunes; `tasks.prompt`
+  holds curator/issue/audit content indefinitely and the default
+  `/tmp/thread-keeper-tasks` spool sits outside the `~/.threadkeeper`
+  perimeter that #21 hardens (#42).
+- Git working-tree safety for evolve roadmap automation: dirty-tree guard
+  (mirroring `auto_update`'s `skipped_dirty_checkout`), branch-from-clean-`main`,
+  and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
+  PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
+  with unrelated working-tree WIP (#43).
 
 ---
 
