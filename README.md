@@ -412,10 +412,21 @@ also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
 been marked applied, then spawns an `evolve_applier` child to apply only safe,
 still-current memory maintenance through `lesson_append` / `lesson_remove` /
-`skill_manage`. It never touches `[PROTECTED]`, foreground/user, pinned, or
-validated entries. Only after the child finishes does it call
-`evolve_mark_curator_report_applied(...)`, which prevents replaying the same
-report.
+`skill_manage` / `concept_manage`. It never touches `[PROTECTED]`,
+foreground/user, pinned, or validated entries. Only after the child finishes
+does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
+the same report.
+
+The curator also audits the `concepts` store (abstract regularities triangulated
+across paraphrase runs). Concepts are no longer write-only: `register_concept`
+and accepted concept candidates **dedup on write** — a re-surfaced equivalent
+invariant (description cosine ≥ 0.85) corroborates the existing concept, bumping
+its `last_evidence_at` and raising confidence, instead of inserting a
+near-duplicate — so `last_evidence_at` is a real corroboration-recency signal the
+brief orders on. The curator's `CONSOLIDATE_CONCEPT` / `PRUNE_CONCEPT` /
+confidence-review recommendations are applied via `concept_manage`
+(`remove` / `consolidate` / `set_confidence`). Concepts are all
+system-generated, so `concept_manage` needs no `force` guard.
 
 Curator can also feed the roadmap loop upstream: when a skill or lesson exposes
 an important way to improve thread-keeper itself, the curator child may call

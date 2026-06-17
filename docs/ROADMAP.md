@@ -230,6 +230,23 @@ heuristic (time + absence of patches). Unclear whether this loses useful
 skills. Need a dry-run mode with a dump of "what would be archived" for
 review. Scope: S.
 
+**Concepts store lifecycle.** ✅ DONE (#75). The `concepts` table was
+write-only / grow-only: no remove/consolidate/confidence tool, auto-registered
+entries piling up, and `last_evidence_at` frozen at registration so the
+Curator's concept-prune rubric and the brief's concept ordering both degenerated
+to registration-age. Fixed end-to-end: `register_concept` /
+`accept_candidate(kind='concept')` now dedup on write — a re-surfaced equivalent
+invariant (description cosine ≥ 0.85, normalized-string fallback when embeddings
+are off) corroborates the existing row (bumps `last_evidence_at`, raises
+confidence to `max(existing, incoming)`) instead of inserting a near-duplicate;
+the brief orders concepts by `COALESCE(last_evidence_at, registered_at)`; and a
+new `concept_manage` tool (`remove` / `consolidate` / `set_confidence`) makes the
+Curator's `CONSOLIDATE_CONCEPT` / `PRUNE_CONCEPT` / confidence-review rubric
+applyable — wired into the Curator's destructive toolset and the curator-report
+applier (the old "NEVER mutate concepts" punt is gone). Concepts are all
+system-generated, so `concept_manage` needs no `force` guard. Shares the
+recency/corroboration treatment proposed for the saturating lessons store (#27).
+
 **Extract_recent precision.** ✅ PARTIALLY DONE. The hypothesis was
 "too many / too noisy", and the ledger confirmed it hard: 107 decisions,
 1 accept, ~5% precision. Root cause found by reading the 106 rejects —

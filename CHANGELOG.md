@@ -9,6 +9,28 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Concepts store gets an eviction/consolidation path + a live evidence signal
+  (#75).** The `concepts` table was write-only / grow-only: no
+  remove/consolidate/confidence tool, auto-registered entries piling up, and
+  `last_evidence_at` frozen at registration time — so the Curator's
+  concept-prune rubric and the brief's concept ordering both degenerated to
+  pure registration-age, and the curator-report applier hard-coded "NEVER mutate
+  concepts". Now `register_concept` and `accept_candidate(kind='concept')`
+  **dedup on write**: a re-surfaced equivalent invariant (description cosine
+  ≥ 0.85, with a normalized-string fallback when embeddings are off)
+  corroborates the existing row — bumping `last_evidence_at` to now and raising
+  confidence to `max(existing, incoming)` — instead of inserting a
+  near-duplicate. A new **`concept_manage`** tool (`remove` / `consolidate` /
+  `set_confidence`) makes the Curator's `CONSOLIDATE_CONCEPT` / `PRUNE_CONCEPT` /
+  confidence-review recommendations actually applyable; it is wired into the
+  Curator's destructive toolset and the curator-report applier (the
+  "NEVER mutate concepts" punt is removed). The brief now orders concepts by
+  `COALESCE(last_evidence_at, registered_at)` so surfacing reflects real
+  corroboration recency. Concepts are all system-generated, so — unlike
+  `lesson_remove` — `concept_manage` needs no `force` guard. The `concepts`
+  table gains `embedding`/`embed_backend` columns to power the dedup gate.
+  README, ARCHITECTURE, and ROADMAP document the lifecycle.
+
 - **Shadow-review production telemetry in `shadow_review_status()` (#6).** The
   status tool now appends a production-validation rollup for the 24h and 7d
   windows: how often the daemon fired, the outcome mix (`no_window` /

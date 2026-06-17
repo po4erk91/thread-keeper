@@ -18,15 +18,19 @@ Design choices:
   • **Defense-in-depth** — pinned lessons/skills and foreground-origin
     entries are listed in the inventory as PROTECTED so the child knows
     not to touch them.
-  • **Scoped toolset** — child gets only lesson_*/skill_*/Read/Write.
-    No shell, no web, no spawn. Curator can't sprawl into anything else.
+  • **Scoped toolset** — child gets only lesson_*/skill_*/concept_*/
+    Read/Write. No shell, no web, no spawn. Curator can't sprawl into
+    anything else.
   • **Per-run REPORT.md** — every pass leaves an auditable trail.
   • **Destructive-by-default (Phase 2)** — child writes the REPORT.md
     first (audit trail), then applies its own PATCH / PRUNE / CONSOLIDATE
-    directly via lesson_append / lesson_remove / skill_manage. Set
-    THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
+    directly via lesson_append / lesson_remove / skill_manage, and its
+    CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
+    Set THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
     [PROTECTED] entries are never mutated, and lesson_remove is always
     called without force so it refuses user/foreground lessons by design.
+    Concepts are all system-generated, so concept_manage needs no such
+    guard — every concept is curatable.
 
 Why this exists: shadow_review accumulates lessons over weeks. Without
 periodic curation, the library grows unbounded with overlapping,
@@ -139,7 +143,13 @@ destructive changes freely. Priorities specific to concepts:
       PRUNE_CONCEPT: <id>
         reason: <one line; note "false_positive" if low-conf+stale>
   • For a `conf=medium`+ concept with no fresh evidence in 30d, RECOMMEND
-    a confidence review (it may be aging out) — note it, don't mutate.
+    a confidence review (it may be aging out). In destructive mode you may
+    apply it via concept_manage(action='set_confidence', ...); otherwise
+    note it and leave it for the human.
+  Note: `last_evidence_at` is a LIVE signal now — re-surfacing an
+  equivalent invariant bumps it (and raises confidence), so a small
+  `last_evidence` age means the concept was recently re-corroborated, not
+  merely recently registered.
 
 INVENTORY ORDERING — entries marked [PROTECTED] are pinned or
 foreground-authored. NEVER suggest PATCH/CONSOLIDATE/PRUNE on those —
@@ -477,6 +487,14 @@ def run_curator_pass(force: bool = False) -> str:
                 "  • CONSOLIDATE — write the umbrella entry first, then "
                 "lesson_remove / skill_manage(action='delete') each merged-away "
                 "slug so the duplicate copies are actually gone.\n"
+                "  • CONSOLIDATE_CONCEPT / PRUNE_CONCEPT — apply concept "
+                "recommendations directly: concept_manage(action='consolidate', "
+                "concept_id=<kept-id>, merge_ids='<id-a>,<id-b>') folds the "
+                "duplicates into the kept concept and deletes them; "
+                "concept_manage(action='remove', concept_id=<id>) prunes a "
+                "false-positive concept; concept_manage(action='set_confidence', "
+                "concept_id=<id>, confidence='low|medium|high') applies a "
+                "confidence review.\n"
                 "NEVER pass force=True to lesson_remove — it refuses "
                 "source=foreground/user lessons by design and that refusal is "
                 "your safety net. NEVER touch any entry marked [PROTECTED], even "
@@ -490,6 +508,9 @@ def run_curator_pass(force: bool = False) -> str:
                 "mcp__thread-keeper__lesson_remove,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_manage,"
+                "mcp__thread-keeper__list_concepts,"
+                "mcp__thread-keeper__expand_concept,"
+                "mcp__thread-keeper__concept_manage,"
                 "mcp__thread-keeper__evolve_format,"
                 "Read,Write"
             )
@@ -507,6 +528,8 @@ def run_curator_pass(force: bool = False) -> str:
                 "mcp__thread-keeper__lesson_list,"
                 "mcp__thread-keeper__lesson_get,"
                 "mcp__thread-keeper__skill_list,"
+                "mcp__thread-keeper__list_concepts,"
+                "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__evolve_format,"
                 "Read,Write"
             )
