@@ -28,6 +28,7 @@ import os
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from .config import (
@@ -333,6 +334,189 @@ def _collect_window(conn: sqlite3.Connection,
         sid = (r["session_id"] or "?")[-6:]
         lines.append(f"[{r['role']} @{sid}]\n{body}\n")
     return ("\n".join(lines), high_water, char_count)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Production-validation telemetry (issue #6)
+#
+# shadow_review_status() shows the last few passes; in production the real
+# question is "is this loop doing useful work, or burning Opus minutes for
+# SKIPs?". shadow_telemetry() answers it by aggregating the trail every
+# pass already leaves behind — no new bookkeeping, no spawn, no mutate:
+#   events.kind='shadow_review_pass' → tick count + outcome mix
+#   tasks (prompt LIKE shadow prefix) → children spawned + spawn-time cost
+#   each child's captured log tail    → MATERIALIZED vs SKIP verdict
+#   skill_usage.created_by_origin     → durable skill writes it caused
+# ──────────────────────────────────────────────────────────────────────
+
+# The shadow evaluator child's prompt always opens with this line, so it is
+# the LIKE-prefix that singles out its `tasks` rows. Reuse the canonical
+# constant so the prefix can't drift from what we actually spawn.
+_SHADOW_TASK_PROMPT_PREFIX = _INTERNAL_PROMPT_PREFIXES[0]
+
+# Issue #6 asks for 24h / 7d windows.
+SHADOW_TELEMETRY_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("24h", 86400),
+    ("7d", 7 * 86400),
+)
+
+# Cap on how many child logs we crack open per call to read a verdict,
+# newest first. A 7d window can hold a few hundred children and the tail is
+# all that matters; logs skipped past the cap are reported as `logs_unread`
+# so the hit-rate denominator stays honest (no silent truncation).
+_VERDICT_LOG_CAP = 400
+
+
+def _classify_pass(summary: Optional[str]) -> str:
+    """Bucket a `shadow_review_pass` summary into one outcome label.
+
+    Mirrors the status strings run_shadow_pass() records:
+      no_window / too_short / spawned ('ok task=…') /
+      deferred ('shadow_child_running') / error ('ERR…'/'spawn_error…').
+    """
+    s = (summary or "").strip()
+    if s.startswith("no_window"):
+        return "no_window"
+    if s.startswith("too_short"):
+        return "too_short"
+    if s.startswith("ok task="):
+        return "spawned"
+    if s.startswith("shadow_child_running"):
+        return "deferred"
+    if s.startswith("ERR") or s.startswith("spawn_error"):
+        return "error"
+    return "other"
+
+
+def _read_verdict(log_path: Path) -> str:
+    """Return a finished shadow child's self-reported verdict from its
+    captured log: 'materialized', 'skip', or 'unknown'.
+
+    The child's contract is a final line `MATERIALIZED: <slug>` or
+    `SKIP: <reason>`; we take the LAST such line since tool output can
+    follow earlier prose. Missing/unreadable logs → 'unknown' (the task
+    log dir defaults to ephemeral /tmp, so older children legitimately
+    have no log left to read)."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return "unknown"
+    verdict = "unknown"
+    for line in text.splitlines():
+        st = line.lstrip()
+        if st.startswith("MATERIALIZED:"):
+            verdict = "materialized"
+        elif st.startswith("SKIP:"):
+            verdict = "skip"
+    return verdict
+
+
+def shadow_telemetry(conn: sqlite3.Connection,
+                     now: Optional[int] = None,
+                     windows: tuple[tuple[str, int], ...] = SHADOW_TELEMETRY_WINDOWS,
+                     log_dir: Optional[Path] = None,
+                     log_cap: int = _VERDICT_LOG_CAP) -> dict:
+    """Aggregate shadow-review production signal over each (label, seconds)
+    window. Read-only; never spawns or mutates. Structured so the MCP tool
+    can render it and tests can assert on it directly.
+
+    Per window:
+      ticks         — shadow_review_pass events (how often the daemon fired)
+      outcomes      — {no_window,too_short,spawned,deferred,error,other}
+      children      — shadow evaluator children actually spawned
+      verdicts      — {materialized,skip,unknown} from child log tails
+      hit_rate      — materialized / (materialized+skip), or None if 0 decided
+      skill_writes  — skill_usage rows with origin 'shadow_review'
+      spawn_seconds — total wall-clock spent in ENDED children (the cost)
+      avg_spawn_s   — mean spawn-time over ended children, or None
+
+    Top-level `logs_unread` counts children whose verdict log we skipped
+    past `log_cap`."""
+    if now is None:
+        now = int(time.time())
+    if log_dir is None:
+        from .config import TASK_LOG_DIR
+        log_dir = TASK_LOG_DIR
+    log_dir = Path(log_dir)
+    win = list(windows)
+    widest = max((s for _, s in win), default=0)
+    cut_widest = now - widest
+
+    try:
+        ev_rows = conn.execute(
+            "SELECT created_at, summary FROM events "
+            "WHERE kind='shadow_review_pass' AND created_at>=?",
+            (cut_widest,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        ev_rows = []
+
+    try:
+        task_rows = conn.execute(
+            "SELECT id, started_at, ended_at FROM tasks "
+            "WHERE prompt LIKE ? AND started_at>=? "
+            "ORDER BY started_at DESC",
+            (_SHADOW_TASK_PROMPT_PREFIX + "%", cut_widest),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        task_rows = []
+
+    # Read verdicts newest-first, bounded by the cap.
+    verdict_by_task: dict[str, str] = {}
+    logs_unread = 0
+    for i, t in enumerate(task_rows):
+        if i >= log_cap:
+            logs_unread += 1
+            continue
+        verdict_by_task[t["id"]] = _read_verdict(log_dir / f"{t['id']}.log")
+
+    out_windows: list[dict] = []
+    for label, secs in win:
+        cut = now - secs
+        outcomes = {k: 0 for k in
+                    ("no_window", "too_short", "spawned",
+                     "deferred", "error", "other")}
+        ticks = 0
+        for r in ev_rows:
+            if r["created_at"] < cut:
+                continue
+            ticks += 1
+            outcomes[_classify_pass(r["summary"])] += 1
+
+        verdicts = {"materialized": 0, "skip": 0, "unknown": 0}
+        children = ended = spawn_seconds = 0
+        for t in task_rows:
+            if t["started_at"] < cut:
+                continue
+            children += 1
+            if t["ended_at"] is not None:
+                ended += 1
+                spawn_seconds += max(
+                    0, int(t["ended_at"]) - int(t["started_at"]))
+            verdicts[verdict_by_task.get(t["id"], "unknown")] += 1
+        decided = verdicts["materialized"] + verdicts["skip"]
+        hit_rate = (verdicts["materialized"] / decided) if decided else None
+
+        try:
+            skill_writes = conn.execute(
+                "SELECT COUNT(*) FROM skill_usage "
+                "WHERE created_by_origin='shadow_review' AND created_at>=?",
+                (cut,),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            skill_writes = 0
+
+        out_windows.append({
+            "label": label, "seconds": secs,
+            "ticks": ticks, "outcomes": outcomes,
+            "children": children, "verdicts": verdicts,
+            "hit_rate": hit_rate, "skill_writes": int(skill_writes or 0),
+            "ended": ended, "spawn_seconds": spawn_seconds,
+            "avg_spawn_s": (spawn_seconds / ended) if ended else None,
+        })
+
+    return {"windows": out_windows, "logs_unread": logs_unread,
+            "log_dir": str(log_dir)}
 
 
 def run_shadow_pass(force: bool = False) -> str:

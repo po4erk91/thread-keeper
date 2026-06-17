@@ -400,7 +400,16 @@ or oversized writes are rejected so the child patches existing memory instead
 of growing the flat lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
-`shadow_review_status()`.
+`shadow_review_status()`. Beyond the last few passes, the status tool carries a
+production-validation rollup (24h / 7d): fire count, outcome mix
+(no_window / too_short / spawned / deferred / error), the MATERIALIZED-vs-SKIP
+hit rate (read from each evaluator child's captured log tail), shadow-origin
+skill writes (`skill_usage.created_by_origin='shadow_review'`), and total
+Claude-spawn time spent — read-only, computed from the trail every pass already
+leaves (events / tasks / child logs / skill_usage). `shadow_telemetry()` is the
+pure aggregator; `snapshot_path` dumps the same numbers as a markdown table for
+human review. Children whose ephemeral `/tmp` log has aged out (or are skipped
+past the per-call read cap) count as `unknown`, keeping the hit-rate honest.
 
 ## Skills system
 
