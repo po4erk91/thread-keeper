@@ -357,6 +357,20 @@ verified at the cited file:line, deduplicated against the issues above):
   structured output across the tool registry (independently confirmed; canonical
   issue #67) — gives hosts a mechanical read-vs-write signal and composes with
   #22 and the elicitation work in #26.
+- **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
+  `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
+  **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /
+  user-model claims with **no injection fence and no provenance trust-tiering**:
+  `_collect_window` keeps all `user`/`assistant`/`[thinking]` content (incl.
+  untrusted text the agent read from web/files/paste), the review prompts carry a
+  *quality* fence (`ANTI_CAPTURE`) but no "treat observed dialog as data, not
+  instructions" boundary, and the writer child runs `permission_mode="auto"` with
+  bare `Write` allow-listed. A poisoned skill auto-triggers on every future
+  SessionStart across every CLI. Fence observed content as data, trust-tier
+  policy capture to genuine user turns, de-privilege the writer (drop bare
+  `Write`), and gate auto-load of loop-minted skills (compose with #26). Distinct
+  from #22 (GitHub-writing daemons; redactable public sink) and #37 (secret
+  scrub, outbound) (#76).
 
 Also folded into existing issues rather than filed anew: auto-update restarts
 even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
