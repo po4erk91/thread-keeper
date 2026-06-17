@@ -167,7 +167,12 @@ class Settings(BaseSettings):
     curator_min_lessons: int = 3
     # THREADKEEPER_CURATOR_REPORTS_DIR — default is relative to db dir; computed post-init
     curator_reports_dir: Optional[Path] = None
-    curator_destructive: bool = False
+    # Destructive-by-default: once the curator daemon is enabled
+    # (curator_interval_s > 0) the child writes its REPORT, then applies its own
+    # PATCH/PRUNE/CONSOLIDATE directly. Set THREADKEEPER_CURATOR_DESTRUCTIVE=0
+    # for advisory REPORT-only. [PROTECTED] (foreground/user/pinned/validated)
+    # entries are never mutated regardless.
+    curator_destructive: bool = True
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0

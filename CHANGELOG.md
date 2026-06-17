@@ -7,6 +7,22 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- **Autonomous Curator is now destructive by default.**
+  `THREADKEEPER_CURATOR_DESTRUCTIVE` now defaults to `1`: once the curator
+  daemon is enabled (`THREADKEEPER_CURATOR_INTERVAL_S > 0`), the child writes
+  its `REPORT-<isodate>.md` and then applies its own PATCH / PRUNE /
+  CONSOLIDATE recommendations directly, instead of leaving an advisory report
+  for manual review. Set `THREADKEEPER_CURATOR_DESTRUCTIVE=0` to restore the
+  previous advisory-only behavior. The destructive curator's allowed-tools now
+  include `lesson_remove`, so it can actually prune and consolidate duplicate
+  lessons (previously it could only delete skills and rewrite same-slug
+  lessons, so lesson-level PRUNE/CONSOLIDATE recommendations were never
+  applied). `[PROTECTED]` (foreground/user/pinned/validated) entries are never
+  mutated, and `lesson_remove` is always called without `force`, so it refuses
+  user/foreground-authored lessons by design.
+
 ## v0.13.1 — 2026-06-15
 
 ### Fixed
