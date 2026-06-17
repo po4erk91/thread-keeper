@@ -371,6 +371,17 @@ verified at the cited file:line, deduplicated against the issues above):
   `Write`), and gate auto-load of loop-minted skills (compose with #26). Distinct
   from #22 (GitHub-writing daemons; redactable public sink) and #37 (secret
   scrub, outbound) (#76).
+- Concepts store is **write-only / grow-only**: no remove/consolidate/
+  confidence tool exists (`tools/concepts.py` has only register/list/expand),
+  concepts are auto-registered (`accept_candidate kind='concept'` at conf=low +
+  agent `register_concept`) so the store grows unbounded, and `last_evidence_at`
+  is set once at registration and **never bumped** (only `user_dialectic` bumps
+  it via `dialectic.py`) — so the curator's concept-prune rubric (`conf=low AND
+  last_evidence >30d`) and the brief's concept ordering both degenerate to pure
+  registration-age. The curator's destructive toolset carries no concept tool,
+  and the curator-report applier hard-codes "NEVER mutate concepts for now", so
+  the `PRUNE_CONCEPT`/`CONSOLIDATE_CONCEPT` rubric is unappliable by design.
+  Distinct from the lessons-only decay item (#27) (#75).
 
 Also folded into existing issues rather than filed anew: auto-update restarts
 even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
