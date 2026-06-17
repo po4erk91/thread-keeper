@@ -83,6 +83,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_PROBE_INTERVAL_S": "0",         # disable probe daemon
         "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": "0", # disable evolve reviewer daemon
         "THREADKEEPER_THREAD_JANITOR_INTERVAL_S": "0",  # disable thread-janitor daemon
+        "THREADKEEPER_CONFIG_WATCH_INTERVAL_S": "0",  # disable config_watcher daemon (#31)
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",

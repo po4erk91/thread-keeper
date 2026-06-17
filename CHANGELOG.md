@@ -7,6 +7,61 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Shadow-review production telemetry in `shadow_review_status()` (#6).** The
+  status tool now appends a production-validation rollup for the 24h and 7d
+  windows: how often the daemon fired, the outcome mix (`no_window` /
+  `too_short` / `spawned` / `deferred` / `error`), the **MATERIALIZED-vs-SKIP
+  hit rate** of the evaluator children it spawned (read from each child's
+  captured log tail), the durable skill writes attributable to
+  `write_origin='shadow_review'`, and the **total Claude-spawn time** spent — so
+  "is this loop earning its Opus minutes or just emitting SKIPs?" is a number
+  instead of a guess. A new pure aggregator `shadow_telemetry()` computes it
+  read-only from the trail each pass already leaves (events / tasks / child
+  logs / skill_usage); `shadow_review_status(snapshot_path=…)` additionally
+  dumps a markdown report for human review. Child logs that have aged out of
+  the ephemeral task-log dir (or are skipped past the per-call read cap) are
+  counted as `unknown` so the hit-rate denominator stays honest. The token/$
+  half of spawn cost is tracked separately as #25.
+
+- **Evolve loops work by default on a PyPI / site-packages install (auto-clone).**
+  The evolve reviewer and evolve applier branch, run the test suite, and open
+  PRs against a git checkout. They previously assumed the repo root was the
+  package's parent dir, which holds only for the editable-from-checkout
+  `install.sh`; on a PyPI/site-packages install that parent is not a git tree,
+  so both loops failed with cryptic `gh`/`git` errors. Now a new
+  `_ensure_repo_ready()` resolves the checkout in order — explicit
+  `THREADKEEPER_EVOLVE_REPO_ROOT`, the package parent when it carries `.git`,
+  else a managed checkout under the DB dir (`~/.threadkeeper/evolve-repo`) — and
+  **auto-provisions the managed checkout on first use** (git clone +
+  per-checkout `.venv` with the `[semantic,dev]` extras) so the loops work with
+  no configuration. The reviewer child now runs with `cwd` pinned to that root
+  instead of the host CLI's working directory. Auto-provisioning is ON by
+  default and can be turned off with `THREADKEEPER_EVOLVE_AUTO_CLONE=0`, in
+  which case a non-checkout install reports a clear
+  `ERR evolve_repo_unavailable`; the clone source/branch are configurable via
+  `THREADKEEPER_EVOLVE_REPO_URL` / `THREADKEEPER_EVOLVE_REPO_BRANCH`. An explicit
+  override that is not itself a checkout is never auto-cloned into and reports
+  `ERR repo_root_not_git`. Curator report apply is memory-only and runs without
+  a checkout regardless.
+
+- **Hot-config reload — no Claude Code restart on env changes (#2).** A new
+  `config_watcher` daemon polls `~/.claude/settings.json`
+  (`THREADKEEPER_CONFIG_WATCH_INTERVAL_S`, default 2 s; 0 disables) and, when
+  its mtime moves, mirrors the threadkeeper-relevant `env` keys into the live
+  process and calls the new `config.reload_settings()`. That re-instantiates
+  `Settings`, re-publishes the module constants, and propagates each changed
+  value into every loaded `threadkeeper.*` module that imported a copy — so
+  daemons and tools pick up a changed knob (e.g.
+  `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S`) without a restart. Newly-enabled
+  daemons (interval 0 → >0) are started automatically; already-running ones
+  self-adjust on their next tick. Manual trigger `config_reload()`; diagnostics
+  `config_watch_status()`. A half-written settings file is debounced via an
+  mtime-cursor + JSON-parse guard. New `helpers.daemon_sleep()` keeps every
+  interval daemon's loop from busy-spinning when a live interval is reloaded
+  to 0.
+
 ### Changed
 
 - **Autonomous Curator is now destructive by default.**
@@ -35,6 +90,17 @@ version bumps follow semver per the policy in
   `candidate_reviewer` / `evolve_applier`. The flock makes the
   running-children check and the spawn atomic; a manual
   `curator_run(force=True)` still bypasses the interval but respects the lock.
+
+- **Skill/memory nudges no longer fire early off daemon-tick bookkeeping.**
+  The nudge counter (`nudges._count_events_since`) counted `<daemon>_pass`
+  events (`ingest_pass`, `janitor_pass`, `config_watch_pass`, …) as agent
+  turns, so a nudge crossed its threshold a turn or two early (and tipped the
+  soft skill-nudge into the 2×-overdue message). It now excludes the whole
+  `%_pass` class by pattern instead of an enumerated list that rots whenever a
+  new daemon lands; `_NONCOUNTING_KINDS` keeps only the non-`_pass`
+  bookkeeping (`thread_hint_shown`). The test bootstrap also gained the
+  missing `THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0` so #31's `config_watcher`
+  daemon joins the kill-list.
 
 ## v0.13.1 — 2026-06-15
 

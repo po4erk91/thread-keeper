@@ -424,3 +424,167 @@ def test_mcp_shadow_review_status_reports_passes(tmp_path, monkeypatch):
     out = tool.fn()
     assert "interval_s=0" in out
     assert "no_window" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Production-validation telemetry (issue #6)
+# ──────────────────────────────────────────────────────────────────────
+
+def _seed_pass(conn, summary, ts, session_id="sess-x"):
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'shadow_review_pass', ?, ?, ?)",
+        (session_id, str(ts), summary, ts),
+    )
+
+
+def _seed_shadow_task(conn, prefix, tid, started, ended, prompt=None):
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, ended_at, rss_kb, rss_updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (tid, 0, "p", "c", "/tmp",
+         prompt or (prefix + " — evaluate this window"),
+         started, ended, 0, started),
+    )
+
+
+def _write_log(log_dir, tid, verdict_line):
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / f"{tid}.log").write_text(
+        "some preamble chatter\n" + verdict_line + "\n", encoding="utf-8"
+    )
+
+
+def test_classify_pass_buckets():
+    from threadkeeper.shadow_review import _classify_pass
+    assert _classify_pass("no_window") == "no_window"
+    assert _classify_pass("too_short") == "too_short"
+    assert _classify_pass("ok task=tk_a pid=1 mode=headless") == "spawned"
+    assert _classify_pass("shadow_child_running n=2") == "deferred"
+    assert _classify_pass("ERR budget_exceeded: ...") == "error"
+    assert _classify_pass("spawn_error: boom") == "error"
+    assert _classify_pass("") == "other"
+    assert _classify_pass(None) == "other"
+
+
+def test_read_verdict(tmp_path):
+    from threadkeeper.shadow_review import _read_verdict
+    mat = tmp_path / "m.log"
+    mat.write_text("blah\nMATERIALIZED: some-skill\n", encoding="utf-8")
+    skip = tmp_path / "s.log"
+    skip.write_text("thinking...\nSKIP: nothing class-level\n", encoding="utf-8")
+    assert _read_verdict(mat) == "materialized"
+    assert _read_verdict(skip) == "skip"
+    # last verdict line wins
+    multi = tmp_path / "x.log"
+    multi.write_text("SKIP: early\nMATERIALIZED: final\n", encoding="utf-8")
+    assert _read_verdict(multi) == "materialized"
+    # missing file → unknown
+    assert _read_verdict(tmp_path / "nope.log") == "unknown"
+
+
+def test_shadow_telemetry_aggregates(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    import threadkeeper.config as cfg
+    log_dir = cfg.TASK_LOG_DIR
+    prefix = pkg["shadow_review"]._SHADOW_TASK_PROMPT_PREFIX
+    now = int(time.time())
+
+    # Pass events: 5 within 24h (one of each class), 1 older (7d only).
+    _seed_pass(conn, "no_window", now - 100)
+    _seed_pass(conn, "too_short", now - 200)
+    _seed_pass(conn, "ok task=tk_a pid=1 mode=headless", now - 300)
+    _seed_pass(conn, "shadow_child_running n=1", now - 400)
+    _seed_pass(conn, "ERR budget_exceeded: cap", now - 500)
+    _seed_pass(conn, "no_window", now - 2 * 86400)
+
+    # Shadow tasks: 3 within 24h, 1 older (7d only).
+    _seed_shadow_task(conn, prefix, "tk_a", now - 300, now - 300 + 90)
+    _seed_shadow_task(conn, prefix, "tk_b", now - 310, now - 310 + 30)
+    _seed_shadow_task(conn, prefix, "tk_c", now - 320, now - 320 + 10)
+    _seed_shadow_task(conn, prefix, "tk_old", now - 2 * 86400,
+                      now - 2 * 86400 + 60)
+    # A non-shadow task must be ignored entirely.
+    _seed_shadow_task(conn, "You are a PROBE RUNNER", "tk_probe",
+                      now - 50, now - 40,
+                      prompt="You are a PROBE RUNNER doing other work")
+
+    _write_log(log_dir, "tk_a", "MATERIALIZED: foo-skill")
+    _write_log(log_dir, "tk_b", "SKIP: one-off")
+    # tk_c: no log file → unknown
+    _write_log(log_dir, "tk_old", "MATERIALIZED: old-skill")
+
+    # Skill writes attributable to shadow_review (one in-window, one not).
+    conn.execute(
+        "INSERT INTO skill_usage (name, created_at, created_by_origin) "
+        "VALUES ('shadow-skill', ?, 'shadow_review')", (now - 100,))
+    conn.execute(
+        "INSERT INTO skill_usage (name, created_at, created_by_origin) "
+        "VALUES ('manual-skill', ?, 'foreground')", (now - 50,))
+    conn.commit()
+
+    tel = pkg["shadow_review"].shadow_telemetry(conn, now=now, log_dir=log_dir)
+    assert tel["logs_unread"] == 0
+    w24, w7 = tel["windows"]
+    assert (w24["label"], w7["label"]) == ("24h", "7d")
+
+    # 24h window
+    assert w24["ticks"] == 5
+    assert w24["outcomes"] == {
+        "no_window": 1, "too_short": 1, "spawned": 1,
+        "deferred": 1, "error": 1, "other": 0,
+    }
+    assert w24["children"] == 3
+    assert w24["verdicts"] == {"materialized": 1, "skip": 1, "unknown": 1}
+    assert w24["hit_rate"] == 0.5
+    assert w24["skill_writes"] == 1
+    assert w24["ended"] == 3
+    assert w24["spawn_seconds"] == 90 + 30 + 10
+
+    # 7d window picks up the older pass + the older materialized child
+    assert w7["ticks"] == 6
+    assert w7["children"] == 4
+    assert w7["verdicts"] == {"materialized": 2, "skip": 1, "unknown": 1}
+    assert abs(w7["hit_rate"] - (2 / 3)) < 1e-9
+
+
+def test_shadow_telemetry_log_cap_reports_unread(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    import threadkeeper.config as cfg
+    prefix = pkg["shadow_review"]._SHADOW_TASK_PROMPT_PREFIX
+    now = int(time.time())
+    for i in range(5):
+        _seed_shadow_task(conn, prefix, f"tk_{i}", now - 10 - i, now - 5 - i)
+    conn.commit()
+    tel = pkg["shadow_review"].shadow_telemetry(
+        conn, now=now, log_dir=cfg.TASK_LOG_DIR, log_cap=2)
+    assert tel["logs_unread"] == 3
+
+
+def test_mcp_shadow_review_status_includes_telemetry_and_snapshot(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    import threadkeeper.config as cfg
+    prefix = pkg["shadow_review"]._SHADOW_TASK_PROMPT_PREFIX
+    now = int(time.time())
+    _seed_pass(conn, "ok task=tk_z pid=1", now - 60)
+    _seed_shadow_task(conn, prefix, "tk_z", now - 60, now - 30)
+    _write_log(cfg.TASK_LOG_DIR, "tk_z", "MATERIALIZED: z-skill")
+    conn.commit()
+
+    from threadkeeper._mcp import mcp
+    tool = mcp._tool_manager._tools["shadow_review_status"]
+    snap = tmp_path / "snap" / "shadow.md"
+    out = tool.fn(snapshot_path=str(snap))
+    assert "telemetry (production validation" in out
+    assert "hit_rate=" in out
+    assert "24h" in out and "7d" in out
+    assert snap.exists()
+    md = snap.read_text(encoding="utf-8")
+    assert "# Shadow-review telemetry" in md
+    assert "| window |" in md

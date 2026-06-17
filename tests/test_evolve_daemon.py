@@ -213,6 +213,47 @@ def test_run_evolve_pass_spawns_reviewer(tmp_path, monkeypatch):
     assert pkg["ed"]._last_evolve_ts(conn) > 0
 
 
+def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
+    """The reviewer child must run with cwd pinned to the repo checkout, not the
+    host CLI's working directory."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "s1")
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit")
+    expected = str(Path(pkg["ed"].__file__).resolve().parent.parent)
+    assert calls["cwd"] == expected
+
+
+def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
+    """When the checkout can't be provisioned (e.g. auto-clone disabled on a
+    PyPI install), the reviewer refuses to spawn and records an actionable
+    error instead of running gh/file reads against the wrong dir."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "s1")
+    monkeypatch.setattr(
+        pkg["ed"], "_ensure_repo_ready",
+        lambda: (Path("/x"), "ERR evolve_repo_unavailable=/x (... auto-clone ...)"),
+    )
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn without a ready checkout")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+    assert out.startswith("ERR evolve_repo_unavailable="), out
+    # the failed pass is recorded so the daemon throttles retries
+    assert pkg["ed"]._last_evolve_ts(conn) > 0
+
+
 def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
     conn = pkg["db"].get_db()

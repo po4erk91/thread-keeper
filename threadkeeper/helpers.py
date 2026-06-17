@@ -6,7 +6,25 @@ import os
 import secrets
 import sqlite3
 import subprocess
+import time
 from typing import Optional
+
+
+def daemon_sleep(interval_s, idle_s: float = 30.0) -> None:
+    """Sleep one daemon tick without ever busy-spinning.
+
+    Daemon `_serve_loop`s read their interval from a module global that the
+    hot-config reload (issue #2) can rewrite at runtime. If a live interval is
+    lowered to 0 ("daemon off"), a bare `time.sleep(0)` would turn the loop
+    into a CPU-pegging spin. This helper idles for `idle_s` instead so the
+    daemon goes quiet (its `run_*_pass` already short-circuits on interval<=0)
+    until the knob is raised again.
+    """
+    try:
+        interval = float(interval_s)
+    except (TypeError, ValueError):
+        interval = 0.0
+    time.sleep(interval if interval > 0 else idle_s)
 
 
 def fmt_age(seconds: int) -> str:

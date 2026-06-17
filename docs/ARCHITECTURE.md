@@ -184,6 +184,26 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
+- **config_watcher** (`config_watcher.start_config_watcher`) — once per
+  `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
+  `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
+  when its mtime moves, re-reads the file's `env` block, mirrors the
+  threadkeeper-relevant keys (`THREADKEEPER_*` plus the unprefixed
+  `CLAUDE_SKILLS_DIR`/`CLAUDE_PROJECTS_DIR`) into `os.environ` (applying new
+  values, dropping deleted ones), and calls `config.reload_settings()`. That
+  re-instantiates `Settings`, re-publishes the UPPER_CASE module constants,
+  and `_propagate`s each changed value into every loaded `threadkeeper.*`
+  module that did `from .config import X` — which works because a function
+  resolves a module-global name at call time, so the next daemon tick / tool
+  call sees the new value with no restart (the issue-#2 acceptance test:
+  change the shadow interval, `shadow_review_status()` reflects it within
+  ~1 s). A daemon whose interval crossed 0 → >0 is started here; the rest
+  self-adjust (and `daemon_sleep` keeps a hot-disabled loop from busy-spinning
+  on `time.sleep(0)`). Cold start records only a baseline (the env is already
+  applied at spawn); a half-written file is skipped via the mtime-cursor +
+  JSON-parse guard and retried. Manual trigger `config_reload()`; diagnostics
+  `config_watch_status()`. Embedding-backend / process-identity flags are
+  intentionally not hot-reloaded.
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator.
 - **candidate_reviewer** — once per `CANDIDATE_REVIEW_INTERVAL_S` (default
@@ -230,7 +250,23 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   interval to avoid duplicate issue workers across foreground server startups;
   manual apply tools still dispatch immediately. If no roadmap issue is
   startable, the pass falls back to Curator reports and then legacy promoted
-  `evolve_format` suggestions.
+  `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
+  operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
+  order: (1) an explicit `EVOLVE_REPO_ROOT` (`THREADKEEPER_EVOLVE_REPO_ROOT`);
+  (2) the package's parent dir when it carries a `.git` entry — the
+  editable-from-checkout `install.sh`; (3) otherwise a **managed checkout**
+  under the DB dir (`~/.threadkeeper/evolve-repo`). On a PyPI/site-packages
+  install where no source tree exists, the managed checkout is **auto-cloned on
+  first use** (from `EVOLVE_REPO_URL`/`EVOLVE_REPO_BRANCH`, defaulting to the
+  upstream repo) and given its own `.venv` with the `[semantic,dev]` extras so
+  the children can branch, run the suite, and open PRs. This makes the loops
+  work by default with no configuration. Set `THREADKEEPER_EVOLVE_AUTO_CLONE=0`
+  to disable provisioning — then a non-checkout install reports
+  `ERR evolve_repo_unavailable=<path>` until an editable install or an explicit
+  `EVOLVE_REPO_ROOT` is provided. An explicit override that is not itself a
+  checkout is never auto-cloned into and reports `ERR repo_root_not_git`.
+  Provisioning is serialized by `evolve-repo-provision.lock`. Curator report
+  apply needs no git tree and runs regardless.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   report-first, but when a skill or lesson exposes a concrete improvement for
   thread-keeper itself it may call `evolve_format(...)` and record an
@@ -364,7 +400,16 @@ or oversized writes are rejected so the child patches existing memory instead
 of growing the flat lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
-`shadow_review_status()`.
+`shadow_review_status()`. Beyond the last few passes, the status tool carries a
+production-validation rollup (24h / 7d): fire count, outcome mix
+(no_window / too_short / spawned / deferred / error), the MATERIALIZED-vs-SKIP
+hit rate (read from each evaluator child's captured log tail), shadow-origin
+skill writes (`skill_usage.created_by_origin='shadow_review'`), and total
+Claude-spawn time spent — read-only, computed from the trail every pass already
+leaves (events / tasks / child logs / skill_usage). `shadow_telemetry()` is the
+pure aggregator; `snapshot_path` dumps the same numbers as a markdown table for
+human review. Children whose ephemeral `/tmp` log has aged out (or are skipped
+past the per-call read cap) count as `unknown`, keeping the hit-rate honest.
 
 ## Skills system
 

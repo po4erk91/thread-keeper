@@ -153,11 +153,19 @@ deployment is the more concrete need; cross-machine CRDT-based sync
 between independent installs is a strictly harder problem and
 probably never the right answer here.
 
-**Hot-config reload.** `.env` can be edited from the macOS menu-bar Settings
-window and that UI can request an MCP server restart after saving, but true
-in-process reload is not implemented. Ideally — pickup without restarting
-daemons. Scope: S (env via periodic re-read in the config object, daemons
-already read per-tick).
+**Hot-config reload.** ✅ DONE (#2). The `config_watcher` daemon polls
+`~/.claude/settings.json` (one mtime stat per tick, default 2 s) and, on a
+change, mirrors the threadkeeper-relevant `env` keys into the live process,
+calls `config.reload_settings()` to re-instantiate `Settings` and re-publish
+the module constants, and propagates each changed value into every loaded
+`threadkeeper.*` module that imported a copy — so daemons and tools pick up
+the new knob without a Claude Code restart. Newly-enabled daemons (interval
+0 → >0) are started; already-running ones self-adjust on their next tick
+(`daemon_sleep` keeps a hot-disabled loop from busy-spinning). Manual trigger
+`config_reload()`; diagnostics `config_watch_status()`; off via
+`THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0`. Does not help host-CLI hooks (those
+are read by the CLI, not us); half-written files are debounced via an
+mtime-cursor + JSON-parse guard.
 
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,
@@ -168,6 +176,17 @@ partial schemas. The first live run surfaced the "Shadow-review proof"
 item below (shadow fires ≫ skills materialized). Possible follow-up:
 periodic dump-to-file for historical trend lines (currently a
 point-in-time snapshot). Scope of follow-up: S.
+
+**Shadow-review production telemetry.** ✅ DONE (#6). `shadow_review_status()`
+now carries a per-loop production-validation rollup for the 24h / 7d windows:
+fire count, outcome mix (no_window / too_short / spawned / deferred / error),
+the MATERIALIZED-vs-SKIP hit rate of spawned evaluator children (read from each
+child's captured log tail), durable skill writes attributable to
+`write_origin='shadow_review'`, and total Claude-spawn time spent — so "is this
+loop earning its Opus minutes or just emitting SKIPs?" is now a number, not a
+guess. Pure aggregator `shadow_telemetry()`; `snapshot_path` dumps a markdown
+table for human review; ephemeral/aged-out child logs count as `unknown` so the
+hit-rate denominator stays honest. The token/$ half of spawn cost remains #25.
 
 **Shadow-review proof in production.** ✅ ANSWERED (~16d of live data,
 read via `mp_dashboard` + an evidence dive). Verdict: **complementary,
@@ -460,6 +479,36 @@ re-reads up to ~30 task logs per menu-bar poll (→ #18); `extract_candidates` i
 another unbounded table with a full-scan dedup probe (→ #45); the auto-update
 due-gate reads the prunable `events` table and `_setup` re-registration can
 drift the launch interpreter (→ #19).
+
+---
+
+## Open — 2026-06-17 reviewer follow-up (issue-backed)
+
+A reviewer pass over the autonomous roadmap-automation surface (evolve
+reviewer/applier, curator) surfaced three concrete gaps not covered by the
+existing backlog. Each is tracked as a GitHub issue.
+
+**Evolve applier never refuses inappropriate issues.** `_open_roadmap_issues()`
+treats every open issue as backlog (`roadmap` label first, then FIFO) and only
+skips already-applied / actively-claimed ones — there is no opt-out. The child
+runs `bypassPermissions` + `Bash/Edit/Write`, so it can auto-attempt human-gated
+work (design/discussion questions, the XL multi-user item, the security
+hardening issues #21/#22, `good-first-issue`s). Add a configurable skip-label
+denylist (and optional opt-in posture). (#50) Scope: S.
+
+**Closed-unmerged applier PR strands its issue.** The child records a permanent
+`roadmap_issue_applied` marker once it opens a PR; if a human closes that PR
+without merging, GitHub leaves the issue open but the applier skips it forever.
+Reconcile applied-markers against PR merge state (re-queue closed-unmerged PRs
+with a bounded retry). Distinct from the shipped claim-leak / duplicate-PR
+guards (#23). (#51) Scope: S.
+
+**Lesson removal is irreversible as the curator goes destructive-by-default.**
+`lesson_remove` physically rewrites `lessons.md`; the audit event stores only
+slug + source, not the body. With `curator_destructive` now defaulting on, an
+autonomously-pruned lesson is unrecoverable (unlike threads, which reopen on a
+note). Add soft-delete / tombstone + restore with a retention window.
+Complements decay scoring (#27) and write-time dedup (#34). (#52) Scope: S–M.
 
 ---
 

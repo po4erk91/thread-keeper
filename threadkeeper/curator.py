@@ -49,6 +49,7 @@ from .config import (
     DB_PATH,
 )
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity, lessons
 
 logger = logging.getLogger(__name__)
@@ -550,7 +551,7 @@ def _serve_loop() -> None:
             run_curator_pass()
         except Exception:
             logger.debug("curator tick failed", exc_info=True)
-        time.sleep(CURATOR_INTERVAL_S)
+        daemon_sleep(CURATOR_INTERVAL_S)
 
 
 def start_curator_daemon() -> None:

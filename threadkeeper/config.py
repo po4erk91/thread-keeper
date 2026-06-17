@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
 
+    # ── Hot-config reload (config_watcher daemon) ────────────────────────────
+    # Poll interval for the watcher that re-reads ~/.claude/settings.json and
+    # hot-reloads threadkeeper config in-process (no Claude Code restart). The
+    # poll is a single mtime stat — cheap, so it defaults ON. 0 = off.
+    config_watch_interval_s: float = 2.0
+    # Override the watched file. "" => the host CLI's settings.json
+    # (~/.claude/settings.json). Tests point this at a tmp file.
+    config_watch_path: str = ""
+
     # ── Ingest ───────────────────────────────────────────────────────────────
     # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
     ingest_cap: int = Field(
@@ -207,6 +216,22 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
+    # Absolute path to the thread-keeper git checkout the evolve reviewer and
+    # applier operate on (branch, run tests, open PRs against). Empty => resolve
+    # automatically: the package's parent dir when it is itself a checkout (the
+    # editable-from-checkout install.sh), else a managed checkout under the DB
+    # dir that is auto-cloned on first use (PyPI/site-packages installs). Set
+    # this to pin an explicit checkout and skip auto-provisioning.
+    evolve_repo_root: str = ""
+    # Auto-provision (git clone + .venv with test deps) a managed checkout when
+    # thread-keeper is installed without a source tree. ON by default so the
+    # evolve loops work out of the box; set 0/false to disable — then the loops
+    # require an editable install or an explicit EVOLVE_REPO_ROOT.
+    evolve_auto_clone: bool = True
+    # Canonical repo the managed checkout is cloned from, and the branch it
+    # tracks. Defaults to the upstream thread-keeper project.
+    evolve_repo_url: str = "https://github.com/po4erk91/thread-keeper"
+    evolve_repo_branch: str = "main"
     # After posting a roadmap-issue claim comment, wait this long, re-fetch
     # comments, and retract our claim if another host raced us. Cross-host
     # TOCTOU guard. Set to 0 in tests to skip the wait.
@@ -264,90 +289,178 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# ── Derived paths that depend on db field ────────────────────────────────────
-
-# CURATOR_REPORTS_DIR: if not explicitly set, anchor to DB_PATH.parent/curator
-# so a custom THREADKEEPER_DB co-locates its curator reports.
-_curator_reports_dir: Path = (
-    settings.curator_reports_dir
-    if settings.curator_reports_dir is not None
-    else (settings.db.parent / "curator")
-)
-
 
 # ── Compat shim: re-export all prior module-level names ──────────────────────
-# Every name listed here is imported by ≥1 call site in the package.
+# Every name listed here is imported by ≥1 call site in the package. They are
+# computed from `settings` by `_derive_constants` so that `reload_settings()`
+# (the hot-config-reload path, issue #2) can recompute and re-publish them in
+# place without a process restart. Consumers that did `from .config import X`
+# still see updates because `reload_settings` propagates the new value into
+# every loaded `threadkeeper.*` module that holds a copy (see `_propagate`).
 
-DB_PATH: Path = settings.db
-EMBED_MODEL_NAME: str = settings.embed_model
-EMBED_BACKEND: str = settings.embed_backend  # already normalized to lower
-NO_EMBEDDINGS: bool = settings.no_embeddings
-CLIENT_LABEL: str = settings.client
-WRITE_ORIGIN: str = settings.write_origin
-SPAWNED_CHILD: bool = settings.spawned_child
-DISABLE_BG_DAEMONS: bool = settings.disable_bg_daemons
-MENUBAR_AUTO_LAUNCH: bool = settings.menubar_auto_launch
-AUTO_UPDATE_INTERVAL_S: float = settings.auto_update_interval_s
-AUTO_UPDATE_RESTART: bool = settings.auto_update_restart
-AUTO_UPDATE_TIMEOUT_S: int = settings.auto_update_timeout_s
-CLAUDE_SKILLS_DIR: Path = settings.claude_skills_dir
-CLAUDE_PROJECTS_DIR: Path = settings.claude_projects_dir
-TASK_LOG_DIR: Path = settings.task_log_dir
-DIALOG_LOG: Path = TASK_LOG_DIR / "dialog.log"
-INGEST_CAP_PER_CALL: int = settings.ingest_cap
-INGEST_INTERVAL_S: float = settings.ingest_interval_s
-INGEST_RECENT_WINDOW_S: int = settings.ingest_window_s
-SELF_CID_TTL_S: float = settings.self_cid_ttl_s
-MEMORY_NUDGE_INTERVAL: int = settings.memory_nudge_interval
-SKILL_NUDGE_INTERVAL: int = settings.skill_nudge_interval
-BRIEF_LEAN: bool = settings.brief_lean
-BRIEF_NO_THREAD_NUDGE: bool = settings.brief_no_thread_nudge
-AUTO_REVIEW_ENABLED: bool = settings.auto_review
-SPAWN_BUDGET_MB: int = settings.spawn_budget_mb
-SPAWN_ESTIMATE_SLIM_MB: int = settings.spawn_estimate_slim_mb
-SPAWN_ESTIMATE_FULL_MB: int = settings.spawn_estimate_full_mb
-SPAWN_BUDGET_POLL_S: float = settings.spawn_budget_poll_s
-MEMORY_GUARD_POLL_S: float = settings.memory_guard_poll_s
-MEMORY_GUARD_WARN_MB: int = settings.memory_guard_warn_mb
-MEMORY_GUARD_KILL_MB: int = settings.memory_guard_kill_mb
-MEMORY_GUARD_AGG_WARN_MB: int = settings.memory_guard_agg_warn_mb
-MEMORY_GUARD_AGG_KILL_MB: int = settings.memory_guard_agg_kill_mb
-MEMORY_GUARD_RECLAIM_MB: int = settings.memory_guard_reclaim_mb
-MEMORY_GUARD_TARGET_SERVERS: int = settings.memory_guard_target_servers
-MEMORY_GUARD_RETIRE_IDLE_S: int = settings.memory_guard_retire_idle_s
-MEMORY_GUARD_RETIRE_LIVE: bool = settings.memory_guard_retire_live
-MEMORY_GUARD_NOTIFY: bool = settings.memory_guard_notify
-MEMORY_GUARD_COOLDOWN_S: int = settings.memory_guard_cooldown_s
-SHADOW_REVIEW_INTERVAL_S: float = settings.shadow_review_interval_s
-SHADOW_REVIEW_WINDOW_S: int = settings.shadow_review_window_s
-SHADOW_REVIEW_MIN_CHARS: int = settings.shadow_review_min_chars
-CURATOR_INTERVAL_S: float = settings.curator_interval_s
-CURATOR_MIN_LESSONS: int = settings.curator_min_lessons
-CURATOR_REPORTS_DIR: Path = _curator_reports_dir
-CURATOR_DESTRUCTIVE: bool = settings.curator_destructive
-EXTRACT_INTERVAL_S: float = settings.extract_interval_s
-EXTRACT_WINDOW_MIN: int = settings.extract_window_min
-CANDIDATE_REVIEW_INTERVAL_S: float = settings.candidate_review_interval_s
-CANDIDATE_REVIEW_MIN: int = settings.candidate_review_min
-PROBE_INTERVAL_S: float = settings.probe_interval_s
-PROBE_COOLDOWN_S: int = settings.probe_cooldown_s
-PANEL_SIZE: int = settings.panel_size
-PANEL_ROLES: list[str] = settings.panel_roles
-PANEL_REQUIRE_SKEPTIC: bool = settings.panel_require_skeptic
-PANEL_VOTE_WEIGHT: float = settings.panel_vote_weight
-PANEL_MODEL: str = settings.panel_model
-PANEL_EFFORT: str = settings.panel_effort
-EVOLVE_REVIEW_INTERVAL_S: float = settings.evolve_review_interval_s
-EVOLVE_REVIEW_MIN: int = settings.evolve_review_min
-EVOLVE_APPLY_INTERVAL_S: float = settings.evolve_apply_interval_s
-ROADMAP_CLAIM_RACE_WINDOW_S: float = settings.roadmap_claim_race_window_s
-THREAD_JANITOR_INTERVAL_S: float = settings.thread_janitor_interval_s
-THREAD_IDLE_CLOSE_DAYS: float = settings.thread_idle_close_days
-DIALECTIC_MINE_INTERVAL_S: float = settings.dialectic_mine_interval_s
-DIALECTIC_VALIDATE_INTERVAL_S: float = settings.dialectic_validate_interval_s
-DIALECTIC_VALIDATE_MIN: int = settings.dialectic_validate_min
-DIALECTIC_VALIDATE_BATCH_SIZE: int = settings.dialectic_validate_batch_size
-DIALECTIC_MAX_NEW_CLAIMS: int = settings.dialectic_max_new_claims
+
+def _derive_constants(s: "Settings") -> dict:
+    """Map a Settings instance to the package's UPPER_CASE constants.
+
+    Pure: no side effects, no globals touched. Used once at import and again
+    on every `reload_settings()`. Only operational knobs live here — identity
+    flags (SEMANTIC_AVAILABLE, BACKGROUND_DAEMONS_ALLOWED) and the embedding
+    backend are computed once below and are NOT hot-reloaded.
+    """
+    # CURATOR_REPORTS_DIR: if not explicitly set, anchor to DB_PATH.parent/curator
+    # so a custom THREADKEEPER_DB co-locates its curator reports.
+    curator_reports_dir = (
+        s.curator_reports_dir
+        if s.curator_reports_dir is not None
+        else (s.db.parent / "curator")
+    )
+    return {
+        "DB_PATH": s.db,
+        "EMBED_MODEL_NAME": s.embed_model,
+        "EMBED_BACKEND": s.embed_backend,  # already normalized to lower
+        "NO_EMBEDDINGS": s.no_embeddings,
+        "CLIENT_LABEL": s.client,
+        "WRITE_ORIGIN": s.write_origin,
+        "SPAWNED_CHILD": s.spawned_child,
+        "DISABLE_BG_DAEMONS": s.disable_bg_daemons,
+        "MENUBAR_AUTO_LAUNCH": s.menubar_auto_launch,
+        "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
+        "AUTO_UPDATE_RESTART": s.auto_update_restart,
+        "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
+        "CONFIG_WATCH_INTERVAL_S": s.config_watch_interval_s,
+        "CONFIG_WATCH_PATH": s.config_watch_path,
+        "CLAUDE_SKILLS_DIR": s.claude_skills_dir,
+        "CLAUDE_PROJECTS_DIR": s.claude_projects_dir,
+        "TASK_LOG_DIR": s.task_log_dir,
+        "DIALOG_LOG": s.task_log_dir / "dialog.log",
+        "INGEST_CAP_PER_CALL": s.ingest_cap,
+        "INGEST_INTERVAL_S": s.ingest_interval_s,
+        "INGEST_RECENT_WINDOW_S": s.ingest_window_s,
+        "SELF_CID_TTL_S": s.self_cid_ttl_s,
+        "MEMORY_NUDGE_INTERVAL": s.memory_nudge_interval,
+        "SKILL_NUDGE_INTERVAL": s.skill_nudge_interval,
+        "BRIEF_LEAN": s.brief_lean,
+        "BRIEF_NO_THREAD_NUDGE": s.brief_no_thread_nudge,
+        "AUTO_REVIEW_ENABLED": s.auto_review,
+        "SPAWN_BUDGET_MB": s.spawn_budget_mb,
+        "SPAWN_ESTIMATE_SLIM_MB": s.spawn_estimate_slim_mb,
+        "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
+        "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
+        "MEMORY_GUARD_POLL_S": s.memory_guard_poll_s,
+        "MEMORY_GUARD_WARN_MB": s.memory_guard_warn_mb,
+        "MEMORY_GUARD_KILL_MB": s.memory_guard_kill_mb,
+        "MEMORY_GUARD_AGG_WARN_MB": s.memory_guard_agg_warn_mb,
+        "MEMORY_GUARD_AGG_KILL_MB": s.memory_guard_agg_kill_mb,
+        "MEMORY_GUARD_RECLAIM_MB": s.memory_guard_reclaim_mb,
+        "MEMORY_GUARD_TARGET_SERVERS": s.memory_guard_target_servers,
+        "MEMORY_GUARD_RETIRE_IDLE_S": s.memory_guard_retire_idle_s,
+        "MEMORY_GUARD_RETIRE_LIVE": s.memory_guard_retire_live,
+        "MEMORY_GUARD_NOTIFY": s.memory_guard_notify,
+        "MEMORY_GUARD_COOLDOWN_S": s.memory_guard_cooldown_s,
+        "SHADOW_REVIEW_INTERVAL_S": s.shadow_review_interval_s,
+        "SHADOW_REVIEW_WINDOW_S": s.shadow_review_window_s,
+        "SHADOW_REVIEW_MIN_CHARS": s.shadow_review_min_chars,
+        "CURATOR_INTERVAL_S": s.curator_interval_s,
+        "CURATOR_MIN_LESSONS": s.curator_min_lessons,
+        "CURATOR_REPORTS_DIR": curator_reports_dir,
+        "CURATOR_DESTRUCTIVE": s.curator_destructive,
+        "EXTRACT_INTERVAL_S": s.extract_interval_s,
+        "EXTRACT_WINDOW_MIN": s.extract_window_min,
+        "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
+        "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
+        "PROBE_INTERVAL_S": s.probe_interval_s,
+        "PROBE_COOLDOWN_S": s.probe_cooldown_s,
+        "PANEL_SIZE": s.panel_size,
+        "PANEL_ROLES": s.panel_roles,
+        "PANEL_REQUIRE_SKEPTIC": s.panel_require_skeptic,
+        "PANEL_VOTE_WEIGHT": s.panel_vote_weight,
+        "PANEL_MODEL": s.panel_model,
+        "PANEL_EFFORT": s.panel_effort,
+        "EVOLVE_REVIEW_INTERVAL_S": s.evolve_review_interval_s,
+        "EVOLVE_REVIEW_MIN": s.evolve_review_min,
+        "EVOLVE_APPLY_INTERVAL_S": s.evolve_apply_interval_s,
+        "EVOLVE_REPO_ROOT": s.evolve_repo_root,
+        "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
+        "EVOLVE_REPO_URL": s.evolve_repo_url,
+        "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
+        "ROADMAP_CLAIM_RACE_WINDOW_S": s.roadmap_claim_race_window_s,
+        "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
+        "THREAD_IDLE_CLOSE_DAYS": s.thread_idle_close_days,
+        "DIALECTIC_MINE_INTERVAL_S": s.dialectic_mine_interval_s,
+        "DIALECTIC_VALIDATE_INTERVAL_S": s.dialectic_validate_interval_s,
+        "DIALECTIC_VALIDATE_MIN": s.dialectic_validate_min,
+        "DIALECTIC_VALIDATE_BATCH_SIZE": s.dialectic_validate_batch_size,
+        "DIALECTIC_MAX_NEW_CLAIMS": s.dialectic_max_new_claims,
+    }
+
+
+# Publish the initial constants into this module's namespace.
+globals().update(_derive_constants(settings))
+
+
+def _propagate(new_values: dict) -> None:
+    """Push reloaded constant values into every loaded `threadkeeper.*` module
+    that imported a copy via `from .config import X`.
+
+    This is what makes hot-reload reach consumers. A function reading a
+    module-global name resolves it against that module's `__dict__` at call
+    time, so overwriting the copy makes the next daemon tick / tool call see
+    the new value — no re-import needed. Only names a module already defines
+    are touched; we never inject new globals into unrelated modules.
+    """
+    import sys as _sys
+
+    me = _sys.modules.get(__name__)
+    for mod_name, mod in list(_sys.modules.items()):
+        if mod is me or mod is None:
+            continue
+        if not mod_name.startswith("threadkeeper"):
+            continue
+        d = getattr(mod, "__dict__", None)
+        if not d:
+            continue
+        for cname, val in new_values.items():
+            if cname in d:
+                d[cname] = val
+
+
+def reload_settings(env: Optional[dict] = None,
+                    remove: Optional[list] = None) -> dict:
+    """Re-read configuration in place (hot-config reload — issue #2).
+
+    Steps:
+      1. Optionally mutate `os.environ`: drop `remove` keys, set `env` keys.
+         (The config_watcher uses this to mirror ~/.claude/settings.json.)
+      2. Re-instantiate `Settings()` (re-reads os.environ + the .env file).
+      3. Recompute the UPPER_CASE constants and republish them on this module.
+      4. Propagate every CHANGED constant to all loaded `threadkeeper.*`
+         modules so daemons/tools that imported a copy observe the new value.
+
+    Returns a dict of changed constants: ``{NAME: {"old": ..., "new": ...}}``.
+    Embedding availability / process-identity flags are intentionally NOT
+    reloaded (hot-swapping the embedding backend in a live process is unsafe).
+    """
+    global settings
+    if remove:
+        for k in remove:
+            os.environ.pop(k, None)
+    if env:
+        for k, v in env.items():
+            os.environ[k] = str(v)
+
+    old = _derive_constants(settings)
+    settings = Settings()
+    new = _derive_constants(settings)
+
+    globals().update(new)
+    changed = {
+        name: {"old": old.get(name), "new": val}
+        for name, val in new.items()
+        if old.get(name) != val
+    }
+    if changed:
+        _propagate({name: c["new"] for name, c in changed.items()})
+    return changed
 
 # ── Derived constants (unchanged logic, computed after settings) ──────────────
 

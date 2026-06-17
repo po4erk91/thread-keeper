@@ -16,6 +16,7 @@ import time
 
 from .config import DIALECTIC_MINE_INTERVAL_S
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 from .identity import _ensure_session, _emit
 
@@ -431,7 +432,7 @@ def _serve_loop() -> None:
             run_mine_pass()
         except Exception:
             logger.debug("dialectic_miner tick failed", exc_info=True)
-        time.sleep(DIALECTIC_MINE_INTERVAL_S)
+        daemon_sleep(DIALECTIC_MINE_INTERVAL_S)
 
 
 def start_dialectic_miner_daemon() -> None:

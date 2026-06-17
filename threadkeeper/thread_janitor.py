@@ -34,6 +34,7 @@ import time
 
 from .config import THREAD_JANITOR_INTERVAL_S, THREAD_IDLE_CLOSE_DAYS
 from .db import get_db
+from .helpers import daemon_sleep
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def _serve_loop() -> None:
             run_janitor_pass()
         except Exception:
             logger.debug("thread_janitor tick failed", exc_info=True)
-        time.sleep(THREAD_JANITOR_INTERVAL_S)
+        daemon_sleep(THREAD_JANITOR_INTERVAL_S)
 
 
 def start_thread_janitor() -> None:

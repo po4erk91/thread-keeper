@@ -58,18 +58,22 @@ _SKILL_RESET_KINDS = (
 
 # Bookkeeping/automatic events that are NOT agent turns and must never
 # inflate the memory/skill nudge counters. These are byproducts of the
-# system itself, not "work done without a save":
-#   thread_hint_shown  — logged by render_brief when the open-thread nudge
-#                        is surfaced (once per session).
-#   shadow_review_pass — cursor mark written by the shadow-review daemon
-#                        on a tick; non-deterministic, daemon-driven.
-# Counting either would make a nudge fire a turn early (and made
-# test_skill_nudge_soft_at_threshold flaky). They are unioned into the
-# exclude set in _count_events_since, NOT added to the *_RESET_KINDS sets,
-# so they neither reset the counter nor count toward it.
+# system itself, not "work done without a save"; counting one makes a nudge
+# fire a turn early.
+#
+# Every DAEMON-tick marker is named "<daemon>_pass" — ingest_pass,
+# janitor_pass, curator_pass, shadow_review_pass, probe_pass,
+# config_watch_pass, evolve_review_pass / evolve_apply_pass,
+# dialectic_mine_pass / dialectic_validate_pass, candidate_review_pass,
+# extract_pass, auto_update_pass. Rather than enumerate them — a list that
+# silently rots every time a new daemon lands (lesson:
+# new-event-kind-audit-every-counter-exclude-bookkeeping-markers) —
+# _count_events_since excludes that whole class by the `%_pass` pattern.
+# This tuple is only for NON-"_pass" bookkeeping kinds that still must not
+# count. It is unioned into the exclude set in _count_events_since, NOT into
+# the *_RESET_KINDS sets, so these neither reset nor count toward the nudge.
 _NONCOUNTING_KINDS = (
     "thread_hint_shown",
-    "shadow_review_pass",
 )
 
 
@@ -93,26 +97,29 @@ def _count_events_since(conn: sqlite3.Connection, session_id: str,
                         since_id: int,
                         exclude_kinds: tuple[str, ...]) -> int:
     """Count events for session with id > since_id whose kind is NOT in
-    exclude_kinds. These are the "non-save" turns between the last save
-    and now. Bookkeeping kinds (_NONCOUNTING_KINDS) are always excluded on
-    top of the caller's exclude_kinds — they are not agent turns."""
+    exclude_kinds. These are the "non-save" turns between the last save and
+    now. Two classes never count: the caller's exclude_kinds unioned with the
+    _NONCOUNTING_KINDS bookkeeping set, AND every daemon-tick marker (any
+    "<daemon>_pass" kind) — they are byproducts of the system, not agent
+    turns."""
     if not session_id:
         return 0
     exclude_kinds = tuple(exclude_kinds) + _NONCOUNTING_KINDS
+    # Exclude the whole daemon-tick class by pattern (ingest_pass,
+    # janitor_pass, curator_pass, config_watch_pass, …) so a newly-added
+    # daemon can't silently inflate the counter. ESCAPE makes '_' a literal
+    # underscore rather than LIKE's single-char wildcard.
+    sql = (
+        "SELECT COUNT(*) c FROM events "
+        "WHERE session_id = ? AND id > ? "
+        "AND kind NOT LIKE '%\\_pass' ESCAPE '\\'"
+    )
+    params: list = [session_id, since_id]
     if exclude_kinds:
         placeholders = ",".join("?" * len(exclude_kinds))
-        row = conn.execute(
-            f"SELECT COUNT(*) c FROM events "
-            f"WHERE session_id = ? AND id > ? "
-            f"AND kind NOT IN ({placeholders})",
-            (session_id, since_id, *exclude_kinds),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT COUNT(*) c FROM events "
-            "WHERE session_id = ? AND id > ?",
-            (session_id, since_id),
-        ).fetchone()
+        sql += f" AND kind NOT IN ({placeholders})"
+        params.extend(exclude_kinds)
+    row = conn.execute(sql, params).fetchone()
     if row is None:
         return 0
     return row["c"] if hasattr(row, "keys") else row[0]
