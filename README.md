@@ -394,9 +394,20 @@ Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
 `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
 CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
-never proposes destructive changes against them.
+never proposes destructive changes against them. The pass is
+single-flight across processes — a non-blocking `fcntl.flock` pidfile
+(`<db dir>/curator.lock`) plus a running-children check serialize it, so
+multiple MCP server instances can't run overlapping (now destructive) passes
+against the same store. A manual `curator_run(force=True)` bypasses the
+interval but still respects the lock.
 
-Curator itself stays advisory-only by default. The existing Evolve applier is
+Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
+writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
+can actually prune and consolidate duplicate lessons). Set
+`THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
+`[PROTECTED]` / foreground / user / pinned / validated entries, and
+`lesson_remove` is always called without `force` (so user/foreground lessons are
+refused by design). The existing Evolve applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
 been marked applied, then spawns an `evolve_applier` child to apply only safe,
@@ -546,7 +557,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_DESTRUCTIVE` | "" (advisory) | when "1": curator child applies its own PATCH/PRUNE/CONSOLIDATE directly instead of writing advisory REPORT only |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |

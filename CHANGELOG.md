@@ -62,6 +62,46 @@ version bumps follow semver per the policy in
   interval daemon's loop from busy-spinning when a live interval is reloaded
   to 0.
 
+### Changed
+
+- **Autonomous Curator is now destructive by default.**
+  `THREADKEEPER_CURATOR_DESTRUCTIVE` now defaults to `1`: once the curator
+  daemon is enabled (`THREADKEEPER_CURATOR_INTERVAL_S > 0`), the child writes
+  its `REPORT-<isodate>.md` and then applies its own PATCH / PRUNE /
+  CONSOLIDATE recommendations directly, instead of leaving an advisory report
+  for manual review. Set `THREADKEEPER_CURATOR_DESTRUCTIVE=0` to restore the
+  previous advisory-only behavior. The destructive curator's allowed-tools now
+  include `lesson_remove`, so it can actually prune and consolidate duplicate
+  lessons (previously it could only delete skills and rewrite same-slug
+  lessons, so lesson-level PRUNE/CONSOLIDATE recommendations were never
+  applied). `[PROTECTED]` (foreground/user/pinned/validated) entries are never
+  mutated, and `lesson_remove` is always called without `force`, so it refuses
+  user/foreground-authored lessons by design.
+
+### Fixed
+
+- **Curator daemon is now single-flight across processes.** Each MCP server
+  instance runs its own curator daemon, but `run_curator_pass` had no
+  cross-process guard, so several curators could spawn at once and — now that
+  the curator mutates the store by default — double-apply or clobber each
+  other's PRUNE/CONSOLIDATE edits to `lessons.md`. Added a non-blocking
+  `fcntl.flock` pidfile (`<db dir>/curator.lock`) plus a
+  `_running_curator_children` check on the tasks table, mirroring
+  `candidate_reviewer` / `evolve_applier`. The flock makes the
+  running-children check and the spawn atomic; a manual
+  `curator_run(force=True)` still bypasses the interval but respects the lock.
+
+- **Skill/memory nudges no longer fire early off daemon-tick bookkeeping.**
+  The nudge counter (`nudges._count_events_since`) counted `<daemon>_pass`
+  events (`ingest_pass`, `janitor_pass`, `config_watch_pass`, …) as agent
+  turns, so a nudge crossed its threshold a turn or two early (and tipped the
+  soft skill-nudge into the 2×-overdue message). It now excludes the whole
+  `%_pass` class by pattern instead of an enumerated list that rots whenever a
+  new daemon lands; `_NONCOUNTING_KINDS` keeps only the non-`_pass`
+  bookkeeping (`thread_hint_shown`). The test bootstrap also gained the
+  missing `THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0` so #31's `config_watcher`
+  daemon joins the kill-list.
+
 ## v0.13.1 — 2026-06-15
 
 ### Fixed
