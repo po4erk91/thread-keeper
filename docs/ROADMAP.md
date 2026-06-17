@@ -290,6 +290,14 @@ Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
 (#18), auto-update self-restart with no smoke-check/rollback (#19), and
 Antigravity transcript ingest not yet implemented (#20).
 
+Follow-up gaps from the 2026-06-17 audit:
+- Semantic lesson dedup at write time (#34).
+- Curator pass debounce / unchanged-inventory coalescing (#35).
+- Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
+- Transcript secret scrubbing before persistence into `dialog_messages` /
+  `dialog_fts` (#37).
+- Shared GitHub API budget/backoff across roadmap automation (#38).
+
 ---
 
 ## Principle
