@@ -206,10 +206,28 @@ line.
 Going forward: keep in sync when the set of tools or daemons changes.
 Scope: ongoing.
 
-**Curator policy tuning.** `curator_run` currently archives by a simple
-heuristic (time + absence of patches). Unclear whether this loses useful
-skills. Need a dry-run mode with a dump of "what would be archived" for
-review. Scope: S.
+**Curator policy tuning.** ✅ DONE — superseded the old time-based archive
+heuristic. `curator_run` now spawns a slim child that grades every lesson +
+recently-active skill (and any concepts) against an explicit rubric
+(KEEP / PATCH / CONSOLIDATE / PRUNE), writes an auditable
+`REPORT-<isodate>.md`, and — **destructive-by-default** — applies its own
+PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove`
+(always without `force`, so user/foreground lessons are refused) /
+`skill_manage`. `[PROTECTED]` (pinned / foreground / user) entries are never
+mutated, and the pass is single-flight across processes (a non-blocking
+`fcntl.flock` pidfile plus a running-children check). The "dry-run mode with
+a dump of what would be archived" this item asked for already exists: set
+`THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
+
+Open follow-ups (issue-backed): restorable deletion / pre-mutation snapshot
+before autonomous prune (#40, #41, #52); a write lock for the unlocked
+`lessons.md` read-modify-write now that the curator and shadow_review both
+mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
+full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
+landed but the argv bound has not (#24); debouncing passes on unchanged
+inventories (#35); and making the curator's `PRUNE_CONCEPT` /
+`CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
+tool exists today (#75). Scope: S–M each.
 
 **Extract_recent precision.** ✅ PARTIALLY DONE. The hypothesis was
 "too many / too noisy", and the ledger confirmed it hard: 107 decisions,
