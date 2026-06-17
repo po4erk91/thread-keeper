@@ -14,6 +14,7 @@ in unit tests. We exercise the pure scaffolding:
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -331,6 +332,44 @@ def test_advisory_mode_excludes_destructive_tools(
     assert "evolve_format" in allowed
     assert "ADVISORY MODE" in kw["prompt"]
     assert "DESTRUCTIVE MODE ENABLED" not in kw["prompt"]
+
+
+def test_single_flight_when_curator_child_running(tmp_path, monkeypatch):
+    """The curator mutates ONE shared store (lessons.md + skills); a second
+    pass must not spawn while a curator child is already running, even when the
+    inventory is above threshold and force=True. Cross-process single-flight."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, pid, parent_cid, spawned_cid, cwd, prompt, started_at) "
+        "VALUES ('tk_running_curator', ?, 'p', 'c', '/x', ?, ?)",
+        (
+            os.getpid(),
+            "You are an autonomous CURATOR for thread-keeper's lessons + "
+            "skills library.",
+            int(time.time()) - 30,
+        ),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_spawn(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("spawn should not run while a curator is active")
+
+    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out == "curator_running n=1 (single-flight)"
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind='curator_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert "curator_running n=1" in row["summary"]
 
 
 # ──────────────────────────────────────────────────────────────────────

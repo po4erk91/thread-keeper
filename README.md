@@ -394,7 +394,12 @@ Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
 `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
 CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
-never proposes destructive changes against them.
+never proposes destructive changes against them. The pass is
+single-flight across processes — a non-blocking `fcntl.flock` pidfile
+(`<db dir>/curator.lock`) plus a running-children check serialize it, so
+multiple MCP server instances can't run overlapping (now destructive) passes
+against the same store. A manual `curator_run(force=True)` bypasses the
+interval but still respects the lock.
 
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it

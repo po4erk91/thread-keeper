@@ -23,6 +23,19 @@ version bumps follow semver per the policy in
   mutated, and `lesson_remove` is always called without `force`, so it refuses
   user/foreground-authored lessons by design.
 
+### Fixed
+
+- **Curator daemon is now single-flight across processes.** Each MCP server
+  instance runs its own curator daemon, but `run_curator_pass` had no
+  cross-process guard, so several curators could spawn at once and — now that
+  the curator mutates the store by default — double-apply or clobber each
+  other's PRUNE/CONSOLIDATE edits to `lessons.md`. Added a non-blocking
+  `fcntl.flock` pidfile (`<db dir>/curator.lock`) plus a
+  `_running_curator_children` check on the tasks table, mirroring
+  `candidate_reviewer` / `evolve_applier`. The flock makes the
+  running-children check and the spawn atomic; a manual
+  `curator_run(force=True)` still bypasses the interval but respects the lock.
+
 ## v0.13.1 — 2026-06-15
 
 ### Fixed
