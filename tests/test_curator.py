@@ -188,15 +188,17 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "evolve_format" in kw["prompt"]
     assert "lesson-one" in kw["prompt"]
     assert "lesson-two" in kw["prompt"]
-    # Scoped toolset — no shell, no spawn, no destructive lesson_append
+    # Scoped toolset — destructive default (the new default) includes
+    # lesson_append / lesson_remove / skill_manage, but never shell or spawn.
     allowed = kw["extra_allowed_tools"]
     assert "lesson_list" in allowed
     assert "lesson_get" in allowed
+    assert "lesson_append" in allowed
+    assert "lesson_remove" in allowed
+    assert "skill_manage" in allowed
     assert "evolve_format" in allowed
     assert "Read" in allowed
     assert "Write" in allowed
-    assert "lesson_append" not in allowed
-    assert "skill_manage" not in allowed
     assert "Bash" not in allowed
     # REPORTS_DIR was created so the child has a place to write
     assert pkg["reports_dir"].is_dir()
@@ -255,8 +257,8 @@ def test_mcp_curator_review_status_reports(tmp_path, monkeypatch):
     assert "interval_s=0" in out
     assert "below_threshold" in out
     assert "latest_report=(none yet)" in out
-    # Default mode is advisory (CURATOR_DESTRUCTIVE not set)
-    assert "mode=advisory" in out
+    # Default mode is now destructive (CURATOR_DESTRUCTIVE defaults to 1)
+    assert "mode=destructive" in out
 
 
 def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
@@ -285,9 +287,10 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     assert len(captured) == 1
     kw = captured[0]
     allowed = kw["extra_allowed_tools"]
-    # Destructive mode → widened toolset
+    # Destructive mode → widened toolset (incl. lesson_remove for prune/consolidate)
     assert "skill_manage" in allowed
     assert "lesson_append" in allowed
+    assert "lesson_remove" in allowed
     assert "evolve_format" in allowed
     # Prompt explicitly flips into destructive mode
     assert "DESTRUCTIVE MODE ENABLED" in kw["prompt"]
@@ -296,11 +299,13 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     assert "PROTECTED" in kw["prompt"]
 
 
-def test_advisory_mode_default_excludes_destructive_tools(
+def test_advisory_mode_excludes_destructive_tools(
     tmp_path, monkeypatch,
 ):
-    """Default (no env knob) keeps the curator child read-only: prompt
-    forbids skill_manage/lesson_append and they aren't in allowed_tools."""
+    """With THREADKEEPER_CURATOR_DESTRUCTIVE=0 the curator child is read-only:
+    prompt forbids skill_manage/lesson_append/lesson_remove and they aren't in
+    allowed_tools. (Destructive is the default, so advisory is now opt-in.)"""
+    monkeypatch.setenv("THREADKEEPER_CURATOR_DESTRUCTIVE", "0")
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     pkg["lessons"].append_lesson(
         title="a", body="b1", source="shadow"

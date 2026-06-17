@@ -21,10 +21,12 @@ Design choices:
   • **Scoped toolset** — child gets only lesson_*/skill_*/Read/Write.
     No shell, no web, no spawn. Curator can't sprawl into anything else.
   • **Per-run REPORT.md** — every pass leaves an auditable trail.
-  • **Read-only-by-default destructive ops** — Phase 1: child writes a
-    REPORT.md with recommendations only. User reviews it and decides
-    whether to apply patches/consolidations manually. Future versions
-    can flip an env knob to let the curator merge/delete in place.
+  • **Destructive-by-default (Phase 2)** — child writes the REPORT.md
+    first (audit trail), then applies its own PATCH / PRUNE / CONSOLIDATE
+    directly via lesson_append / lesson_remove / skill_manage. Set
+    THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
+    [PROTECTED] entries are never mutated, and lesson_remove is always
+    called without force so it refuses user/foreground lessons by design.
 
 Why this exists: shadow_review accumulates lessons over weeks. Without
 periodic curation, the library grows unbounded with overlapping,
@@ -366,23 +368,32 @@ def run_curator_pass(force: bool = False) -> str:
     # Ensure reports dir exists before the child tries to Write into it.
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Phase-1 default: advisory-only. CURATOR_DESTRUCTIVE=1 promotes
-    # the child to "apply your own recommendations directly" mode and
-    # widens the allowed-tools list to include skill_manage + lesson_append.
+    # Default: destructive — the curator applies its own recommendations
+    # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
+    # to advisory REPORT-only (read-only toolset).
     if CURATOR_DESTRUCTIVE:
         destructive_clause = (
-            "DESTRUCTIVE MODE ENABLED. After writing the REPORT.md you "
-            "MAY apply your own PATCH / PRUNE / CONSOLIDATE recommendations "
-            "directly via skill_manage(action='patch'|'delete'|'write_file') "
-            "and lesson_append(...). Always cross-check against the "
-            "[PROTECTED] marker — never touch protected entries even in "
-            "destructive mode. Apply changes ONLY after the REPORT.md is "
+            "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
+            "the REPORT.md you MUST apply your own PATCH / PRUNE / "
+            "CONSOLIDATE recommendations directly:\n"
+            "  • PATCH — lesson_append(...) replaces a same-slug lesson in "
+            "place; skill_manage(action='patch') for skills.\n"
+            "  • PRUNE — lesson_remove(slug=...) for a lesson; "
+            "skill_manage(action='delete') for a skill.\n"
+            "  • CONSOLIDATE — write the umbrella entry first, then "
+            "lesson_remove / skill_manage(action='delete') each merged-away "
+            "slug so the duplicate copies are actually gone.\n"
+            "NEVER pass force=True to lesson_remove — it refuses "
+            "source=foreground/user lessons by design and that refusal is "
+            "your safety net. NEVER touch any entry marked [PROTECTED], even "
+            "in destructive mode. Apply changes ONLY after the REPORT.md is "
             "written (audit trail first, mutation second)."
         )
         allowed_tools = (
             "mcp__thread-keeper__lesson_list,"
             "mcp__thread-keeper__lesson_get,"
             "mcp__thread-keeper__lesson_append,"
+            "mcp__thread-keeper__lesson_remove,"
             "mcp__thread-keeper__skill_list,"
             "mcp__thread-keeper__skill_manage,"
             "mcp__thread-keeper__evolve_format,"
@@ -390,12 +401,13 @@ def run_curator_pass(force: bool = False) -> str:
         )
     else:
         destructive_clause = (
-            "ADVISORY MODE. Do NOT call lesson_append, skill_manage with "
-            "action in {create,patch,delete,write_file}, or any other "
-            "destructive tool. Your output is the REPORT.md ONLY — the "
-            "human reviews and applies changes manually. Flip "
-            "THREADKEEPER_CURATOR_DESTRUCTIVE=1 in env when ready to let "
-            "the curator apply its own recommendations."
+            "ADVISORY MODE (you explicitly set "
+            "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
+            "lesson_remove, skill_manage with action in "
+            "{create,patch,delete,write_file}, or any other destructive tool. "
+            "Your output is the REPORT.md ONLY — the human reviews and applies "
+            "changes manually. Unset the knob (or set it to 1) to let the "
+            "curator apply its own recommendations directly, the default."
         )
         allowed_tools = (
             "mcp__thread-keeper__lesson_list,"
