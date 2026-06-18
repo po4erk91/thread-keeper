@@ -803,6 +803,53 @@ reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 
 ---
 
+## Evaluating learning-loop decision quality
+
+`verify_ingest` answers *"did we capture the data?"*. The decision-quality
+harness answers the orthogonal question — *"when the shadow-review and
+candidate-reviewer daemons make a materialize/skip or accept/reject call, are
+those calls **right**?"* The codebase has decision telemetry but no labeled
+set and no precision/recall ([roadmap issue
+#72](https://github.com/po4erk91/thread-keeper/issues/72)); this harness adds
+both, modeled on the
+[evidently.ai LLM-as-a-judge guide](https://www.evidentlyai.com/llm-guide/llm-as-a-judge)
+(build a labeled set, measure judge↔human agreement, calibrate before trusting
+a judge).
+
+```bash
+python -m threadkeeper.eval                 # bundled golden fixtures, offline rubric judge
+python -m threadkeeper.eval --json          # machine-readable report
+python -m threadkeeper.eval --judge llm     # replay the real prompt (needs ANTHROPIC_API_KEY)
+python -m threadkeeper.eval --fixtures-dir my_labels/   # your own labeled set
+```
+
+It reports, over a small **hand-labeled, anonymized** fixture set checked into
+`threadkeeper/eval/fixtures/`:
+
+- **precision / recall / F1** for the shadow-review (materialize vs skip) and
+  candidate-reviewer (accept vs reject) decisions, against the human labels.
+- **judge ↔ human agreement** (raw accuracy + Cohen's kappa) for the
+  open-ended *"is this a high-quality skill?"* judgment — the calibration
+  number that makes a drifting judge visible.
+- a `PASS` / `PARTIAL` / `FAIL` verdict on **harness readiness** (enough labels
+  with both classes present), surfaced the same way as `verify_ingest` — *not*
+  a fixed quality threshold.
+
+The default **rubric** judge is deterministic, offline, and needs no API key:
+each fixture carries the human-tagged rubric *signals* it contains, and a
+signal only counts if its anchor phrase is still present in the **live** daemon
+prompt — so editing a rubric (dropping a signal class) deactivates those
+signals and **moves the metric**, which CI catches as a regression against the
+golden baseline. `--judge llm` replays the *actual* `SHADOW_REVIEW_PROMPT` /
+`CANDIDATE_REVIEW_PROMPT` over each item and parses the daemon's own verdict —
+the high-fidelity measurement, when a key is set. The fixtures are fully
+synthetic (a test asserts they carry no secrets or private paths); point
+`--fixtures-dir` at your own labeled set to score real decisions. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the harness couples to the
+daemon prompts.
+
+---
+
 ## Tests
 
 ```bash
@@ -826,6 +873,7 @@ threadkeeper/
 ├── identity.py           # session, self-cid, daemon launchers
 ├── ingest.py             # adapter-driven transcript ingest
 ├── verify_ingest.py      # cross-CLI production verification verdict
+├── eval/                 # offline learning-loop decision-quality harness (python -m threadkeeper.eval)
 ├── brief.py              # render_brief / render_context
 ├── shadow_review.py      # autonomous learning observer
 ├── i18n.py               # 10 locales of regex + prompt bundles

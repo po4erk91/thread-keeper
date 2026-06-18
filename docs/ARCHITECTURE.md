@@ -20,6 +20,7 @@ threadkeeper/
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
 ├── verify_ingest.py   cross-CLI production verification — slot coverage + PASS/PARTIAL/FAIL verdict (issue #1)
+├── eval/              offline learning-loop decision-quality harness — precision/recall/F1 + judge↔human agreement (issue #72)
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
@@ -753,6 +754,57 @@ tests/
 Run: `.venv/bin/python -m pytest tests/ -q`. Currently 495 tests (1 skipped),
 all green. Smoke parametrization automatically picks up any new tools without
 having to add tests.
+
+## Evaluating the learning loop
+
+`verify_ingest.py` measures the *ingest plumbing* (did rows land, does shadow
+span >1 adapter). `threadkeeper/eval/` measures the orthogonal axis —
+**decision quality**: when `shadow_review` calls materialize-vs-skip and
+`candidate_reviewer` calls accept-vs-reject, are those calls right? There was
+no labeled set and no precision/recall before this harness (issue #72); the
+shadow rubric hard-codes a class-vs-incident decision but nothing scored how
+often it's correct.
+
+The harness (`python -m threadkeeper.eval`, pure verdict logic in
+`threadkeeper/eval/harness.py`) has three parts, surfaced with the same
+`PASS/PARTIAL/FAIL` verdict shape as `verify_ingest`:
+
+- **Fixtures** (`threadkeeper/eval/fixtures/*.json`) — small, hand-labeled,
+  fully-synthetic sets: `shadow.json` (dialog windows + expected
+  materialize/skip), `candidates.json` (candidate snippets + expected
+  accept/reject), and `skill_quality.json` (skill bodies + a human high/low
+  label). `test_eval_harness.py` asserts they carry no secrets/private paths.
+- **Two judges** (mirroring the `verify_ingest` / memory-recall split between an
+  offline CI-safe path and an LLM path):
+  - `rubric` (default, deterministic, offline) — a *signal-vote* classifier
+    **coupled to the live daemon prompt**. Each fixture item carries the human
+    rubric `signals` it contains (`stated_policy`, `false_positive`, …); each
+    signal maps to an `anchor` phrase, and a signal only votes if its anchor is
+    present **in its decision's section of the current prompt**
+    (`SHADOW_SECTIONS` / `CANDIDATE_SECTIONS`, with graceful fallback to
+    whole-prompt presence if a section header was reworded). So editing a rubric
+    — dropping a materialize/reject criterion — deactivates the signals anchored
+    to it and **moves the precision/recall**, deterministically and offline.
+    Calibrated so the golden fixtures classify cleanly, the offline judge is a
+    cheap regression guard: a rubric edit that silently drops a criterion shows
+    up as an F1 drop in CI.
+  - `llm` (opt-in, needs `ANTHROPIC_API_KEY`) — replays the *actual*
+    `SHADOW_REVIEW_PROMPT` / `CANDIDATE_REVIEW_PROMPT` (plus the same
+    `<observed_dialog>` data fence the daemons use) over each item via the
+    Anthropic Messages API over `urllib` (no SDK), and parses the daemon's own
+    verdict contract. This is the high-fidelity decision-quality measurement; a
+    prompt edit obviously moves it because the model reads the edited prompt.
+- **Calibration** — the skill-quality axis reports judge↔human **agreement**
+  (raw accuracy + Cohen's kappa). Per the evidently.ai LLM-as-a-judge guidance,
+  agreement against a fixed human-labeled set is what makes a drifting judge
+  (offline heuristic or LLM) visible before its scores are trusted.
+
+The CLI exits non-zero only when the harness itself is broken (no fixtures /
+nothing computable), never on model quality — quality is a number to track and
+optimize against (e.g. the ROADMAP's extract-precision and "do we need tiers"
+open questions), not a gate. `--fixtures-dir` scores a custom labeled set.
+Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
+rubric-sensitivity + a subprocess end-to-end run).
 
 ## Env knobs (config.py)
 
