@@ -751,9 +751,50 @@ tests/
 └── …
 ```
 
-Run: `.venv/bin/python -m pytest tests/ -q`. Currently 495 tests (1 skipped),
+Run: `.venv/bin/python -m pytest tests/ -q`. Currently 869 tests (1 skipped),
 all green. Smoke parametrization automatically picks up any new tools without
 having to add tests.
+
+## Memory-quality evaluation (issue #71)
+
+Two read-only harnesses measure the memory layer, not the code:
+
+- `scripts/tk_verify_ingest.py` — *write/ingest* side: did we capture rows from
+  every CLI? (slot coverage, PASS/PARTIAL/FAIL; issue #1).
+- `scripts/memory_eval/run.py` — *read/retrieval* side: when we retrieve, do we
+  recall the right fact and **refuse** to answer about things that never
+  happened? Modeled on LongMemEval (ICLR 2025) + mem0's 2026
+  tokens-per-retrieval cost axis.
+
+The eval harness is deliberately thin and treats the retrieval surface as a
+black box: each ground-truth question carries a `system`
+(`search` → notes, `dialog_search` → ingested transcripts, `brief` → the
+auto-injected context) and a `query`; `retrieve()` calls the *real* tool
+function and the judge reads its verbatim output, so tokens-per-retrieval is
+measured on exactly what an agent would receive. The five LongMemEval axes map
+onto thread-keeper as:
+
+| Axis | What it probes here |
+|---|---|
+| information_extraction | single-fact recall from one message/note |
+| multi_session_reasoning | union of top-k spans facts from ≥2 sessions |
+| temporal_reasoning | retrieval surfaces the time-relevant evidence (before/after, latest) |
+| knowledge_update | the *current* value wins over a superseded one in the corpus |
+| abstention | never-happened question → no fabricated `trap_substring` leaks into context |
+
+The default **lexical** judge is a deterministic substring scorer (gold recall;
+abstention = no trap surfaced) — offline, no API key, no embeddings, so it runs
+in CI and as a golden baseline (the bundled `ground_truth.json` demo corpus
+scores 100% under a faithful retrieval; a regression in `search()`/
+`dialog_search()` drops it). An optional `--judge llm` grades answer
+*reasoning* (true temporal ordering, knowledge-update correctness) via the
+Anthropic Messages API over `urllib` — no SDK dependency — and is the intended
+optimization target for the lessons-decay (#27) and bi-temporal (#28) work.
+`--db snapshot.sqlite` evaluates a real production snapshot, copied to a temp
+file first so the original is never opened for writing. Backend (`fts` vs
+`semantic`) is auto-detected and reported. Smoke-tested in
+`tests/test_memory_eval.py` (subprocess, to keep import-time env setup off the
+shared in-process package state).
 
 ## Evaluating the learning loop
 
@@ -805,7 +846,6 @@ optimize against (e.g. the ROADMAP's extract-precision and "do we need tiers"
 open questions), not a gate. `--fixtures-dir` scores a custom labeled set.
 Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
 rubric-sensitivity + a subprocess end-to-end run).
-
 ## Env knobs (config.py)
 
 | Knob | Default | Purpose |

@@ -51,6 +51,30 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Memory-quality eval harness — LongMemEval-style abstention +
+  tokens-per-retrieval (#71).** thread-keeper measured write *precision* (the
+  extract-candidate ledger) but never retrieval *recall*, or whether
+  `brief()`/`search()` surface stale or fabricated facts — so the planned
+  lessons-decay (#27) and bi-temporal (#28) work would ship with no number to
+  optimize against. New `scripts/memory_eval/run.py` runs the **real**
+  `search()` / `dialog_search()` / `brief()` tools as systems-under-test over a
+  fixed ground-truth set and reports three numbers: **accuracy** (per the five
+  LongMemEval axes — information extraction, multi-session reasoning, temporal
+  reasoning, knowledge updates, abstention), **abstention rate** (of
+  never-happened questions, the fraction correctly refused — the highest-payoff
+  axis, directly measuring whether auto-injected `brief()` context fabricates),
+  and **tokens-per-retrieval** (mem0's 2026 cost axis, so recall is never read
+  apart from cost). The default judge is **lexical** (deterministic, offline,
+  no API key or embeddings → reproducible and CI-safe); an optional
+  `--judge llm` grades answer *reasoning* via an Anthropic model (urllib, no
+  SDK dependency) when `ANTHROPIC_API_KEY` is set. With no `--db` it builds a
+  bundled fixture corpus (`scripts/memory_eval/ground_truth.json`, a fictional
+  "billing service" across three sessions) into a throwaway DB — a **golden
+  baseline** where faithful retrieval scores 100%; `--db snapshot.sqlite` runs
+  **read-only** (the snapshot is copied to a temp file; the original is never
+  written). Wired as an optional `scripts/` harness, not CI-gating. Documented
+  in the README ("Memory-quality evaluation") and docs/ARCHITECTURE.md.
+
 - **Offline eval harness for learning-loop decision quality (#72).** The
   quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
   each make accept/reject/materialize calls, but there was no way to measure
