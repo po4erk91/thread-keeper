@@ -409,10 +409,12 @@ verified at the cited file:line, deduplicated against the issues above):
   never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
   never resolves pins its full-estimate budget share forever. (The
   admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.) (#64).
-- Spawn **slim MCP config** is written world-readable with no `chmod` and
-  embeds the host server `env` block, while the stdin prompt file is correctly
-  `0600` and the `.command` script is `0755`. Restrict modes + minimize the
-  embedded env. (Spool-file retention/cleanup is #42.) (#68).
+- ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
+  `chmod` and embedded the host server `env` block, while the stdin prompt file
+  is correctly `0600` and the `.command` script was `0755`. Now: slim config
+  `chmod 0600`, `.command` `0700`, and the slim config copies only the env keys
+  a slim child needs (`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONHOME` + `THREADKEEPER_*`),
+  dropping host secrets. (Spool-file retention/cleanup is #42.)
 - `shadow_review` + `dialectic_miner` advance a single global `created_at`
   high-water cursor, so **late/out-of-order ingested** messages (resumed
   sessions, newly-installed adapters, post-downtime backfill) that land below

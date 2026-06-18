@@ -96,6 +96,90 @@ def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeyp
     assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
 
 
+def test_slim_config_is_owner_only_and_minimizes_env(tmp_path, monkeypatch):
+    """#68: the slim config must be 0600 (not group/other readable) and must
+    NOT carry host env keys the child doesn't need — e.g. a secret a user
+    added to their ~/.claude.json thread-keeper entry."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".claude.json").write_text(json.dumps({
+        "mcpServers": {
+            "thread-keeper": {
+                "type": "stdio",
+                "command": "/path/to/python",
+                "args": ["-m", "threadkeeper.server"],
+                "env": {
+                    "PYTHONPATH": "/path/to/repo",
+                    "THREADKEEPER_TZ": "Europe/Kyiv",
+                    # secrets a user may have on their host MCP entry — must
+                    # never travel into the slim config.
+                    "OPENAI_API_KEY": "sk-secret-should-be-dropped",
+                    "AWS_SECRET_ACCESS_KEY": "also-secret",
+                },
+            },
+        }
+    }))
+
+    log_dir = tmp_path / "logs"
+    monkeypatch.setenv("THREADKEEPER_TASK_LOG_DIR", str(log_dir))
+
+    import sys
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+    from threadkeeper.tools.spawn import _build_slim_mcp_config
+
+    slim_path = _build_slim_mcp_config("tk_perm01", {
+        "THREADKEEPER_FORCE_CID": _FAKE_CID,
+        "THREADKEEPER_NO_EMBEDDINGS": "1",
+    })
+    assert slim_path is not None
+
+    # File mode: owner-only, no group/other bits.
+    mode = slim_path.stat().st_mode & 0o777
+    assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+    env = json.loads(slim_path.read_text())["mcpServers"]["thread-keeper"]["env"]
+    # Needed keys survive: package discovery + thread-keeper knobs + overrides.
+    assert env["PYTHONPATH"] == "/path/to/repo"
+    assert env["THREADKEEPER_TZ"] == "Europe/Kyiv"
+    assert env["THREADKEEPER_FORCE_CID"] == _FAKE_CID
+    assert env["THREADKEEPER_NO_EMBEDDINGS"] == "1"
+    # Secrets dropped.
+    assert "OPENAI_API_KEY" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
+    """#68: the visible-spawn `.command` script `export`s the child env and
+    must be 0700 (owner-only), not the world-readable/executable 0755."""
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    # Don't require a real claude binary, and never actually launch Terminal.
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/usr/bin/true")
+    # Pre-seed the active-CLI cache so spawn() resolves to the claude path
+    # without shelling out to `ps` (which would otherwise hit the patched
+    # Popen below). _detect_self_cid short-circuits on the pinned FORCE_CID.
+    monkeypatch.setattr(pkg["identity"], "_active_cli", "claude")
+
+    class _FakePopen:
+        def __init__(self, *a, **k):
+            self.pid = 4321
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
+
+    spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
+    out = spawn_fn(prompt="do a thing", visible=True)
+    assert out.startswith("ok task="), out
+
+    cmd_files = list(spawn_mod.TASK_LOG_DIR.glob("*.command"))
+    assert len(cmd_files) == 1, cmd_files
+    mode = cmd_files[0].stat().st_mode & 0o777
+    assert mode == 0o700, f"expected 0700, got {oct(mode)}"
+
+
 def test_spawn_slim_falls_back_to_full_config_when_unable(tmp_path, monkeypatch):
     """If _build_slim_mcp_config returns None (e.g. write error), spawn()
     must NOT crash — it just runs without slim flags."""
