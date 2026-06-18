@@ -36,6 +36,31 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Offline eval harness for learning-loop decision quality (#72).** The
+  quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
+  each make accept/reject/materialize calls, but there was no way to measure
+  whether those calls were good — the codebase had decision telemetry but no
+  labeled set and no precision/recall. New `threadkeeper/eval/` package
+  (`python -m threadkeeper.eval`) replays the daemon rubrics over a small,
+  hand-labeled, **anonymized** fixture set (`threadkeeper/eval/fixtures/` —
+  dialog windows + expected materialize/skip, candidate snippets + expected
+  accept/reject, skill bodies + a human quality label) and reports
+  **precision / recall / F1** for the shadow-review and candidate decisions plus
+  a calibrated **judge↔human agreement** (accuracy + Cohen's kappa) for the
+  open-ended "is this skill high quality" question, surfaced with the same
+  `PASS/PARTIAL/FAIL` verdict as `verify_ingest`. The default **rubric** judge
+  is deterministic and offline (no API key): each fixture's human-tagged rubric
+  *signals* only count when their anchor phrase is still present in the **live**
+  daemon prompt section, so editing a rubric (dropping a criterion) deactivates
+  those signals and **moves the metric** — a regression CI catches against the
+  golden baseline. `--judge llm` replays the *actual* prompts over the Anthropic
+  Messages API (urllib, no SDK) for the high-fidelity measurement when a key is
+  set. Fixtures are fully synthetic (a test asserts no secrets/private paths);
+  `--fixtures-dir` scores a custom labeled set. Modeled on the evidently.ai
+  LLM-as-a-judge guidance (calibrate judge↔human agreement before trusting
+  scores) and complementary to the memory-recall harness (#71). New
+  `tests/test_eval_harness.py`; ARCHITECTURE gets an "Evaluating the learning
+  loop" section.
 - **Concepts store gets an eviction/consolidation path + a live evidence signal
   (#75).** The `concepts` table was write-only / grow-only: no
   remove/consolidate/confidence tool, auto-registered entries piling up, and
