@@ -9,6 +9,21 @@ version bumps follow semver per the policy in
 
 ### Security
 
+- **Lock down spawn artifacts + minimize embedded env (#68).** The per-task
+  **slim MCP config** (`slim-mcp-<task_id>.json`) was written with the default
+  umask (typically `0644`, world-readable) and embedded the host
+  `thread-keeper` MCP `env` block **verbatim** — so any secret a user kept on
+  that entry travelled into the weakest-permission spawn artifact. The visible
+  `.command` script was `0755` (world-readable/executable) even though it
+  `export`s the child's env. Now: the slim config is `chmod 0600` and the
+  `.command` script `0700` on creation (parity with the already-locked-down
+  `0600` stdin spool file), and the slim config copies **only** the host env
+  keys a slim child actually needs to start its server (package/runtime
+  discovery — `PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONHOME` — plus `THREADKEEPER_*`
+  knobs); every other host key (API keys, tokens) is dropped. Run-specific
+  values still arrive via the existing per-spawn env overrides.
+  (Spool-file retention/cleanup remains #42; broader `~/.threadkeeper` perms
+  are #21.)
 - **Injection fence + provenance gate for the learning loops (#76).** The
   learning loops synthesize **auto-loaded** skill / lesson / user-model
   artifacts from **raw observed dialog** — which routinely echoes content the

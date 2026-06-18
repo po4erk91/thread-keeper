@@ -258,6 +258,16 @@ ROLE_PROMPTS: dict[str, str] = {
 }
 
 
+# Env keys from the host MCP `env` block that a slim child genuinely needs
+# to start its thread-keeper server. Everything else — arbitrary
+# secret-bearing keys a user may have added to their host `thread-keeper`
+# MCP entry — is dropped so it never lands in the slim config (#68). The
+# transient run values the child actually needs arrive via env_overrides;
+# these cover package/runtime discovery plus thread-keeper's own knobs.
+_SLIM_MCP_ENV_ALLOW = frozenset({"PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME"})
+_SLIM_MCP_ENV_ALLOW_PREFIXES = ("THREADKEEPER_",)
+
+
 def _build_slim_mcp_config(
     task_id: str,
     env_overrides: Optional[dict[str, str]] = None,
@@ -300,7 +310,17 @@ def _build_slim_mcp_config(
         }
     else:
         mp_entry = dict(mp_entry)
-    env = dict(mp_entry.get("env") or {})
+    # Minimize the embedded env (#68): the host `env` block is copied
+    # verbatim from ~/.claude.json and may carry secrets the slim child
+    # does NOT need. Keep only package/runtime-discovery keys plus
+    # thread-keeper's own config knobs; the run-specific values the child
+    # actually needs arrive via env_overrides. Everything else is dropped.
+    host_env = dict(mp_entry.get("env") or {})
+    env = {
+        k: v for k, v in host_env.items()
+        if k in _SLIM_MCP_ENV_ALLOW
+        or any(k.startswith(p) for p in _SLIM_MCP_ENV_ALLOW_PREFIXES)
+    }
     if env_overrides:
         env.update(env_overrides)
     mp_entry["env"] = env
@@ -310,6 +330,10 @@ def _build_slim_mcp_config(
                         indent=2),
             encoding="utf-8",
         )
+        # This file embeds the MCP server env — lock it down to owner-only,
+        # parity with the 0600 stdin spool file (#68). Not group/other
+        # readable.
+        slim_path.chmod(0o600)
     except OSError:
         return None
     return slim_path
@@ -680,7 +704,11 @@ OSA
 exit $rc
 """
             script_path.write_text(script)
-            script_path.chmod(0o755)
+            # The script `export`s the child's env (FORCE_CID, write-origin,
+            # etc.) and is run by Terminal.app as the current user, so it
+            # only needs owner rwx — not the world-readable/executable 0755
+            # it used to get. Parity with the 0600 stdin file (#68).
+            script_path.chmod(0o700)
             try:
                 subprocess.Popen(
                     ["open", "-a", "Terminal", str(script_path)],
