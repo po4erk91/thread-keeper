@@ -1,0 +1,89 @@
+{
+  "_doc": "Hand-labeled, anonymized fixtures for the shadow-review decision (issue #72). Each item is a short dialog window with a human MATERIALIZE/SKIP label and the rubric signal classes a human reader saw in it. Fully synthetic — no real paths, secrets, or private content. The offline 'rubric' judge votes via these signals, coupled to the live SHADOW_REVIEW_PROMPT; the 'llm' judge replays the real prompt over the dialog.",
+  "items": [
+    {
+      "id": "shadow-policy-1",
+      "type": "stated_policy",
+      "dialog": "[user] From now on, always run the schema-diff check before opening a deploy PR. Treat that as a standing rule, not a one-time thing.\n[assistant] Got it — I'll run the schema-diff check first on every deploy from now on.",
+      "signals": ["stated_policy"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-policy-2",
+      "type": "stated_policy",
+      "dialog": "[user] Prefer the streaming parser over the buffered one whenever a payload can exceed a few megabytes. Make that the default choice.\n[assistant] Understood, I'll default to the streaming parser for large payloads.",
+      "signals": ["stated_policy"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-debug-1",
+      "type": "debugging_insight",
+      "dialog": "[assistant] The flaky test wasn't a timing issue. The pattern is: a stale element handle is cached after the list re-renders, so any later tap targets the old node. The general fix is to re-query the handle after any list mutation, not to add sleeps.\n[user] yes that's the real root cause, good.",
+      "signals": ["debugging_insight"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-debug-2",
+      "type": "debugging_insight",
+      "dialog": "[assistant] Three bugs were compounding: a cache that wasn't invalidated, an overlay stealing z-order, and a fixture mismatch. The generalizable rule is to bisect compounding failures one layer at a time before assuming a single cause.\n[user] exactly, that's worth remembering.",
+      "signals": ["debugging_insight"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-correct-1",
+      "type": "corrected_skill",
+      "dialog": "[user] No — the existing note about that API is wrong. The retry header is honored on the second call, not the first. Update what we have.\n[assistant] Thanks for the correction; the prior guidance was incomplete, I'll fix it.",
+      "signals": ["corrected_skill"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-recovery-1",
+      "type": "recovery_procedure",
+      "dialog": "[assistant] To get the local emulator unstuck reliably: reset the proxy state, kill any zombie helper process, then wait for the port to free before relaunching. That sequence recovers it every time.\n[user] good, that procedure has worked for me too.",
+      "signals": ["recovery_procedure"],
+      "label": "materialize"
+    },
+    {
+      "id": "shadow-oneoff-1",
+      "type": "one_off_task",
+      "dialog": "[user] Summarize the changes in this one pull request for me.\n[assistant] Sure — it renames two functions and adds a test. Done.",
+      "signals": ["one_off_task"],
+      "label": "skip"
+    },
+    {
+      "id": "shadow-oneoff-2",
+      "type": "one_off_task",
+      "dialog": "[user] Can you analyze this CSV and tell me the row count by category?\n[assistant] There are 412 rows across 6 categories; here's the breakdown.",
+      "signals": ["one_off_task"],
+      "label": "skip"
+    },
+    {
+      "id": "shadow-confusion-1",
+      "type": "transient_confusion",
+      "dialog": "[assistant] Hm, the import looks broken... wait, I was in the wrong directory. It resolves fine from the project root. Never mind.",
+      "signals": ["transient_confusion"],
+      "label": "skip"
+    },
+    {
+      "id": "shadow-whatis-1",
+      "type": "what_is_question",
+      "dialog": "[user] What does the term 'idempotent' mean again?\n[assistant] It means applying the operation multiple times has the same effect as applying it once.",
+      "signals": ["what_is_question"],
+      "label": "skip"
+    },
+    {
+      "id": "shadow-summary-1",
+      "type": "self_summary",
+      "dialog": "[assistant] Great work by me — to recap what just happened, I read three files, made an edit, and the test passed. Nice and clean.",
+      "signals": ["self_summary"],
+      "label": "skip"
+    },
+    {
+      "id": "shadow-transient-env-1",
+      "type": "transient_env_error",
+      "dialog": "[assistant] The command failed with 'package not found'. After a quick reinstall it worked. Nothing else changed.\n[user] ok cool.",
+      "signals": ["transient_env_error"],
+      "label": "skip"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "_doc": "Hand-labeled, anonymized fixtures for the open-ended 'is this a high-quality skill?' judgment (issue #72). Each item is a synthetic SKILL.md (name + frontmatter description + body) with a human HIGH/LOW quality label. The harness reports judge-vs-human AGREEMENT (accuracy + Cohen's kappa) so a drifting judge is visible — the offline judge is a deterministic heuristic, the 'llm' judge grades quality with a model. Fully synthetic — no real paths, secrets, or private content.",
+  "items": [
+    {
+      "id": "q-good-state-transition",
+      "name": "verify-state-transition-not-existence",
+      "description": "Use when asserting a result after navigating between screens, to avoid false positives where the asserted label exists on both the source and destination screen.",
+      "body": "## Rule\nAssert that the destination state actually changed, not merely that a label exists. When a flow moves between screens, the success label is often present on the source screen too, so an existence check passes even when the action never happened. Assert on a destination-only marker, or verify the source marker is gone.",
+      "label": "high"
+    },
+    {
+      "id": "q-good-cross-language",
+      "name": "cross-language-matching-cosine-is-sensitive",
+      "description": "Use when a matching, dedup, or clustering pipeline silently misses same-topic items in another language.",
+      "body": "## Rule\nEmbedding cosine over short titles is language-sensitive: same-topic items in different languages score below typical thresholds, so a cosine-only prefilter drops cross-language matches. Mirror a language-independent signal such as shared tags or entities alongside the embedding score.",
+      "label": "high"
+    },
+    {
+      "id": "q-good-recovery",
+      "name": "flaky-emulator-recovery-procedure",
+      "description": "Use before starting a test runner against a local emulator that intermittently hangs.",
+      "body": "## Procedure\nReset the proxy state, kill any zombie helper process, then wait for the port to free before relaunching. Make the reset the default and opt out for speed, so leftover state can never produce a false pass or fail.",
+      "label": "high"
+    },
+    {
+      "id": "q-good-verify-wheel",
+      "name": "release-wheel-asset-verification",
+      "description": "Use when releasing a packaged CLI that depends on bundled non-Python assets, to avoid shipping a wheel that omits them.",
+      "body": "## Rule\nVerify the built wheel and a clean installed artifact actually contain and resolve the bundled assets, instead of trusting the git tag or the source tree. A polluted local environment can mask a missing asset that breaks a fresh install.",
+      "label": "high"
+    },
+    {
+      "id": "q-good-fixture-policy",
+      "name": "make-ad-hoc-fixture-steps-explicit",
+      "description": "Use when an E2E fixture has optional or environment-dependent setup steps.",
+      "body": "## Rule\nMake optional and ad-hoc fixture steps explicit in the scenario rather than relying on ambient state. Implicit setup is the most common source of runs that pass on one machine and fail on another.",
+      "label": "high"
+    },
+    {
+      "id": "q-bad-negclaim",
+      "name": "browser-tools-status",
+      "description": "Notes about the browser tools.",
+      "body": "The browser tools do not work and cannot be used. Do not attempt to call them in any session.",
+      "label": "low"
+    },
+    {
+      "id": "q-bad-incident-pr",
+      "name": "fix-login-redirect-pr-1234",
+      "description": "How we fixed the login redirect in that one change set.",
+      "body": "We edited the redirect handler and the test, and it passed. This documents that specific change for later reference if anyone asks about it.",
+      "label": "low"
+    },
+    {
+      "id": "q-bad-nodesc",
+      "name": "misc-helper",
+      "description": "",
+      "body": "Some assorted helper guidance with no trigger description, so nothing will ever auto-load this skill when it would actually be relevant.",
+      "label": "low"
+    },
+    {
+      "id": "q-bad-thin",
+      "name": "remember-this",
+      "description": "Use sometimes.",
+      "body": "Just remember it.",
+      "label": "low"
+    },
+    {
+      "id": "q-bad-incident-today",
+      "name": "todays-deploy-notes",
+      "description": "Notes about the deploy we ran today and the hiccup we saw.",
+      "body": "The deploy needed a manual retry once and then succeeded; capturing the play-by-play here in case it comes up again.",
+      "label": "low"
+    }
+  ]
+}

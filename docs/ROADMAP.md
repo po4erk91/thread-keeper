@@ -430,6 +430,24 @@ verified at the cited file:line, deduplicated against the issues above):
   corpus is a golden baseline; `--db` evaluates a snapshot **read-only** (copied
   to temp). Use the temporal-reasoning + knowledge-update axes as the
   optimization target for #27/#28.
+
+- ✅ DONE (#72). Learning-loop **decision-quality** eval harness. The
+  quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
+  make accept/reject/materialize calls with decision telemetry but no labeled
+  set and no precision/recall — nothing scored how often the hard-coded
+  class-vs-incident rubric was right. New `threadkeeper/eval/`
+  (`python -m threadkeeper.eval`) replays the *current* daemon rubrics over a
+  small hand-labeled, anonymized fixture set and reports precision/recall/F1 for
+  the shadow-review and candidate decisions plus a calibrated judge↔human
+  agreement (accuracy + Cohen's kappa) on the open-ended "is this skill high
+  quality" question, with a `verify_ingest`-style PASS/PARTIAL/FAIL verdict on
+  harness readiness. Default **rubric** judge is offline/deterministic and
+  section-coupled to the live prompt, so editing a rubric *moves the metric*
+  (caught in CI against the golden baseline); `--judge llm` replays the actual
+  prompts for the high-fidelity number. This gives the ROADMAP's own open
+  questions — **extract precision re-measurement** and **"do we even need
+  tiers — metric not collected"** — a harness to measure against; point
+  `--fixtures-dir` at a production-derived labeled set to collect those numbers.
 - MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
   structured output across the tool registry (independently confirmed; canonical
   issue #67) — gives hosts a mechanical read-vs-write signal and composes with
