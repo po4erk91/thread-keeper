@@ -438,6 +438,55 @@ def test_run_curator_pass_includes_concepts_in_inventory(
     assert "asymmetric in-band reactivity" in prompt
 
 
+def test_destructive_toolset_includes_concept_manage(tmp_path, monkeypatch):
+    """In destructive mode the curator child can apply its own
+    CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations: concept_manage is in
+    the allowed toolset and the prompt instructs it how (#75). Before #75 the
+    concept rubric was permanently advisory because no concept tool was wired."""
+    monkeypatch.setenv("THREADKEEPER_CURATOR_DESTRUCTIVE", "1")
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="a", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="b", body="b2", source="shadow")
+    conn = pkg["db"].get_db()
+    _add_concept(conn, "Cdup", "a near-duplicate idea", confidence="low")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
+    )
+    pkg["curator"].run_curator_pass(force=True)
+    kw = captured[0]
+    allowed = kw["extra_allowed_tools"]
+    assert "concept_manage" in allowed
+    assert "list_concepts" in allowed
+    assert "expand_concept" in allowed
+    # Prompt tells the child how to apply concept recommendations.
+    assert "CONSOLIDATE_CONCEPT" in kw["prompt"]
+    assert "PRUNE_CONCEPT" in kw["prompt"]
+    assert "concept_manage" in kw["prompt"]
+
+
+def test_advisory_toolset_excludes_concept_manage(tmp_path, monkeypatch):
+    """Advisory mode is read-only: concept_manage must NOT be granted, though
+    the read-only concept tools may be (so the child can inspect descriptions)."""
+    monkeypatch.setenv("THREADKEEPER_CURATOR_DESTRUCTIVE", "0")
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="a", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="b", body="b2", source="shadow")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
+    )
+    pkg["curator"].run_curator_pass(force=True)
+    allowed = captured[0]["extra_allowed_tools"]
+    assert "concept_manage" not in allowed
+
+
 def test_concepts_alone_do_not_trigger_pass(tmp_path, monkeypatch):
     """Concepts enrich the review but don't lower the lesson threshold —
     a pass still requires CURATOR_MIN_LESSONS lessons."""

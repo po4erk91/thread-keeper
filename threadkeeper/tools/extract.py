@@ -384,15 +384,27 @@ def accept_candidate(id: int, target_kind: str = "",
         )
         placed = f"note id={cur.lastrowid} thread={tid or '-'}"
     elif kind == "concept":
-        pid = gen_concept_id(conn)
-        cid = _detect_self_cid()
-        conn.execute(
-            "INSERT INTO concepts (id, description, triangulation_notes, "
-            "confidence, source_thread, registered_by_cid, registered_at, "
-            "last_evidence_at) VALUES (?,?,?,?,?,?,?,?)",
-            (pid, content, r["rationale"], "low", tid, cid, now, now),
-        )
-        placed = f"concept id={pid}"
+        # Dedup-on-write: a re-surfaced equivalent invariant corroborates the
+        # existing concept (bumps last_evidence_at) rather than inserting a
+        # near-duplicate row — same gate as register_concept.
+        from .concepts import _find_duplicate_concept, _bump_concept_evidence
+        dup = _find_duplicate_concept(conn, content)
+        if dup:
+            _bump_concept_evidence(conn, dup, "low", r["rationale"])
+            placed = f"concept id={dup} bumped=1"
+        else:
+            pid = gen_concept_id(conn)
+            cid = _detect_self_cid()
+            emb = _embed(content)
+            conn.execute(
+                "INSERT INTO concepts (id, description, triangulation_notes, "
+                "confidence, source_thread, registered_by_cid, registered_at, "
+                "last_evidence_at, embedding, embed_backend) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (pid, content, r["rationale"], "low", tid, cid, now, now,
+                 emb, embed_tag(emb)),
+            )
+            placed = f"concept id={pid}"
     elif kind == "distill":
         pid = gen_distill_id(conn)
         cid = _detect_self_cid()

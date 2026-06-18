@@ -666,12 +666,15 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         for r in unknown:
             out.append(f"  {r['category']} (never_tested)")
 
-    # ── concepts (high-confidence, recent) ─────────────────────────────────
+    # ── concepts (high-confidence, recently corroborated) ──────────────────
+    # Order by last_evidence_at (falling back to registration time for rows
+    # never re-corroborated) so the brief surfaces concepts by real
+    # corroboration recency, not just when they were first registered.
     try:
         cs = conn.execute(
             "SELECT id, description FROM concepts "
             "WHERE confidence='high' "
-            "ORDER BY registered_at DESC LIMIT 3"
+            "ORDER BY COALESCE(last_evidence_at, registered_at) DESC LIMIT 3"
         ).fetchall()
     except sqlite3.OperationalError:
         cs = []

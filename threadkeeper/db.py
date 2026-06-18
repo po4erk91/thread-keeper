@@ -541,6 +541,13 @@ def get_db() -> sqlite3.Connection:
         "ALTER TABLE evolve ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
         "ALTER TABLE evolve ADD COLUMN reviewed_at INTEGER",
         "ALTER TABLE evolve ADD COLUMN review_reason TEXT",
+        # Concept dedup-on-write: store the description embedding so the
+        # register/extract path can re-corroborate an equivalent invariant
+        # (cosine over `description`) and bump last_evidence_at instead of
+        # inserting a near-duplicate row. embed_backend tags the vector the
+        # same way notes/dialog_messages are tagged (NULL = no embedding).
+        "ALTER TABLE concepts ADD COLUMN embedding BLOB",
+        "ALTER TABLE concepts ADD COLUMN embed_backend TEXT",
     ):
         try:
             conn.execute(ddl)

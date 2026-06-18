@@ -54,7 +54,7 @@ threadkeeper/
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status
     ├── lessons.py     lesson_append/list/get
-    ├── concepts.py    register/list/expand
+    ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
     ├── pickup.py      pickup_candidates/claim/release
@@ -272,6 +272,19 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   thread-keeper itself it may call `evolve_format(...)` and record an
   `EVOLVE_CANDIDATE:` line in the report. That candidate is input for
   `evolve_reviewer`, not something the Curator implements directly.
+- **concepts lifecycle** — the `concepts` store is no longer write-only.
+  `register_concept` / `accept_candidate(kind='concept')` dedup on write: a
+  re-surfaced equivalent invariant (description cosine ≥ 0.85, with a
+  normalized-string fallback when embeddings are off) corroborates the existing
+  row — bumping `last_evidence_at` to now and raising confidence to
+  `max(existing, incoming)` — instead of inserting a near-duplicate. That keeps
+  `last_evidence_at` a live corroboration-recency signal, which the brief orders
+  on and the Curator's concept rubric reads. The Curator (in destructive mode)
+  and the curator-report applier apply their `CONSOLIDATE_CONCEPT` /
+  `PRUNE_CONCEPT` / confidence-review recommendations via the `concept_manage`
+  tool (`remove` / `consolidate` / `set_confidence`). Concepts are all
+  system-generated, so — unlike `lesson_remove` — `concept_manage` needs no
+  `force` guard; every concept is curatable.
 
 Autonomous learning daemons only run in foreground parent processes. Spawned
 children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
@@ -694,7 +707,7 @@ auto-generates JSON-Schema from annotations.
 | extract | 4 | extract_recent, review_candidates, accept_candidate, reject_candidate |
 | distill | 4 | distill, vote_distill, pending_distillates, export_distillates |
 | dialog | 3 | dialog_search, open_dialog_window, ingest |
-| concepts | 3 | register_concept, list_concepts, expand_concept |
+| concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
 | lessons | 4 | lesson_append, lesson_list, lesson_get, lesson_remove |

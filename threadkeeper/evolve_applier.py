@@ -177,6 +177,9 @@ DO, strictly in order:
    - For every skill you might patch/delete, read its current SKILL.md first.
      Canonical skills live under the configured skills root; if a Read fails,
      skip that skill rather than guessing.
+   - If the report has concept recommendations, call list_concepts(k=200) and
+     expand_concept(<id>) for any concept you might consolidate/prune so you act
+     on the current store, not the snapshot baked into the report text.
 
 2. Apply only LOW-RISK, report-backed operations:
    - PATCH a skill only when the report gives a concrete fix and you can make
@@ -186,13 +189,21 @@ DO, strictly in order:
      lessons whose content you already carried over.
    - PRUNE only clear background/system false positives, stale duplicate
      lessons, or superseded non-protected skills. Skip anything ambiguous.
+   - CONSOLIDATE_CONCEPT / PRUNE_CONCEPT: apply clear concept recommendations
+     via concept_manage. CONSOLIDATE_CONCEPT → concept_manage(
+     action='consolidate', concept_id=<kept-id>, merge_ids='<id-a>,<id-b>').
+     PRUNE_CONCEPT → concept_manage(action='remove', concept_id=<id>). Use
+     expand_concept first if you need the full description to judge a merge.
 
 3. Hard safety gates:
    - NEVER touch entries marked [PROTECTED] in the report.
    - NEVER touch lessons whose source is foreground or user.
    - NEVER delete or patch skills with origin=foreground, pinned=1, or
      tier=validated in skill_list output.
-   - NEVER mutate concepts for now; report concept recommendations as skipped.
+   - Concepts are ALL system-generated (no foreground/pinned concept class), so
+     you MAY apply clear CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via
+     concept_manage. Skip ambiguous merges and any confidence change you are not
+     confident about.
    - Do not use Bash, git, gh, Edit, or raw file writes. Use only the MCP memory
      tools plus Read. This is live memory maintenance, not a code PR.
 
@@ -1420,6 +1431,9 @@ def apply_curator_report(report_path: str = "") -> str:
                     "mcp__thread-keeper__lesson_remove,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__skill_manage,"
+                    "mcp__thread-keeper__list_concepts,"
+                    "mcp__thread-keeper__expand_concept,"
+                    "mcp__thread-keeper__concept_manage,"
                     "mcp__thread-keeper__evolve_mark_curator_report_applied,"
                     "mcp__thread-keeper__broadcast"
                 ),
