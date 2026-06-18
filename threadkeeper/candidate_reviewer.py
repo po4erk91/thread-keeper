@@ -136,8 +136,6 @@ OUTPUT — write a one-paragraph summary at the end of your run:
    M notes, V verbatim, R rejected, S left-pending. Reason for any
    created skill: ..."
 
-INVENTORY
-=========
 """
 
 
@@ -350,10 +348,15 @@ def run_review_pass(force: bool = False) -> str:
             return f"below_threshold n={n_pending}"
 
         active_skills = _active_skills_dump(conn)
+        # The harvested candidate `content` snippets are untrusted observed
+        # dialog (issue #76) — fence them as data. The active-skills list
+        # is our own DB state, so it stays outside the fence.
+        from .review_prompts import DATA_FENCE, fence_observed
         full_prompt = (
             CANDIDATE_REVIEW_PROMPT
+            + DATA_FENCE + "\n\n"
             + active_skills
-            + inventory
+            + fence_observed(inventory, "pending candidate snippets")
         )
 
         from .tools.spawn import spawn  # type: ignore
@@ -366,14 +369,16 @@ def run_review_pass(force: bool = False) -> str:
                 role="candidate_reviewer",
                 write_origin="candidate_review",
                 slim=True,
+                # De-privileged (issue #76): path-scoped skill/lesson/
+                # candidate tools only — no bare Read/Write. Reference
+                # files go through skill_manage(action='write_file').
                 extra_allowed_tools=(
                     "mcp__thread-keeper__skill_manage,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__accept_candidate,"
                     "mcp__thread-keeper__reject_candidate,"
                     "mcp__thread-keeper__lesson_append,"
-                    "mcp__thread-keeper__mark_skill_materialized,"
-                    "Read,Write"
+                    "mcp__thread-keeper__mark_skill_materialized"
                 ),
             )
         except Exception as e:

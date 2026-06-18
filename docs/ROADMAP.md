@@ -303,6 +303,21 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   into them and nothing mechanically redacts issue/PR bodies. De-privilege the
   appliers, fence injected content as data, sanitize bodies for paths/secrets,
   and role-gate the dangerous spawn mode. (#22) Scope: S–M.
+- ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
+  GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
+  user-model artifacts with no injection fence and no provenance trust-tiering —
+  a durable memory-poisoning channel (a poisoned `SKILL.md` auto-triggers on
+  every future `SessionStart`, across every CLI). Extended #22's "fence injected
+  content as data" principle to these loops: every synthesis prompt
+  (`shadow_review`, `candidate_reviewer`, the three `review_prompts` templates,
+  the dialectic validator) wraps the observed span in an explicit
+  `<observed_dialog>…</observed_dialog>` data fence; stated-policy rules are
+  tiered to genuine foreground `role='user'` turns; the shadow / candidate /
+  close-thread children are de-privileged (no bare `Read`/`Write`); loop-authored
+  skills stay distinguishable by `created_by_origin` for an auto-load gate / #26
+  elicitation; and a write-time screen refuses loop-origin bodies with
+  imperative-override / remote-exec idioms. `SECURITY.md` documents the trust
+  boundary. Scope was S–M.
 
 **Evolve issue-flow reliability.** The applier posts a claim comment *before*
 spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
