@@ -225,10 +225,28 @@ line.
 Going forward: keep in sync when the set of tools or daemons changes.
 Scope: ongoing.
 
-**Curator policy tuning.** `curator_run` currently archives by a simple
-heuristic (time + absence of patches). Unclear whether this loses useful
-skills. Need a dry-run mode with a dump of "what would be archived" for
-review. Scope: S.
+**Curator policy tuning.** ✅ DONE — superseded the old time-based archive
+heuristic. `curator_run` now spawns a slim child that grades every lesson +
+recently-active skill (and any concepts) against an explicit rubric
+(KEEP / PATCH / CONSOLIDATE / PRUNE), writes an auditable
+`REPORT-<isodate>.md`, and — **destructive-by-default** — applies its own
+PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove`
+(always without `force`, so user/foreground lessons are refused) /
+`skill_manage`. `[PROTECTED]` (pinned / foreground / user) entries are never
+mutated, and the pass is single-flight across processes (a non-blocking
+`fcntl.flock` pidfile plus a running-children check). The "dry-run mode with
+a dump of what would be archived" this item asked for already exists: set
+`THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
+
+Open follow-ups (issue-backed): restorable deletion / pre-mutation snapshot
+before autonomous prune (#40, #41, #52); a write lock for the unlocked
+`lessons.md` read-modify-write now that the curator and shadow_review both
+mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
+full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
+landed but the argv bound has not (#24); debouncing passes on unchanged
+inventories (#35); and making the curator's `PRUNE_CONCEPT` /
+`CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
+tool exists today (#75). Scope: S–M each.
 
 **Concepts store lifecycle.** ✅ DONE (#75). The `concepts` table was
 write-only / grow-only: no remove/consolidate/confidence tool, auto-registered
@@ -325,6 +343,159 @@ Scope: S–M each.
 Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
 (#18), auto-update self-restart with no smoke-check/rollback (#19), and
 Antigravity transcript ingest not yet implemented (#20).
+
+Follow-up gaps from the 2026-06-17 audit:
+- Semantic lesson dedup at write time (#34).
+- Curator pass debounce / unchanged-inventory coalescing (#35).
+- Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
+- Transcript secret scrubbing before persistence into `dialog_messages` /
+  `dialog_fts` (#37).
+- Shared GitHub API budget/backoff across roadmap automation (#38).
+- Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
+  the autonomous child now prunes/consolidates lessons + skills in place with no
+  pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
+  records the slug only; `lessons.md` is not version-controlled), and no
+  destructive-action telemetry in `mp_dashboard`. Add a snapshot/restore safety
+  net + structured prune/consolidate counts (#40).
+- Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool files — every
+  spawn leaves a permanent `tasks` row (full `prompt`) plus
+  `.log`/`.stdin.txt`/`.command` files that nothing prunes; `tasks.prompt`
+  holds curator/issue/audit content indefinitely and the default
+  `/tmp/thread-keeper-tasks` spool sits outside the `~/.threadkeeper`
+  perimeter that #21 hardens (#42).
+- Git working-tree safety for evolve roadmap automation: dirty-tree guard
+  (mirroring `auto_update`'s `skipped_dirty_checkout`), branch-from-clean-`main`,
+  and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
+  PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
+  with unrelated working-tree WIP (#43).
+- Auto-update payload integrity/provenance: the on-by-default daily pip/git
+  self-update installs and runs new code with **no version pin, hash, or PyPI
+  attestation/signed-tag verification**, then restarts on it. A compromised
+  release auto-propagates to every install within ~24h. Distinct from #19
+  (reliability smoke-check/rollback — a malicious-but-importable release passes
+  that) and #22 (GitHub-writing daemons). Verify provenance before upgrade and
+  document auto-update as standing consent to run maintainer code (#44).
+
+Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
+verified at the cited file:line, deduplicated against the issues above):
+- Extract H4 paraphrase-cluster path re-harvests **rejected** candidates
+  forever — its inline dedup checks `status IN ('pending','accepted')` only,
+  omitting `'rejected'`, so a rejected cluster reappears on the next
+  overlapping window. Same incident class as the documented #157/#158
+  prod loop, on the one heuristic path that never got the `_candidate_exists`
+  fix (#62).
+- Author-trust boundary on autonomous issue pickup: the applier fetches no
+  `authorAssociation` and treats every open issue on this **public** repo as
+  backlog for a `bypassPermissions` child; separately, the Python-generated
+  claim comment leaks hostname/PID/git-rev even though an opaque
+  `_host_branch_slug()` already exists. Gate pickup by author association and
+  redact the claim body. Complements #22 (fencing) and #50 (skip-label) (#63).
+- Spawn budget is blind to **visible (pid=0)** children: their real RSS is
+  never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
+  never resolves pins its full-estimate budget share forever. (The
+  admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.) (#64).
+- Spawn **slim MCP config** is written world-readable with no `chmod` and
+  embeds the host server `env` block, while the stdin prompt file is correctly
+  `0600` and the `.command` script is `0755`. Restrict modes + minimize the
+  embedded env. (Spool-file retention/cleanup is #42.) (#68).
+- `shadow_review` + `dialectic_miner` advance a single global `created_at`
+  high-water cursor, so **late/out-of-order ingested** messages (resumed
+  sessions, newly-installed adapters, post-downtime backfill) that land below
+  the cursor are evaluated by neither loop. Use a grace lookback or an
+  ingest-order watermark instead of the transcript timestamp (#69).
+- Memory **recall/abstention** eval harness (LongMemEval-style QA + abstention
+  + tokens-per-retrieval) to give the lessons-decay (#27) and bi-temporal
+  (#28) work a number to optimize against — complementary to the learning-loop
+  **decision-quality** harness (#72) (#71).
+- MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
+  structured output across the tool registry (independently confirmed; canonical
+  issue #67) — gives hosts a mechanical read-vs-write signal and composes with
+  #22 and the elicitation work in #26.
+- **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
+  `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
+  **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /
+  user-model claims with **no injection fence and no provenance trust-tiering**:
+  `_collect_window` keeps all `user`/`assistant`/`[thinking]` content (incl.
+  untrusted text the agent read from web/files/paste), the review prompts carry a
+  *quality* fence (`ANTI_CAPTURE`) but no "treat observed dialog as data, not
+  instructions" boundary, and the writer child runs `permission_mode="auto"` with
+  bare `Write` allow-listed. A poisoned skill auto-triggers on every future
+  SessionStart across every CLI. Fence observed content as data, trust-tier
+  policy capture to genuine user turns, de-privilege the writer (drop bare
+  `Write`), and gate auto-load of loop-minted skills (compose with #26). Distinct
+  from #22 (GitHub-writing daemons; redactable public sink) and #37 (secret
+  scrub, outbound) (#76).
+- Concepts store is **write-only / grow-only**: no remove/consolidate/
+  confidence tool exists (`tools/concepts.py` has only register/list/expand),
+  concepts are auto-registered (`accept_candidate kind='concept'` at conf=low +
+  agent `register_concept`) so the store grows unbounded, and `last_evidence_at`
+  is set once at registration and **never bumped** (only `user_dialectic` bumps
+  it via `dialectic.py`) — so the curator's concept-prune rubric (`conf=low AND
+  last_evidence >30d`) and the brief's concept ordering both degenerate to pure
+  registration-age. The curator's destructive toolset carries no concept tool,
+  and the curator-report applier hard-codes "NEVER mutate concepts for now", so
+  the `PRUNE_CONCEPT`/`CONSOLIDATE_CONCEPT` rubric is unappliable by design.
+  Distinct from the lessons-only decay item (#27) (#75).
+
+Also folded into existing issues rather than filed anew: auto-update restarts
+even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
+the write-time dedup gate `lesson_append` has (→ #34); `agent_status` log-sample
+scraping resurfaces unredacted child `gh`/`git` output (→ #37).
+
+Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
+read-only subsystem audits, each finding re-verified at the cited file:line and
+deduplicated against the issues above):
+- Per-file **ingest cursor loses messages**: `_ingest_file` advances
+  `last_mtime` even when the `max_msgs` cap truncates the read (default 50 at
+  session start), and the skip guard compares only mtime — never the stored
+  `last_size` — so same-second appends are dropped. Distinct from the global
+  out-of-order cursor #69 (#89).
+- Two learning daemons **drop dialog windows**: `shadow_review` records its
+  high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string
+  (a value, not an exception, so the `try/except` misses it), and the `extract`
+  daemon scans a fixed wall-clock window with a dead cursor, leaving an
+  uncovered gap whenever `interval > window` (#90).
+- `lessons.md` append/remove is an **unlocked read-modify-write**, so concurrent
+  loop writers (shadow / candidate / auto-review / foreground) last-writer-win
+  and silently clobber each other's edits — the new curator single-flight only
+  serializes curators against each other (#91).
+- `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
+  lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
+  every slim child runs a perpetual `ps`-polling thread it was explicitly
+  designed not to run (#92).
+- Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
+  needed retire/kill, or freeing in-use budget), and the liveness refresh caps
+  at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
+  of unrefreshed rows pins the budget. Complements #64/#66 (#93).
+- Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
+  with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
+  create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
+  content on shared hosts. Distinct from #21 (`~/.threadkeeper`) and #68 (#94).
+- Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
+  `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
+  can produce a torn/corrupt DB at the new path (#95).
+- **Pickup claims leak**: `threads.claimed_at` has no TTL/reaper and the
+  `auto_spawn` child is never told to `release_pickup`, so even a successful
+  pickup pins the thread out of the candidate pool forever (#96).
+- Codex adapter: the fallback message **UUID** has no per-line offset, so
+  timestamp-colliding messages collapse to one uuid and the later ones are
+  deduped away; separately, each rollout file is fully scanned twice per ingest
+  pass (#97).
+- The candidate-reviewer's "max 2 new skills per pass" cap is **prompt-only**;
+  `skill_manage(create)` has no server-side per-pass counter, so an injected or
+  confused (injection-prone) child can mass-create skills in one pass (#98).
+
+Also extended existing issues with verified file:line detail rather than filing
+anew: `get_db` re-runs the full schema + ~25 migrations per call and leaks
+connections (→ #59); the `project='subagents'` exclusion is dead across six
+modules (→ #36); pid-reuse also hits `task_kill`/`_reap_finished_tasks` (→ #66);
+a SIGKILL'd `_spawn_wrap` leaves a budget row pinned (→ #64); applied markers key
+on issue number, not PR url (→ #51); the roadmap apply pass double-fetches the
+issue list and churns per-candidate claim comments (→ #38); `agent_status`
+re-reads up to ~30 task logs per menu-bar poll (→ #18); `extract_candidates` is
+another unbounded table with a full-scan dedup probe (→ #45); the auto-update
+due-gate reads the prunable `events` table and `_setup` re-registration can
+drift the launch interpreter (→ #19).
 
 ---
 
