@@ -418,10 +418,18 @@ verified at the cited file:line, deduplicated against the issues above):
   sessions, newly-installed adapters, post-downtime backfill) that land below
   the cursor are evaluated by neither loop. Use a grace lookback or an
   ingest-order watermark instead of the transcript timestamp (#69).
-- Memory **recall/abstention** eval harness (LongMemEval-style QA + abstention
-  + tokens-per-retrieval) to give the lessons-decay (#27) and bi-temporal
-  (#28) work a number to optimize against — complementary to the learning-loop
-  **decision-quality** harness (#72) (#71).
+- ✅ DONE (#71). Memory **recall/abstention** eval harness (LongMemEval-style
+  QA + abstention + tokens-per-retrieval) to give the lessons-decay (#27) and
+  bi-temporal (#28) work a number to optimize against — complementary to the
+  learning-loop **decision-quality** harness (#72). `scripts/memory_eval/run.py`
+  runs the real `search()`/`dialog_search()`/`brief()` tools over a fixed
+  ground-truth set and reports accuracy (per the five LongMemEval axes),
+  abstention rate (never-happened questions correctly refused), and
+  tokens-per-retrieval. Lexical judge by default (offline, reproducible,
+  CI-safe); optional `--judge llm` for answer-reasoning grading. Bundled demo
+  corpus is a golden baseline; `--db` evaluates a snapshot **read-only** (copied
+  to temp). Use the temporal-reasoning + knowledge-update axes as the
+  optimization target for #27/#28.
 - MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
   structured output across the tool registry (independently confirmed; canonical
   issue #67) — gives hosts a mechanical read-vs-write signal and composes with

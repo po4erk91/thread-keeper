@@ -1,0 +1,752 @@
+{
+  "_about": "Reproducible demo corpus + hand-labeled ground truth for the memory-quality eval harness (issue #71). A small fictional 'billing service' project told across three sessions over ~30 days, so the five LongMemEval axes \u2014 information extraction, multi-session reasoning, temporal reasoning, knowledge updates, and abstention \u2014 are all exercisable offline. The harness builds this into a throwaway SQLite DB and queries the real search()/dialog_search()/brief() tools. Replace with your own snapshot + labels via --db / --ground-truth for a real evaluation.",
+  "corpus": {
+    "threads": [
+      {
+        "id": "Tarch",
+        "question": "Billing service architecture"
+      },
+      {
+        "id": "Tinfra",
+        "question": "Billing service infra and deploy"
+      },
+      {
+        "id": "Tdec",
+        "question": "Billing service decisions log"
+      }
+    ],
+    "dialog_messages": [
+      {
+        "uuid": "d-alpha-1",
+        "session_id": "s_alpha",
+        "role": "user",
+        "day_offset": -30,
+        "content": "Starting the billing service \u2014 pick the database and the payments provider."
+      },
+      {
+        "uuid": "d-alpha-2",
+        "session_id": "s_alpha",
+        "role": "assistant",
+        "day_offset": -30,
+        "content": "Billing service: we chose PostgreSQL as the database and Stripe as the payments provider. Backend is Python on the FastAPI framework, REST API style."
+      },
+      {
+        "uuid": "d-alpha-3",
+        "session_id": "s_alpha",
+        "role": "user",
+        "day_offset": -30,
+        "content": "What about background jobs, tests, and Kubernetes for billing?"
+      },
+      {
+        "uuid": "d-alpha-4",
+        "session_id": "s_alpha",
+        "role": "assistant",
+        "day_offset": -30,
+        "content": "Billing service jobs run on RabbitMQ and tests use pytest. We considered Kubernetes but decided to stay on AWS ECS \u2014 no Kubernetes migration."
+      },
+      {
+        "uuid": "d-beta-1",
+        "session_id": "s_beta",
+        "role": "user",
+        "day_offset": -15,
+        "content": "Set up CI and deploy the billing service to production."
+      },
+      {
+        "uuid": "d-beta-2",
+        "session_id": "s_beta",
+        "role": "assistant",
+        "day_offset": -15,
+        "content": "Billing service CI runs on GitHub Actions; we deployed the production cluster to the us-east-1 region. Container images push to GHCR and errors go to Sentry."
+      },
+      {
+        "uuid": "d-beta-3",
+        "session_id": "s_beta",
+        "role": "user",
+        "day_offset": -15,
+        "content": "How are secrets and auth handled for the billing service?"
+      },
+      {
+        "uuid": "d-beta-4",
+        "session_id": "s_beta",
+        "role": "assistant",
+        "day_offset": -15,
+        "content": "Billing service secrets live in AWS Secrets Manager; authentication uses Better Auth with JWT tokens."
+      },
+      {
+        "uuid": "d-gamma-1",
+        "session_id": "s_gamma",
+        "role": "user",
+        "day_offset": -3,
+        "content": "Lower EU latency \u2014 update the billing production deployment."
+      },
+      {
+        "uuid": "d-gamma-2",
+        "session_id": "s_gamma",
+        "role": "assistant",
+        "day_offset": -3,
+        "content": "Billing service: migrated the production cluster from us-east-1 to the eu-central-1 region, and added a Redis cache in front of PostgreSQL. Current production region is eu-central-1."
+      },
+      {
+        "uuid": "d-gamma-3",
+        "session_id": "s_gamma",
+        "role": "user",
+        "day_offset": -3,
+        "content": "Any GraphQL gateway or mobile app for the billing service?"
+      },
+      {
+        "uuid": "d-gamma-4",
+        "session_id": "s_gamma",
+        "role": "assistant",
+        "day_offset": -3,
+        "content": "No GraphQL gateway and no mobile app for the billing service \u2014 the API stays REST-only."
+      }
+    ],
+    "notes": [
+      {
+        "thread_id": "Tarch",
+        "kind": "insight",
+        "day_offset": -30,
+        "content": "Billing service stack: PostgreSQL database, Stripe payments, FastAPI backend, RabbitMQ jobs, Redis cache."
+      },
+      {
+        "thread_id": "Tinfra",
+        "kind": "insight",
+        "day_offset": -3,
+        "content": "Billing production cluster region is eu-central-1, migrated from us-east-1 for EU latency."
+      },
+      {
+        "thread_id": "Tdec",
+        "kind": "insight",
+        "day_offset": -3,
+        "content": "Billing decisions: no Kubernetes (stay on ECS), no GraphQL gateway, no mobile app."
+      }
+    ]
+  },
+  "questions": [
+    {
+      "id": "ie_db",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "billing database",
+      "question": "Which database did we choose for the billing service?",
+      "gold_any": [
+        "PostgreSQL",
+        "Postgres"
+      ]
+    },
+    {
+      "id": "ie_payments",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "payments provider",
+      "question": "Which payments provider did we choose?",
+      "gold_any": [
+        "Stripe"
+      ]
+    },
+    {
+      "id": "ie_language",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "backend Python",
+      "question": "What language is the billing backend written in?",
+      "gold_any": [
+        "Python"
+      ]
+    },
+    {
+      "id": "ie_framework",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "FastAPI framework",
+      "question": "Which web framework does the backend use?",
+      "gold_any": [
+        "FastAPI"
+      ]
+    },
+    {
+      "id": "ie_jobs",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "jobs",
+      "question": "What runs the background jobs?",
+      "gold_any": [
+        "RabbitMQ"
+      ]
+    },
+    {
+      "id": "ie_tests",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "tests",
+      "question": "What test runner do we use?",
+      "gold_any": [
+        "pytest"
+      ]
+    },
+    {
+      "id": "ie_ci",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "CI GitHub",
+      "question": "Where does CI run?",
+      "gold_any": [
+        "GitHub Actions"
+      ]
+    },
+    {
+      "id": "ie_registry",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "container images",
+      "question": "Where are container images pushed?",
+      "gold_any": [
+        "GHCR"
+      ]
+    },
+    {
+      "id": "ie_errors",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "errors",
+      "question": "What do we use for error tracking?",
+      "gold_any": [
+        "Sentry"
+      ]
+    },
+    {
+      "id": "ie_secrets",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "secrets",
+      "question": "Where are secrets stored?",
+      "gold_any": [
+        "Secrets Manager"
+      ]
+    },
+    {
+      "id": "ie_auth",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "authentication",
+      "question": "How is authentication handled?",
+      "gold_any": [
+        "Better Auth",
+        "JWT"
+      ]
+    },
+    {
+      "id": "ie_cache",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "Redis cache",
+      "question": "What cache sits in front of PostgreSQL?",
+      "gold_any": [
+        "Redis"
+      ]
+    },
+    {
+      "id": "ie_api_style",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "API style",
+      "question": "What API style does the service use?",
+      "gold_any": [
+        "REST"
+      ]
+    },
+    {
+      "id": "ie_ecs",
+      "type": "information_extraction",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "Kubernetes ECS",
+      "question": "What orchestrator are we running on?",
+      "gold_any": [
+        "ECS"
+      ]
+    },
+    {
+      "id": "ie_notes_stack",
+      "type": "information_extraction",
+      "system": "search",
+      "k": 5,
+      "query": "billing stack",
+      "question": "What is in the billing service stack note?",
+      "gold_any": [
+        "PostgreSQL"
+      ]
+    },
+    {
+      "id": "ie_notes_payments",
+      "type": "information_extraction",
+      "system": "search",
+      "k": 5,
+      "query": "billing stack",
+      "question": "What payments provider is recorded in the stack note?",
+      "gold_any": [
+        "Stripe"
+      ]
+    },
+    {
+      "id": "ie_notes_region",
+      "type": "information_extraction",
+      "system": "search",
+      "k": 5,
+      "query": "production region",
+      "question": "What region does the infra note record?",
+      "gold_any": [
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "ie_notes_decisions",
+      "type": "information_extraction",
+      "system": "search",
+      "k": 5,
+      "query": "billing decisions",
+      "question": "What orchestrator decision is in the decisions note?",
+      "gold_any": [
+        "ECS"
+      ]
+    },
+    {
+      "id": "ms_db_and_ci",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "What database did we pick and where does CI run?",
+      "gold_all": [
+        "PostgreSQL",
+        "GitHub Actions"
+      ]
+    },
+    {
+      "id": "ms_payments_and_region",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "Which payments provider did we pick and what is the current region?",
+      "gold_all": [
+        "Stripe",
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "ms_secrets_and_cache",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "Where are secrets stored and what cache did we add?",
+      "gold_all": [
+        "Secrets Manager",
+        "Redis"
+      ]
+    },
+    {
+      "id": "ms_jobs_and_registry",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "What runs jobs and where do images go?",
+      "gold_all": [
+        "RabbitMQ",
+        "GHCR"
+      ]
+    },
+    {
+      "id": "ms_framework_and_auth",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "Which framework and which auth library do we use?",
+      "gold_all": [
+        "FastAPI",
+        "Better Auth"
+      ]
+    },
+    {
+      "id": "ms_full_stack",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "Summarize the database, payments, and cache choices.",
+      "gold_all": [
+        "PostgreSQL",
+        "Stripe",
+        "Redis"
+      ]
+    },
+    {
+      "id": "ms_tests_and_errors",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "What test runner and error tracker do we use?",
+      "gold_all": [
+        "pytest",
+        "Sentry"
+      ]
+    },
+    {
+      "id": "ms_lang_and_region",
+      "type": "multi_session_reasoning",
+      "system": "dialog_search",
+      "k": 12,
+      "query": "billing service",
+      "question": "What language is the backend, and what region is prod now?",
+      "gold_all": [
+        "Python",
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "tr_first_region",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "Which region did we deploy to first?",
+      "gold_any": [
+        "us-east-1"
+      ]
+    },
+    {
+      "id": "tr_current_region",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "Which region is production in most recently?",
+      "gold_any": [
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "tr_latest_infra",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "What was the most recent infrastructure change?",
+      "gold_any": [
+        "eu-central-1",
+        "Redis"
+      ]
+    },
+    {
+      "id": "tr_stripe_evidence",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "payments provider",
+      "question": "Was Stripe chosen in the first session?",
+      "gold_any": [
+        "Stripe"
+      ]
+    },
+    {
+      "id": "tr_ci_evidence",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "CI GitHub",
+      "question": "When was CI set up relative to the first deploy?",
+      "gold_any": [
+        "GitHub Actions"
+      ]
+    },
+    {
+      "id": "tr_cache_recent",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "Redis cache",
+      "question": "Was the cache added recently?",
+      "gold_any": [
+        "Redis"
+      ]
+    },
+    {
+      "id": "tr_migration_evidence",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "Did the region change over time?",
+      "gold_all": [
+        "us-east-1",
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "tr_original_db",
+      "type": "temporal_reasoning",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "billing database",
+      "question": "What database did we start with?",
+      "gold_any": [
+        "PostgreSQL"
+      ]
+    },
+    {
+      "id": "ku_region",
+      "type": "knowledge_update",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "What region is production in NOW?",
+      "gold_any": [
+        "eu-central-1"
+      ],
+      "stale": [
+        "us-east-1"
+      ]
+    },
+    {
+      "id": "ku_cache",
+      "type": "knowledge_update",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "front PostgreSQL",
+      "question": "What now sits in front of PostgreSQL?",
+      "gold_any": [
+        "Redis"
+      ]
+    },
+    {
+      "id": "ku_region_note",
+      "type": "knowledge_update",
+      "system": "search",
+      "k": 5,
+      "query": "production region",
+      "question": "What region does the latest infra note record?",
+      "gold_any": [
+        "eu-central-1"
+      ],
+      "stale": [
+        "us-east-1"
+      ]
+    },
+    {
+      "id": "ku_orchestrator",
+      "type": "knowledge_update",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "Kubernetes ECS",
+      "question": "Did we end up on Kubernetes or stay on ECS?",
+      "gold_any": [
+        "ECS"
+      ]
+    },
+    {
+      "id": "ku_api_surface",
+      "type": "knowledge_update",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "GraphQL REST",
+      "question": "Is the API GraphQL or still REST?",
+      "gold_any": [
+        "REST"
+      ]
+    },
+    {
+      "id": "ku_eu_latency",
+      "type": "knowledge_update",
+      "system": "dialog_search",
+      "k": 6,
+      "query": "production region",
+      "question": "What is the reason for the current region?",
+      "gold_any": [
+        "eu-central-1"
+      ]
+    },
+    {
+      "id": "abs_k8s",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "Kubernetes migration",
+      "question": "What did we decide in the approved Kubernetes migration plan?",
+      "trap_substrings": [
+        "kubernetes migration approved",
+        "migrated to kubernetes",
+        "moved to kubernetes",
+        "running on kubernetes",
+        "kubernetes is approved"
+      ]
+    },
+    {
+      "id": "abs_graphql",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "GraphQL gateway",
+      "question": "Which GraphQL gateway schema did we ship?",
+      "trap_substrings": [
+        "graphql gateway shipped",
+        "built the graphql gateway",
+        "graphql schema",
+        "graphql is live"
+      ]
+    },
+    {
+      "id": "abs_mobile",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "mobile app",
+      "question": "What did we name the mobile app we launched?",
+      "trap_substrings": [
+        "mobile app launched",
+        "ios app",
+        "android app",
+        "react native app",
+        "app store"
+      ]
+    },
+    {
+      "id": "abs_soc2",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "SOC2 audit",
+      "question": "What was the outcome of the SOC2 audit?",
+      "trap_substrings": [
+        "soc2",
+        "soc 2",
+        "passed the audit",
+        "audit passed"
+      ]
+    },
+    {
+      "id": "abs_kafka",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "Kafka topics",
+      "question": "How did we configure the Kafka topics?",
+      "trap_substrings": [
+        "kafka"
+      ]
+    },
+    {
+      "id": "abs_oracle",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "Oracle database",
+      "question": "Why did we pick Oracle for billing?",
+      "trap_substrings": [
+        "oracle"
+      ]
+    },
+    {
+      "id": "abs_paypal",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "PayPal integration",
+      "question": "How did we integrate PayPal?",
+      "trap_substrings": [
+        "paypal"
+      ]
+    },
+    {
+      "id": "abs_gcp",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "GCP project",
+      "question": "What is our GCP project id?",
+      "trap_substrings": [
+        "gcp",
+        "google cloud"
+      ]
+    },
+    {
+      "id": "abs_mongodb",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "MongoDB",
+      "question": "Which MongoDB cluster do we use?",
+      "trap_substrings": [
+        "mongodb",
+        "mongo"
+      ]
+    },
+    {
+      "id": "abs_apac",
+      "type": "abstention",
+      "system": "dialog_search",
+      "k": 6,
+      "abstain": true,
+      "query": "production region",
+      "question": "When did we deploy to the APAC region?",
+      "trap_substrings": [
+        "ap-southeast",
+        "ap-northeast",
+        "apac region",
+        "tokyo region",
+        "singapore region"
+      ]
+    },
+    {
+      "id": "abs_notes_kafka",
+      "type": "abstention",
+      "system": "search",
+      "k": 5,
+      "abstain": true,
+      "query": "billing stack",
+      "question": "What does the stack note say about Kafka?",
+      "trap_substrings": [
+        "kafka"
+      ]
+    },
+    {
+      "id": "abs_brief_kubernetes",
+      "type": "abstention",
+      "system": "brief",
+      "k": 6,
+      "abstain": true,
+      "query": "kubernetes migration plan",
+      "question": "What does the brief say about the approved Kubernetes migration?",
+      "trap_substrings": [
+        "kubernetes migration approved",
+        "migrated to kubernetes",
+        "moved to kubernetes"
+      ]
+    }
+  ]
+}
