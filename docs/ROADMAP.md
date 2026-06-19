@@ -465,10 +465,18 @@ verified at the cited file:line, deduplicated against the issues above):
   questions — **extract precision re-measurement** and **"do we even need
   tiers — metric not collected"** — a harness to measure against; point
   `--fixtures-dir` at a production-derived labeled set to collect those numbers.
-- MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
-  structured output across the tool registry (independently confirmed; canonical
-  issue #67) — gives hosts a mechanical read-vs-write signal and composes with
-  #22 and the elicitation work in #26.
+- ✅ DONE (#67). MCP **tool annotations** (`readOnlyHint`/`destructiveHint`/
+  `idempotentHint`) across the whole tool registry, plus structured
+  **`outputSchema` + `structuredContent`** on the five status tools (`context`,
+  `spawn_budget_status`, `spawn_status`, `mp_health`, `agent_status`). Every
+  tool now registers through `read_tool()` / `write_tool()` wrappers
+  (`threadkeeper/_mcp.py`) so `tools/list` carries an explicit read-vs-write
+  signal and delete-class tools carry `destructiveHint=True`. A registry test
+  (`tests/test_tool_annotations.py`) fails if any tool is unclassified, marks a
+  mutator read-only, or drops the destructive hint; the status tools keep their
+  legacy human-readable text block alongside the typed JSON. Gives hosts a
+  mechanical confirmation signal and composes with #22 and the elicitation work
+  in #26.
 - **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
   `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
   **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /

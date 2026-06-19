@@ -13,14 +13,14 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session
 
 
-@mcp.tool()
+@read_tool()
 def find_invariants(window_days: int = 14,
                     min_cluster_size: int = 3,
                     response_cohesion: float = 0.85,

@@ -29,7 +29,7 @@ import re
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session, _emit
@@ -59,7 +59,7 @@ def _build_shipped_re(extra: str) -> "re.Pattern[str]":
     return re.compile(r"\b(" + "|".join(parts) + r")\b", re.IGNORECASE)
 
 
-@mcp.tool()
+@write_tool()
 def validate_threads(
     dry_run: bool = True,
     no_notes_days: int = VALIDATE_NO_NOTES_DAYS,

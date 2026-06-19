@@ -9,7 +9,7 @@ import sqlite3
 import time
 import re as _re_extract
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, gen_concept_id, gen_distill_id
@@ -127,7 +127,7 @@ def _enqueue(conn, kind, source_uuid, source_cid, content, rationale):
     return cur.lastrowid
 
 
-@mcp.tool()
+@write_tool()
 def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     """Scan recent dialog_messages and enqueue heuristic candidates.
 
@@ -303,7 +303,7 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     )
 
 
-@mcp.tool()
+@read_tool()
 def review_candidates(status: str = "pending", k: int = 20) -> str:
     """status ∈ {pending, accepted, rejected, all}. Newest first."""
     valid = ("pending", "accepted", "rejected", "all")
@@ -343,7 +343,7 @@ def review_candidates(status: str = "pending", k: int = 20) -> str:
 _VALID_TARGET_KINDS = ("note", "concept", "distill", "verbatim")
 
 
-@mcp.tool()
+@write_tool()
 def accept_candidate(id: int, target_kind: str = "",
                      thread_id: str = "") -> str:
     """Materialize candidate into its target table.
@@ -435,7 +435,7 @@ def accept_candidate(id: int, target_kind: str = "",
     return f"ok accepted #{id} → {placed}"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def reject_candidate(id: int, reason: str = "") -> str:
     """Mark rejected. Reason appended to rationale for heuristic tuning."""
     conn = get_db()

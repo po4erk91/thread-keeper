@@ -35,7 +35,7 @@ from typing import Optional
 
 import yaml
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..config import CLAUDE_SKILLS_DIR, WRITE_ORIGIN
 from ..db import get_db
 from ..helpers import q
@@ -511,7 +511,7 @@ def _record_event(name: str, kind: str) -> None:
 _VALID_OUTCOMES: set[str] = {"helped", "partial", "wrong"}
 
 
-@mcp.tool()
+@write_tool()
 def skill_record(name: str, kind: str = "use", outcome: str = "") -> str:
     """Record usage telemetry for a mirrored skill.
 
@@ -571,7 +571,7 @@ def skill_record(name: str, kind: str = "use", outcome: str = "") -> str:
 # skill_manage
 # ──────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@write_tool(destructive=True)
 def skill_manage(action: str,
                  name: str = "",
                  content: str = "",
@@ -791,7 +791,7 @@ def _action_delete(name: str) -> str:
 # skill_list
 # ──────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@read_tool()
 def skill_list(include_archived: bool = False) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
@@ -920,7 +920,7 @@ def _recent_active_skills_dump(
 # Curator
 # ──────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@write_tool(destructive=True)
 def curator_run(stale_after_days: int = 30,
                 archive_after_days: int = 90,
                 dry_run: bool = True) -> str:
@@ -1054,7 +1054,7 @@ def _thread_notes_dump(conn, thread_id: str) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def review_thread(thread_id: str,
                   focus: str = "combined",
                   mode: str = "auto") -> str:

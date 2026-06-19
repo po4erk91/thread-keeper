@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from ..curator import (
@@ -35,7 +35,7 @@ from ..config import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def curator_review(force: bool = False, dry_run: bool = False) -> str:
     """Fire one curator pass.
 
@@ -65,7 +65,7 @@ def curator_review(force: bool = False, dry_run: bool = False) -> str:
     return run_curator_pass(force=force)
 
 
-@mcp.tool()
+@read_tool()
 def curator_review_status() -> str:
     """Show curator configuration + last 5 passes + latest REPORT path.
 

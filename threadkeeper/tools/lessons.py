@@ -27,7 +27,7 @@ from datetime import datetime
 import re
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
@@ -92,7 +92,7 @@ def _similar_lesson_slug(title: str) -> tuple[str, float] | None:
     return None
 
 
-@mcp.tool()
+@write_tool()
 def lesson_append(
     title: str,
     body: str,
@@ -152,7 +152,7 @@ def lesson_append(
     return f"ok slug={slug} path={get_path()}"
 
 
-@mcp.tool()
+@read_tool()
 def lesson_list(k: int = 20) -> str:
     """Compact listing of materialized lessons, newest first.
 
@@ -183,7 +183,7 @@ def lesson_list(k: int = 20) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@read_tool()
 def lesson_get(slug: str) -> str:
     """Return the full body of one lesson by slug. Useful when
     `lesson_list` surfaced something you want to read in full."""
@@ -195,7 +195,7 @@ def lesson_get(slug: str) -> str:
     return f"ERR not_found slug={slug}"
 
 
-@mcp.tool()
+@write_tool(destructive=True, idempotent=True)
 def lesson_remove(slug: str, force: bool = False) -> str:
     """Remove one materialized lesson section by slug.
 

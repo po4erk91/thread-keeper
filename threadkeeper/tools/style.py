@@ -4,13 +4,13 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from .. import identity
 from ..identity import _ensure_session, _emit
 
 
-@mcp.tool()
+@write_tool()
 def verbatim_user(content: str, thread_id: str = "") -> str:
     """Capture a user quote worth surfacing in future briefs. Use when the user's
     exact phrasing matters (sharp reframes, decisions, pushback)."""
@@ -28,7 +28,7 @@ def verbatim_user(content: str, thread_id: str = "") -> str:
     return "ok"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def style_set(key: str, value: str) -> str:
     """Set a stylistic running rule. Examples:
        lang=ru | prose=lean | allow=half-baked,weird | deny=sycophancy,headers"""

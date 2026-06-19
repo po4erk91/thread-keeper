@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from ..dialectic_miner import run_mine_pass, _last_mine_ts
@@ -24,7 +24,7 @@ from ..config import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_mine_run(force: bool = True) -> str:
     """Fire one mechanical capture pass now (force=True runs even when the
     miner daemon interval is 0)."""
@@ -33,7 +33,7 @@ def dialectic_mine_run(force: bool = True) -> str:
     return run_mine_pass(force=force)
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_validate_run(force: bool = True, dry_run: bool = False) -> str:
     """Fire one validator pass. dry_run shows pending count + would_spawn
     without spawning or advancing the cursor."""
@@ -51,7 +51,7 @@ def dialectic_validate_run(force: bool = True, dry_run: bool = False) -> str:
     return run_validate_pass(force=force)
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_mine_status() -> str:
     """Miner config + buffer sizes + last 5 capture passes."""
     conn = get_db()
@@ -83,7 +83,7 @@ def dialectic_mine_status() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_validate_status() -> str:
     """Validator config + pending observation count + last 5 passes."""
     conn = get_db()

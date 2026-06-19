@@ -19,9 +19,15 @@ import json as _json
 from pathlib import Path
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
+from ..tool_schemas import (
+    SpawnBudgetStatus,
+    SpawnTaskRss,
+    SpawnStatus,
+    CliCapability,
+)
 from ..helpers import fmt_age, q, alive
 from .. import identity  # noqa: F401  (kept for future identity.* attr access)
 from ..identity import _ensure_session, _detect_self_cid, _emit
@@ -339,7 +345,7 @@ def _build_slim_mcp_config(
     return slim_path
 
 
-@mcp.tool()
+@write_tool()
 def spawn(prompt: str, cwd: str = "", append_system: str = "",
           model: str = "", effort: str = "",
           permission_mode: str = "auto",
@@ -789,7 +795,7 @@ exit $rc
     )
 
 
-@mcp.tool()
+@write_tool()
 def tournament(prompt: str,
                roles: str = "skeptic,generator,critic",
                cwd: str = "",
@@ -913,7 +919,7 @@ def tournament(prompt: str,
     return "\n".join(out)
 
 
-@mcp.tool()
+@read_tool()
 def tasks(include_ended: bool = True, k: int = 15) -> str:
     """List spawned tasks: id, pid, status, elapsed, spawned_cid (if linked),
     prompt prefix. Refreshes liveness and resolves spawned_cid lazily."""
@@ -958,7 +964,7 @@ def tasks(include_ended: bool = True, k: int = 15) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@read_tool()
 def task_logs(task_id: str, tail_lines: int = 80) -> str:
     """Read tail of a spawned task's captured stdout/stderr log.
 
@@ -980,15 +986,17 @@ def task_logs(task_id: str, tail_lines: int = 80) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-@mcp.tool()
-def spawn_budget_status() -> str:
+@read_tool()
+def spawn_budget_status() -> SpawnBudgetStatus:
     """Report current spawn-budget usage: cap, used, free, plus per-running-task
     RSS. Used to decide whether another spawn() will be admitted.
 
     Values come from the budget daemon (refreshes every SPAWN_BUDGET_POLL_S
     seconds via `ps`). Just-spawned tasks show their initial estimate until
     the daemon catches up. Tasks with pid=0 (visible Terminal-launched
-    spawns) aren't tracked from here — their RSS column stays as estimate."""
+    spawns) aren't tracked from here — their RSS column stays as estimate.
+
+    Returns structuredContent (SpawnBudgetStatus) plus the legacy text block."""
     from ..config import SPAWN_BUDGET_MB, SPAWN_BUDGET_POLL_S
     conn = get_db()
     _ensure_session(conn)
@@ -1002,38 +1010,52 @@ def spawn_budget_status() -> str:
     used_kb = sum(
         (r["rss_kb"] or 0) for r in rows
     )
-    if SPAWN_BUDGET_MB <= 0:
+    enabled = SPAWN_BUDGET_MB > 0
+    free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb) if enabled else None
+    if not enabled:
         header = (
             f"budget=disabled used={used_kb // 1024}MB "
             f"running={len(rows)}"
         )
     else:
-        free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb)
         header = (
             f"budget={SPAWN_BUDGET_MB}MB used={used_kb // 1024}MB "
             f"free={free_kb // 1024}MB running={len(rows)} "
             f"poll={SPAWN_BUDGET_POLL_S}s"
         )
-    if not rows:
-        return header
+    tasks: list[SpawnTaskRss] = []
     lines = [header]
     for r in rows:
         rss_mb = (r["rss_kb"] or 0) // 1024
         age_at = r["rss_updated_at"] or r["started_at"]
-        age = fmt_age(now_t - age_at)
+        age_s = now_t - age_at
         snip = r["prompt"][:50].replace("\n", " ")
         if len(r["prompt"]) > 50:
             snip += "…"
         cid = (r["spawned_cid"] or "-")[:8]
-        pid_disp = "vis" if not r["pid"] or r["pid"] <= 0 else str(r["pid"])
+        pid = r["pid"] or 0
+        pid_disp = "vis" if pid <= 0 else str(pid)
+        tasks.append(SpawnTaskRss(
+            id=r["id"], pid=pid, cid=cid, rss_mb=rss_mb,
+            age_s=age_s, prompt=snip,
+        ))
         lines.append(
             f"  {r['id']} pid={pid_disp} cid={cid} rss={rss_mb}MB "
-            f"age={age} {q(snip)}"
+            f"age={fmt_age(age_s)} {q(snip)}"
         )
-    return "\n".join(lines)
+    model = SpawnBudgetStatus(
+        enabled=enabled,
+        cap_mb=SPAWN_BUDGET_MB if enabled else None,
+        used_mb=used_kb // 1024,
+        free_mb=(free_kb // 1024) if free_kb is not None else None,
+        running=len(rows),
+        poll_s=SPAWN_BUDGET_POLL_S if enabled else None,
+        tasks=tasks,
+    )
+    return structured_result(header if not rows else "\n".join(lines), model)
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def spawn_budget_set(limit_mb: int) -> str:
     """Override the spawn-budget cap for this process (in MB). Set 0 to
     disable enforcement. Does NOT persist across restarts — set
@@ -1050,8 +1072,8 @@ def spawn_budget_set(limit_mb: int) -> str:
     return f"ok: SPAWN_BUDGET_MB now {limit_mb}MB (was via env or previous override)"
 
 
-@mcp.tool()
-def spawn_status() -> str:
+@read_tool()
+def spawn_status() -> SpawnStatus:
     """Show which CLI thread-keeper detected as its host, and which CLI
     each spawn role resolves to (after env + file overrides). Use to
     sanity-check spawn config when you want loops to fire through a
@@ -1065,30 +1087,42 @@ def spawn_status() -> str:
 
     Manual model pinning:
       • THREADKEEPER_SPAWN__MODEL__<CLI-or-ROLE>=<model>
+
+    Returns structuredContent (SpawnStatus) plus the legacy text block.
     """
     from .. import spawn_config as _sc, identity as _id
     from ..adapters import get_adapter
     active = _id.active_cli()
+    role_resolution = _sc.summary_table(active)
     lines = [
         f"active_cli={active or '(none detected)'}",
         "",
         "per-role resolution:",
-        _sc.summary_table(active),
+        role_resolution,
         "",
         "spawn capability by CLI:",
     ]
+    capabilities: list[CliCapability] = []
     for cli in _sc.SUPPORTED_CLIS:
         adapter = get_adapter(cli)
         if not adapter:
+            capabilities.append(CliCapability(cli=cli, available=False, note="no adapter"))
             lines.append(f"  {cli:<8} no adapter")
             continue
         argv = adapter.spawn_argv("test", model="")
         if argv is None:
+            capabilities.append(CliCapability(cli=cli, available=False, note="not on PATH"))
             lines.append(f"  {cli:<8} not on PATH")
         else:
             bin_short = argv[0].split("/")[-1]
+            capabilities.append(CliCapability(cli=cli, available=True, bin=bin_short))
             lines.append(f"  {cli:<8} ok bin={bin_short}")
-    return "\n".join(lines)
+    model = SpawnStatus(
+        active_cli=active or None,
+        role_resolution=role_resolution,
+        capabilities=capabilities,
+    )
+    return structured_result("\n".join(lines), model)
 
 
 def task_kill(task_id: str, force: bool = False) -> str:

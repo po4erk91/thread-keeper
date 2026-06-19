@@ -7,6 +7,28 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **MCP tool annotations + structured outputs (#67).** Every thread-keeper tool
+  was a bare `@mcp.tool()` with no machine-readable read/write signal. Now each
+  of the 113 tools registers through one of two wrappers in
+  `threadkeeper/_mcp.py` — `@read_tool()` (sets `readOnlyHint=True`) for pure
+  queries, `@write_tool(destructive=…, idempotent=…)` for mutations — so
+  `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for every tool. The ten
+  delete/overwrite/kill tools (`compost` is **not** one — it only reads) carry
+  `destructiveHint=True`: `agent_memory_cleanup`, `concept_manage`,
+  `consolidate`, `core_remove`, `curator_run`, `lesson_remove`,
+  `memory_guard_check`, `mp_cleanup`, `skill_manage`, `unlink`. This is the
+  static metadata a confirmation/elicitation host reads to decide which calls
+  warrant a prompt (substrate for #26). The five status tools — `context`,
+  `spawn_budget_status`, `spawn_status`, `mp_health`, `agent_status` — now also
+  advertise an `outputSchema` (typed models in `threadkeeper/tool_schemas.py`)
+  and return `structuredContent`, while preserving the legacy human-readable
+  text block (per the spec's structured-content backward-compat rule). New
+  `tests/test_tool_annotations.py` fails if any tool is unclassified, a mutating
+  tool is marked read-only, or a delete-class tool drops `destructiveHint`.
+  Requires the MCP **2025-06-18** tool vocabulary (`mcp>=1.10.0`).
+
 ### Security
 
 - **Cross-provider memory egress policy + opt-out (#74).** thread-keeper shares
