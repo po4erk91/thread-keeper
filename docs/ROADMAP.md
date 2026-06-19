@@ -414,12 +414,21 @@ verified at the cited file:line, deduplicated against the issues above):
   overlapping window. Same incident class as the documented #157/#158
   prod loop, on the one heuristic path that never got the `_candidate_exists`
   fix (#62).
-- Author-trust boundary on autonomous issue pickup: the applier fetches no
-  `authorAssociation` and treats every open issue on this **public** repo as
-  backlog for a `bypassPermissions` child; separately, the Python-generated
-  claim comment leaks hostname/PID/git-rev even though an opaque
-  `_host_branch_slug()` already exists. Gate pickup by author association and
-  redact the claim body. Complements #22 (fencing) and #50 (skip-label) (#63).
+- ✅ DONE (#63). Author-trust boundary on autonomous issue pickup: the applier
+  fetched no `authorAssociation` and treated every open issue on this **public**
+  repo as backlog for a `bypassPermissions` child; separately, the
+  Python-generated claim comment leaked hostname/PID/git-rev even though an
+  opaque `_host_branch_slug()` already existed. Now `_fetch_open_issues` reads
+  the REST `/issues` endpoint (the `gh issue list --json` field set can't return
+  `author_association`; PRs are filtered out) and autonomous pickup is gated on
+  `EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default `OWNER,MEMBER,COLLABORATOR`) or a
+  maintainer-applied label in `EVOLVE_TRUST_LABELS` (empty by default) —
+  untrusted-author issues are skipped until promoted, while exact-number
+  invocation bypasses the gate as explicit human promotion. The public claim
+  body now carries only the opaque `_host_branch_slug()` token; the full host
+  identity is recorded in a local `roadmap_issue_claim_host` event. Removes the
+  untrusted input at the boundary (complements #22/#76 fencing and #50
+  skip-label) and is documented in README + ARCHITECTURE.
 - Spawn budget is blind to **visible (pid=0)** children: their real RSS is
   never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
   never resolves pins its full-estimate budget share forever. (The

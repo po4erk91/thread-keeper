@@ -221,14 +221,28 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   and create/update GitHub issues with acceptance criteria and research
   sources. It does not implement roadmap issues.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues with
-  `gh issue list`, prioritizes `roadmap`-labeled issues then FIFO, and spawns
-  one `evolve_applier` child to implement exactly one issue. Before spawning,
-  the parent runs five multi-host conflict guards in order: (1) skip if an
-  active `<!-- thread-keeper:evolve-applier-claim -->` comment already exists;
-  (2) skip if `gh pr list --search "in:body Closes #N"` shows an open PR
-  already closing the issue; (3) post the parent's own claim comment (body
-  carries hostname + PID + git-rev for triage); (4) wait
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
+  REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
+  list --json` cannot return `author_association`; pull requests in the
+  response are filtered out), prioritizes `roadmap`-labeled issues then FIFO,
+  and spawns one `evolve_applier` child to implement exactly one issue.
+  **Author-trust gate (#63):** the repo is public, so any account can open an
+  issue whose body is injected into the permission-bypassing child. Autonomous
+  pickup is therefore limited to issues whose `authorAssociation` is in
+  `EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default `OWNER,MEMBER,COLLABORATOR`) or
+  that carry a maintainer-applied label in `EVOLVE_TRUST_LABELS` (empty by
+  default; only collaborators can label a public repo, so a trust label is
+  itself an endorsement). Untrusted issues are skipped until promoted; naming
+  the exact number (`evolve_apply_roadmap_issue(issue_number=N)`) bypasses the
+  gate as explicit human promotion. This removes the untrusted input at the
+  boundary and complements the in-prompt data-fencing of #22/#76. Before
+  spawning, the parent runs five multi-host conflict guards in order: (1) skip
+  if an active `<!-- thread-keeper:evolve-applier-claim -->` comment already
+  exists; (2) skip if `gh pr list --search "in:body Closes #N"` shows an open
+  PR already closing the issue; (3) post the parent's own claim comment (body
+  carries only an opaque per-host token — `sha1(hostname)[:6]` — never raw
+  hostname/PID/git-rev, which stay in the local `roadmap_issue_claim_host`
+  event for triage); (4) wait
   `ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetch claims, and delete the
   parent's own claim when a competing host got there first (earliest
   `createdAt` wins); (5) on `spawn()` failure, retract the just-posted claim

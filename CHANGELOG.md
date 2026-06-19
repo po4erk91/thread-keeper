@@ -53,6 +53,28 @@ version bumps follow semver per the policy in
 
 ### Security
 
+- **Author-trust gate for autonomous issue pickup + redacted claim comments
+  (#63).** This repo is **public**, so any GitHub account can open an issue —
+  and the evolve applier injected every open issue's body into a
+  permission-bypassing, shell-enabled implementer child with no author check
+  (`_fetch_open_issues` never even requested the author). Autonomous pickup is
+  now gated: only issues whose GitHub `authorAssociation` is in
+  `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default
+  `OWNER,MEMBER,COLLABORATOR`) — or that carry a maintainer-applied label in
+  `THREADKEEPER_EVOLVE_TRUST_LABELS` (empty by default; only collaborators can
+  label a public repo, so a trust label is an endorsement) — are auto-drained.
+  Untrusted issues are skipped until a human promotes one (apply a trust label,
+  or name the exact number via `evolve_apply_roadmap_issue(issue_number=N)`,
+  which bypasses the gate as explicit promotion). Because `gh issue list --json`
+  cannot return `author_association`, `_fetch_open_issues` now fetches via the
+  REST API (`gh api …/issues`, filtering out pull requests). This removes the
+  untrusted input at the boundary and complements the in-prompt data-fencing of
+  #22/#76. Separately, the public claim comment leaked the developer machine's
+  hostname, PID, and an unreleased commit SHA on every claim; it now carries
+  only the opaque per-host token already used for branch names
+  (`sha1(hostname)[:6]`), with the full host identity kept in a local
+  `roadmap_issue_claim_host` event for multi-host triage. README +
+  `docs/ARCHITECTURE.md` document the trust model and both env knobs.
 - **Cross-provider memory egress policy + opt-out (#74).** thread-keeper shares
   one user-model across CLIs by design, but the most sensitive memory it holds —
   `verbatim_user` quotes and the `dialectic` user-model (claims *about the

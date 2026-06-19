@@ -512,6 +512,22 @@ pushes to `main`, and it never marks an issue applied without a real PR URL. A
 manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
 why that issue cannot start instead of silently switching to another issue.
 
+**Author-trust gate (this repo is public).** Any GitHub account can open an
+issue, and an open issue's body is injected into the permission-bypassing
+implementer child — so **autonomous** pickup is gated on the issue author's
+GitHub association. Only issues whose `authorAssociation` is in
+`THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default
+`OWNER,MEMBER,COLLABORATOR`) are auto-drained; everything else is skipped until
+a human promotes it — by applying a label listed in
+`THREADKEEPER_EVOLVE_TRUST_LABELS` (empty by default; on a public repo only
+collaborators can label, so a trust label is itself a maintainer endorsement),
+or by naming the exact issue number via `evolve_apply_roadmap_issue(issue_number=N)`,
+which bypasses the gate as explicit promotion. This removes the untrusted input
+at the boundary and complements the in-prompt data-fencing of #22/#76. The
+public claim comment also carries only an opaque per-host token (a 6-char hash
+of the hostname), never the raw hostname/PID/git-rev; the full host identity is
+recorded in the local event log for multi-host triage.
+
 Fallback/manual paths remain:
 
 - `evolve_apply_curator_report(report_path="")` applies safe Curator memory
@@ -656,6 +672,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
+| `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,

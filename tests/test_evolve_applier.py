@@ -47,6 +47,12 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
         del sys.modules[name]
     import threadkeeper.server  # noqa: F401
     from threadkeeper import _mcp, db, evolve_applier, identity
+    # Capture the real implementations before stubbing so tests that need to
+    # exercise the unstubbed gh/REST paths can restore them.
+    orig = {
+        "_fetch_open_issues": evolve_applier._fetch_open_issues,
+        "_comment_issue_claim": evolve_applier._comment_issue_claim,
+    }
     monkeypatch.setattr(
         evolve_applier, "_fetch_open_issues",
         lambda repo_root=None: ([], ""),
@@ -77,7 +83,8 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     import threadkeeper.config as _cfg
     monkeypatch.setattr(_cfg, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
     monkeypatch.setattr(evolve_applier, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
-    return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier, "identity": identity}
+    return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier,
+            "identity": identity, "orig": orig}
 
 
 def _tool(pkg, name):
@@ -118,13 +125,18 @@ def _write_report(pkg, name="REPORT-20260611T120000.md", complete=True):
     return path
 
 
-def _issue(number, title, labels=("roadmap",), body="Issue body"):
+def _issue(number, title, labels=("roadmap",), body="Issue body",
+           author_association="OWNER"):
+    # Default to a trusted (maintainer) author so existing pickup tests pass
+    # through the #63 author-trust gate unchanged; untrusted-author tests pass
+    # author_association="NONE"/"CONTRIBUTOR" explicitly.
     return {
         "number": number,
         "title": title,
         "labels": [{"name": name} for name in labels],
         "body": body,
         "url": f"https://github.com/o/r/issues/{number}",
+        "authorAssociation": author_association,
     }
 
 
@@ -385,6 +397,132 @@ def test_open_roadmap_issues_allows_stale_issue_claim(
 
     assert err == ""
     assert [int(i["number"]) for i in issues] == [1]
+
+
+def test_open_roadmap_issues_skips_untrusted_author(tmp_path, monkeypatch):
+    # #63: this repo is public; an issue from a non-trusted author must NOT be
+    # auto-picked-up. Trusted associations pass; NONE/CONTRIBUTOR are skipped.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(1, "from owner", author_association="OWNER"),
+                _issue(2, "from outsider", author_association="NONE"),
+                _issue(3, "from member", author_association="MEMBER"),
+                _issue(4, "from drive-by", author_association="CONTRIBUTOR"),
+            ],
+            "",
+        ),
+    )
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    # Only OWNER (#1) and MEMBER (#3) survive the gate.
+    assert [int(i["number"]) for i in issues] == [1, 3]
+
+
+def test_open_roadmap_issues_trust_label_promotes_untrusted_author(
+    tmp_path, monkeypatch,
+):
+    # A maintainer-applied trust label is an explicit human endorsement: on a
+    # public repo only collaborators can label, so it bypasses the author gate.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_TRUST_LABELS", ["approved"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(1, "untrusted, no label", labels=("enhancement",),
+                       author_association="NONE"),
+                _issue(2, "untrusted, promoted",
+                       labels=("enhancement", "approved"),
+                       author_association="NONE"),
+            ],
+            "",
+        ),
+    )
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [2]
+
+
+def test_open_roadmap_issues_exact_mode_bypasses_author_gate(
+    tmp_path, monkeypatch,
+):
+    # Naming an exact issue number is itself the human promotion the gate
+    # requires, so enforce_author_trust=False keeps the untrusted issue.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [_issue(7, "outsider issue", author_association="NONE")], ""
+        ),
+    )
+
+    gated, _ = pkg["ea"]._open_roadmap_issues(conn)
+    assert [int(i["number"]) for i in gated] == []
+
+    promoted, err = pkg["ea"]._open_roadmap_issues(
+        conn, skip_claimed=False, enforce_author_trust=False,
+    )
+    assert err == ""
+    assert [int(i["number"]) for i in promoted] == [7]
+
+
+def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
+    tmp_path, monkeypatch,
+):
+    # #63: _fetch_open_issues now uses the REST API (gh issue list can't return
+    # author_association). Verify the shape mapping and that PRs are dropped.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    rest_payload = [
+        {
+            "number": 10,
+            "title": "real issue",
+            "labels": [{"name": "roadmap"}],
+            "body": "do the thing",
+            "html_url": "https://github.com/o/r/issues/10",
+            "url": "https://api.github.com/repos/o/r/issues/10",
+            "author_association": "OWNER",
+            "user": {"login": "po4erk91"},
+        },
+        {
+            "number": 11,
+            "title": "a pull request",
+            "labels": [],
+            "body": "",
+            "html_url": "https://github.com/o/r/pull/11",
+            "author_association": "NONE",
+            "user": {"login": "outsider"},
+            "pull_request": {"url": "https://api.github.com/.../pulls/11"},
+        },
+    ]
+
+    class _Proc:
+        returncode = 0
+        stdout = __import__("json").dumps(rest_payload)
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", lambda *a, **k: _Proc())
+
+    issues, err = pkg["orig"]["_fetch_open_issues"]()
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [10]  # PR #11 filtered out
+    only = issues[0]
+    assert only["url"] == "https://github.com/o/r/issues/10"  # html_url, not api
+    assert only["authorAssociation"] == "OWNER"
+    assert only["authorLogin"] == "po4erk91"
+    assert pkg["ea"]._issue_labels(only) == ["roadmap"]
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
@@ -798,17 +936,64 @@ def test_resolve_claim_race_loses_and_deletes_own_claim(
     assert deleted == ["https://x/issues/6#issuecomment-200"]
 
 
-def test_claim_body_includes_host_pid_git_rev(tmp_path, monkeypatch):
+def test_claim_body_redacts_host_identity_to_opaque_token(tmp_path, monkeypatch):
+    # #63: the public claim comment must NOT leak raw hostname/PID/git-rev;
+    # only the opaque per-host slug is published for cross-host triage.
     pkg = _bootstrap(tmp_path, monkeypatch)
+    import socket
+    monkeypatch.setattr(
+        pkg["ea"], "_host_identity",
+        lambda: {"hostname": "dev-laptop.local", "pid": 4242,
+                 "git_rev": "deadbeef"},
+    )
     issue = _issue(42, "Cross-host check")
     body = pkg["ea"]._roadmap_issue_claim_body(issue, now_t=1781438400.0)
     assert pkg["ea"].ROADMAP_ISSUE_CLAIM_MARKER in body
-    # The new identity block fields must be present so multi-host triage works.
-    assert "- Host:" in body
-    assert "- PID:" in body
-    assert "- Git rev:" in body
+    # No raw host identity in the public body.
+    assert "- Host:" not in body
+    assert "- PID:" not in body
+    assert "- Git rev:" not in body
+    assert "dev-laptop.local" not in body
+    assert "4242" not in body
+    assert "deadbeef" not in body
+    # The opaque slug (and only that) identifies the host.
+    assert "- Host token:" in body
+    assert pkg["ea"]._host_branch_slug() in body
     assert "- Started:" in body
     assert "Claim TTL:" in body
+
+
+def test_comment_issue_claim_records_full_host_identity_locally(
+    tmp_path, monkeypatch,
+):
+    # #63: full hostname/PID/git-rev is kept in the LOCAL event log only — it
+    # never egresses to the public tracker (the comment is redacted above).
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_host_identity",
+        lambda: {"hostname": "dev-laptop.local", "pid": 4242,
+                 "git_rev": "deadbeef"},
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = "https://github.com/o/r/issues/42#issuecomment-99\n"
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", lambda *a, **k: _Proc())
+    url, err = pkg["orig"]["_comment_issue_claim"](_issue(42, "Cross-host check"))
+    assert err == ""
+    assert url.endswith("issuecomment-99")
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=?",
+        (pkg["ea"].ROADMAP_ISSUE_CLAIM_HOST_KIND,),
+    ).fetchone()
+    assert row is not None
+    assert row["target"] == "42"
+    assert "host=dev-laptop.local" in row["summary"]
+    assert "pid=4242" in row["summary"]
+    assert "git_rev=deadbeef" in row["summary"]
 
 
 def test_roadmap_branch_name_carries_host_suffix(tmp_path, monkeypatch):
