@@ -9,6 +9,31 @@ version bumps follow semver per the policy in
 
 ### Security
 
+- **Cross-provider memory egress policy + opt-out (#74).** thread-keeper shares
+  one user-model across CLIs by design, but the most sensitive memory it holds —
+  `verbatim_user` quotes and the `dialectic` user-model (claims *about the
+  user*) — was rendered into **every** `brief()` with no provider scoping, and
+  `brief()` is consumed by whichever LLM vendor backs the active or spawned CLI.
+  So a quote said in confidence to Claude, or a trait inferred about the user,
+  could egress to **OpenAI** (Codex), **Google** (Gemini / Antigravity), or
+  **Microsoft-GitHub** (Copilot) on the next spawn or session-start — undocumented
+  and unrestricted. Added a static sensitivity-class map + CLI→vendor map
+  (`egress.py`) and the `THREADKEEPER_MEMORY_EGRESS` knob: `all` (default —
+  current behavior, brief byte-identical) | `same-vendor` (personal-class memory
+  renders only for Anthropic/Claude, omitted for third-party vendors) |
+  `work-only` (personal renders for no vendor). `render_brief` resolves the
+  consuming vendor (explicit `consumer_cli` arg → `THREADKEEPER_EGRESS_CONSUMER`
+  → `active_cli()`) and, under a restricted policy, drops the `verbatim`,
+  `user_model (dialectic)`, and `currently_testing` sections — leaving a one-line
+  `egress policy=…: personal memory … withheld from <vendor>` disclosure so the
+  consuming agent knows personal context was intentionally withheld. `spawn()`
+  injects `THREADKEEPER_EGRESS_CONSUMER=<target CLI>` into the child process env
+  and the slim MCP config, so a child spawned to a third-party CLI cannot pull
+  more personal memory than the policy allows for that vendor — deterministically,
+  without relying on the child's own ppid walk. `work`/`shared` classes
+  (threads/notes/skills/lessons/concepts) always egress. README + ARCHITECTURE
+  document the default and the opt-out. Distinct from the local-perms gap
+  (#21/#68) and the prompt-injection surface (#22/#76).
 - **Lock down spawn artifacts + minimize embedded env (#68).** The per-task
   **slim MCP config** (`slim-mcp-<task_id>.json`) was written with the default
   umask (typically `0644`, world-readable) and embedded the host

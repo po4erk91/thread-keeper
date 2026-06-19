@@ -501,6 +501,13 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     from .. import spawn_config as _sc, identity as _id
     chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
+    # Cross-provider egress (issue #74): tell the child which LLM vendor will
+    # consume its brief() so render_brief gates personal-class memory
+    # deterministically on the spawn path — not relying on the child's own
+    # ppid walk. Propagated both to the child process env (non-claude adapters
+    # Popen with child_env) and the slim MCP config (claude children).
+    child_env["THREADKEEPER_EGRESS_CONSUMER"] = chosen_cli
+    mcp_env_overrides["THREADKEEPER_EGRESS_CONSUMER"] = chosen_cli
     stdin_text: Optional[str] = None
     stdin_path: Optional[Path] = None
     if chosen_cli != "claude":

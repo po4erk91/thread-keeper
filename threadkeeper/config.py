@@ -166,6 +166,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("THREADKEEPER_AUTO_REVIEW", "auto_review"),
     )
 
+    # ── Cross-provider memory egress (issue #74) ─────────────────────────────
+    # Which sensitivity classes may render into a brief() consumed by a
+    # third-party LLM vendor. Personal-class memory (verbatim quotes + dialectic
+    # user-model) egresses to whatever vendor backs the active/spawned CLI.
+    #   all          (default) — current behavior, no gating, egress everywhere
+    #   same-vendor  — personal renders only for the native vendor (Anthropic /
+    #                  Claude); omitted for OpenAI / Google / Microsoft
+    #   work-only    — personal never renders, for any vendor
+    # Unknown values normalize to `all` (fail-open — don't regress the product).
+    memory_egress: str = Field(
+        default="all",
+        validation_alias=AliasChoices("THREADKEEPER_MEMORY_EGRESS", "memory_egress"),
+    )
+
     # ── Shadow review daemon ─────────────────────────────────────────────────
     shadow_review_interval_s: float = 0.0
     shadow_review_window_s: int = 900
@@ -276,6 +290,14 @@ class Settings(BaseSettings):
     def _normalize_backend(cls, v: str) -> str:
         return v.strip().lower()
 
+    @field_validator("memory_egress", mode="after")
+    @classmethod
+    def _normalize_egress(cls, v: str) -> str:
+        # Light tidy only (lower/strip); canonicalization + alias mapping +
+        # fail-open fallback live in egress.normalize_policy so the policy
+        # vocabulary has a single owner and config stays import-cycle free.
+        return v.strip().lower()
+
     @field_validator("panel_roles", mode="before")
     @classmethod
     def _parse_panel_roles(cls, v):
@@ -342,6 +364,7 @@ def _derive_constants(s: "Settings") -> dict:
         "BRIEF_LEAN": s.brief_lean,
         "BRIEF_NO_THREAD_NUDGE": s.brief_no_thread_nudge,
         "AUTO_REVIEW_ENABLED": s.auto_review,
+        "MEMORY_EGRESS": s.memory_egress,
         "SPAWN_BUDGET_MB": s.spawn_budget_mb,
         "SPAWN_ESTIMATE_SLIM_MB": s.spawn_estimate_slim_mb,
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,

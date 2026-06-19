@@ -26,6 +26,7 @@ threadkeeper/
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
+├── egress.py          cross-provider memory egress policy (issue #74)
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
 ├── process_health.py  orphan-detection (ppid + heartbeat)
@@ -327,6 +328,30 @@ so their direct Python/MCP calls hit the same store as the parent.
 
 `slim=False` is set explicitly when the child genuinely needs another MCP
 (e.g. `context7` for library documentation).
+
+### Cross-provider memory egress (issue #74)
+
+`spawn()` resolves the child's target CLI via `resolve_agent(role, active_cli)`
+and may route it to a third-party vendor (Codex→OpenAI, Gemini/Antigravity→
+Google, Copilot→Microsoft). A slim child still loads the thread-keeper MCP, so
+it can call `brief()` and pull the **personal-class** user-model into a prompt
+processed by that vendor. `egress.py` is the control layer:
+
+- `THREADKEEPER_MEMORY_EGRESS` (`all` default | `same-vendor` | `work-only`)
+  decides whether personal-class sections (`verbatim`, `user_model (dialectic)`,
+  `currently_testing`) render for a given consuming vendor. `all` skips the gate
+  entirely → brief stays byte-identical to pre-#74.
+- `render_brief(..., consumer_cli=…)` resolves the consumer from (1) the explicit
+  arg, (2) `THREADKEEPER_EGRESS_CONSUMER` (set by `spawn()` so the spawn path is
+  deterministic and doesn't depend on the child's own ppid walk), then (3)
+  `identity.active_cli()`. When the policy restricts a third-party vendor, the
+  personal sections are dropped and replaced by a one-line `withheld` disclosure.
+- `spawn()` injects `THREADKEEPER_EGRESS_CONSUMER=<chosen_cli>` into both the
+  child process env and the slim MCP config, so a child spawned to a third-party
+  CLI cannot retrieve more personal memory than the policy allows for that vendor.
+
+The native vendor is Anthropic — the brief format and personal memory are
+authored in Claude sessions. `work`/`shared` classes always egress.
 
 ### Search proxy (search_via_parent)
 
@@ -851,6 +876,7 @@ rubric-sensitivity + a subprocess end-to-end run).
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_MEMORY_EGRESS` | `all` | personal-class memory egress scope: `all` / `same-vendor` / `work-only` (see Spawn → Cross-provider memory egress) |
 | `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | `onnx` (fastembed, no PyTorch) or `sentence-transformers` (fallback) |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | jsonl for ingest |
