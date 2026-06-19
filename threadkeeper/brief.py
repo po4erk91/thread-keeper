@@ -31,7 +31,8 @@ from .i18n import SPAWN_CUE_RE as _SPAWN_CUE_RE  # noqa: E402
 
 
 def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
-                 scope: str = "full", lean: Optional[bool] = None) -> str:
+                 scope: str = "full", lean: Optional[bool] = None,
+                 consumer_cli: Optional[str] = None) -> str:
     now = int(time.time())
     out: list[str] = []
 
@@ -46,6 +47,23 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     if lean is None:
         lean = BRIEF_LEAN
     eff_lean = lean or not full
+
+    # ── cross-provider egress gate (issue #74) ────────────────────────────
+    # Personal-class sections (verbatim quotes + dialectic user-model) egress to
+    # whatever LLM vendor backs the consuming CLI. Under a restricted
+    # THREADKEEPER_MEMORY_EGRESS policy, omit them when the consumer is a
+    # third-party vendor. Default ('all') keeps allow_personal True and never
+    # resolves the consumer — output stays byte-identical to pre-#74.
+    from . import egress
+    egress_policy = egress.current_policy()
+    allow_personal = True
+    if egress_policy != "all":
+        if consumer_cli is None:
+            consumer_cli = (
+                os.environ.get("THREADKEEPER_EGRESS_CONSUMER")
+                or identity.active_cli()
+            )
+        allow_personal = egress.personal_allowed(consumer_cli, egress_policy)
 
     # ── ctx ───────────────────────────────────────────────────────────────
     last = conn.execute(
@@ -599,11 +617,21 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         "FROM verbatim v "
         "ORDER BY react DESC, v.created_at DESC, v.id DESC LIMIT 5"
     ).fetchall()
-    if qt and full:
+    if qt and full and allow_personal:
         out.append("")
         out.append("verbatim (reactivated first)")
         for r in qt:
             out.append(f"  react={r['react']} {r['speaker']}> {q(r['content'][:200])}")
+    elif full and not allow_personal:
+        # Personal memory withheld from a third-party vendor under the egress
+        # policy. Disclose it so the consuming agent knows personal context
+        # exists but was intentionally not sent (rather than assuming none).
+        out.append("")
+        out.append(
+            f"egress policy={egress_policy}: personal memory "
+            f"(verbatim + user_model) withheld from "
+            f"{egress.vendor_for(consumer_cli) or consumer_cli or 'this vendor'}"
+        )
 
     # ── relevant_to_query (only if query passed) ──────────────────────────
     if query:
@@ -705,7 +733,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         ).fetchall()
     except sqlite3.OperationalError:
         syn_rows = []
-    if syn_rows and full:
+    if syn_rows and full and allow_personal:
         # Group by domain inline (keep total ≤ 10 lines incl. headers).
         out.append("")
         out.append("user_model (dialectic)")
@@ -750,7 +778,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         ).fetchall()
     except sqlite3.OperationalError:
         hyp_rows = []
-    if hyp_rows and not eff_lean:
+    if hyp_rows and not eff_lean and allow_personal:
         out.append("")
         out.append("currently_testing (hypothesis — watch next user moves)")
         for r in hyp_rows:

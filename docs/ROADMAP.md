@@ -318,6 +318,21 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   elicitation; and a write-time screen refuses loop-origin bodies with
   imperative-override / remote-exec idioms. `SECURITY.md` documents the trust
   boundary. Scope was S–M.
+- ✅ DONE (#74). **Cross-provider memory egress.** `brief()` rendered the
+  personal-class user-model — `verbatim_user` quotes + the `dialectic` claims
+  *about the user* — unconditionally, and `brief()` is consumed by whatever LLM
+  vendor backs the active/spawned CLI, so a quote said to Claude could egress to
+  OpenAI / Google / Microsoft on the next spawn or session-start with no policy
+  or opt-out. Added a static sensitivity-class map + CLI→vendor map (`egress.py`)
+  and the `THREADKEEPER_MEMORY_EGRESS` knob (`all` default — byte-identical
+  behavior | `same-vendor` — personal only to Anthropic/Claude | `work-only` —
+  personal to no vendor). `render_brief` resolves the consuming vendor (explicit
+  arg → `THREADKEEPER_EGRESS_CONSUMER` set by `spawn()` → `active_cli()`) and
+  omits the personal sections for a restricted third-party consumer, leaving a
+  one-line `withheld` disclosure; `spawn()` propagates the target vendor so a
+  third-party child can't pull more than the policy allows. README + ARCHITECTURE
+  document the default and the opt-out. Distinct from the local-perms gap
+  (#21/#68) and the injection surface (#22/#76). Scope was S.
 
 **Evolve issue-flow reliability.** The applier posts a claim comment *before*
 spawning the implementer; a spawn failure or red-CI abort leaks the claim for a

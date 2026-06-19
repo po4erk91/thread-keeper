@@ -151,6 +151,43 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Memory egress (cross-provider privacy)
+
+thread-keeper is "one user model … shared across CLIs," and that sharing is by
+design. The flip side: the most sensitive memory it holds — `verbatim_user`
+quotes and the `dialectic` user-model (claims *about you*: style, values,
+workflow) — is rendered into every `brief()`, and `brief()` is consumed by
+**whichever LLM vendor backs the active or spawned CLI.** So by default, a quote
+you said to Claude, or a trait inferred about you, can be transmitted to OpenAI
+(Codex), Google (Gemini / Antigravity), or Microsoft-GitHub (Copilot) on the
+next session-start or spawn under that CLI. This is a deliberate default, not a
+leak — but it's worth stating plainly, and it's controllable.
+
+`THREADKEEPER_MEMORY_EGRESS` scopes the egress of **personal-class** memory
+(verbatim + dialectic user-model). `work`-class (threads/notes/tasks) and
+`shared`-class (skills/lessons/concepts) memory always egress.
+
+| Value | Personal-class memory egresses to… |
+|---|---|
+| `all` *(default)* | every vendor — current behavior, brief is byte-identical to pre-policy |
+| `same-vendor` | Claude / Anthropic only; omitted for OpenAI / Google / Microsoft CLIs |
+| `work-only` | no vendor — personal memory never leaves the machine |
+
+Under a restricted policy, the gated `brief()` drops the `verbatim` and
+`user_model (dialectic)` sections and leaves a one-line `egress policy=…:
+personal memory … withheld from <vendor>` disclosure so the consuming agent
+knows personal context exists but was intentionally not sent. The native vendor
+is Anthropic because the brief format and personal memory are authored in Claude
+sessions. The gate applies on every consumption path: the foreground brief and
+any spawned child — `spawn()` tells the child which vendor will consume its
+brief, so a child spawned to a third-party CLI cannot retrieve more than the
+policy allows for that vendor. Set it in `~/.threadkeeper/.env` (a real env
+override wins over `.env`):
+
+```bash
+THREADKEEPER_MEMORY_EGRESS=same-vendor
+```
+
 ---
 
 ## Core systems
@@ -572,6 +609,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
