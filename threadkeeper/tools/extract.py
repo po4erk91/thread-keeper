@@ -275,23 +275,23 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
                         cluster_key = "cluster:" + ",".join(
                             u[:8] for u in member_uuids[:6]
                         )
-                        if conn.execute(
-                            "SELECT 1 FROM extract_candidates WHERE source_uuid=? "
-                            "AND status IN ('pending','accepted')",
-                            (cluster_key,),
-                        ).fetchone():
-                            skipped += 1
-                            continue
-                        conn.execute(
-                            "INSERT INTO extract_candidates (kind, source_uuid, "
-                            "source_cid, content, rationale, status, created_at) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            ("note", cluster_key, sid, rep["content"][:2000],
-                             f"H4 paraphrase_repeat n={len(members)} "
-                             f"sess={sid[:8]} centroid={rep['uuid'][:8]}",
-                             "pending", now),
+                        # Route through _enqueue (single source of truth) so
+                        # the H4 dedup counts 'rejected' too. The inline query
+                        # this replaced checked only ('pending','accepted'),
+                        # so a rejected cluster — keyed by a deterministic
+                        # cluster_key the daemon re-derives every overlapping
+                        # window — was re-harvested forever, the exact #157/#158
+                        # prod loop on the one path that never got the fix.
+                        res = _enqueue(
+                            conn, "note", cluster_key, sid,
+                            rep["content"][:2000],
+                            f"H4 paraphrase_repeat n={len(members)} "
+                            f"sess={sid[:8]} centroid={rep['uuid'][:8]}",
                         )
-                        counts["note"] += 1
+                        if res:
+                            counts["note"] += 1
+                        else:
+                            skipped += 1
     _emit(conn, "extract_recent",
           summary=" ".join(f"{k}={v}" for k, v in counts.items()))
     conn.commit()
