@@ -26,7 +26,7 @@ from ..identity import _ensure_session
 from ..shadow_review import (
     SHADOW_REVIEW_PROMPT,
     _collect_window,
-    _last_shadow_ts,
+    _last_shadow_rowid,
     _record_shadow_pass,
     run_shadow_pass,
     shadow_telemetry,
@@ -53,7 +53,7 @@ def shadow_review_run(force: bool = False, dry_run: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     if dry_run:
-        floor = _last_shadow_ts(conn)
+        floor = _last_shadow_rowid(conn)
         dump, high_water, n_chars = _collect_window(
             conn, floor, SHADOW_REVIEW_WINDOW_S,
         )
@@ -62,7 +62,7 @@ def shadow_review_run(force: bool = False, dry_run: bool = False) -> str:
         head = dump[:2000]
         suffix = "…(truncated for display)" if len(dump) > 2000 else ""
         return (
-            f"dry_run: n_chars={n_chars} high_water_ts={high_water} "
+            f"dry_run: n_chars={n_chars} high_water_rowid={high_water} "
             f"min_chars={SHADOW_REVIEW_MIN_CHARS} "
             f"would_spawn={'yes' if n_chars >= SHADOW_REVIEW_MIN_CHARS else 'no'}\n\n"
             f"--- prompt preview ---\n"
@@ -158,15 +158,24 @@ def shadow_review_status(snapshot_path: str = "") -> str:
     for human review (the side-channel snapshot)."""
     conn = get_db()
     _ensure_session(conn)
-    floor = _last_shadow_ts(conn)
+    floor = _last_shadow_rowid(conn)
     now = int(time.time())
-    age_s = (now - floor) if floor else None
+    # Cursor is an ingest-order rowid (#69); derive a human age from the
+    # transcript timestamp of the row it points at, if that row still exists.
+    age_s = None
+    if floor:
+        wm = conn.execute(
+            "SELECT created_at FROM dialog_messages WHERE rowid=?", (floor,)
+        ).fetchone()
+        if wm and wm["created_at"]:
+            age_s = now - int(wm["created_at"])
     lines = [
         f"interval_s={SHADOW_REVIEW_INTERVAL_S:.0f} "
         f"window_s={SHADOW_REVIEW_WINDOW_S} "
         f"min_chars={SHADOW_REVIEW_MIN_CHARS}",
-        f"cursor_ts={floor} (age={age_s}s)" if floor
-        else "cursor_ts=0 (no prior pass)",
+        f"cursor_rowid={floor}" + (f" (watermark age={age_s}s)"
+                                   if age_s is not None else "") if floor
+        else "cursor_rowid=0 (no prior pass)",
         "",
         "recent passes (newest first):",
     ]

@@ -12,7 +12,7 @@ import time
 from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
-from ..dialectic_miner import run_mine_pass, _last_mine_ts
+from ..dialectic_miner import run_mine_pass, _last_mine_rowid
 from ..dialectic_validator import (
     run_validate_pass, _collect_pending, _last_validate_ts,
 )
@@ -66,11 +66,11 @@ def dialectic_mine_status() -> str:
         ).fetchone()[0]
     except Exception:
         pending = total = "?"
-    floor = _last_mine_ts(conn)
+    floor = _last_mine_rowid(conn)
     lines = [
         f"interval_s={DIALECTIC_MINE_INTERVAL_S:.0f} buffer_pending={pending} "
         f"buffer_total={total}",
-        f"cursor_ts={floor}" if floor else "cursor_ts=0 (no prior pass)",
+        f"cursor_rowid={floor}" if floor else "cursor_rowid=0 (no prior pass)",
         "",
         "recent passes (newest first):",
     ]
