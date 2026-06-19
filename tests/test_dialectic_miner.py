@@ -80,6 +80,26 @@ def test_dedup_by_dialog_uuid(tmp_path, monkeypatch):
     assert n == 1
 
 
+def test_captures_late_out_of_order_ingest(tmp_path, monkeypatch):
+    """Issue #69: a user turn ingested with a created_at BELOW the cursor
+    (resumed/backfilled session) is still captured, because the cursor is the
+    ingest-order rowid, not the transcript timestamp."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    _seed(conn, "user", "я хочу всегда короткие коммиты", now - 50)
+    conn.commit()
+    assert "captured=1" in pkg["dialectic_miner"].run_mine_pass(force=True)
+    # Late ingest: OLDER created_at, but inserted now → higher rowid.
+    _seed(conn, "user", "никогда не пушь на main без ревью", now - 5000,
+          session_id="resumed-sess")
+    conn.commit()
+    assert "captured=1" in pkg["dialectic_miner"].run_mine_pass(force=True)
+    quotes = [r["user_quote"] for r in conn.execute(
+        "SELECT user_quote FROM dialectic_observations ORDER BY id").fetchall()]
+    assert "никогда не пушь на main без ревью" in quotes
+
+
 def test_excludes_spawned_child_session(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()

@@ -7,6 +7,28 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Late / out-of-order ingested dialog was evaluated by neither learning loop
+  (#69).** `shadow_review` and `dialectic_miner` advanced a single global
+  high-water cursor over `dialog_messages.created_at` (the message's own
+  transcript timestamp), but ingestion is **not** monotonic in `created_at`: a
+  dormant/resumed session, a newly-installed adapter, or a post-downtime
+  `_ingest_all` backfill lands rows whose `created_at` sits **below** a cursor
+  that fresher sessions already pushed forward — so those rows were silently
+  never reviewed for class-level learning. Both loops now drive their cursor
+  off the `dialog_messages` **ingest-order rowid** instead, so a late row
+  (old `created_at`, fresh rowid) always lands above the cursor and is
+  evaluated exactly once. Because the rowid advances monotonically,
+  `shadow_review` no longer needs per-row dedup to avoid re-spawning a window
+  it already saw, and `dialectic_miner` no longer parks its cursor at `now` on
+  an empty pass (which had pushed the created_at cursor into the future).
+  Pre-#69 watermarks (a stored `created_at`) are translated to the matching
+  rowid once, then self-heal on the next pass. `shadow_review_status` /
+  `dialectic_mine_status` now report `cursor_rowid` (was `cursor_ts`).
+  (`candidate_reviewer` and `dialectic_validator` were never exposed — they
+  re-scan the whole pending queue and use the cursor only for telemetry.)
+
 ### Security
 
 - **Lock down spawn artifacts + minimize embedded env (#68).** The per-task

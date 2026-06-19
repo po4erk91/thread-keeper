@@ -114,6 +114,58 @@ def alive(pid: int) -> bool:
     return True
 
 
+# ── Ingest-order watermark (issue #69) ─────────────────────────────────
+# The shadow_review and dialectic_miner loops drive their high-water cursor
+# off the dialog_messages implicit `rowid` (ingest order), NOT the transcript
+# `created_at`. `created_at` is the message's own jsonl timestamp; ingestion
+# is not monotonic in it (a dormant/resumed session, a newly-installed
+# adapter, or a post-downtime `_ingest_all` backfill lands rows whose
+# `created_at` is BELOW a cursor that fresher sessions already pushed
+# forward), so a created_at cursor silently steps over those late arrivals.
+# `dialog_messages` is append-only (no DELETE / no VACUUM in the package), so
+# its rowid is assigned in strict ingest order — a late row always lands
+# ABOVE the cursor and is evaluated exactly once, and the monotonic advance
+# means shadow_review never re-spawns a window it already saw.
+#
+# Pre-#69 deployments stored a created_at unix timestamp in `events.target`.
+# A rowid is orders of magnitude smaller than any real unix timestamp, so a
+# stored watermark at or above this floor is a legacy created_at value we
+# translate to the matching rowid once (the next pass overwrites it with a
+# real rowid). 1_000_000_000 is 2001-09-09; every real created_at exceeds it.
+LEGACY_TS_FLOOR = 1_000_000_000
+
+
+def dialog_rowid_at_or_before(conn: sqlite3.Connection, created_at_ts: int) -> int:
+    """Largest dialog_messages rowid whose created_at <= `created_at_ts`.
+
+    Used to (a) translate a legacy created_at watermark into an ingest-order
+    rowid on the first read after the #69 upgrade and (b) seed the first-ever
+    shadow window so it doesn't replay the whole transcript history. Returns 0
+    when no row is that old (or on a missing table)."""
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM dialog_messages "
+            "WHERE created_at <= ?",
+            (int(created_at_ts),),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0] or 0)
+
+
+def resolve_ingest_watermark(conn: sqlite3.Connection, stored: int) -> int:
+    """Interpret a stored cursor value as a dialog_messages ingest-order rowid.
+
+    A value >= LEGACY_TS_FLOOR is a pre-#69 created_at timestamp → translate
+    to the equivalent rowid. Smaller positives are already rowids. 0/negative
+    → 0 (no cursor yet)."""
+    if stored <= 0:
+        return 0
+    if stored >= LEGACY_TS_FLOOR:
+        return dialog_rowid_at_or_before(conn, stored)
+    return stored
+
+
 def normalize_text(s: str) -> str:
     """Whitespace-collapsed lower for fuzzy duplicate detection."""
     return " ".join(s.lower().strip().split())
