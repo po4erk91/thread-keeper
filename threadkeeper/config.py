@@ -16,10 +16,10 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
 _ENV_FILE: str = os.environ.get(
@@ -250,6 +250,23 @@ class Settings(BaseSettings):
     # comments, and retract our claim if another host raced us. Cross-host
     # TOCTOU guard. Set to 0 in tests to skip the wait.
     roadmap_claim_race_window_s: float = 3.0
+    # Author-trust gate for autonomous GitHub-issue pickup (issue #63). This
+    # repo is public, so any account can open an issue whose body is then
+    # injected into a permission-bypassing implementer child. Auto-pickup is
+    # limited to issues whose GitHub author association is in this set;
+    # everything else needs explicit human promotion (a trust label below, or
+    # invoking the applier on the exact issue number). CSV string or list.
+    # NoDecode: keep a raw env string out of pydantic-settings' JSON decoder so
+    # the CSV validator below handles it.
+    evolve_trusted_author_associations: Annotated[list[str], NoDecode] = [
+        "OWNER", "MEMBER", "COLLABORATOR",
+    ]
+    # Optional escape hatch for the author gate: issues carrying any of these
+    # labels are eligible for auto-pickup regardless of author association. On
+    # a public repo only collaborators can apply labels, so a trust label is
+    # itself a maintainer endorsement. Empty by default — association is the
+    # sole gate. CSV string or list.
+    evolve_trust_labels: Annotated[list[str], NoDecode] = []
 
     # ── Thread janitor daemon ─────────────────────────────────────────────────
     thread_janitor_interval_s: float = 0.0
@@ -305,6 +322,22 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [r.strip() for r in v.split(",") if r.strip()]
         return v
+
+    @field_validator("evolve_trusted_author_associations", mode="before")
+    @classmethod
+    def _parse_trusted_assocs(cls, v):
+        """Accept CSV string or list; normalize to UPPER (GitHub's casing)."""
+        if isinstance(v, str):
+            v = [a for a in v.split(",")]
+        return [str(a).strip().upper() for a in (v or []) if str(a).strip()]
+
+    @field_validator("evolve_trust_labels", mode="before")
+    @classmethod
+    def _parse_trust_labels(cls, v):
+        """Accept CSV string or list; normalize to lower (case-insensitive)."""
+        if isinstance(v, str):
+            v = [a for a in v.split(",")]
+        return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
 
 
 # ── Instantiate ──────────────────────────────────────────────────────────────
@@ -407,6 +440,10 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_REPO_URL": s.evolve_repo_url,
         "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
         "ROADMAP_CLAIM_RACE_WINDOW_S": s.roadmap_claim_race_window_s,
+        "EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS": (
+            s.evolve_trusted_author_associations
+        ),
+        "EVOLVE_TRUST_LABELS": s.evolve_trust_labels,
         "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
         "THREAD_IDLE_CLOSE_DAYS": s.thread_idle_close_days,
         "DIALECTIC_MINE_INTERVAL_S": s.dialectic_mine_interval_s,

@@ -206,6 +206,7 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
                 "labels": [{"name": "roadmap"}],
                 "body": "Need counters",
                 "url": "https://github.com/o/r/issues/6",
+                "authorAssociation": "OWNER",
             }],
             "",
         ),
