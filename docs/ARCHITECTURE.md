@@ -701,7 +701,9 @@ numerically identical, so after a switch run `tk-migrate-embeddings --all`
 ## MCP tools (107 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
-auto-generates JSON-Schema from annotations.
+auto-generates JSON-Schema from annotations. Every tool also carries an
+explicit read/write **`ToolAnnotations`** hint (see the annotation contract
+below).
 
 | Module | N | Tools |
 |---|---|---|
@@ -735,9 +737,32 @@ auto-generates JSON-Schema from annotations.
 | missed_spawns | 1 | find_missed_spawns |
 | session | 1 | session_end |
 
-Each @mcp.tool() is a synchronous Python function; FastMCP wraps it in
-JSON-Schema automatically from type annotations. One process — one mcp
-instance (`threadkeeper._mcp.mcp`).
+Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+automatically from type annotations. One process — one mcp instance
+(`threadkeeper._mcp.mcp`).
+
+### Tool annotation contract (#67)
+
+Tools register through two thin wrappers in `_mcp.py` instead of bare
+`@mcp.tool()`, so `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for
+every tool:
+
+- `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
+  `search`, `dialog_search`, `lesson_list`, the status tools, `compost`, …).
+- `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
+  mutations. The ten delete/overwrite/kill tools carry `destructiveHint=True`:
+  `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
+  `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
+  `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
+  (`close_thread`, `mark_skill_materialized`, `core_set`, deletes-by-key, …).
+
+This is the static metadata a confirmation/elicitation host reads to decide
+which calls warrant a prompt (substrate for #26). The five status tools
+(`context`, `spawn_budget_status`, `spawn_status`, `mp_health`,
+`agent_status`) additionally return an `outputSchema` + `structuredContent`
+(typed models in `tool_schemas.py`, built via `structured_result()`), keeping
+the legacy human-readable text block for backward compatibility. The contract
+is enforced by `tests/test_tool_annotations.py`.
 
 ## Tests
 

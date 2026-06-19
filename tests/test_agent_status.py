@@ -12,6 +12,15 @@ def _tool(pkg, name):
     return pkg["mcp"]._tool_manager._tools[name].fn
 
 
+def _txt(res):
+    """Text payload from a tool result (str or CallToolResult, #67)."""
+    if isinstance(res, str):
+        return res
+    return "\n".join(
+        c.text for c in res.content if getattr(c, "type", None) == "text"
+    )
+
+
 def _insert_task(pkg, task_id: str, prompt: str, rss_mb: int = 0):
     conn = pkg["db"].get_db()
     now = int(time.time())
@@ -317,7 +326,7 @@ def test_agent_status_mcp_json_output(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     _insert_task(pkg, "tk_status", "Build a compact menu-bar status app.", rss_mb=100)
 
-    raw = _tool(pkg, "agent_status")(json_output=True, refresh=False)
+    raw = _txt(_tool(pkg, "agent_status")(json_output=True, refresh=False))
     data = json.loads(raw)
     assert data["running_count"] == 1
     assert "loops" in data
@@ -468,7 +477,7 @@ def test_agent_status_text_output(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     _insert_task(pkg, "tk_status", "Build a compact menu-bar status app.", rss_mb=100)
 
-    txt = _tool(pkg, "agent_status")(json_output=False, refresh=False)
+    txt = _txt(_tool(pkg, "agent_status")(json_output=False, refresh=False))
     assert "loops enabled=" in txt
     assert "Candidate reviewer" in txt
     assert "agents=1" in txt

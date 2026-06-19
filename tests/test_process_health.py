@@ -18,6 +18,15 @@ def _tool(pkg, name):
     return pkg["mcp"]._tool_manager._tools[name].fn
 
 
+def _txt(res):
+    """Text payload from a tool result (str or CallToolResult, #67)."""
+    if isinstance(res, str):
+        return res
+    return "\n".join(
+        c.text for c in res.content if getattr(c, "type", None) == "text"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # classify() — the heart of the logic
 # ─────────────────────────────────────────────────────────────────────
@@ -219,7 +228,7 @@ def test_mp_health_tool_shows_table(mp_with_cid, monkeypatch):
          "heartbeat_age_s": 10, "is_self": False, "is_orphaned": False,
          "orphan_reason": "parent_alive"},
     ])
-    txt = _tool(pkg, "mp_health")()
+    txt = _txt(_tool(pkg, "mp_health")())
     assert "total=2" in txt
     assert "orphans=1" in txt
     assert "ORPHAN" in txt

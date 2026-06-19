@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from ..config import EVOLVE_APPLY_INTERVAL_S
@@ -50,7 +50,7 @@ from ..evolve_applier import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def evolve_apply(evolve_id: int) -> str:
     """Implement a PROMOTED + not-yet-applied format-evolution suggestion.
 
@@ -72,7 +72,7 @@ def evolve_apply(evolve_id: int) -> str:
     return apply_evolve(int(evolve_id))
 
 
-@mcp.tool()
+@write_tool()
 def evolve_apply_curator_report(report_path: str = "") -> str:
     """Apply a Curator advisory report using the existing evolve_applier role.
 
@@ -86,7 +86,7 @@ def evolve_apply_curator_report(report_path: str = "") -> str:
     return apply_curator_report(report_path)
 
 
-@mcp.tool()
+@write_tool()
 def evolve_apply_roadmap_issue(issue_number: int = 0) -> str:
     """Implement one open GitHub issue through the evolve_applier role.
 
@@ -99,7 +99,7 @@ def evolve_apply_roadmap_issue(issue_number: int = 0) -> str:
     return apply_roadmap_issue(int(issue_number or 0))
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     """Mark a format-evolution suggestion as APPLIED — called by the
     evolve_applier child after it has opened the PR.
@@ -116,7 +116,7 @@ def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     return mark_applied(conn, int(evolve_id), pr_url.strip())
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def evolve_mark_roadmap_issue_applied(issue_number: int, pr_url: str) -> str:
     """Mark a roadmap issue as handed off — called by evolve_applier only
     after it has opened a real pull request for that issue."""
@@ -130,7 +130,7 @@ def evolve_mark_roadmap_issue_applied(issue_number: int, pr_url: str) -> str:
     )
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def evolve_mark_curator_report_applied(report_path: str, summary: str) -> str:
     """Mark a Curator report as processed by the evolve_applier child.
 
@@ -144,7 +144,7 @@ def evolve_mark_curator_report_applied(report_path: str, summary: str) -> str:
     return mark_curator_report_applied(conn, report_path.strip(), summary)
 
 
-@mcp.tool()
+@read_tool()
 def evolve_apply_status() -> str:
     """Show evolve-applier config + curator/evolve queues + running applier
     + the last 5 apply passes."""

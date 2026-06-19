@@ -911,6 +911,8 @@ the suite on every push and PR.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
+├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults
 ├── db.py                 # SQLite schema + sqlite-vec loader
@@ -929,7 +931,7 @@ threadkeeper/
 │   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @mcp.tool entries — 89 of them
+└── tools/                # @read_tool()/@write_tool() entries — 113 of them
     ├── threads.py
     ├── peers.py
     ├── spawn.py
@@ -938,6 +940,19 @@ threadkeeper/
     ├── validate.py
     └── ...
 ```
+
+**Tool annotation contract (#67).** Every tool registers through
+`@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
+so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
+`readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
+`dialog_search`, `lesson_list`, the status tools, …) and `readOnlyHint=False`
+for mutations, with `destructiveHint=True` on the ten delete/overwrite/kill
+tools (`compost` is read-only — it only surfaces idle threads). A
+confirmation/elicitation host reads this to decide which calls warrant a
+prompt. The five status tools (`context`, `spawn_budget_status`,
+`spawn_status`, `mp_health`, `agent_status`) additionally advertise an
+`outputSchema` and return `structuredContent` alongside the legacy text
+block. The contract is enforced by `tests/test_tool_annotations.py`.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

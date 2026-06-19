@@ -9,7 +9,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from .. import identity
@@ -18,7 +18,7 @@ from ..embeddings import _embed, embed_tag
 from .spawn import spawn
 
 
-@mcp.tool()
+@read_tool()
 def pickup_candidates(min_idle_days: int = 3, max_n: int = 5) -> str:
     """Surface unresolved threads that are stale and unclaimed — candidates
     for self-initiated pickup when context is free.
@@ -50,7 +50,7 @@ def pickup_candidates(min_idle_days: int = 3, max_n: int = 5) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def claim_pickup(thread_id: str, plan: str = "",
                  spawn_role: str = "", auto_spawn: bool = False) -> str:
     """Claim a thread for self-initiated work. Marks it claimed by my cid.
@@ -124,7 +124,7 @@ def claim_pickup(thread_id: str, plan: str = "",
     return f"ok claimed thread={tid}{spawn_info}"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def release_pickup(thread_id: str) -> str:
     """Release a claim. Only the claimant can release."""
     conn = get_db()

@@ -12,7 +12,7 @@ reports (and optionally applies) four kinds of cleanup:
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, normalize_text
@@ -26,7 +26,7 @@ CONSOLIDATE_STALE_THREAD_DAYS = 30
 CONSOLIDATE_ORPHAN_CLAIM_DAYS = 7
 
 
-@mcp.tool()
+@write_tool(destructive=True)
 def consolidate(dry_run: bool = True,
                 stale_days: int = CONSOLIDATE_STALE_THREAD_DAYS,
                 orphan_days: int = CONSOLIDATE_ORPHAN_CLAIM_DAYS,

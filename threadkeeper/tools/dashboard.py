@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age
 from ..identity import _ensure_session
@@ -86,7 +86,7 @@ _OUTCOME_KINDS = (
 )
 
 
-@mcp.tool()
+@read_tool()
 def mp_dashboard(window_days: int = 7) -> str:
     """One-call rollup of the whole thread-keeper system: store sizes, how
     often each autonomous loop fired (in the last `window_days` and 30d),

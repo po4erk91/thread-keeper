@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age
 from ..identity import _ensure_session
@@ -38,7 +38,7 @@ from ..config import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def shadow_review_run(force: bool = False, dry_run: bool = False) -> str:
     """Fire one shadow-review pass.
 
@@ -141,7 +141,7 @@ def _telemetry_markdown(tel: dict, now: int) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@read_tool()
 def shadow_review_status(snapshot_path: str = "") -> str:
     """Show shadow-review config, recent passes, and production telemetry.
 

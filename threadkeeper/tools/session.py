@@ -4,14 +4,14 @@ record a terse summary note for future briefs."""
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age
 from ..embeddings import _embed, embed_tag
 from .. import identity
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def session_end(summary: str = "") -> str:
     """Mark current session ended with optional terse summary."""
     if identity._session_id is None:

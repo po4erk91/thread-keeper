@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from .. import config
 from .. import config_watcher
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def config_reload(force: bool = True) -> str:
     """Re-read the watched settings file and hot-apply changed env knobs.
 
@@ -36,7 +36,7 @@ def config_reload(force: bool = True) -> str:
     return config_watcher.run_config_watch_pass(force=force)
 
 
-@mcp.tool()
+@read_tool()
 def config_watch_status() -> str:
     """Show hot-config-reload state + the last 5 reload passes."""
     conn = get_db()
