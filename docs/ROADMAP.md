@@ -430,11 +430,19 @@ verified at the cited file:line, deduplicated against the issues above):
   `chmod 0600`, `.command` `0700`, and the slim config copies only the env keys
   a slim child needs (`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONHOME` + `THREADKEEPER_*`),
   dropping host secrets. (Spool-file retention/cleanup is #42.)
-- `shadow_review` + `dialectic_miner` advance a single global `created_at`
-  high-water cursor, so **late/out-of-order ingested** messages (resumed
-  sessions, newly-installed adapters, post-downtime backfill) that land below
-  the cursor are evaluated by neither loop. Use a grace lookback or an
-  ingest-order watermark instead of the transcript timestamp (#69).
+- ✅ DONE (#69). `shadow_review` + `dialectic_miner` advanced a single global
+  `created_at` high-water cursor, so **late/out-of-order ingested** messages
+  (resumed sessions, newly-installed adapters, post-downtime backfill) that
+  landed below the cursor were evaluated by neither loop. Both loops now drive
+  their cursor off the `dialog_messages` **ingest-order rowid** (append-only
+  table → strictly monotonic in ingest order), so a late row (old `created_at`,
+  fresh rowid) lands above the cursor and is reviewed exactly once. The
+  monotonic advance gives `shadow_review` per-row dedup for free (no re-spawn of
+  an already-seen window), and `dialectic_miner` no longer parks its cursor at
+  `now` on empty passes. Pre-#69 `created_at` watermarks are translated to a
+  rowid once (`helpers.resolve_ingest_watermark`), then self-heal. Status tools
+  report `cursor_rowid`. (`candidate_reviewer`/`dialectic_validator` were immune
+  — they re-scan the pending queue and use the cursor only for telemetry.)
 - ✅ DONE (#71). Memory **recall/abstention** eval harness (LongMemEval-style
   QA + abstention + tokens-per-retrieval) to give the lessons-decay (#27) and
   bi-temporal (#28) work a number to optimize against — complementary to the

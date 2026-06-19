@@ -413,9 +413,10 @@ or doesn't open them at all. Shadow-review closes that gap.
 
 ```
 every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
-1. _last_shadow_ts(): high-water mark from events.kind='shadow_review_pass'.target
-2. _collect_window(): pull dialog_messages WHERE created_at > max(cursor, now-WINDOW_S)
-   — ALL sessions, not just our own.
+1. _last_shadow_rowid(): ingest-order high-water mark from
+   events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
+2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
+   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
@@ -427,12 +428,18 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
    broad skill. `lesson_append(source='shadow')` is the compact fallback.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
-8. Write events.kind='shadow_review_pass' with new high_water_ts.
+8. Write events.kind='shadow_review_pass' with the new high-water rowid.
 ```
 
-Dedupe — via a cursor in `events.target` (timestamp of the last evaluated
-message). Idempotent: a repeated tick will not re-evaluate what it has already
-seen. SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
+Dedupe — via an **ingest-order** cursor in `events.target` (the rowid of the
+last evaluated message, #69). The cursor is the `dialog_messages` rowid rather
+than the transcript `created_at`, so a late/out-of-order ingested row — a
+resumed session, a freshly-installed adapter, or a post-downtime backfill,
+whose `created_at` lands below the cursor — still gets a fresh rowid above it
+and is reviewed exactly once (a `created_at` cursor silently stepped over it).
+Idempotent: the monotonic rowid advance means a repeated tick will not
+re-evaluate (or re-spawn on) what it has already seen.
+SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
 a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
 or oversized writes are rejected so the child patches existing memory instead
