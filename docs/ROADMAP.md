@@ -408,12 +408,14 @@ Follow-up gaps from the 2026-06-17 audit:
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):
-- Extract H4 paraphrase-cluster path re-harvests **rejected** candidates
-  forever — its inline dedup checks `status IN ('pending','accepted')` only,
-  omitting `'rejected'`, so a rejected cluster reappears on the next
-  overlapping window. Same incident class as the documented #157/#158
-  prod loop, on the one heuristic path that never got the `_candidate_exists`
-  fix (#62).
+- ✅ DONE (#62). Extract H4 paraphrase-cluster path re-harvested **rejected**
+  candidates forever — its inline dedup checked `status IN ('pending','accepted')`
+  only, omitting `'rejected'`, so a rejected cluster (keyed by a deterministic
+  `cluster:<sorted-uuid-prefixes>`) reappeared on the next overlapping window.
+  Same incident class as the documented #157/#158 prod loop, on the one
+  heuristic path that never got the `_candidate_exists` fix. The H4 path now
+  routes through `_enqueue`, so its dedup shares the rejected-counting
+  semantics of H1/H2/H3 (single source of truth).
 - ✅ DONE (#63). Author-trust boundary on autonomous issue pickup: the applier
   fetched no `authorAssociation` and treated every open issue on this **public**
   repo as backlog for a `bypassPermissions` child; separately, the

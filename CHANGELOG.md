@@ -31,6 +31,17 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Extract H4 paraphrase-cluster path no longer re-harvests rejected
+  candidates (#62).** The semantic-cluster heuristic had its own inline dedup
+  (`status IN ('pending','accepted')`) that omitted `'rejected'`, so a rejected
+  cluster — keyed by a deterministic `cluster:<sorted-uuid-prefixes>` the daemon
+  re-derives on every overlapping window — was invisible to the gate and
+  re-enqueued on the next tick: the same incident class as the documented
+  #157/#158 prod loop, on the one path that never received the
+  `_candidate_exists` fix. The H4 path now routes through `_enqueue`, so its
+  dedup shares the rejected-counting semantics of H1/H2/H3 (single source of
+  truth). Internal heuristic only — no API or env change.
+
 - **Late / out-of-order ingested dialog was evaluated by neither learning loop
   (#69).** `shadow_review` and `dialectic_miner` advanced a single global
   high-water cursor over `dialog_messages.created_at` (the message's own
