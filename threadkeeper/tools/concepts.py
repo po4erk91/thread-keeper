@@ -8,7 +8,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..config import SEMANTIC_AVAILABLE
 from ..db import get_db
 from ..embeddings import _embed, embed_tag
@@ -122,7 +122,7 @@ def _bump_concept_evidence(conn: sqlite3.Connection,
     return new_conf
 
 
-@mcp.tool()
+@write_tool()
 def register_concept(description: str,
                      triangulation_notes: str = "",
                      confidence: str = "medium",
@@ -174,7 +174,7 @@ def register_concept(description: str,
     return f"ok id={pid} conf={confidence}"
 
 
-@mcp.tool()
+@read_tool()
 def list_concepts(min_confidence: str = "low", k: int = 10) -> str:
     """List registered concepts, filtered by minimum confidence."""
     rank = {"low": 0, "medium": 1, "high": 2}
@@ -211,7 +211,7 @@ def list_concepts(min_confidence: str = "low", k: int = 10) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@read_tool()
 def expand_concept(concept_id: str) -> str:
     """Full description + triangulation_notes for one concept."""
     conn = get_db()
@@ -233,7 +233,7 @@ def expand_concept(concept_id: str) -> str:
     return "\n".join(parts)
 
 
-@mcp.tool()
+@write_tool(destructive=True)
 def concept_manage(action: str,
                    concept_id: str,
                    merge_ids: str = "",

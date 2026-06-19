@@ -8,7 +8,7 @@ store. Entries are capped at 1KB and a soft hint at 20 entries total.
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session, _emit
@@ -20,7 +20,7 @@ CORE_PRIORITY_MIN = 0
 CORE_PRIORITY_MAX = 100
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def core_set(key: str, content: str, priority: int = 50) -> str:
     """Upsert a core-memory entry. ALWAYS shown in brief, sorted by priority DESC.
 
@@ -55,7 +55,7 @@ def core_set(key: str, content: str, priority: int = 50) -> str:
     return f"ok n={n}{warn}"
 
 
-@mcp.tool()
+@write_tool(destructive=True, idempotent=True)
 def core_remove(key: str) -> str:
     """Delete a core-memory entry by key."""
     conn = get_db()
@@ -68,7 +68,7 @@ def core_remove(key: str) -> str:
     return "ok"
 
 
-@mcp.tool()
+@read_tool()
 def core_list() -> str:
     """List all core-memory entries, ordered by priority DESC then key."""
     conn = get_db()
@@ -91,7 +91,7 @@ def core_list() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@read_tool()
 def core_get(key: str) -> str:
     """Return the full content of a single core-memory entry."""
     conn = get_db()

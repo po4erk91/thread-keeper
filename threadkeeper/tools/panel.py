@@ -29,7 +29,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..config import (
     PANEL_SIZE, PANEL_ROLES, PANEL_REQUIRE_SKEPTIC,
     PANEL_MODEL, PANEL_EFFORT,
@@ -117,7 +117,7 @@ def _child_prompt(kind: str, target_id: str, content: str,
     )
 
 
-@mcp.tool()
+@write_tool()
 def convene_panel(target_kind: str, target_id: str,
                   size: int = 0, roles: str = "") -> str:
     """Spawn a panel of independent agents to vote on a distillate or claim,

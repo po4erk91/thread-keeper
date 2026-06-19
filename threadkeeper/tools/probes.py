@@ -9,7 +9,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q, gen_probe_id
 from .. import identity
@@ -76,7 +76,7 @@ def _recompute_reliability(conn: sqlite3.Connection, category: str) -> dict:
     }
 
 
-@mcp.tool()
+@write_tool()
 def register_probe(category: str, prompt: str,
                    expected_pattern: str = "",
                    grader: str = "regex") -> str:
@@ -110,7 +110,7 @@ def register_probe(category: str, prompt: str,
     return f"ok id={pid} cat={category}"
 
 
-@mcp.tool()
+@read_tool()
 def run_probe(probe_id: str) -> str:
     """Surface a registered probe for self-attempt. Returns the prompt and
     the grader hint. After attempting, call record_attempt(category,
@@ -136,7 +136,7 @@ def run_probe(probe_id: str) -> str:
     return "\n".join(parts)
 
 
-@mcp.tool()
+@write_tool()
 def record_attempt(category: str, success: bool, note: str = "",
                    probe_id: str = "", latency_ms: int = 0) -> str:
     """Record a self-test outcome. Updates reliability aggregates.
@@ -174,7 +174,7 @@ def record_attempt(category: str, success: bool, note: str = "",
     )
 
 
-@mcp.tool()
+@read_tool()
 def reliability_for(category: str, window_days: int = 30) -> str:
     """Reliability stats for one category over a window."""
     if not category.strip():
@@ -215,7 +215,7 @@ def reliability_for(category: str, window_days: int = 30) -> str:
     )
 
 
-@mcp.tool()
+@read_tool()
 def weak_spots(top_n: int = 5) -> str:
     """List categories ranked by recent failure rate (min 3 attempts in 30d),
     plus registered probe categories with no attempts yet (= unknown,

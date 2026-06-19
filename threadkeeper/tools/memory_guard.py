@@ -1,6 +1,6 @@
 """MCP tools for the thread-keeper server RSS guard."""
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from .. import memory_guard
 from ..db import get_db
 from ..identity import _ensure_session
@@ -13,7 +13,7 @@ def _fmt_proc(p: dict, prefix: str) -> str:
     )
 
 
-@mcp.tool()
+@read_tool()
 def memory_guard_status() -> str:
     """Show memory-guard thresholds and current thread-keeper RSS rows."""
     conn = get_db()
@@ -51,7 +51,7 @@ def memory_guard_status() -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@write_tool(destructive=True)
 def memory_guard_check(dry_run: bool = True, notify: bool = False) -> str:
     """Run one memory-guard pass now.
 
@@ -102,7 +102,7 @@ def memory_guard_check(dry_run: bool = True, notify: bool = False) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@write_tool()
 def memory_guard_reclaim(scope: str = "self") -> str:
     """Unload thread-keeper model/caches now.
 
