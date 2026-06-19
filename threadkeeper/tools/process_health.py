@@ -5,26 +5,35 @@ leave orphan processes that hold RAM (especially with sentence-transformers
 loaded). These tools surface the situation and let you clean up.
 """
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool, structured_result
 from .. import process_health
+from ..tool_schemas import MpHealth, MpProcess
 
 
-@mcp.tool()
-def mp_health() -> str:
+@read_tool()
+def mp_health() -> MpHealth:
     """Diagnostic snapshot of every running thread-keeper server process
     on this machine. Shows pid, parent status, RSS, heartbeat age, and
     whether each is classified as orphaned (parent gone + no fresh
     heartbeat from its session).
 
     Self (the process answering this call) is always marked is_self=true
-    and never flagged as orphan."""
+    and never flagged as orphan. Returns structuredContent (MpHealth) plus
+    the legacy text block."""
     procs = process_health.scan()
-    if not procs:
-        return "no_mp_processes_running"
-
     total_kb = sum(p["rss_kb"] for p in procs)
     orphans = [p for p in procs if p.get("is_orphaned")]
     live = [p for p in procs if not p.get("is_orphaned")]
+    model = MpHealth(
+        total=len(procs),
+        live=len(live),
+        orphans=len(orphans),
+        rss_total_mb=total_kb // 1024,
+        processes=[MpProcess(**p) for p in procs],
+    )
+    if not procs:
+        return structured_result("no_mp_processes_running", model)
+
     out = [
         f"total={len(procs)} live={len(live)} orphans={len(orphans)} "
         f"rss_total={total_kb // 1024}MB"
@@ -45,10 +54,10 @@ def mp_health() -> str:
             f"\nCleanup plan: mp_cleanup(dry_run=False) would SIGTERM "
             f"{len(orphans)} orphan(s); add force=True for SIGKILL."
         )
-    return "\n".join(out)
+    return structured_result("\n".join(out), model)
 
 
-@mcp.tool()
+@write_tool(destructive=True)
 def mp_cleanup(dry_run: bool = True, force: bool = False) -> str:
     """Kill orphaned thread-keeper processes (parent gone AND heartbeat
     stale for > 5 minutes). Defaults to dry-run — pass dry_run=False to

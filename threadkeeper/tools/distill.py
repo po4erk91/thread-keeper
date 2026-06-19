@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..config import TASK_LOG_DIR
 from ..helpers import fmt_age, q, gen_distill_id
@@ -23,7 +23,7 @@ DISTILL_KINDS = ("insight", "pattern", "anti-pattern", "fix",
                  "terminology", "concept")
 
 
-@mcp.tool()
+@write_tool()
 def distill(content: str, kind: str = "insight",
             confidence: str = "medium", source_thread: str = "") -> str:
     """Mark content as worth carrying forward (distillation channel).
@@ -69,7 +69,7 @@ def distill(content: str, kind: str = "insight",
     return f"ok id={pid} kind={kind} conf={confidence} vote=1.0"
 
 
-@mcp.tool()
+@write_tool()
 def vote_distill(distill_id: str, weight: float) -> str:
     """Vote on a distillate, weight ∈ [-1, +1]. One vote per cid; re-voting
     overwrites your previous vote. Updates aggregate vote_sum/vote_count."""
@@ -109,7 +109,7 @@ def vote_distill(distill_id: str, weight: float) -> str:
     return f"ok id={did} vote_sum={agg['s']:.2f} count={agg['c']}"
 
 
-@mcp.tool()
+@read_tool()
 def pending_distillates(min_vote: float = 1.0, k: int = 10) -> str:
     """List distillates with vote_sum >= min_vote, not yet exported."""
     conn = get_db()
@@ -138,7 +138,7 @@ def pending_distillates(min_vote: float = 1.0, k: int = 10) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def export_distillates(min_vote: float = 1.0,
                        output_path: str = "") -> str:
     """Write distillates with vote_sum >= min_vote to a jsonl bucket.

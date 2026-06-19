@@ -11,7 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..config import TASK_LOG_DIR, DIALOG_LOG, SEMANTIC_AVAILABLE
 from ..db import get_db
 from ..helpers import fmt_age, q
@@ -20,7 +20,7 @@ from ..embeddings import _dialog_cosine_search, _fts_search, _rrf_combine
 from ..ingest import _ingest_all
 
 
-@mcp.tool()
+@write_tool()
 def open_dialog_window() -> str:
     """Open a Terminal window that tails the live cross-session signal log.
 
@@ -50,7 +50,7 @@ def open_dialog_window() -> str:
     return f"opened tailing {DIALOG_LOG}"
 
 
-@mcp.tool()
+@read_tool()
 def dialog_search(query: str, k: int = 5, role: str = "",
                   mode: str = "hybrid") -> str:
     """Search ingested Claude Code transcripts.
@@ -118,7 +118,7 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
     )
 
 
-@mcp.tool()
+@write_tool()
 def ingest(max_msgs: int = 5000) -> str:
     """Ingest new Claude Code transcripts. Auto-runs on session start; call
     manually for backfill or after long absence."""

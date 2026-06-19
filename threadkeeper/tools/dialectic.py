@@ -59,7 +59,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..config import WRITE_ORIGIN
 from ..db import get_db
 from ..helpers import fmt_age, q, gen_dialectic_id
@@ -321,7 +321,7 @@ def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
     return cur.lastrowid
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
                     evidence_kind: str = "support") -> str:
     """Register a new claim about the user. Optionally seed with first
@@ -366,7 +366,7 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     return f"ok id={pid} conf={new_conf} tier={new_tier}"
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_evidence(claim_id: str, kind: str = "support",
                        quote: str = "", source: str = "",
                        weight: float = 1.0) -> str:
@@ -414,7 +414,7 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
     )
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_review(min_confidence: str = "low",
                      domain: str = "",
                      k: int = 20) -> str:
@@ -478,7 +478,7 @@ def dialectic_review(min_confidence: str = "low",
     return "\n".join([f"claims n={len(out)}"] + out)
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_synthesis(domain: str = "") -> str:
     """Terse rendering of accumulated beliefs about the user, grouped by
     domain. Used as brief() input. Excludes low/disputed claims and
@@ -560,7 +560,7 @@ def dialectic_synthesis(domain: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_supersede(old_claim_id: str, new_claim: str,
                         domain: str = "", quote: str = "") -> str:
     """Retire `old_claim_id` and register `new_claim` that refines or
@@ -616,7 +616,7 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     return f"ok new={pid} old={old_id} conf={new_conf} tier={new_tier}"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def dialectic_observation_resolve(id: int, note: str = "") -> str:
     """Mark a dialectic_observations buffer row 'processed' so the validator
     never re-interprets it. Called by the validator child after it has written
