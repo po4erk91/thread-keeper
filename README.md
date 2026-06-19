@@ -757,12 +757,19 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age), and **outcomes** (what those loops actually
-  produced — skills materialized, tier promotions, candidate
-  accept-vs-reject rate). Surfaces the gaps the point-tools can't:
-  a loop firing constantly while its outcomes stay flat, or a queue
-  backing up. Complements the per-loop `*_status` tools (`mp_health`,
-  `spawn_budget_status`, `shadow_review_status`).
+  plus last-fire age — the loop list is derived from the same source as
+  `agent_status`, so it covers *every* daemon including the paid-spawn
+  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  **outcomes** (what those loops actually produced — skills materialized,
+  tier promotions, candidate accept-vs-reject rate, plus knowledge-store
+  mutation counts: `lesson_append` / `lesson_remove`,
+  `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`,
+  `dialectic_claim` / `dialectic_supersede`). A `curator_net_change
+  added/removed/patched/net` line makes a loop silently shrinking the
+  lessons store visible at a glance. Surfaces the gaps the point-tools
+  can't: a loop firing constantly while its outcomes stay flat, or a
+  queue backing up. Complements the per-loop `*_status` tools
+  (`mp_health`, `spawn_budget_status`, `shadow_review_status`).
 - **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
   often the daemon fired, the outcome mix (`no_window` / `too_short` /

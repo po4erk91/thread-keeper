@@ -176,6 +176,17 @@ partial schemas. The first live run surfaced the "Shadow-review proof"
 item below (shadow fires ≫ skills materialized). Possible follow-up:
 periodic dump-to-file for historical trend lines (currently a
 point-in-time snapshot). Scope of follow-up: S.
+  - **Telemetry blind spots closed (#61). ✅ DONE.** The loop list was a
+    hand-maintained tuple that omitted `dialectic_mine`, `dialectic_validate`,
+    `evolve_apply`, and `thread_janitor` (two spawn *paid* children) — it now
+    derives from `agent_status._LOOP_DEFS` so the two surfaces can't drift.
+    Outcomes now also count knowledge-store mutations (`lesson_append` /
+    `lesson_remove` / `curator_report_applied` / `roadmap_issue_applied` /
+    `evolve_applied` / `dialectic_claim` / `dialectic_supersede`), and a
+    `curator_net_change` line makes a daemon silently pruning the lessons
+    store a visible number. Partial overlap with the #40 destructive-curator
+    telemetry ask (the *visibility* half); the snapshot/restore safety net
+    remains in #40.
 
 **Shadow-review production telemetry.** ✅ DONE (#6). `shadow_review_status()`
 now carries a per-loop production-validation rollup for the 24h / 7d windows:
