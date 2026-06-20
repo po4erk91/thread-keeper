@@ -214,12 +214,24 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `candidate-reviewer.lock` prevents multiple foreground MCP servers from
   spawning duplicate reviewers for the same pending candidates.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
-  `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) spawns an audit/research child
-  that reviews thread-keeper itself for security/privacy risks, memory leaks,
-  runaway daemons, cost waste, reliability gaps, optimizations, and current
-  agent/MCP/memory tooling ideas. It may update `docs/ROADMAP.md` through a PR
-  and create/update GitHub issues with acceptance criteria and research
-  sources. It does not implement roadmap issues.
+  `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
+  for security/privacy risks, memory leaks, runaway daemons, cost waste,
+  reliability gaps, optimizations, and current agent/MCP/memory tooling ideas. It
+  may update `docs/ROADMAP.md` through a PR and create/update GitHub issues with
+  acceptance criteria and research sources. It does not implement roadmap issues.
+  To avoid completing the lethal trifecta (private data + untrusted web content +
+  exfiltration) in one child (#79), the pass is **split across two alternating
+  phases**, chosen by the last recorded spawn phase: (1) a **research** child
+  (`permission_mode="auto"`, tools `WebSearch,WebFetch,Read,Glob,Grep,Write` —
+  no `Bash`, no `bypassPermissions`, no `gh`) that distills external findings to
+  `~/.threadkeeper/evolve-research/RESEARCH-<ts>.md` and has no network-write
+  tool to exfiltrate with; then (2) an **audit** child (`bypassPermissions` +
+  `Bash,Edit,Write` but **no** `WebSearch`/`WebFetch`) that audits the repo and
+  does the GitHub/ROADMAP writes, consuming the digest inside an explicit
+  `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` fence it must treat as data.
+  Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
+  the existing single-flight (`_running_evolve_children`) and shadow/extract
+  exclusion cover both. A full research → audit cycle spans two due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues with
   `gh issue list`, prioritizes `roadmap`-labeled issues then FIFO, and spawns
@@ -309,9 +321,13 @@ For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
 `--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
-for branch/commit/PR creation. All spawned children receive the parent's
-`THREADKEEPER_DB`, task log dir, project dir, forced cid, and write-origin env
-so their direct Python/MCP calls hit the same store as the parent.
+for branch/commit/PR creation. Web tools (`WebSearch`/`WebFetch`) are never
+granted to a `bypassPermissions` child: the evolve reviewer's web research runs
+in a separate read-only `permission_mode="auto"` child with no shell, so the
+untrusted web content and the exfiltration-capable context are never the same
+child (#79). All spawned children receive the parent's `THREADKEEPER_DB`, task
+log dir, project dir, forced cid, and write-origin env so their direct
+Python/MCP calls hit the same store as the parent.
 
 ### Slim vs full child
 

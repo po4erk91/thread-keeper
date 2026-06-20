@@ -61,6 +61,25 @@ def _add_evolve(conn, suggestion, rationale=None, applied=0, status="pending"):
     conn.commit()
 
 
+def _seed_research(pkg, conn, text="- idea: adopt Y\n  sources: https://ex.com\n"):
+    """Make run_evolve_pass take the AUDIT branch on its next call: record a
+    prior research spawn so _last_spawn_phase()=='research', and write a fresh
+    digest file the audit phase will fence into its prompt."""
+    now = int(time.time())
+    rdir = pkg["ed"]._research_dir()
+    rdir.mkdir(parents=True, exist_ok=True)
+    f = rdir / f"RESEARCH-{now}.md"
+    f.write_text(text, encoding="utf-8")
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_review_pass', ?, ?, ?)",
+        ("s_prev", str(now), "spawned research file=RESEARCH.md ok task=tk pid=1",
+         now),
+    )
+    conn.commit()
+    return f, text
+
+
 # ── pending selection ──────────────────────────────────────────────────
 
 def test_pending_excludes_applied_and_decided(tmp_path, monkeypatch):
@@ -112,9 +131,11 @@ def test_run_evolve_pass_disabled(tmp_path, monkeypatch):
     assert pkg["ed"].run_evolve_pass() == "disabled"
 
 
-def test_run_evolve_pass_force_spawns_audit_without_pending(
+def test_run_evolve_pass_force_spawns_research_first(
     tmp_path, monkeypatch,
 ):
+    """With no prior spawn, the first pass is the read-only research phase — not
+    the privileged audit phase (#79)."""
     pkg = _bootstrap(tmp_path, monkeypatch)
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
@@ -123,10 +144,14 @@ def test_run_evolve_pass_force_spawns_audit_without_pending(
 
     out = pkg["ed"].run_evolve_pass(force=True)
 
-    assert out.startswith("spawned audit pending=0")
-    assert "Audit thread-keeper itself" in calls["prompt"]
-    assert "gh issue create" in calls["prompt"]
-    assert "web research" in calls["prompt"]
+    assert out.startswith("spawned research")
+    assert "research phase" in calls["prompt"]
+    assert "untrusted DATA" in calls["prompt"]
+    # research is read-only web: web tools yes, privilege/shell no
+    assert "WebSearch" in calls["extra_allowed_tools"]
+    assert "WebFetch" in calls["extra_allowed_tools"]
+    assert calls["permission_mode"] != "bypassPermissions"
+    assert "Bash" not in calls["extra_allowed_tools"]
 
 
 def test_run_evolve_pass_skips_empty_until_interval(tmp_path, monkeypatch):
@@ -157,8 +182,9 @@ def test_run_evolve_pass_below_min(tmp_path, monkeypatch):
 
     out = pkg["ed"].run_evolve_pass(force=True)
 
-    assert out.startswith("spawned audit pending=1")
-    assert "only one" in calls["prompt"]
+    # A forced pass spawns regardless of the suggestion count; the first phase is
+    # research (the legacy queue is consumed later, in the audit phase).
+    assert out.startswith("spawned research")
 
 
 def test_run_evolve_pass_skips_legacy_backlog_until_interval(
@@ -187,30 +213,103 @@ def test_run_evolve_pass_skips_legacy_backlog_until_interval(
     assert calls == {}
 
 
-def test_run_evolve_pass_spawns_reviewer(tmp_path, monkeypatch):
+def test_run_evolve_pass_research_phase_is_read_only(tmp_path, monkeypatch):
+    """Phase 1 (research): web access but no privilege/shell — it cannot
+    exfiltrate, so the untrusted web content it reads can't complete the
+    trifecta (#79)."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "suggestion alpha")
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
+    out = pkg["ed"].run_evolve_pass(force=True)
+    assert out.startswith("spawned research")
+    assert calls["write_origin"] == "evolve"
+    assert calls["role"] == "evolve_researcher"
+    # web research yes; bypass/shell/GitHub-write no
+    assert "WebSearch" in calls["extra_allowed_tools"]
+    assert "WebFetch" in calls["extra_allowed_tools"]
+    assert calls["permission_mode"] != "bypassPermissions"
+    assert "Bash" not in calls["extra_allowed_tools"]
+    assert "Edit" not in calls["extra_allowed_tools"]
+    assert "evolve_decide" not in calls["extra_allowed_tools"]
+    assert pkg["ed"]._last_evolve_ts(conn) > 0
+
+
+def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
+    tmp_path, monkeypatch,
+):
+    """Phase 2 (audit): privileged (bypass + Bash/Edit/Write) but NO web tools;
+    it consumes the prior research digest as fenced untrusted data (#79)."""
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
     conn = pkg["db"].get_db()
     _add_evolve(conn, "suggestion alpha", rationale="friction A")
     _add_evolve(conn, "suggestion beta")
+    _seed_research(pkg, conn, text="- idea: adopt thing Z\n  sources: https://z\n")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("spawned audit pending=2")
-    # both suggestions reached the child prompt
+    assert calls["write_origin"] == "evolve"
+    assert calls["role"] == "evolve_reviewer"
+    assert calls["permission_mode"] == "bypassPermissions"
+    # privileged write tools present; reviewer still cannot apply issues
+    assert "Bash" in calls["extra_allowed_tools"]
+    assert "Edit" in calls["extra_allowed_tools"]
+    assert "Write" in calls["extra_allowed_tools"]
+    assert "evolve_decide" in calls["extra_allowed_tools"]
+    assert "skill_manage" not in calls["extra_allowed_tools"]
+    assert "evolve_mark_roadmap_issue_applied" not in calls["extra_allowed_tools"]
+    # no web tools in the privileged child
+    assert "WebSearch" not in calls["extra_allowed_tools"]
+    assert "WebFetch" not in calls["extra_allowed_tools"]
+    # legacy suggestions reach the audit prompt
     assert "suggestion alpha" in calls["prompt"]
     assert "suggestion beta" in calls["prompt"]
     assert "friction A" in calls["prompt"]
-    assert calls["write_origin"] == "evolve"
-    assert calls["role"] == "evolve_reviewer"
-    # reviewer can audit/research/create issues, but still cannot apply issues
-    assert "evolve_decide" in calls["extra_allowed_tools"]
-    assert "skill_manage" not in calls["extra_allowed_tools"]
-    assert "Bash" in calls["extra_allowed_tools"]
-    assert "WebSearch" in calls["extra_allowed_tools"]
-    assert "evolve_mark_roadmap_issue_applied" not in calls["extra_allowed_tools"]
-    assert pkg["ed"]._last_evolve_ts(conn) > 0
+    # research is embedded, fenced, and explicitly flagged untrusted
+    assert "adopt thing Z" in calls["prompt"]
+    assert "untrusted data" in calls["prompt"].lower()
+    assert pkg["ed"].EVOLVE_RESEARCH_FENCE in calls["prompt"]
+
+
+def test_web_research_and_privileged_write_never_cogranted(tmp_path, monkeypatch):
+    """The core #79 invariant: across both phases, no single reviewer child holds
+    web research (WebSearch/WebFetch) AND the bypassPermissions + Bash/Write
+    capability at the same time."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "suggestion alpha")
+    captured = []
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(dict(kw)) or "ok task=tk_ev pid=1",
+    )
+
+    # Phase 1 records a real "spawned research" pass, so phase 2 takes the audit
+    # branch on the next forced call.
+    out1 = pkg["ed"].run_evolve_pass(force=True)
+    assert out1.startswith("spawned research")
+    out2 = pkg["ed"].run_evolve_pass(force=True)
+    assert out2.startswith("spawned audit")
+
+    assert len(captured) == 2
+    for kw in captured:
+        tools = kw["extra_allowed_tools"]
+        has_web = "WebSearch" in tools or "WebFetch" in tools
+        privileged = (
+            kw.get("permission_mode") == "bypassPermissions"
+            and ("Bash" in tools or "Write" in tools)
+        )
+        assert not (has_web and privileged), (
+            "lethal trifecta: a single child holds web research + "
+            "bypassPermissions + Bash/Write"
+        )
 
 
 def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
@@ -226,7 +325,7 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
 
     out = pkg["ed"].run_evolve_pass(force=True)
 
-    assert out.startswith("spawned audit")
+    assert out.startswith("spawned research")
     expected = str(Path(pkg["ed"].__file__).resolve().parent.parent)
     assert calls["cwd"] == expected
 

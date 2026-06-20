@@ -335,7 +335,7 @@ shows agents focused on their primary task rarely do).
 | 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
 | 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | `REPORT-<date>.md`; Evolve applier applies it after roadmap issues |
-| 6 | evolve_reviewer daemon | configurable (env knob; 0=off) | code/docs/issues + web research when useful | roadmap updates + GitHub issues |
+| 6 | evolve_reviewer daemon | configurable (env knob; 0=off) | code/docs/issues; web research in a separate read-only phase (#79) | roadmap updates + GitHub issues |
 | 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
@@ -501,6 +501,24 @@ impact, and research sources when applicable. Legacy `evolve_format(...)`
 suggestions are still included as audit input, but durable implementation work
 should become GitHub issues.
 
+To avoid completing the **lethal trifecta** — private-data access + untrusted
+web content + exfiltration — inside one privileged child (#79), the reviewer
+runs as **two alternating phases**, never co-granting web research and
+shell/`bypassPermissions` to the same child:
+
+- **research phase** — a read-only child with `WebSearch`/`WebFetch` and
+  read-only repo reads but **no shell, no `bypassPermissions`, and no GitHub
+  access**. It distills external findings into a digest file under
+  `~/.threadkeeper/evolve-research/`. With no `Bash`/`gh`/network-write tool it
+  has no exfiltration channel, so the untrusted pages it reads cannot act.
+- **audit phase** — the privileged child (`bypassPermissions` + `Bash`/`Edit`/
+  `Write`) that audits the repo, opens the `docs/ROADMAP.md` PR, and creates or
+  updates GitHub issues. It holds **no web tools**; it consumes the research
+  digest as an explicit, fenced **data** block it must never read as
+  instructions (mirroring #76's fencing, applied to the web source).
+
+A full research → audit cycle therefore spans two due passes.
+
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), skips
 issues with an active Evolve claim comment, posts its own claim comment before
@@ -650,7 +668,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
-| `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, researches current approaches, updates roadmap/issues, and includes legacy evolve suggestions as input |
+| `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |

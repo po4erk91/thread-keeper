@@ -333,6 +333,23 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   third-party child can't pull more than the policy allows. README + ARCHITECTURE
   document the default and the opt-out. Distinct from the local-perms gap
   (#21/#68) and the injection surface (#22/#76). Scope was S.
+- ✅ DONE (#79). **Reviewer web-research path completed the lethal trifecta.** The
+  evolve reviewer was the only learning loop granted `WebSearch`/`WebFetch`, and
+  it held them inside the *same* `bypassPermissions` child that also had
+  `Bash`/`Edit`/`Write` + `gh` — so one un-gated child had all three trifecta
+  legs (private data, untrusted web content, exfiltration/action). Split the pass
+  into two alternating phases that never co-grant web + privilege: a **read-only
+  research** child (`permission_mode="auto"`, `WebSearch,WebFetch,Read,Glob,Grep,
+  Write` — no `Bash`/`bypassPermissions`/`gh`, so no exfiltration channel) that
+  distills a digest to `~/.threadkeeper/evolve-research/`, then a **privileged
+  audit** child (`bypassPermissions` + `Bash/Edit/Write`, **no** web tools) that
+  does the repo audit + GitHub/ROADMAP writes and consumes the digest inside an
+  explicit `<<<EVOLVE_RESEARCH_DATA …` fence it must treat as data, not
+  instructions. A `tests/test_evolve_daemon.py` invariant asserts the two
+  capability sets are never granted to one child. README + ARCHITECTURE document
+  the reduced privilege and the fenced research step. Complements #22 (stored
+  injected content) and #63 (issue-author trust gate); the open web cannot be
+  author-allowlisted, so those don't cover this path. Scope was S–M.
 
 **Evolve issue-flow reliability.** The applier posts a claim comment *before*
 spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
