@@ -9,6 +9,30 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **MCP Resources & Prompts primitives (#78).** thread-keeper exposed its whole
+  surface as MCP **tools** and zero of the other two server primitives. It now
+  adopts both for the views that fit them. **Resources** (`tools/resources.py`,
+  `@mcp.resource`) expose the read-only memory snapshots at stable URIs —
+  `memory://brief`, `memory://context`, `memory://dashboard`,
+  `memory://agent-status` — each backed by the same render function as the
+  matching tool (`render_brief` / `render_context` / `mp_dashboard` /
+  `agent_status`). A host can now pull the brief as attachable / `@`-mentionable
+  read-only context instead of relying on a hookless agent *remembering* to call
+  `brief()`. The brief resource renders `lean=True` (and agent-status uses
+  `refresh=False`) so an automatic host pull is side-effect-free — no
+  `*_hint_shown` events, no process re-scan. **Prompts** (`tools/prompts.py`,
+  `@mcp.prompt`) expose the curation / audit / review flows as host-native,
+  parameterized commands — `review_recent_threads`, `run_library_curation`,
+  `audit_threadkeeper` — which Claude Code surfaces as
+  `/mcp__thread-keeper__<name>` slash commands. Both are additive: the server
+  advertises the `resources` / `prompts` capabilities, and a host that uses
+  neither falls back to the unchanged tool-only surface (and the SessionStart
+  hook path) with identical content. No tool was added, removed, or altered;
+  `context()` now shares `brief.render_context()` with its resource. New
+  `tests/test_mcp_resources_prompts.py` covers list/read, prompt rendering,
+  capability advertisement, side-effect-freeness, and the tool-only fallback.
+  Composes with the tool-annotation work (#67) and the elicitation item (#26);
+  both are different MCP capabilities, neither covered there.
 - **MCP tool annotations + structured outputs (#67).** Every thread-keeper tool
   was a bare `@mcp.tool()` with no machine-readable read/write signal. Now each
   of the 113 tools registers through one of two wrappers in

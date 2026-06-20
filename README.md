@@ -82,8 +82,11 @@ each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 have no global instructions file, so that step is skipped for them).
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
-message; hookless clients such as Codex and Antigravity CLI follow the managed
-instructions block and call `brief()` / `context()` manually before answering.
+message; hookless clients such as Codex and Antigravity CLI either follow the
+managed instructions block and call `brief()` / `context()` before answering, or
+— on hosts that support MCP **resources** — pull the brief as the read-only
+`memory://brief` resource the host attaches automatically (see
+[MCP primitives](#mcp-primitives-tools-resources-prompts)).
 
 ### Alternative installs
 
@@ -150,6 +153,35 @@ Cline, … — so a single registration there reaches all of them at once.
 
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### MCP primitives (tools, resources, prompts)
+
+MCP has three server primitives. thread-keeper uses all three, mapped to the
+read/act split:
+
+| Primitive | Control | What thread-keeper exposes | When to use |
+|---|---|---|---|
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
+| **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
+
+**Resources** back the genuinely read-only memory views with the same render
+functions as the matching tools, so the content is identical — `memory://brief`
+is `brief()`, `memory://context` is `context()`, and so on. The win is for
+**hookless CLIs**: instead of depending on the agent *remembering* to call
+`brief()` (agents focused on their task often skip it), a resource lets the host
+surface memory as attachable / `@`-mentionable context through a mechanical
+channel. The brief resource renders lean and agent-status uses a cached snapshot,
+so an automatic host pull is **side-effect-free**.
+
+**Prompts** turn the curation / audit / review flows into discoverable,
+parameterized commands; each just drives the existing tools.
+
+Everything here is **additive and capability-gated**: a host that advertises the
+`resources` / `prompts` capabilities sees them; one that doesn't falls back to
+the SessionStart hook plus the `brief()` / `context()` tools — same content, no
+regression. Static URIs only for now (resource *templates* with `{param}` are
+still unevenly supported across hosts).
 
 ### Memory egress (cross-provider privacy)
 

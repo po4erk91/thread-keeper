@@ -507,6 +507,28 @@ verified at the cited file:line, deduplicated against the issues above):
   legacy human-readable text block alongside the typed JSON. Gives hosts a
   mechanical confirmation signal and composes with #22 and the elicitation work
   in #26.
+- ✅ DONE (#78). MCP **Resources & Prompts** primitives. thread-keeper exposed
+  its whole surface as MCP **tools** and zero of the other two server primitives;
+  it now adopts both where they fit the read/act split. **Resources**
+  (`tools/resources.py`, `@mcp.resource`) expose the read-only memory snapshots at
+  stable URIs — `memory://brief`, `memory://context`, `memory://dashboard`,
+  `memory://agent-status` — each backed by the same render function as the
+  matching tool (`render_brief` / `render_context` / `mp_dashboard` /
+  `agent_status`), so a host can pull memory as attachable / `@`-mentionable
+  context instead of a hookless agent *remembering* to call `brief()`. The brief
+  resource renders `lean=True` and agent-status uses `refresh=False`, so an
+  automatic host pull is side-effect-free (no `*_hint_shown` events, no process
+  re-scan). **Prompts** (`tools/prompts.py`, `@mcp.prompt`) expose the curation /
+  audit / review flows as host-native parameterized commands —
+  `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` (Claude
+  Code renders them as `/mcp__thread-keeper__<name>`). Additive: the server
+  advertises the `resources` / `prompts` capabilities, and a host using neither
+  falls back to the unchanged tool-only surface + SessionStart hook with identical
+  content. Static URIs only (resource *templates* are still unevenly supported
+  across hosts — a later, host-gated step). `tests/test_mcp_resources_prompts.py`
+  pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
+  and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
+  #26 (elicitation); neither covered them.
 - **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
   `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
   **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /
