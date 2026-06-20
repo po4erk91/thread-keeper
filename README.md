@@ -239,6 +239,14 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
 
+Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
+daemon resolves their live pid from the `--session-id` it carries in `ps`
+argv and measures the real RSS tree — they count their true memory, not
+the static estimate. A visible row whose session-id never resolves to a
+live process is reaped once it outlives `THREADKEEPER_SPAWN_VISIBLE_TTL_S`
+(1 h default; 0 disables), so an unresolvable row can't pin budget
+capacity forever.
+
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
 

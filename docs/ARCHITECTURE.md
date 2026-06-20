@@ -395,10 +395,14 @@ children** (the parent itself is not counted). Default 3 GB.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
+- Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
+  pid from the `--session-id <cid>` the child carries in `ps` argv and measures
+  the same subtree RSS, so they contribute real memory, not the estimate. A
+  visible row whose cid never resolves to a live process is reaped past
+  `SPAWN_VISIBLE_TTL_S` (1 h default) so it can't pin budget capacity forever.
 
 Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted). Visible spawns (Terminal.app, pid=0) aren't
-tracked — their RSS column stays at the estimate.
+(runtime override, not persisted).
 
 ## Learning loop
 
@@ -989,6 +993,7 @@ rubric-sensitivity + a subprocess end-to-end run).
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
+| `THREADKEEPER_SPAWN_VISIBLE_TTL_S` | 3600 | reap a visible (pid=0) row whose cid never resolves to a live process; 0 disables |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
