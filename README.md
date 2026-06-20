@@ -823,6 +823,15 @@ The migration is batched, resumable, and idempotent (a second run finds
 nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
 unchanged.
 
+**Swapping in a different-width model.** The `notes_vec` / `dialog_vec` tables
+are created as `FLOAT[EMBED_DIM]`, default 384. If you point
+`THREADKEEPER_EMBED_MODEL` at a model of a different dimension, also set
+`THREADKEEPER_EMBED_DIM` to its width and recreate the `*_vec` tables —
+otherwise every vec0 insert mismatches the schema and the fast KNN path goes
+dead (semantic search still works via the legacy BLOB cosine path). thread-keeper
+logs a one-line warning naming both dimensions and this knob when it detects the
+mismatch, rather than failing silently.
+
 ---
 
 ## Verifying ingest across CLIs

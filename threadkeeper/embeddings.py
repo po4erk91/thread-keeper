@@ -13,6 +13,7 @@ vector in BOTH the BLOB column AND the vec0 virtual table, so the legacy
 path keeps working and we can roll back without data loss. Old rows are
 backfilled to vec0 lazily by the ingester.
 """
+import logging
 import sqlite3
 import threading
 from typing import Optional
@@ -21,14 +22,50 @@ from .config import (
     SEMANTIC_AVAILABLE,
     EMBED_MODEL_NAME,
     EMBED_BACKEND,
+    EMBED_DIM,
     FASTEMBED_MODEL_ID,
 )
 from . import db as _db
+
+logger = logging.getLogger(__name__)
 
 
 def _vec_on() -> bool:
     """Indirect lookup so monkeypatching db.vec_available in tests works."""
     return _db.vec_available()
+
+
+# Emit the dimension-mismatch warning at most once per process — a mismatched
+# model would otherwise log on every single note/dialog insert.
+_dim_mismatch_warned = False
+
+
+def _vec_dim_ok(emb_blob: bytes) -> bool:
+    """True when `emb_blob`'s float32 width matches the dimension the vec0
+    tables were created with (EMBED_DIM).
+
+    A user-configurable `THREADKEEPER_EMBED_MODEL` can emit vectors of a width
+    other than the hardcoded FLOAT[EMBED_DIM] the `*_vec` tables were CREATEd
+    with. Every such `INSERT ... INTO notes_vec` raises OperationalError; left
+    unchecked it is silently swallowed, so vec0 stays empty while `_vec_on()`
+    still claims the fast path is live and `tk-migrate-embeddings` (same-dim
+    only) never notices. We surface ONE actionable warning instead and let the
+    caller skip the insert so the legacy BLOB cosine path carries the load."""
+    expected = EMBED_DIM * 4  # float32 = 4 bytes/elem
+    if len(emb_blob) == expected:
+        return True
+    global _dim_mismatch_warned
+    if not _dim_mismatch_warned:
+        _dim_mismatch_warned = True
+        got = len(emb_blob) // 4
+        logger.warning(
+            "vec0 mirror disabled: embed model %r emits %d-dim vectors but the "
+            "notes_vec/dialog_vec tables are FLOAT[%d]. Set THREADKEEPER_EMBED_DIM=%d "
+            "(then drop & recreate the *_vec tables) to enable the fast KNN path; "
+            "falling back to the legacy Python cosine path until then.",
+            EMBED_MODEL_NAME, got, EMBED_DIM, got,
+        )
+    return False
 
 _model = None
 _model_lock = threading.RLock()
@@ -155,7 +192,16 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     Distance is squared-Euclidean on normalized vectors; we convert to
     cosine score for compatibility with the legacy result shape:
         cos(q, v) = 1 - dist²/2  for unit-norm vectors.
+
+    Over-fetches from vec0: an orphaned vec row (a note deleted before the
+    delete-sync existed — notes.id is AUTOINCREMENT so the id is never reused)
+    consumes a KNN slot but is dropped by the inner join, shrinking the result
+    below `k`. We pull extra candidates so the join still yields `k` live hits,
+    then trim. `_vec_delete_note` keeps new deletes clean; this drains any
+    legacy orphan backlog gracefully.
     """
+    want = max(1, int(k))
+    fetch_k = want * 2 + 8
     rows = conn.execute(
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
         "       v.distance "
@@ -163,7 +209,7 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
         "JOIN notes n ON n.id = v.id "
         "WHERE v.embedding MATCH ? AND k = ? "
         "ORDER BY v.distance",
-        (qv_blob, max(1, int(k))),
+        (qv_blob, fetch_k),
     ).fetchall()
     out = []
     for r in rows:
@@ -172,7 +218,7 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
                                   "thread_id", "created_at")}
         d["score"] = float(score)
         out.append(d)
-    return out
+    return out[:want]
 
 
 def _dialog_cosine_search(conn, query: str, k: int) -> list[dict]:
@@ -206,7 +252,7 @@ def _vec_upsert_note(conn: sqlite3.Connection, note_id: int,
     """Mirror a note's embedding into notes_vec. No-op when vec0 isn't
     loaded or the blob is None. Safe to call multiple times — uses
     INSERT OR REPLACE keyed by integer id."""
-    if not _vec_on() or emb_blob is None:
+    if not _vec_on() or emb_blob is None or not _vec_dim_ok(emb_blob):
         return
     try:
         conn.execute(
@@ -217,12 +263,28 @@ def _vec_upsert_note(conn: sqlite3.Connection, note_id: int,
         pass  # vec0 table missing on this connection — silent fall-through
 
 
+def _vec_delete_note(conn: sqlite3.Connection, note_id: int) -> None:
+    """Drop a note's row from notes_vec so vec0 stays in sync with notes on
+    delete. No-op when vec0 isn't loaded. Mirror of `_vec_upsert_note` for the
+    delete path: without it, deleting a note (e.g. consolidate merge) leaves a
+    permanent orphan vec row — notes.id is AUTOINCREMENT so the id is never
+    reused — that consumes a KNN slot and is then dropped by the join in
+    `_vec0_notes_search`, shrinking results below `k` and accumulating dead
+    index entries over time."""
+    if not _vec_on():
+        return
+    try:
+        conn.execute("DELETE FROM notes_vec WHERE id=?", (note_id,))
+    except sqlite3.OperationalError:
+        pass  # vec0 table missing on this connection — silent fall-through
+
+
 def _vec_upsert_dialog(conn: sqlite3.Connection, uuid: str,
                        emb_blob: Optional[bytes]) -> None:
     """Mirror a dialog_message embedding into dialog_vec via the uuid map.
     Resolves or assigns a rowid for the given uuid in dialog_vec_map, then
     INSERT-OR-REPLACE keyed by that rowid in dialog_vec."""
-    if not _vec_on() or emb_blob is None:
+    if not _vec_on() or emb_blob is None or not _vec_dim_ok(emb_blob):
         return
     try:
         row = conn.execute(

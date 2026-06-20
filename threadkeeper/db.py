@@ -5,13 +5,17 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from .config import DB_PATH
+from .config import DB_PATH, EMBED_DIM
 
 logger = logging.getLogger(__name__)
 
-# Embedding dimension for paraphrase-multilingual-MiniLM-L12-v2.
-# When swapping models, change here AND drop & recreate the *_vec tables.
-EMBED_DIM = 384
+# Embedding dimension the vec0 tables are created with (FLOAT[EMBED_DIM]).
+# Sourced from config (THREADKEEPER_EMBED_DIM, default 384 for
+# paraphrase-multilingual-MiniLM-L12-v2). When swapping in a model of a
+# different dimension, set THREADKEEPER_EMBED_DIM AND drop & recreate the
+# *_vec tables; embeddings._vec_dim_ok warns loudly if a vector's width
+# doesn't match this. Re-exported here for callers that import db.EMBED_DIM.
+__all__ = ["EMBED_DIM", "get_db", "vec_available", "SCHEMA"]
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work

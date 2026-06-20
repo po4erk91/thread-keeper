@@ -81,6 +81,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("THREADKEEPER_EMBED_MODEL", "embed_model"),
     )
     embed_backend: str = "onnx"
+    # Vector width the vec0 (`notes_vec`/`dialog_vec`) tables are CREATEd with.
+    # Defaults to 384 (paraphrase-multilingual-MiniLM-L12-v2). When swapping in
+    # a model of a different dimension via THREADKEEPER_EMBED_MODEL, set this to
+    # the new width AND drop & recreate the *_vec tables, otherwise every vec0
+    # insert mismatches FLOAT[384] and the fast KNN path silently goes dead (the
+    # legacy BLOB cosine path keeps working). See embeddings._vec_dim_ok, which
+    # warns loudly on a width mismatch instead of swallowing it.
+    embed_dim: int = Field(
+        default=384,
+        validation_alias=AliasChoices("THREADKEEPER_EMBED_DIM", "embed_dim"),
+    )
     no_embeddings: bool = False
 
     # ── Client / process identity ────────────────────────────────────────────
@@ -531,6 +542,12 @@ FASTEMBED_MODEL_ID: str = (
     if "/" in EMBED_MODEL_NAME
     else f"sentence-transformers/{EMBED_MODEL_NAME}"
 )
+
+# Embedding dimension the vec0 virtual tables are created with. Computed once
+# here (NOT via _derive_constants) because, like the embedding backend, it is
+# baked into already-created vec0 schema — hot-swapping it in a live process
+# would desync the tables from the data. Override with THREADKEEPER_EMBED_DIM.
+EMBED_DIM: int = int(settings.embed_dim)
 
 
 def _installed(*mods: str) -> bool:
