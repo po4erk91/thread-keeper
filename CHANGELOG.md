@@ -87,6 +87,17 @@ version bumps follow semver per the policy in
   (`candidate_reviewer` and `dialectic_validator` were never exposed — they
   re-scan the whole pending queue and use the cursor only for telemetry.)
 
+- **Docs: reconciled the hot-config-reload status across surfaces (#77).** The
+  three doc surfaces disagreed: the README pointed at the now-closed-completed
+  issue #2 as if it were a live tracker for unfinished work, and
+  `docs/ARCHITECTURE.md`'s "What is NOT done" still listed "No hot-config
+  reload … requires restarting the MCP process" — directly contradicting the
+  same file's `config_watcher` description and ROADMAP's `✅ DONE (#2)`. In-process
+  reload is in fact shipped (the `config_watcher` daemon re-applies changed
+  `THREADKEEPER_*` knobs from the watched `settings.json` without a restart), so
+  the README now states that plainly instead of linking the closed issue, and
+  the stale ARCHITECTURE bullet was removed. Docs-only; no code or behavior change.
+
 ### Security
 
 - **Author-trust gate for autonomous issue pickup + redacted claim comments
