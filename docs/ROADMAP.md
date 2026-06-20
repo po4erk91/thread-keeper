@@ -585,6 +585,38 @@ autonomously-pruned lesson is unrecoverable (unlike threads, which reopen on a
 note). Add soft-delete / tombstone + restore with a retention window.
 Complements decay scoring (#27) and write-time dedup (#34). (#52) Scope: S–M.
 
+**2026-06-20 reviewer additions (issue-backed).**
+A follow-up audit surfaced a handful of concrete gaps that are now tracked as
+GitHub issues:
+
+- **Lesson consultation telemetry.** Lessons have no per-entry
+  read/consultation counts, so decay and prune logic cannot tell \"never read\"
+  from \"recently consulted\" (#160).
+- **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
+  shadow edit path that can fix long lessons without re-transcribing them from
+  scratch (#161).
+- **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
+  that target merged-away lesson/skill slugs so consolidation does not leave
+  dead pointers behind (#162).
+- **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
+  subtopic, promote it into a structured skill and retire the subsumed lessons
+  instead of leaving a noisy long tail (#163).
+- **Spawn worktree isolation.** Each spawned session should get its own git
+  worktree, or repo-mutating work should be blocked when sessions would share a
+  checkout (#164).
+- **Fail-loud event emission.** `_emit()` should not silently no-op when
+  session setup is missing; forgetting the setup call should be a loud error or
+  an auto-ensure path (#165).
+- **Skill prune heuristic fix.** The curator's false-positive skill prune logic
+  should key on real foreground use, not on auto-patch counts that make the
+  current gate unreachable (#166).
+- **Lesson contradiction reconciliation.** When a new lesson debunks an older
+  permissive lesson or encodes an absolute user directive, flag the older
+  guidance for patch/cross-link/supersession review (#167).
+- **Skill telemetry sanity.** Skill view/use counters need to be verified and
+  surfaced correctly so the curator can trust the disuse/prune signal instead of
+  operating on a dead or undercounted metric (#168).
+
 ---
 
 ## Principle
