@@ -726,6 +726,21 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 Optional — not needed for basic functionality. Embeddings themselves are stored
 as BLOB in `notes.embedding` regardless of vec0 availability.
 
+**vec0 lifecycle (sync + dimension).** The `notes_vec` mirror is kept in sync
+with `notes` *explicitly*, not by trigger: inserts dual-write via
+`_vec_upsert_note`, and deletes (only `consolidate()` merges notes today) call
+`_vec_delete_note` so a removed note can't strand an orphan KNN row — `notes.id`
+is `AUTOINCREMENT` so a stale id is never reclaimed by reuse. As belt-and-braces
+for any pre-existing orphan backlog, `_vec0_notes_search` over-fetches from vec0
+and trims after the join so a query still yields `k` live hits. The vector width
+the `*_vec` tables are created with is `EMBED_DIM` (config-driven —
+`THREADKEEPER_EMBED_DIM`, default 384). Because `THREADKEEPER_EMBED_MODEL` is
+user-configurable, a model that emits a different width would otherwise make
+every vec0 insert raise and silently leave the mirror empty while `_vec_on()`
+still reports the fast path live; `_vec_dim_ok` validates the blob width before
+insert and logs one actionable warning (set `THREADKEEPER_EMBED_DIM` to the new
+width and recreate the `*_vec` tables) instead of swallowing the error.
+
 ### Embedding backend
 
 `embeddings.py` is backend-pluggable via `THREADKEEPER_EMBED_BACKEND`. The

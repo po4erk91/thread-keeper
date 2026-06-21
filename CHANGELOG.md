@@ -31,6 +31,31 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **vec0 index integrity: delete-sync + EMBED_DIM dimension guard (#85).** Two
+  consistency gaps in the sqlite-vec (`notes_vec`) mirror are closed. **(1)
+  Orphaned vec rows on note delete.** `notes_fts` is trigger-synced but
+  `notes_vec` was not, so `consolidate()` deleting a merged note
+  (`DELETE FROM notes WHERE id=?`) left a permanent orphan — `notes.id` is
+  `AUTOINCREMENT`, never reused — that consumed a KNN slot and was then dropped
+  by the inner join in `_vec0_notes_search`, so a query could return *fewer than
+  `k`* live hits while dead entries piled up. `embeddings._vec_delete_note` now
+  removes the mirror row in the consolidate apply loop, and `_vec0_notes_search`
+  over-fetches (`2k+8`, trimmed to `k`) so any legacy orphan backlog drains
+  gracefully instead of shrinking results. **(2) Silent vec0-disable on
+  dimension drift.** `EMBED_DIM` was a hardcoded `384` while
+  `THREADKEEPER_EMBED_MODEL` is user-configurable; a non-384-dim model made
+  every `INSERT INTO notes_vec` raise `OperationalError` that `_vec_upsert_*`
+  silently swallowed — vec0 stayed empty while `_vec_on()` still claimed the
+  fast path, and `tk-migrate-embeddings` (same-dim only) never noticed.
+  `EMBED_DIM` is now config-driven (`THREADKEEPER_EMBED_DIM`, default 384) so a
+  different-width model can create the `*_vec` tables correctly, and
+  `embeddings._vec_dim_ok` validates vector width before insert, logging ONE
+  actionable warning (naming the model, both dimensions, and the env knob)
+  instead of swallowing the error. Tests cover delete→search consistency, the
+  over-fetch-past-orphans path, the consolidate apply path, and the
+  dimension-mismatch warning. Distinct from the closed integrity issue #56
+  (tampered-artifact verification) — this is dimension-compatibility.
+
 - **Extract H4 paraphrase-cluster path no longer re-harvests rejected
   candidates (#62).** The semantic-cluster heuristic had its own inline dedup
   (`status IN ('pending','accepted')`) that omitted `'rejected'`, so a rejected
