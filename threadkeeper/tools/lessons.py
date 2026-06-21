@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+import sqlite3
 from typing import Optional
 
 from .._mcp import read_tool, write_tool
@@ -146,9 +147,27 @@ def lesson_append(
                 f"score={score:.2f}; use lesson_get/skill_manage to patch "
                 "existing memory instead"
             )
+    # Was this an in-place patch of an existing slug, or a brand-new lesson?
+    # Determined BEFORE the write so the dashboard's curator-net-change line
+    # can split added vs patched.
+    existed = any(it["slug"] == _slugify(title) for it in iter_lessons())
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
+    # Record the write so mp_dashboard can count store growth (issue #61),
+    # mirroring the lesson_remove event below. The events table always exists
+    # (db schema); guard defensively anyway so a logging hiccup never loses
+    # the lesson the caller just materialized.
+    op = "replace" if existed else "create"
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, 'lesson_append', ?, ?, strftime('%s','now'))",
+            (identity._session_id or "", slug, f"op={op} source={source or '?'}"),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     return f"ok slug={slug} path={get_path()}"
 
 
