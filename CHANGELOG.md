@@ -304,6 +304,22 @@ version bumps follow semver per the policy in
 
 ### Changed
 
+- **`mp_dashboard` no longer has loop + mutation telemetry blind spots (#61).**
+  The dashboard's loop list was a hand-maintained tuple that silently omitted
+  `dialectic_mine`, `dialectic_validate`, `evolve_apply`, and `thread_janitor`
+  — two of which spawn *paid* LLM children — so it disagreed with
+  `agent_status` on which loops even exist. It is now **derived from
+  `agent_status._LOOP_DEFS`** (single source of truth) and can never drift;
+  loop labels are the canonical loop ids. The **outcomes** section now also
+  counts knowledge-store mutations — `lesson_append`, `lesson_remove`,
+  `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`, and
+  `dialectic_claim` / `dialectic_supersede` — and a new **`curator_net_change
+  added=/removed=/patched=/net=`** line surfaces lessons-store growth or
+  shrinkage in the window, so a daemon silently auto-pruning the store now
+  produces a visible number. `lesson_append` now records a `lesson_append`
+  event (mirroring the existing `lesson_remove` event) with an
+  `op=create|replace` summary so additions are countable and split from
+  in-place patches.
 - **Autonomous Curator is now destructive by default.**
   `THREADKEEPER_CURATOR_DESTRUCTIVE` now defaults to `1`: once the curator
   daemon is enabled (`THREADKEEPER_CURATOR_INTERVAL_S > 0`), the child writes
