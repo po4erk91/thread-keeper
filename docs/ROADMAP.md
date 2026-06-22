@@ -379,6 +379,20 @@ comment — and excluded from the auto-drain until a human intervenes (composes
 with the #50 skip-label gate). Attempt counts/states show in
 `evolve_apply_status()`; stuck/dead-letter counts in `mp_dashboard()`.
 
+**Background daemon resource hygiene (done, #86).** Three low-grade resource
+gaps in the daemon family: (1) every loop slept on a bare interval with zero
+jitter, so the always-on guards (`memory_guard`, `skill_watcher`) — which start
+during `_ensure_session` bootstrap on *every* MCP instance — ticked in near-
+lockstep across concurrent clients, a synchronized `ps`/notification subprocess
+storm scaling with instance count; (2) `memory_guard._last_notify_at[(pid,
+level)]` was insert-only, leaking a permanent entry per transient MCP pid on the
+long-lived coordinator; (3) `run_janitor_pass` recorded a `janitor_pass` event
+on every tick including the `no_stale` no-op, growing the `events` table with
+zero-signal rows. Fixed by ±15% wake-up jitter in `daemon_sleep` (+ migrating
+the three bare-`time.sleep` loops onto it), pruning `_last_notify_at` of
+past-cooldown / dead-pid entries each `_maybe_notify`, and collapsing
+consecutive no-op janitor passes into a single recorded row. Scope: S.
+
 **Daemon robustness under load.** Curator lacks the machine-wide single-flight
 every other spawning daemon has, and `candidate_reviewer`/`curator` dump an
 unbounded queue/inventory into the child prompt argv (the `E2BIG` class already

@@ -239,7 +239,14 @@ def test_daemon_sleep_idles_when_interval_zero(tmp_path, monkeypatch):
     helpers.daemon_sleep(0, idle_s=0.05)
     helpers.daemon_sleep(7.5)
     helpers.daemon_sleep(-3, idle_s=0.05)
-    assert seen == [0.05, 7.5, 0.05]
+    # interval<=0 idles on idle_s (never 0 → no busy-spin); interval>0 sleeps
+    # the interval. Each is now jittered by ±_JITTER_FRAC (#86), so the sleeps
+    # land within the band around their nominal value rather than exactly on it.
+    frac = helpers._JITTER_FRAC
+    assert len(seen) == 3
+    for got, nominal in zip(seen, [0.05, 7.5, 0.05]):
+        assert nominal * (1 - frac) <= got <= nominal * (1 + frac)
+        assert got > 0
 
 
 # ── MCP tools ─────────────────────────────────────────────────────────────

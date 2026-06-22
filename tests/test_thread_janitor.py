@@ -179,3 +179,42 @@ def test_daemon_does_not_start_at_interval_zero(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, interval="0")
     pkg["thread_janitor"].start_thread_janitor()
     assert pkg["thread_janitor"]._started is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# no-op event suppression (issue #86 — don't grow events one row per tick)
+# ──────────────────────────────────────────────────────────────────────
+
+def test_no_stale_events_collapse_to_one(tmp_path, monkeypatch):
+    """Consecutive no-op ticks record at most one janitor_pass row."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    for _ in range(5):
+        assert pkg["thread_janitor"].run_janitor_pass(force=True) == "no_stale"
+    n = conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind='janitor_pass'"
+    ).fetchone()["c"]
+    assert n == 1, n
+
+
+def test_no_stale_records_again_after_activity(tmp_path, monkeypatch):
+    """A close transitions the loop out of quiet, so the next no_stale is a
+    real state change and IS recorded — collapse, not permanent suppression."""
+    pkg = _bootstrap(tmp_path, monkeypatch, idle_days="1")
+    conn = pkg["db"].get_db()
+    # quiet → exactly one no_stale marker
+    pkg["thread_janitor"].run_janitor_pass(force=True)
+    pkg["thread_janitor"].run_janitor_pass(force=True)
+    # activity: one stale thread closed
+    tid = _tool(pkg, "open_thread")(question="stale")
+    _age_thread(conn, tid, days_ago=2)
+    assert pkg["thread_janitor"].run_janitor_pass(force=True) == "closed=1"
+    # quiet again → a fresh no_stale recorded (transition)
+    pkg["thread_janitor"].run_janitor_pass(force=True)
+    pkg["thread_janitor"].run_janitor_pass(force=True)
+    summaries = [
+        r["summary"] for r in conn.execute(
+            "SELECT summary FROM events WHERE kind='janitor_pass' ORDER BY id"
+        ).fetchall()
+    ]
+    assert summaries == ["no_stale", "closed=1", "no_stale"], summaries

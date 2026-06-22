@@ -7,6 +7,33 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- **Background daemon resource hygiene (#86).** Three low-grade resource gaps in
+  the background daemon family are closed:
+  - **Wake-up jitter.** Every daemon sleep is now scaled by ±15% random jitter
+    (`helpers.daemon_sleep`, which most daemons already route through). The
+    three loops that still slept on a bare `time.sleep` — `memory_guard`,
+    `skill_watcher`, `spawn_budget` — were migrated onto `daemon_sleep` too. The
+    always-on guards bootstrap on *every* MCP instance during `_ensure_session`,
+    so with several clients open (Code CLI, Desktop, VS Code, headless
+    `claude -p`) they used to tick in near-lockstep, firing `ps`/`osascript`
+    work simultaneously every interval — a synchronized subprocess storm that
+    scaled with instance count. Jitter de-synchronizes concurrent instances
+    without meaningfully changing any daemon's cadence.
+  - **Bounded `_last_notify_at`.** `memory_guard`'s module-level
+    `_last_notify_at[(pid, level)]` was insert-only, so on the long-lived
+    aggregate-guard coordinator every transient MCP pid that ever crossed a
+    threshold leaked a permanent entry. `_maybe_notify` now prunes entries past
+    their cooldown window (after which they no longer suppress anything) or for
+    a dead pid, keeping the coordinator's footprint flat.
+  - **No-op `janitor_pass` event suppression.** `run_janitor_pass` recorded a
+    `janitor_pass` event on *every* tick, including the common `no_stale`
+    no-op — steady unbounded growth of the `events` table with zero-signal rows
+    that `brief()`/nudge queries scan. Consecutive no-op ticks now collapse into
+    a single row (the first `no_stale` after activity still lands, so the
+    dashboard keeps a heartbeat).
+
 ### Added
 
 - **MCP Resources & Prompts primitives (#78).** thread-keeper exposed its whole
