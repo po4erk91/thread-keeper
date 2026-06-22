@@ -138,6 +138,33 @@ version bumps follow semver per the policy in
 
 ### Security
 
+- **Split the evolve reviewer's web research out of its privileged child (#79).**
+  The reviewer was the only learning loop granted `WebSearch`/`WebFetch`, and it
+  held them in the *same* `bypassPermissions` child that also had unsandboxed
+  `Bash`/`Edit`/`Write` + `gh` — one child with all three "lethal trifecta" legs:
+  private-data access (`Read`/`Bash`/MCP over the home perimeter), exposure to
+  untrusted web content (it was told to research the open internet), and an
+  exfiltration/action channel (`gh`/`curl`/`git`/`Write` under no per-action
+  confirmation). A page returned by a research query could carry injected
+  instructions the child would execute with no human in the loop. `run_evolve_pass`
+  now alternates **two phases** that never co-grant web research and the
+  `bypassPermissions` + `Bash`/`Write` capability: a **read-only research** child
+  (`permission_mode="auto"`; `WebSearch,WebFetch,Read,Glob,Grep,Write` — no
+  `Bash`, no `bypassPermissions`, no `gh`, so no network egress to exfiltrate
+  with) distills its findings into `~/.threadkeeper/evolve-research/RESEARCH-<ts>.md`;
+  the next due pass spawns the **privileged audit** child (`bypassPermissions` +
+  `Bash`/`Edit`/`Write`, **no** web tools) that audits the repo and does the
+  GitHub/ROADMAP writes, consuming the digest inside an explicit
+  `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` data fence it must never read
+  as instructions (mirrors #76's fencing, applied to the web source). Both phase
+  prompts open with the same `"You are an EVOLVE REVIEWER"` line, so the existing
+  machine-wide single-flight and shadow/extract exclusion cover both; a full
+  research → audit cycle now spans two due passes. `tests/test_evolve_daemon.py`
+  adds an invariant test asserting no single child holds web research +
+  `bypassPermissions` + `Bash`/`Write`. README + ARCHITECTURE document the reduced
+  privilege and the fenced research step. Complements #22 (stored injected
+  content) and #63 (issue-author trust gate); the open web cannot be
+  author-allowlisted, so neither covered this path.
 - **Author-trust gate for autonomous issue pickup + redacted claim comments
   (#63).** This repo is **public**, so any GitHub account can open an issue —
   and the evolve applier injected every open issue's body into a
