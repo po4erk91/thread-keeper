@@ -59,6 +59,14 @@ from .tools import dashboard  # noqa: F401
 from .tools import agent_status  # noqa: F401
 from .tools import config_watch  # noqa: F401
 
+# MCP Resources & Prompts (roadmap #78) — the other two MCP server primitives.
+# Importing these registers @mcp.resource / @mcp.prompt entries (NOT tools) on
+# the shared instance: read-only memory snapshots as resources, curation/audit
+# flows as prompts. Additive — every existing tool stays unchanged, and hosts
+# without the resources/prompts capability fall back to the tool-only surface.
+from .tools import resources  # noqa: F401
+from .tools import prompts  # noqa: F401
+
 
 if __name__ == "__main__":
     from .menubar_app import ensure_menubar_app

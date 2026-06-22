@@ -8,18 +8,17 @@ suggestion box.
 
 import sqlite3
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 from .._mcp import read_tool, write_tool, structured_result
-from ..config import SEMANTIC_AVAILABLE, DB_PATH
+from ..config import SEMANTIC_AVAILABLE
 from ..tool_schemas import ContextStatus
 from ..db import get_db
 from ..helpers import gen_thread_id, fmt_age, q, _fts_query
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, _cosine_search, _vec_upsert_note, embed_tag
-from ..brief import render_brief
+from ..brief import render_brief, render_context
 
 
 @read_tool()
@@ -47,33 +46,13 @@ def brief(query: str = "", k: int = 6, scope: str = "full") -> str:
 def context() -> ContextStatus:
     """Runtime context: session id, age, semantic on/off, db path, thread counts.
 
-    Returns structuredContent (ContextStatus) plus the legacy text block."""
+    Returns structuredContent (ContextStatus) plus the legacy text block.
+    The same snapshot is reachable read-only as the ``memory://context``
+    resource — both render through ``brief.render_context``."""
     conn = get_db()
     _ensure_session(conn)
-    now = int(time.time())
-    counts = conn.execute(
-        "SELECT state, COUNT(*) c FROM threads GROUP BY state"
-    ).fetchall()
-    thread_counts = {r["state"]: r["c"] for r in counts}
-    cs = " ".join(f"{k}={v}" for k, v in thread_counts.items()) or "empty"
-    started = identity._session_start or now
-    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
-    text = (
-        f"sess={identity._session_id} "
-        f"started={fmt_age(now - started)}_ago "
-        f"sem={'on' if SEMANTIC_AVAILABLE else 'off'} "
-        f"db={DB_PATH} "
-        f"threads[{cs}] "
-        f"now={now_iso}"
-    )
-    return structured_result(text, ContextStatus(
-        session_id=identity._session_id,
-        started_age_s=now - started,
-        semantic=bool(SEMANTIC_AVAILABLE),
-        db_path=str(DB_PATH),
-        thread_counts=thread_counts,
-        now=now_iso,
-    ))
+    text, fields = render_context(conn)
+    return structured_result(text, ContextStatus(**fields))
 
 
 @write_tool()

@@ -13,7 +13,7 @@ read-write the same database simultaneously. One state file:
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool registrar)
+├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
@@ -63,6 +63,8 @@ threadkeeper/
     ├── dialog.py      dialog_search/open_dialog_window/ingest
     ├── validate.py    validate_threads
     ├── style.py       style_set/verbatim_user
+    ├── resources.py   @mcp.resource — memory://brief|context|dashboard|agent-status (#78)
+    ├── prompts.py     @mcp.prompt — review_recent_threads/run_library_curation/audit_threadkeeper (#78)
     ├── invariants.py, missed_spawns.py, consolidate.py, session.py, …
 ```
 
@@ -817,6 +819,37 @@ which calls warrant a prompt (substrate for #26). The five status tools
 (typed models in `tool_schemas.py`, built via `structured_result()`), keeping
 the legacy human-readable text block for backward compatibility. The contract
 is enforced by `tests/test_tool_annotations.py`.
+
+### MCP resources & prompts (#78)
+
+Tools are only one of MCP's three server primitives. thread-keeper also adopts
+the other two for the read/act split they fit naturally:
+
+- **Resources** (`tools/resources.py`, `@mcp.resource`) — *application-controlled,
+  read-only* memory snapshots at stable URIs: `memory://brief`,
+  `memory://context`, `memory://dashboard`, `memory://agent-status`. Each is
+  backed by the same render function as the matching tool (`render_brief`,
+  `render_context`, `mp_dashboard`, `agent_status`), so a host can pull memory as
+  attachable / `@`-mentionable context without the agent *remembering* to call a
+  tool — the mechanical channel that hookless CLIs lacked. The brief resource
+  renders `lean=True` and agent-status uses `refresh=False`, so an automatic host
+  pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
+  URIs are static: resource *templates* (`{param}`) are still unevenly supported
+  across hosts, so parameterized URIs are a later, host-gated step.
+- **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,
+  parameterized* templates for the curation / audit / review flows:
+  `review_recent_threads`, `run_library_curation`, `audit_threadkeeper`. Claude
+  Code surfaces them as `/mcp__thread-keeper__<name>` slash commands; each returns
+  one instruction message that drives the existing read/act tools (it does not act
+  on its own).
+
+Both are **additive**: FastMCP advertises the `resources` / `prompts`
+capabilities, which only changes what a capability-aware host *sees* — never the
+tool surface. A host that uses neither falls back to the hook-injected brief and
+the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on
+their own managers, so they never enter the tool registry (pinned by
+`tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
+rendering, capability advertisement, and the tool-only fallback).
 
 ## Tests
 
