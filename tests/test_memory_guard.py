@@ -319,3 +319,44 @@ def test_guard_tool_does_not_leak_daemon_thread(mp_with_cid, monkeypatch):
         if t.name == "memory_guard" and t.is_alive()
     } - before
     assert leaked == set(), f"memory_guard daemon thread leaked: {leaked}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# _last_notify_at pruning (issue #86 — bound the long-lived coordinator)
+# ──────────────────────────────────────────────────────────────────────
+
+def test_prune_notify_state_drops_stale_and_dead(monkeypatch):
+    """Entries past the cooldown window or for a dead pid are pruned; a
+    fresh entry for a live pid survives."""
+    from threadkeeper import memory_guard as mg
+
+    monkeypatch.setattr(mg, "MEMORY_GUARD_COOLDOWN_S", 60)
+    monkeypatch.setattr(mg, "_pid_alive", lambda pid: pid == 100)
+    now = 1_000_000.0
+    mg._last_notify_at.clear()
+    mg._last_notify_at[(100, "warn")] = now - 10   # fresh + alive → keep
+    mg._last_notify_at[(100, "kill")] = now - 120  # stale → drop
+    mg._last_notify_at[(200, "warn")] = now - 10   # dead pid → drop
+    try:
+        mg._prune_notify_state(now)
+        assert set(mg._last_notify_at) == {(100, "warn")}
+    finally:
+        mg._last_notify_at.clear()
+
+
+def test_maybe_notify_keeps_dict_bounded(monkeypatch):
+    """Notifying about a churn of transient (dead) pids does not grow the
+    module dict without bound — each tick prunes the prior dead entries."""
+    from threadkeeper import memory_guard as mg
+
+    monkeypatch.setattr(mg, "MEMORY_GUARD_COOLDOWN_S", 0)  # cooldown disabled
+    monkeypatch.setattr(mg, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(mg, "_notify_user", lambda *a, **k: True)
+    monkeypatch.setattr(mg, "_log_line", lambda *a, **k: None)
+    mg._last_notify_at.clear()
+    try:
+        for pid in range(1000, 1200):
+            mg._maybe_notify(pid, "warn", "rss over limit")
+        assert len(mg._last_notify_at) <= 1
+    finally:
+        mg._last_notify_at.clear()

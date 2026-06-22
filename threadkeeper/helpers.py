@@ -3,15 +3,32 @@ short-quoting, ID generation, process-aliveness check."""
 from __future__ import annotations
 
 import os
+import random
 import secrets
 import sqlite3
 import subprocess
 import time
 from typing import Optional
 
+# ±15% wake-up jitter. Every always-on daemon (memory_guard, skill_watcher)
+# starts during `_ensure_session` bootstrap on every MCP instance, so with
+# several clients open (Code CLI, Desktop, VS Code, headless `claude -p`) they
+# all bootstrap near the same moment and would then tick in near-lockstep —
+# a synchronized `ps`/notification subprocess storm that scales with instance
+# count (#86). Scaling each sleep by a per-tick random factor de-synchronizes
+# concurrent instances without meaningfully changing any daemon's cadence.
+_JITTER_FRAC = 0.15
+
+
+def _jittered(seconds: float) -> float:
+    """Scale `seconds` by a uniform factor in [1-_JITTER_FRAC, 1+_JITTER_FRAC]."""
+    if seconds <= 0:
+        return seconds
+    return seconds * (1.0 + random.uniform(-_JITTER_FRAC, _JITTER_FRAC))
+
 
 def daemon_sleep(interval_s, idle_s: float = 30.0) -> None:
-    """Sleep one daemon tick without ever busy-spinning.
+    """Sleep one daemon tick without ever busy-spinning, with wake-up jitter.
 
     Daemon `_serve_loop`s read their interval from a module global that the
     hot-config reload (issue #2) can rewrite at runtime. If a live interval is
@@ -19,12 +36,15 @@ def daemon_sleep(interval_s, idle_s: float = 30.0) -> None:
     into a CPU-pegging spin. This helper idles for `idle_s` instead so the
     daemon goes quiet (its `run_*_pass` already short-circuits on interval<=0)
     until the knob is raised again.
+
+    The actual sleep is jittered by ±`_JITTER_FRAC` (see above) so multiple
+    MCP server instances on one host don't fire their work in lockstep.
     """
     try:
         interval = float(interval_s)
     except (TypeError, ValueError):
         interval = 0.0
-    time.sleep(interval if interval > 0 else idle_s)
+    time.sleep(_jittered(interval if interval > 0 else idle_s))
 
 
 def fmt_age(seconds: int) -> str:

@@ -203,7 +203,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   change the shadow interval, `shadow_review_status()` reflects it within
   ~1 s). A daemon whose interval crossed 0 → >0 is started here; the rest
   self-adjust (and `daemon_sleep` keeps a hot-disabled loop from busy-spinning
-  on `time.sleep(0)`). Cold start records only a baseline (the env is already
+  on `time.sleep(0)`, and jitters every sleep by ±15% so concurrent MCP
+  instances on one host don't fire their `ps`/notify work in lockstep — #86).
+  Cold start records only a baseline (the env is already
   applied at spawn); a half-written file is skipped via the mtime-cursor +
   JSON-parse guard and retried. Manual trigger `config_reload()`; diagnostics
   `config_watch_status()`. Embedding-backend / process-identity flags are

@@ -11,11 +11,11 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from typing import Optional
 
 from .config import CLAUDE_SKILLS_DIR
 from .db import get_db
+from .helpers import daemon_sleep
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def _watch_loop() -> None:
                 conn.close()
         except Exception:
             logger.debug("skill_watcher tick failed", exc_info=True)
-        time.sleep(_tick_interval_s)
+        daemon_sleep(_tick_interval_s)
 
 
 def start_skill_watcher() -> None:

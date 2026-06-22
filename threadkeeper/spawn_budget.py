@@ -44,6 +44,7 @@ from .config import (
     SPAWN_BUDGET_POLL_S,
     SPAWN_VISIBLE_TTL_S,
 )
+from .helpers import daemon_sleep
 from .db import get_db
 from .helpers import alive
 
@@ -306,7 +307,7 @@ def _daemon_loop() -> None:
                 conn.close()
         except Exception:
             logger.debug("spawn_budget daemon tick failed", exc_info=True)
-        time.sleep(SPAWN_BUDGET_POLL_S)
+        daemon_sleep(SPAWN_BUDGET_POLL_S)
 
 
 def start_budget_daemon() -> None:

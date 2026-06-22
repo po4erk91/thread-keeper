@@ -34,6 +34,7 @@ from .config import (
     TASK_LOG_DIR,
 )
 from .db import get_db
+from .helpers import daemon_sleep
 from . import process_health
 
 logger = logging.getLogger(__name__)
@@ -115,8 +116,39 @@ def _notify_user(title: str, message: str) -> bool:
         return False
 
 
+def _prune_notify_state(now: float) -> None:
+    """Bound `_last_notify_at`. It is only ever inserted into, so on the
+    long-lived aggregate-guard coordinator each transient MCP `(pid, level)`
+    that ever crossed a threshold would persist forever — slow unbounded
+    growth in the one process that should stay lean (#86). An entry only
+    matters until its cooldown lapses (after that `_maybe_notify` would notify
+    again regardless), and an entry for a dead pid can never matter, so both
+    are safe to drop. Window falls back to 1h when the cooldown is disabled."""
+    window = MEMORY_GUARD_COOLDOWN_S if MEMORY_GUARD_COOLDOWN_S > 0 else 3600.0
+    drop = []
+    for (pid, level), last in _last_notify_at.items():
+        if now - last >= window or not _pid_alive(pid):
+            drop.append((pid, level))
+    for key in drop:
+        _last_notify_at.pop(key, None)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Cheap liveness check (no subprocess) for notify-state pruning."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _maybe_notify(pid: int, level: str, message: str, *, force: bool = False) -> None:
     now = time.time()
+    _prune_notify_state(now)
     key = (pid, level)
     last = _last_notify_at.get(key, 0)
     if not force and MEMORY_GUARD_COOLDOWN_S > 0 and now - last < MEMORY_GUARD_COOLDOWN_S:
@@ -521,7 +553,7 @@ def _daemon_loop() -> None:
             check_once(dry_run=False, notify=True)
         except Exception:
             logger.debug("memory_guard daemon tick failed", exc_info=True)
-        time.sleep(MEMORY_GUARD_POLL_S)
+        daemon_sleep(MEMORY_GUARD_POLL_S)
 
 
 def start_memory_guard_daemon() -> None:

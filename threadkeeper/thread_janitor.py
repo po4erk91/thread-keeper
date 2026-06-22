@@ -54,6 +54,18 @@ def _record_janitor_pass(conn: sqlite3.Connection, outcome: str) -> None:
         logger.debug("thread_janitor: failed to record pass", exc_info=True)
 
 
+def _last_janitor_outcome(conn: sqlite3.Connection) -> str | None:
+    """Summary of the most recent recorded janitor_pass, or None."""
+    try:
+        row = conn.execute(
+            "SELECT summary FROM events WHERE kind='janitor_pass' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row["summary"] if row else None
+
+
 def _stale_threads(conn: sqlite3.Connection, cutoff: int) -> list[sqlite3.Row]:
     """Active or idle threads not touched since `cutoff`, oldest first."""
     try:
@@ -83,7 +95,13 @@ def run_janitor_pass(force: bool = False) -> str:
     cutoff = now - int(max(0.0, THREAD_IDLE_CLOSE_DAYS) * 86400)
     stale = _stale_threads(conn, cutoff)
     if not stale:
-        _record_janitor_pass(conn, "no_stale")
+        # Collapse consecutive no-op ticks: record `no_stale` only on the
+        # transition into quiet, not on every tick. Otherwise the `events`
+        # table grows one zero-signal row per interval forever — rows that
+        # brief()/nudge queries then have to scan (#86). The first no_stale
+        # after any activity still lands, so the dashboard keeps a heartbeat.
+        if _last_janitor_outcome(conn) != "no_stale":
+            _record_janitor_pass(conn, "no_stale")
         return "no_stale"
 
     # Late import — tools.threads imports brief/embeddings; importing at
