@@ -14,6 +14,11 @@ Flow:
   background daemon (start_budget_daemon):
     every SPAWN_BUDGET_POLL_S seconds, walk running tasks, compute real
     RSS of each process tree via `ps`, write back into tasks.rss_kb.
+    Visible (Terminal-launched) children persist pid=0, so their live pid
+    is resolved from their forced session-id (spawned_cid) in `ps` argv and
+    measured the same way — they contribute real RSS, not the static
+    estimate. A visible row whose cid never resolves to a live process is
+    reaped past SPAWN_VISIBLE_TTL_S so it can't pin budget capacity forever.
     Tasks that have ended → no update (their rss_kb stays as last seen
     but they're filtered out by ended_at IS NOT NULL anyway).
 
@@ -37,6 +42,7 @@ from .config import (
     SPAWN_ESTIMATE_SLIM_MB,
     SPAWN_ESTIMATE_FULL_MB,
     SPAWN_BUDGET_POLL_S,
+    SPAWN_VISIBLE_TTL_S,
 )
 from .db import get_db
 from .helpers import alive
@@ -133,6 +139,35 @@ def measure_tree_rss_kb(root_pid: int) -> Optional[int]:
     return _rss_for_pids(tree)
 
 
+def _pid_for_cid(cid: str) -> Optional[int]:
+    """Resolve the live OS pid of a visible (Terminal-launched) child from its
+    forced session-id. spawn() persists pid=0 for visible children, but a
+    claude child carries `--session-id <cid>` in its argv, so the cid is a
+    stable handle into `ps`. Returns the first process whose command line
+    contains the cid, or None when no live process carries it (child not yet
+    started, already exited, or a non-claude CLI that keeps the cid in env)."""
+    if not cid:
+        return None
+    try:
+        r = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,command="],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    for line in (r.stdout or "").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmdline = parts
+        if cid in cmdline:
+            try:
+                return int(pid_s)
+            except ValueError:
+                continue
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Budget check
 # ─────────────────────────────────────────────────────────────────────
@@ -180,26 +215,69 @@ def check_budget(conn, new_child_kb: int) -> Tuple[bool, str]:
 # Daemon — refresh real RSS values
 # ─────────────────────────────────────────────────────────────────────
 
+def _measure_visible(conn, row, now: int) -> int:
+    """Account a visible (pid=0) child's memory, or reap an unresolvable row.
+
+    Resolves the live pid from the row's forced session-id (spawned_cid) and
+    writes its real RSS tree into rss_kb, so visible children contribute true
+    memory to the budget instead of the static pre-launch estimate (#64). When
+    no live process carries the cid and the row has outlived
+    SPAWN_VISIBLE_TTL_S, mark it ended so an unresolvable visible row cannot
+    pin budget capacity forever.
+
+    Returns 1 when rss_kb was refreshed, 2 when the row was reaped, else 0."""
+    cid = row["spawned_cid"]
+    vpid = _pid_for_cid(cid) if cid else None
+    if vpid:
+        rss = measure_tree_rss_kb(vpid)
+        if rss is not None:
+            conn.execute(
+                "UPDATE tasks SET rss_kb=?, rss_updated_at=? WHERE id=?",
+                (rss, now, row["id"]),
+            )
+            return 1
+        return 0  # live pid found but RSS unreadable this tick — leave as-is
+    started = row["started_at"] or 0
+    if SPAWN_VISIBLE_TTL_S > 0 and started and (now - started) >= SPAWN_VISIBLE_TTL_S:
+        conn.execute(
+            "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+            (now, row["id"]),
+        )
+        return 2
+    return 0
+
+
 def _refresh_all_running(conn) -> int:
-    """Sweep running tasks, update rss_kb with real measurement. Tasks
-    whose pid is invalid (0 / visible spawn) are skipped — their RSS
-    can't be tracked from here. Returns number of rows updated."""
+    """Sweep running tasks, update rss_kb with real measurement.
+
+    pid>0 (headless) children are measured directly from their pid. Visible
+    (pid<=0, Terminal-launched) children are resolved to a live pid via their
+    forced session-id and measured too — and reaped past a TTL when no live
+    process carries the cid (#64). Returns the number of rows whose rss_kb was
+    refreshed."""
     rows = conn.execute(
-        "SELECT id, pid, spawned_cid FROM tasks "
+        "SELECT id, pid, spawned_cid, started_at FROM tasks "
         "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 100"
     ).fetchall()
     now = int(time.time())
     updated = 0
+    changed = False
     for r in rows:
         pid = r["pid"]
         if not pid or pid <= 0:
-            continue  # visible spawns — Terminal-launched, pid not tracked
+            code = _measure_visible(conn, r, now)
+            if code:
+                changed = True
+                if code == 1:
+                    updated += 1
+            continue
         if not alive(pid):
             # Process gone — mark ended, leave rss_kb as last-known.
             conn.execute(
                 "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
                 (now, r["id"]),
             )
+            changed = True
             continue
         rss = measure_tree_rss_kb(pid)
         if rss is None:
@@ -209,7 +287,8 @@ def _refresh_all_running(conn) -> int:
             (rss, now, r["id"]),
         )
         updated += 1
-    if updated:
+        changed = True
+    if changed:
         try:
             conn.commit()
         except Exception:

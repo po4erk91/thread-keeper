@@ -152,6 +152,11 @@ class Settings(BaseSettings):
     spawn_estimate_slim_mb: int = 500
     spawn_estimate_full_mb: int = 1500
     spawn_budget_poll_s: float = 10.0
+    # Wall-clock backstop for visible (pid=0) children: a Terminal-launched
+    # row whose process can't be resolved from its cid is marked ended once it
+    # outlives this, so an unresolvable row can't pin budget capacity forever
+    # (#64). 0 disables the reaper.
+    spawn_visible_ttl_s: float = 3600.0
 
     # ── Memory guard ─────────────────────────────────────────────────────────
     memory_guard_poll_s: float = 30.0
@@ -413,6 +418,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_ESTIMATE_SLIM_MB": s.spawn_estimate_slim_mb,
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
         "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
+        "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
         "MEMORY_GUARD_POLL_S": s.memory_guard_poll_s,
         "MEMORY_GUARD_WARN_MB": s.memory_guard_warn_mb,
         "MEMORY_GUARD_KILL_MB": s.memory_guard_kill_mb,

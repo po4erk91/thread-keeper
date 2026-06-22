@@ -79,6 +79,20 @@ version bumps follow semver per the policy in
   over-fetch-past-orphans path, the consolidate apply path, and the
   dimension-mismatch warning. Distinct from the closed integrity issue #56
   (tampered-artifact verification) — this is dimension-compatibility.
+- **Spawn budget now measures visible (pid=0) children and reaps unresolvable
+  rows (#64).** The budget daemon skipped `pid<=0`, so a visible
+  (Terminal-launched) child's real (~1.3 GB) RSS was never measured — it only
+  ever counted as its static pre-launch estimate, letting combined visible-child
+  memory exceed `SPAWN_BUDGET_MB` while the accounting believed it was under cap.
+  And a visible row whose jsonl never resolved kept `ended_at` NULL, pinning its
+  full-estimate budget share indefinitely. Now: the daemon resolves a visible
+  child's live pid from the `--session-id <cid>` it carries in `ps` argv and
+  measures its real subtree RSS like any other child, and a new
+  `THREADKEEPER_SPAWN_VISIBLE_TTL_S` (3600 s default; 0 disables) wall-clock
+  backstop marks any `pid<=0` row whose cid never resolves to a live process as
+  ended once it outlives the TTL, so it can't pin capacity forever. The
+  admission-time check-then-spawn TOCTOU (#58), kill-path/pid-reuse hardening
+  (#66), and spool/tasks retention (#42) remain out of scope.
 
 - **Extract H4 paraphrase-cluster path no longer re-harvests rejected
   candidates (#62).** The semantic-cluster heuristic had its own inline dedup

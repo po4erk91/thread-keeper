@@ -993,8 +993,10 @@ def spawn_budget_status() -> SpawnBudgetStatus:
 
     Values come from the budget daemon (refreshes every SPAWN_BUDGET_POLL_S
     seconds via `ps`). Just-spawned tasks show their initial estimate until
-    the daemon catches up. Tasks with pid=0 (visible Terminal-launched
-    spawns) aren't tracked from here — their RSS column stays as estimate.
+    the daemon catches up. Visible (pid=0, Terminal-launched) spawns are
+    tracked too: the daemon resolves their live pid from the forced
+    session-id and measures real RSS, and reaps a row whose cid never
+    resolves past SPAWN_VISIBLE_TTL_S (#64).
 
     Returns structuredContent (SpawnBudgetStatus) plus the legacy text block."""
     from ..config import SPAWN_BUDGET_MB, SPAWN_BUDGET_POLL_S
