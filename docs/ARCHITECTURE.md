@@ -1013,9 +1013,6 @@ real-estate cost.
   (`agy`) is wired for MCP/instructions/skills/spawn, but its sqlite/protobuf
   conversation history and hook schema are not parsed/wired yet.
 - Extraction heuristics are simple regexes; no ML quality classifier.
-- No hot-config reload: changing an env-knob still requires restarting the MCP
-  process. The macOS menu-bar Settings window can request that restart after
-  writing `.env`, but daemons do not yet re-read config in-process.
 - MCP-native `sampling/createMessage` (a native review fork without
   pay-per-use tokens) is not yet implemented in Claude Code
   (anthropics/claude-code#1785). spawn-subprocess is the fallback, slim-config

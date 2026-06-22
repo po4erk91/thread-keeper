@@ -680,8 +680,11 @@ Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
 macOS, the menu-bar app's gear button can edit the same file visually, save up
 to three local presets, and request a ThreadKeeper restart after saving.
-Hot-config reload is
-[tracked](https://github.com/po4erk91/thread-keeper/issues/2).
+Hot-config reload for the watched `settings.json` env block is implemented
+(shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
+knobs in-process within ~2 s, with no Claude Code restart — toggle it via
+`THREADKEEPER_CONFIG_WATCH_INTERVAL_S` (above; `0` disables) and inspect with
+`config_watch_status()`.
 
 ### Per-loop agent dispatch
 
