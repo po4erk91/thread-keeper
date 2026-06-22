@@ -13,7 +13,7 @@ read-write the same database simultaneously. One state file:
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool registrar)
+├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
@@ -63,6 +63,8 @@ threadkeeper/
     ├── dialog.py      dialog_search/open_dialog_window/ingest
     ├── validate.py    validate_threads
     ├── style.py       style_set/verbatim_user
+    ├── resources.py   @mcp.resource — memory://brief|context|dashboard|agent-status (#78)
+    ├── prompts.py     @mcp.prompt — review_recent_threads/run_library_curation/audit_threadkeeper (#78)
     ├── invariants.py, missed_spawns.py, consolidate.py, session.py, …
 ```
 
@@ -233,14 +235,28 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues with
-  `gh issue list`, prioritizes `roadmap`-labeled issues then FIFO, and spawns
-  one `evolve_applier` child to implement exactly one issue. Before spawning,
-  the parent runs five multi-host conflict guards in order: (1) skip if an
-  active `<!-- thread-keeper:evolve-applier-claim -->` comment already exists;
-  (2) skip if `gh pr list --search "in:body Closes #N"` shows an open PR
-  already closing the issue; (3) post the parent's own claim comment (body
-  carries hostname + PID + git-rev for triage); (4) wait
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
+  REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
+  list --json` cannot return `author_association`; pull requests in the
+  response are filtered out), prioritizes `roadmap`-labeled issues then FIFO,
+  and spawns one `evolve_applier` child to implement exactly one issue.
+  **Author-trust gate (#63):** the repo is public, so any account can open an
+  issue whose body is injected into the permission-bypassing child. Autonomous
+  pickup is therefore limited to issues whose `authorAssociation` is in
+  `EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default `OWNER,MEMBER,COLLABORATOR`) or
+  that carry a maintainer-applied label in `EVOLVE_TRUST_LABELS` (empty by
+  default; only collaborators can label a public repo, so a trust label is
+  itself an endorsement). Untrusted issues are skipped until promoted; naming
+  the exact number (`evolve_apply_roadmap_issue(issue_number=N)`) bypasses the
+  gate as explicit human promotion. This removes the untrusted input at the
+  boundary and complements the in-prompt data-fencing of #22/#76. Before
+  spawning, the parent runs five multi-host conflict guards in order: (1) skip
+  if an active `<!-- thread-keeper:evolve-applier-claim -->` comment already
+  exists; (2) skip if `gh pr list --search "in:body Closes #N"` shows an open
+  PR already closing the issue; (3) post the parent's own claim comment (body
+  carries only an opaque per-host token — `sha1(hostname)[:6]` — never raw
+  hostname/PID/git-rev, which stay in the local `roadmap_issue_claim_host`
+  event for triage); (4) wait
   `ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetch claims, and delete the
   parent's own claim when a competing host got there first (earliest
   `createdAt` wins); (5) on `spawn()` failure, retract the just-posted claim
@@ -395,10 +411,14 @@ children** (the parent itself is not counted). Default 3 GB.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
+- Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
+  pid from the `--session-id <cid>` the child carries in `ps` argv and measures
+  the same subtree RSS, so they contribute real memory, not the estimate. A
+  visible row whose cid never resolves to a live process is reaped past
+  `SPAWN_VISIBLE_TTL_S` (1 h default) so it can't pin budget capacity forever.
 
 Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted). Visible spawns (Terminal.app, pid=0) aren't
-tracked — their RSS column stays at the estimate.
+(runtime override, not persisted).
 
 ## Learning loop
 
@@ -429,9 +449,10 @@ or doesn't open them at all. Shadow-review closes that gap.
 
 ```
 every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
-1. _last_shadow_ts(): high-water mark from events.kind='shadow_review_pass'.target
-2. _collect_window(): pull dialog_messages WHERE created_at > max(cursor, now-WINDOW_S)
-   — ALL sessions, not just our own.
+1. _last_shadow_rowid(): ingest-order high-water mark from
+   events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
+2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
+   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
@@ -443,12 +464,18 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
    broad skill. `lesson_append(source='shadow')` is the compact fallback.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
-8. Write events.kind='shadow_review_pass' with new high_water_ts.
+8. Write events.kind='shadow_review_pass' with the new high-water rowid.
 ```
 
-Dedupe — via a cursor in `events.target` (timestamp of the last evaluated
-message). Idempotent: a repeated tick will not re-evaluate what it has already
-seen. SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
+Dedupe — via an **ingest-order** cursor in `events.target` (the rowid of the
+last evaluated message, #69). The cursor is the `dialog_messages` rowid rather
+than the transcript `created_at`, so a late/out-of-order ingested row — a
+resumed session, a freshly-installed adapter, or a post-downtime backfill,
+whose `created_at` lands below the cursor — still gets a fresh rowid above it
+and is reviewed exactly once (a `created_at` cursor silently stepped over it).
+Idempotent: the monotonic rowid advance means a repeated tick will not
+re-evaluate (or re-spawn on) what it has already seen.
+SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
 a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
 or oversized writes are rejected so the child patches existing memory instead
@@ -721,6 +748,21 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 Optional — not needed for basic functionality. Embeddings themselves are stored
 as BLOB in `notes.embedding` regardless of vec0 availability.
 
+**vec0 lifecycle (sync + dimension).** The `notes_vec` mirror is kept in sync
+with `notes` *explicitly*, not by trigger: inserts dual-write via
+`_vec_upsert_note`, and deletes (only `consolidate()` merges notes today) call
+`_vec_delete_note` so a removed note can't strand an orphan KNN row — `notes.id`
+is `AUTOINCREMENT` so a stale id is never reclaimed by reuse. As belt-and-braces
+for any pre-existing orphan backlog, `_vec0_notes_search` over-fetches from vec0
+and trims after the join so a query still yields `k` live hits. The vector width
+the `*_vec` tables are created with is `EMBED_DIM` (config-driven —
+`THREADKEEPER_EMBED_DIM`, default 384). Because `THREADKEEPER_EMBED_MODEL` is
+user-configurable, a model that emits a different width would otherwise make
+every vec0 insert raise and silently leave the mirror empty while `_vec_on()`
+still reports the fast path live; `_vec_dim_ok` validates the blob width before
+insert and logs one actionable warning (set `THREADKEEPER_EMBED_DIM` to the new
+width and recreate the `*_vec` tables) instead of swallowing the error.
+
 ### Embedding backend
 
 `embeddings.py` is backend-pluggable via `THREADKEEPER_EMBED_BACKEND`. The
@@ -735,7 +777,9 @@ numerically identical, so after a switch run `tk-migrate-embeddings --all`
 ## MCP tools (107 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
-auto-generates JSON-Schema from annotations.
+auto-generates JSON-Schema from annotations. Every tool also carries an
+explicit read/write **`ToolAnnotations`** hint (see the annotation contract
+below).
 
 | Module | N | Tools |
 |---|---|---|
@@ -769,9 +813,63 @@ auto-generates JSON-Schema from annotations.
 | missed_spawns | 1 | find_missed_spawns |
 | session | 1 | session_end |
 
-Each @mcp.tool() is a synchronous Python function; FastMCP wraps it in
-JSON-Schema automatically from type annotations. One process — one mcp
-instance (`threadkeeper._mcp.mcp`).
+Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+automatically from type annotations. One process — one mcp instance
+(`threadkeeper._mcp.mcp`).
+
+### Tool annotation contract (#67)
+
+Tools register through two thin wrappers in `_mcp.py` instead of bare
+`@mcp.tool()`, so `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for
+every tool:
+
+- `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
+  `search`, `dialog_search`, `lesson_list`, the status tools, `compost`, …).
+- `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
+  mutations. The ten delete/overwrite/kill tools carry `destructiveHint=True`:
+  `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
+  `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
+  `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
+  (`close_thread`, `mark_skill_materialized`, `core_set`, deletes-by-key, …).
+
+This is the static metadata a confirmation/elicitation host reads to decide
+which calls warrant a prompt (substrate for #26). The five status tools
+(`context`, `spawn_budget_status`, `spawn_status`, `mp_health`,
+`agent_status`) additionally return an `outputSchema` + `structuredContent`
+(typed models in `tool_schemas.py`, built via `structured_result()`), keeping
+the legacy human-readable text block for backward compatibility. The contract
+is enforced by `tests/test_tool_annotations.py`.
+
+### MCP resources & prompts (#78)
+
+Tools are only one of MCP's three server primitives. thread-keeper also adopts
+the other two for the read/act split they fit naturally:
+
+- **Resources** (`tools/resources.py`, `@mcp.resource`) — *application-controlled,
+  read-only* memory snapshots at stable URIs: `memory://brief`,
+  `memory://context`, `memory://dashboard`, `memory://agent-status`. Each is
+  backed by the same render function as the matching tool (`render_brief`,
+  `render_context`, `mp_dashboard`, `agent_status`), so a host can pull memory as
+  attachable / `@`-mentionable context without the agent *remembering* to call a
+  tool — the mechanical channel that hookless CLIs lacked. The brief resource
+  renders `lean=True` and agent-status uses `refresh=False`, so an automatic host
+  pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
+  URIs are static: resource *templates* (`{param}`) are still unevenly supported
+  across hosts, so parameterized URIs are a later, host-gated step.
+- **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,
+  parameterized* templates for the curation / audit / review flows:
+  `review_recent_threads`, `run_library_curation`, `audit_threadkeeper`. Claude
+  Code surfaces them as `/mcp__thread-keeper__<name>` slash commands; each returns
+  one instruction message that drives the existing read/act tools (it does not act
+  on its own).
+
+Both are **additive**: FastMCP advertises the `resources` / `prompts`
+capabilities, which only changes what a capability-aware host *sees* — never the
+tool surface. A host that uses neither falls back to the hook-injected brief and
+the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on
+their own managers, so they never enter the tool registry (pinned by
+`tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
+rendering, capability advertisement, and the tool-only fallback).
 
 ## Tests
 
@@ -911,6 +1009,7 @@ rubric-sensitivity + a subprocess end-to-end run).
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
+| `THREADKEEPER_SPAWN_VISIBLE_TTL_S` | 3600 | reap a visible (pid=0) row whose cid never resolves to a live process; 0 disables |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
@@ -968,9 +1067,6 @@ real-estate cost.
   (`agy`) is wired for MCP/instructions/skills/spawn, but its sqlite/protobuf
   conversation history and hook schema are not parsed/wired yet.
 - Extraction heuristics are simple regexes; no ML quality classifier.
-- No hot-config reload: changing an env-knob still requires restarting the MCP
-  process. The macOS menu-bar Settings window can request that restart after
-  writing `.env`, but daemons do not yet re-read config in-process.
 - MCP-native `sampling/createMessage` (a native review fork without
   pay-per-use tokens) is not yet implemented in Claude Code
   (anthropics/claude-code#1785). spawn-subprocess is the fallback, slim-config

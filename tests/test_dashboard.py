@@ -74,7 +74,8 @@ def test_dashboard_counts_stores_delta(fresh_mp):
 
 
 def _shadow_win(out: str) -> int:
-    m = re.search(r"shadow\s+(\d+) / \d+", out)
+    # Loop labels are now the agent_status loop ids (shadow_review, not shadow).
+    m = re.search(r"shadow_review\s+(\d+) / \d+", out)
     return int(m.group(1)) if m else 0
 
 
@@ -97,6 +98,108 @@ def test_dashboard_reflects_loop_and_outcome_events(fresh_mp):
     after_out = _tool(fresh_mp, "mp_dashboard")(window_days=7)
     assert _shadow_win(after_out) - before == 3, (before, after_out)
     assert "skill_materialized" in after_out, after_out
+
+
+def _loop_win(out: str, label: str) -> int:
+    m = re.search(rf"^\s+{re.escape(label)}\s+(\d+) / \d+", out, re.M)
+    return int(m.group(1)) if m else 0
+
+
+def _outcome_all(out: str, label: str) -> int:
+    m = re.search(rf"^\s+{re.escape(label)}\s+\d+ / \d+ / (\d+)", out, re.M)
+    return int(m.group(1)) if m else 0
+
+
+def _net_field(out: str, field: str) -> int:
+    m = re.search(rf"curator_net_change [^\n]*\b{field}=(\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
+def _net_removed(out: str) -> int:
+    return _net_field(out, "removed")
+
+
+def test_dashboard_loop_list_matches_agent_status(fresh_mp):
+    # The two telemetry surfaces must agree on which loops exist: the dashboard
+    # derives its loop kinds from the same _LOOP_DEFS the menu-bar status reads.
+    from threadkeeper.tools import dashboard
+    from threadkeeper import agent_status
+
+    dash_events = {event for _, event in dashboard._LOOP_KINDS}
+    status_events = {d["event"] for d in agent_status._LOOP_DEFS}
+    assert dash_events == status_events, (dash_events, status_events)
+    # The previously-omitted loops (two spawn PAID children) must now be listed.
+    for kind in ("dialectic_mine_pass", "dialectic_validate_pass",
+                 "evolve_apply_pass", "janitor_pass"):
+        assert kind in dash_events, (kind, dash_events)
+
+
+def test_dashboard_reflects_previously_unlisted_loops(fresh_mp):
+    # Acceptance: fire counts show up for dialectic_mine, dialectic_validate,
+    # evolve_apply, and thread_janitor — loops the old hand-list omitted.
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    # (loop id label, *_pass event kind)
+    seeded = [
+        ("dialectic_miner", "dialectic_mine_pass"),
+        ("dialectic_validator", "dialectic_validate_pass"),
+        ("evolve_apply", "evolve_apply_pass"),
+        ("thread_janitor", "janitor_pass"),
+    ]
+    before = {label: _loop_win(dash(window_days=7), label) for label, _ in seeded}
+    for _, kind in seeded:
+        for _ in range(2):
+            conn.execute(
+                "INSERT INTO events (session_id, kind, target, summary, created_at) "
+                "VALUES ('s', ?, '', '', ?)", (kind, now))
+    conn.commit()
+    after = dash(window_days=7)
+    for label, _ in seeded:
+        assert _loop_win(after, label) - before[label] == 2, (label, after)
+
+
+def test_dashboard_curator_removal_outcome(fresh_mp):
+    # Acceptance: a destructive curator pass that prunes 3 lessons shows a
+    # non-zero removal outcome AND a non-zero curator_net_change removed count.
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    before_out = dash(window_days=7)
+    rem0 = _outcome_all(before_out, "lesson_remove")
+    net0 = _net_removed(before_out)
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('s', 'lesson_remove', ?, 'source=curator', ?)",
+            (f"stale-lesson-{i}", now))
+    conn.commit()
+    after = dash(window_days=7)
+    assert _outcome_all(after, "lesson_remove") - rem0 == 3, after
+    assert _net_removed(after) - net0 == 3, after
+
+
+def test_dashboard_lesson_append_emits_countable_outcome(fresh_mp):
+    # lesson_append now records an event so additions are visible as a number
+    # and split create-vs-patch in the curator_net_change line.
+    dash = _tool(fresh_mp, "mp_dashboard")
+    la = _tool(fresh_mp, "lesson_append")
+    before = dash(window_days=7)
+    add0 = _outcome_all(before, "lesson_append")
+    net_add0 = _net_field(before, "added")
+    net_patch0 = _net_field(before, "patched")
+
+    la(title="Dashboard test lesson", body="a durable rule worth keeping",
+       summary="tldr", source="curator")
+    # Re-append the same title → in-place patch, not a new addition.
+    la(title="Dashboard test lesson", body="the same rule, reworded",
+       summary="tldr", source="curator")
+
+    after = dash(window_days=7)
+    assert _outcome_all(after, "lesson_append") - add0 == 2, after
+    # One create, one in-place patch.
+    assert _net_field(after, "added") - net_add0 == 1, after
+    assert _net_field(after, "patched") - net_patch0 == 1, after
 
 
 def test_dashboard_accept_rate(fresh_mp):

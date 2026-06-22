@@ -25,9 +25,10 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+import sqlite3
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
@@ -92,7 +93,7 @@ def _similar_lesson_slug(title: str) -> tuple[str, float] | None:
     return None
 
 
-@mcp.tool()
+@write_tool()
 def lesson_append(
     title: str,
     body: str,
@@ -146,13 +147,31 @@ def lesson_append(
                 f"score={score:.2f}; use lesson_get/skill_manage to patch "
                 "existing memory instead"
             )
+    # Was this an in-place patch of an existing slug, or a brand-new lesson?
+    # Determined BEFORE the write so the dashboard's curator-net-change line
+    # can split added vs patched.
+    existed = any(it["slug"] == _slugify(title) for it in iter_lessons())
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
+    # Record the write so mp_dashboard can count store growth (issue #61),
+    # mirroring the lesson_remove event below. The events table always exists
+    # (db schema); guard defensively anyway so a logging hiccup never loses
+    # the lesson the caller just materialized.
+    op = "replace" if existed else "create"
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, 'lesson_append', ?, ?, strftime('%s','now'))",
+            (identity._session_id or "", slug, f"op={op} source={source or '?'}"),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     return f"ok slug={slug} path={get_path()}"
 
 
-@mcp.tool()
+@read_tool()
 def lesson_list(k: int = 20) -> str:
     """Compact listing of materialized lessons, newest first.
 
@@ -183,7 +202,7 @@ def lesson_list(k: int = 20) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@read_tool()
 def lesson_get(slug: str) -> str:
     """Return the full body of one lesson by slug. Useful when
     `lesson_list` surfaced something you want to read in full."""
@@ -195,7 +214,7 @@ def lesson_get(slug: str) -> str:
     return f"ERR not_found slug={slug}"
 
 
-@mcp.tool()
+@write_tool(destructive=True, idempotent=True)
 def lesson_remove(slug: str, force: bool = False) -> str:
     """Remove one materialized lesson section by slug.
 

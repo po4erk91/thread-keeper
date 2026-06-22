@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
@@ -49,14 +51,16 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", window_min="30"):
     }
 
 
-def _seed_dialog(conn, role, content, ts, session_id="user-sess"):
+def _seed_dialog(conn, role, content, ts, session_id="user-sess",
+                 embedding=None):
     uid = f"u-{ts}-{role}-{abs(hash(content)) % 100000}"
     conn.execute(
         "INSERT INTO dialog_messages (uuid, source, project, session_id, "
-        "role, content, model, created_at) "
-        "VALUES (?, 'claude-code', 'p1', ?, ?, ?, ?, ?)",
-        (uid, session_id, role, content, "test-model", ts),
+        "role, content, model, created_at, embedding) "
+        "VALUES (?, 'claude-code', 'p1', ?, ?, ?, ?, ?, ?)",
+        (uid, session_id, role, content, "test-model", ts, embedding),
     )
+    return uid
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -510,6 +514,64 @@ def test_extract_filters_codex_spawned_marker_without_task_link(
     ).fetchall()
     assert any(r["source_cid"] == "real-sess" for r in rows)
     assert not any(r["source_cid"] == codex_rollout for r in rows)
+
+
+def test_extract_h4_rejected_cluster_not_reharvested(tmp_path, monkeypatch):
+    """H4 paraphrase-cluster path must share the rejected-counting dedup of
+    H1/H2/H3. A cluster keyed by its deterministic cluster_key, once
+    rejected, must NOT be re-enqueued when the daemon re-scans the
+    overlapping window — the #157/#158 prod re-harvest loop, on the one
+    heuristic path that bypassed _candidate_exists (issue #62)."""
+    np = pytest.importorskip("numpy")
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    # H4 only runs when semantic clustering is available; force it on so the
+    # test is independent of the ambient THREADKEEPER_NO_EMBEDDINGS setting.
+    monkeypatch.setattr("threadkeeper.tools.extract.SEMANTIC_AVAILABLE", True)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    # Identical unit-norm embeddings → pairwise cosine 1.0 ≥ 0.80, so the
+    # three paraphrases collapse into one H4 note cluster. The texts differ
+    # but none trips H1/H2/H3 (assistant role, short, no headers/bullets).
+    vec = np.ones(8, dtype=np.float32)
+    vec /= np.linalg.norm(vec)
+    emb = vec.tobytes()
+    for i, text in enumerate([
+        "We should retry transient deploy failures before paging anyone.",
+        "Transient deploy errors ought to be retried prior to alerting.",
+        "Retry transient failures in the deploy step before sending a page.",
+    ]):
+        _seed_dialog(
+            conn, "assistant", text, now - (300 - i * 10),
+            session_id="cluster-sess", embedding=emb,
+        )
+    conn.commit()
+
+    # First pass enqueues exactly one H4 cluster candidate.
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out, out
+    rows = conn.execute(
+        "SELECT id FROM extract_candidates WHERE kind='note' "
+        "AND source_uuid LIKE 'cluster:%'"
+    ).fetchall()
+    assert len(rows) == 1, f"expected one H4 cluster row, got {len(rows)}"
+    cluster_id = rows[0]["id"]
+
+    # Reviewer rejects it.
+    conn.execute(
+        "UPDATE extract_candidates SET status='rejected' WHERE id=?",
+        (cluster_id,),
+    )
+    conn.commit()
+
+    # Daemon re-scans the overlapping window: same messages → same
+    # deterministic cluster_key. The rejected row must suppress re-harvest.
+    pkg["extract_daemon"].run_extract_pass(force=True)
+    rows = conn.execute(
+        "SELECT status FROM extract_candidates WHERE kind='note' "
+        "AND source_uuid LIKE 'cluster:%'"
+    ).fetchall()
+    assert len(rows) == 1, f"rejected H4 cluster re-harvested: {len(rows)} rows"
+    assert rows[0]["status"] == "rejected"
 
 
 # ──────────────────────────────────────────────────────────────────────

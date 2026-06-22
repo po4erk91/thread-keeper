@@ -8,13 +8,13 @@ spawned task as a chronological thread of signals plus relevant notes.
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session
 
 
-@mcp.tool()
+@write_tool()
 def tag_signal(signal_id: int, task_id: str) -> str:
     """Manually attach a signal to a task. Useful when retroactively building
     a task-thread (auto-tagging happens at signal-emit time when the cid
@@ -37,7 +37,7 @@ def tag_signal(signal_id: int, task_id: str) -> str:
     return f"ok signal={signal_id} → task={task_id}"
 
 
-@mcp.tool()
+@read_tool()
 def task_thread(task_id: str, include_notes: bool = True,
                 k: int = 50) -> str:
     """Replay a spawned task as a chronological thread: every signal tagged

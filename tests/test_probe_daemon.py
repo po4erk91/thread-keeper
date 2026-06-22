@@ -7,6 +7,7 @@ and run_probe_pass dispatch with spawn monkeypatched.
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -179,8 +180,13 @@ def test_run_probe_pass_spawns_due_probe(tmp_path, monkeypatch):
 
     out = pkg["pd"].run_probe_pass(force=True)
     assert "spawned" in out and "date_arithmetic" in out
-    # child got the bare prompt with NO answer key leaked
-    assert "42" not in calls["prompt"].split("TASK:")[0]
+    # child got the bare prompt with NO answer key leaked. The answer-file
+    # path carries a random hex token (and a tmp dir whose digits are
+    # incidental) — that's an artifact location, not answer-key leakage — so
+    # drop that whole line before scanning the instructions for the pattern.
+    prefix = calls["prompt"].split("TASK:")[0]
+    prefix = re.sub(r"(?m)^.*P020__[0-9a-f]+\.txt.*$", "", prefix)
+    assert "42" not in prefix
     assert calls["role"] == "probe_runner"
     assert calls["write_origin"] == "probe"
     assert "Write" in calls["extra_allowed_tools"]

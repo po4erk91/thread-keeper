@@ -10,10 +10,14 @@ it), and safe to surface in any session.
 
 It reads only aggregates from existing tables + the `events` log; it does
 NOT spawn or mutate. Loop activity comes from the `*_pass` event rows each
-daemon already records (probe_pass, shadow_review_pass, curator_pass,
-extract_pass, candidate_review_pass, evolve_review_pass); outcomes come
-from the action events (skill_materialized, accept_candidate:*,
-reject_candidate, tier_promoted/demoted).
+daemon records — the loop list is derived from `agent_status._LOOP_DEFS`
+so it never drifts from the menu-bar status surface (it covers every loop,
+including the paid-spawn dialectic_validate and evolve_apply daemons and the
+thread_janitor). Outcomes come from the action events: skill/tier changes,
+accept/reject_candidate, AND knowledge-store mutations (lesson_append /
+lesson_remove, curator_report_applied, roadmap_issue_applied, evolve_applied,
+dialectic_claim / _supersede), plus a `curator_net_change` line so a loop
+silently shrinking the lessons store is visible at a glance.
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
+from ..agent_status import _LOOP_DEFS
 from ..db import get_db
 from ..helpers import fmt_age
 from ..identity import _ensure_session
@@ -64,29 +69,42 @@ def _fmt_group(d: dict[str, int], order: tuple[str, ...]) -> str:
     return " ".join(parts) if parts else "0"
 
 
-# The autonomous loops, keyed by their events.kind='*_pass' marker.
-_LOOP_KINDS = (
-    ("ingest", "ingest_pass"),
-    ("shadow", "shadow_review_pass"),
-    ("extract", "extract_pass"),
-    ("candidate", "candidate_review_pass"),
-    ("curator", "curator_pass"),
-    ("probe", "probe_pass"),
-    ("evolve", "evolve_review_pass"),
-    ("auto_update", "auto_update_pass"),
-)
+# The autonomous loops, keyed by their events.kind='*_pass' marker. Derived
+# from agent_status._LOOP_DEFS — the SAME source the menu-bar status surface
+# reads — so the two telemetry views can never disagree on which loops exist.
+# (Previously hand-listed here, which silently omitted dialectic_mine,
+# dialectic_validate, evolve_apply, and thread_janitor — two of which spawn
+# paid LLM children.) Label is the loop id; kind is the '*_pass' event.
+_LOOP_KINDS = tuple((d["id"], d["event"]) for d in _LOOP_DEFS)
+_LOOP_LABEL_W = max((len(label) for label, _ in _LOOP_KINDS), default=10)
 
-# Outcome event kinds the loops are supposed to PRODUCE.
+# Outcome event kinds the loops are supposed to PRODUCE. Beyond the original
+# skill/tier/reject set, this now counts knowledge-store MUTATIONS — the most
+# consequential autonomous behavior — so a daemon adding to or deleting from
+# the lessons/claims store produces a visible number (issue #61):
+#   lesson_append / lesson_remove   — curator + shadow lesson writes/prunes
+#   curator_report_applied          — evolve_applier applied a curator report
+#   roadmap_issue_applied           — evolve_applier opened a roadmap-issue PR
+#   evolve_applied                  — evolve_applier marked a suggestion done
+#   dialectic_claim / _supersede    — user-model claim mutations
 _OUTCOME_KINDS = (
     ("skill_materialized", "skill_materialized"),
     ("tier_promoted", "tier_promoted"),
     ("tier_demoted", "tier_demoted"),
     ("skill_tier_promoted", "skill_tier_promoted"),
     ("reject_candidate", "reject_candidate"),
+    ("lesson_append", "lesson_append"),
+    ("lesson_remove", "lesson_remove"),
+    ("curator_report_applied", "curator_report_applied"),
+    ("roadmap_issue_applied", "roadmap_issue_applied"),
+    ("evolve_applied", "evolve_applied"),
+    ("dialectic_claim", "dialectic_claim"),
+    ("dialectic_supersede", "dialectic_supersede"),
 )
+_OUTCOME_LABEL_W = max((len(label) for label, _ in _OUTCOME_KINDS), default=22)
 
 
-@mcp.tool()
+@read_tool()
 def mp_dashboard(window_days: int = 7) -> str:
     """One-call rollup of the whole thread-keeper system: store sizes, how
     often each autonomous loop fired (in the last `window_days` and 30d),
@@ -165,7 +183,7 @@ def mp_dashboard(window_days: int = 7) -> str:
         if n_30 == 0 and last == 0:
             continue  # never fired — skip to keep the view tight
         age = fmt_age(now - last) + "_ago" if last else "never"
-        out.append(f"  {label:<10} {n_win} / {n_30}   last={age}")
+        out.append(f"  {label:<{_LOOP_LABEL_W}} {n_win} / {n_30}   last={age}")
 
     # ── outcomes ──────────────────────────────────────────────────────
     out.append("")
@@ -186,7 +204,7 @@ def mp_dashboard(window_days: int = 7) -> str:
         )
         if n_all == 0:
             continue
-        out.append(f"  {label:<22} {n_win} / {n_30} / {n_all}")
+        out.append(f"  {label:<{_OUTCOME_LABEL_W}} {n_win} / {n_30} / {n_all}")
     # accept_candidate has a per-target-kind suffix (accept_candidate:note,
     # :verbatim, ...) so it needs a LIKE rather than equality.
     acc_all = _scalar(
@@ -202,6 +220,35 @@ def mp_dashboard(window_days: int = 7) -> str:
             f"  candidate_accept_rate {acc_all}/{decided} = {rate:.0%} "
             f"(accepted/decided, all-time)"
         )
+
+    # Knowledge-store net change in the window. A loop silently shrinking the
+    # lessons store (e.g. a destructive curator pass auto-pruning) is otherwise
+    # invisible — curator_pass only logs "spawned lessons=N..." at spawn time,
+    # not the deletions the async child makes. lesson_append events carry an
+    # `op=create|replace` summary prefix so we can split brand-new additions
+    # from in-place patches; lesson_remove is always a deletion. Always shown
+    # (even all-zero) so a shrink is visible at a glance.
+    added = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='lesson_append' "
+        "AND summary LIKE 'op=create%' AND created_at>=?",
+        (cut_win,),
+    )
+    patched = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='lesson_append' "
+        "AND summary LIKE 'op=replace%' AND created_at>=?",
+        (cut_win,),
+    )
+    removed = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='lesson_remove' AND created_at>=?",
+        (cut_win,),
+    )
+    out.append(
+        f"  curator_net_change added={added} removed={removed} "
+        f"patched={patched} net={added - removed:+d} (lessons, {window_days}d)"
+    )
 
     # ── reliability ───────────────────────────────────────────────────
     weak = _scalar(

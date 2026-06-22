@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .config import SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN
+from .config import SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN, DB_PATH
 from .helpers import fmt_age, q
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
@@ -881,6 +881,42 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         )
 
     return "\n".join(out)
+
+
+def render_context(conn: sqlite3.Connection) -> tuple[str, dict]:
+    """Build the runtime-context snapshot shared by the ``context()`` tool and
+    the ``memory://context`` MCP resource.
+
+    Returns ``(text, fields)`` where ``text`` is the legacy human-readable block
+    and ``fields`` keys match the ``ContextStatus`` model constructor. Read-only:
+    a single ``GROUP BY`` over ``threads``, no writes — safe for a host to pull
+    automatically as a resource.
+    """
+    now = int(time.time())
+    counts = conn.execute(
+        "SELECT state, COUNT(*) c FROM threads GROUP BY state"
+    ).fetchall()
+    thread_counts = {r["state"]: r["c"] for r in counts}
+    cs = " ".join(f"{k}={v}" for k, v in thread_counts.items()) or "empty"
+    started = identity._session_start or now
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    text = (
+        f"sess={identity._session_id} "
+        f"started={fmt_age(now - started)}_ago "
+        f"sem={'on' if SEMANTIC_AVAILABLE else 'off'} "
+        f"db={DB_PATH} "
+        f"threads[{cs}] "
+        f"now={now_iso}"
+    )
+    fields = {
+        "session_id": identity._session_id,
+        "started_age_s": now - started,
+        "semantic": bool(SEMANTIC_AVAILABLE),
+        "db_path": str(DB_PATH),
+        "thread_counts": thread_counts,
+        "now": now_iso,
+    }
+    return text, fields
 
 
 def _append_dialog_log(from_cid: Optional[str], to_cid: Optional[str],

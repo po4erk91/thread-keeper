@@ -8,20 +8,20 @@ suggestion box.
 
 import sqlite3
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
-from .._mcp import mcp
-from ..config import SEMANTIC_AVAILABLE, DB_PATH
+from .._mcp import read_tool, write_tool, structured_result
+from ..config import SEMANTIC_AVAILABLE
+from ..tool_schemas import ContextStatus
 from ..db import get_db
 from ..helpers import gen_thread_id, fmt_age, q, _fts_query
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, _cosine_search, _vec_upsert_note, embed_tag
-from ..brief import render_brief
+from ..brief import render_brief, render_context
 
 
-@mcp.tool()
+@read_tool()
 def brief(query: str = "", k: int = 6, scope: str = "full") -> str:
     """Compact Claude-native memory brief. CALL AT THE START OF EVERY CONVERSATION.
 
@@ -42,28 +42,20 @@ def brief(query: str = "", k: int = 6, scope: str = "full") -> str:
     return render_brief(conn, query=query, k=k, scope=scope)
 
 
-@mcp.tool()
-def context() -> str:
-    """Runtime context: session id, age, semantic on/off, db path, thread counts."""
+@read_tool()
+def context() -> ContextStatus:
+    """Runtime context: session id, age, semantic on/off, db path, thread counts.
+
+    Returns structuredContent (ContextStatus) plus the legacy text block.
+    The same snapshot is reachable read-only as the ``memory://context``
+    resource — both render through ``brief.render_context``."""
     conn = get_db()
     _ensure_session(conn)
-    now = int(time.time())
-    counts = conn.execute(
-        "SELECT state, COUNT(*) c FROM threads GROUP BY state"
-    ).fetchall()
-    cs = " ".join(f"{r['state']}={r['c']}" for r in counts) or "empty"
-    started = identity._session_start or now
-    return (
-        f"sess={identity._session_id} "
-        f"started={fmt_age(now - started)}_ago "
-        f"sem={'on' if SEMANTIC_AVAILABLE else 'off'} "
-        f"db={DB_PATH} "
-        f"threads[{cs}] "
-        f"now={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')}"
-    )
+    text, fields = render_context(conn)
+    return structured_result(text, ContextStatus(**fields))
 
 
-@mcp.tool()
+@write_tool()
 def open_thread(question: str, parent_id: str = "") -> str:
     """Open a thread. `question` should be terse (5-15 words, the open question).
     `parent_id` optional — pass an existing ID like 'T7f3' for a child. Returns new ID."""
@@ -88,7 +80,7 @@ def open_thread(question: str, parent_id: str = "") -> str:
     return tid
 
 
-@mcp.tool()
+@write_tool()
 def note(thread_id: str, content: str, kind: str = "move") -> str:
     """Add a note to a thread. Write terse, optimized for future-Claude.
 
@@ -124,7 +116,7 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
     return f"ok id={note_id}"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def close_thread(thread_id: str, outcome: str) -> str:
     """Close a thread with a 5-15 word outcome."""
     conn = get_db()
@@ -153,7 +145,7 @@ def close_thread(thread_id: str, outcome: str) -> str:
     return "ok"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     """Close the Learning loop: record that a closed thread's insights were
     written into a skill.
@@ -205,7 +197,7 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     return "ok"
 
 
-@mcp.tool()
+@write_tool(idempotent=True)
 def idle_thread(thread_id: str) -> str:
     """Mark thread idle (paused, may return). Auto-revives to active on next note()."""
     conn = get_db()
@@ -220,7 +212,7 @@ def idle_thread(thread_id: str) -> str:
     return "ok"
 
 
-@mcp.tool()
+@read_tool()
 def search(query: str, k: int = 5) -> str:
     """Semantic (or FTS) search over all notes."""
     conn = get_db()
@@ -252,7 +244,7 @@ def search(query: str, k: int = 5) -> str:
     )
 
 
-@mcp.tool()
+@read_tool()
 def compost(n: int = 2) -> str:
     """Surface N random idle threads. Call when current threads feel exhausted
     or you want to shake loose dormant ideas."""
@@ -270,7 +262,7 @@ def compost(n: int = 2) -> str:
     )
 
 
-@mcp.tool()
+@write_tool()
 def evolve_format(suggestion: str, rationale: str = "") -> str:
     """Propose a change to the brief format itself. The format is not fixed — this
     is how it adapts. Examples: 'field X unused this session, drop it';
@@ -286,7 +278,7 @@ def evolve_format(suggestion: str, rationale: str = "") -> str:
     return "ok"
 
 
-@mcp.tool()
+@read_tool()
 def evolve_review(include_applied: bool = False) -> str:
     """List pending (or all) format-evolution suggestions for review."""
     conn = get_db()
@@ -316,7 +308,7 @@ def evolve_review(include_applied: bool = False) -> str:
 _EVOLVE_DECISIONS = {"promote", "dismiss"}
 
 
-@mcp.tool()
+@write_tool()
 def evolve_decide(evolve_id: int, decision: str, reason: str = "") -> str:
     """Triage a pending format-evolution suggestion. Used by the autonomous
     evolve reviewer daemon (and available manually).
@@ -349,7 +341,7 @@ def evolve_decide(evolve_id: int, decision: str, reason: str = "") -> str:
     return f"ok id={evolve_id} status={status}"
 
 
-@mcp.tool()
+@write_tool()
 def auto_review_trigger(focus: str = "combined", force: bool = False) -> str:
     """Check current counters + close-thread state and, if conditions are
     met, fire review_thread(mode='auto') for the richest pending thread.

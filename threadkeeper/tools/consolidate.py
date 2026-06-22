@@ -12,12 +12,12 @@ reports (and optionally applies) four kinds of cleanup:
 import sqlite3
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, normalize_text
 from ..identity import _ensure_session, _emit
-from ..embeddings import _get_model, _encode
+from ..embeddings import _get_model, _encode, _vec_delete_note
 
 
 CONSOLIDATE_NOTE_COSINE = 0.95
@@ -26,7 +26,7 @@ CONSOLIDATE_STALE_THREAD_DAYS = 30
 CONSOLIDATE_ORPHAN_CLAIM_DAYS = 7
 
 
-@mcp.tool()
+@write_tool(destructive=True)
 def consolidate(dry_run: bool = True,
                 stale_days: int = CONSOLIDATE_STALE_THREAD_DAYS,
                 orphan_days: int = CONSOLIDATE_ORPHAN_CLAIM_DAYS,
@@ -158,6 +158,9 @@ def consolidate(dry_run: bool = True,
     if not dry_run:
         for f in findings["merge_dup_notes"]:
             conn.execute("DELETE FROM notes WHERE id=?", (f["drop"],))
+            # Keep the vec0 mirror in sync — notes_fts is trigger-synced but
+            # notes_vec is not, so an explicit delete prevents orphan KNN rows.
+            _vec_delete_note(conn, f["drop"])
             applied["merge_dup_notes"] += 1
         for f in findings["idle_stale"]:
             conn.execute(

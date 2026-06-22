@@ -17,7 +17,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session
@@ -35,7 +35,7 @@ _HEADER_RE = re.compile(r"(?m)^#{2,3}\s+\S")
 _SPAWN_PROXIMITY_S = 600
 
 
-@mcp.tool()
+@read_tool()
 def find_missed_spawns(window_days: int = 14,
                        min_response_len: int = 400,
                        min_numbered: int = 2,
