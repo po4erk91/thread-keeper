@@ -249,6 +249,41 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"  curator_net_change added={added} removed={removed} "
         f"patched={patched} net={added - removed:+d} (lessons, {window_days}d)"
     )
+    # ── roadmap applier (poison-issue backoff / dead-letter) ───────────
+    # Issues the evolve applier has spawned a child for, split by outcome.
+    # `stuck` = attempted but neither handed off (PR) nor dead-lettered yet
+    # (in backoff or eligible-again); `dead_letter` = capped out and excluded
+    # from the auto-drain pending a human. A climbing dead_letter count is a
+    # poison-issue / cost-waste signal.
+    rm_attempted = _scalar(
+        conn,
+        "SELECT COUNT(DISTINCT target) FROM events "
+        "WHERE kind='roadmap_issue_attempt'",
+    )
+    if rm_attempted:
+        rm_applied = _scalar(
+            conn,
+            "SELECT COUNT(DISTINCT target) FROM events "
+            "WHERE kind='roadmap_issue_applied'",
+        )
+        rm_dead = _scalar(
+            conn,
+            "SELECT COUNT(DISTINCT target) FROM events "
+            "WHERE kind='roadmap_issue_dead_letter'",
+        )
+        rm_stuck = _scalar(
+            conn,
+            "SELECT COUNT(*) FROM (SELECT target FROM events "
+            "WHERE kind='roadmap_issue_attempt' AND target NOT IN "
+            "(SELECT target FROM events WHERE kind='roadmap_issue_applied') "
+            "AND target NOT IN (SELECT target FROM events "
+            "WHERE kind='roadmap_issue_dead_letter') GROUP BY target)",
+        )
+        out.append("")
+        out.append(
+            f"roadmap applier  attempted={rm_attempted} applied={rm_applied} "
+            f"stuck={rm_stuck} dead_letter={rm_dead}"
+        )
 
     # ── reliability ───────────────────────────────────────────────────
     weak = _scalar(

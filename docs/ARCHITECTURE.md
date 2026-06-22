@@ -263,7 +263,22 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   so the next pass can retry immediately. Claims expire after 24 hours as a
   fallback so crashed workers do not block issues forever; the implementer
   branch carries a 6-char hostname-hash suffix so two hosts past the claim
-  check do not collide on `git push`. In queue mode, issue-local dispatch
+  check do not collide on `git push`. **Poison-issue backoff + dead-letter
+  (#82):** each spawn records a `roadmap_issue_attempt` event, so an issue
+  whose child keeps aborting without a PR is not retried every ~24h forever.
+  An escalating cooldown — `ROADMAP_ISSUE_BACKOFF_BASE_S * 2^(attempts-1)`,
+  default base 2 days so it exceeds the 24h claim TTL — defers re-selection,
+  and after `ROADMAP_ISSUE_MAX_ATTEMPTS` (default 3) the issue is
+  **dead-lettered**: a `blocked` label and a one-time summary comment are
+  applied (composes with the #50 skip-label gate) and it drops out of the
+  auto-drain until a human intervenes. A `roadmap_issue_dead_letter` event is
+  the authoritative idempotent marker; the label/comment are best-effort
+  signals. A successful child writes `roadmap_issue_applied` (checked first
+  everywhere), so only genuinely-failing issues accrue attempts. An exact
+  `evolve_apply_roadmap_issue(issue_number=N)` override bypasses the cooldown
+  and the cap so a human can force a retry; per-issue attempt counts/states
+  surface in `evolve_apply_status()` and stuck/dead-letter counts in
+  `mp_dashboard()`. In queue mode, issue-local dispatch
   failures advance to the next issue; exact
   `evolve_apply_roadmap_issue(issue_number=N)` calls report the specific
   failure instead of switching tasks. The PR body must include `Closes #N`;

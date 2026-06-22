@@ -8,6 +8,14 @@ Primary path:
   edits code/docs, runs the full suite, opens a PR with `Closes #N`, then calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`.
 
+  Poison-issue guard: each spawn records a `roadmap_issue_attempt` event. An
+  escalating backoff (base * 2^(attempts-1), default base 2 days) defers
+  re-selection of an issue whose child keeps aborting without a PR, and after
+  `ROADMAP_ISSUE_MAX_ATTEMPTS` the issue is dead-lettered — a `blocked` label
+  plus a one-time summary comment — and dropped from the auto-drain until a
+  human intervenes. A successful child writes `roadmap_issue_applied` (checked
+  first everywhere), so only genuinely-failing issues accrue backoff.
+
 Fallback paths:
 
   apply_curator_report(report_path="") — apply safe Curator memory-maintenance
@@ -46,6 +54,8 @@ from .config import (
     EVOLVE_TRUST_LABELS,
     EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS,
     ROADMAP_CLAIM_RACE_WINDOW_S,
+    ROADMAP_ISSUE_BACKOFF_BASE_S,
+    ROADMAP_ISSUE_MAX_ATTEMPTS,
 )
 from .db import get_db
 from .helpers import daemon_sleep
@@ -146,6 +156,16 @@ ROADMAP_ISSUE_APPLIED_KIND = "roadmap_issue_applied"
 # public claim comment carries just the opaque _host_branch_slug() token; this
 # event keeps hostname/PID/git-rev in the local DB for multi-host triage (#63).
 ROADMAP_ISSUE_CLAIM_HOST_KIND = "roadmap_issue_claim_host"
+# Poison-issue failure ledger. One `roadmap_issue_attempt` row is recorded per
+# spawned implementer child; `roadmap_issue_dead_letter` is the one-time marker
+# written when an issue crosses the attempt cap and is flagged for a human.
+ROADMAP_ISSUE_ATTEMPT_KIND = "roadmap_issue_attempt"
+ROADMAP_ISSUE_DEAD_LETTER_KIND = "roadmap_issue_dead_letter"
+# Label applied to a dead-lettered issue so it is visibly excluded from the
+# auto-drain and surfaced for a human (composes with the #50 skip-label gate).
+ROADMAP_ISSUE_BLOCKED_LABEL = "blocked"
+# Upper bound on the escalating backoff window regardless of attempt count.
+ROADMAP_ISSUE_BACKOFF_CAP_S = 30 * 24 * 60 * 60
 ROADMAP_ISSUE_FETCH_LIMIT = 50
 ROADMAP_ISSUE_CLAIM_MARKER = "<!-- thread-keeper:evolve-applier-claim -->"
 ROADMAP_ISSUE_CLAIM_TTL_S = 24 * 60 * 60
@@ -1041,12 +1061,255 @@ def _roadmap_issue_applied(conn: sqlite3.Connection, issue_number: int) -> bool:
     return row is not None
 
 
+# ── Poison-issue failure backoff + dead-letter ──────────────────────────────
+#
+# A roadmap issue whose implementer child repeatedly aborts without opening a
+# PR used to be re-selected every ~24h (once its claim TTL lapsed), burning a
+# fresh bypassPermissions Opus child each pass with no escalation. The applier
+# now records one `roadmap_issue_attempt` event per spawned child and gates
+# re-selection on an escalating backoff; after a cap it dead-letters the issue
+# (a `blocked` label + a one-time human-facing comment) and excludes it from the
+# auto-drain. A successful child writes `roadmap_issue_applied`, which every
+# selection path checks first — so any non-applied issue with attempts>0 has
+# genuinely failed those spawns.
+
+
+def _roadmap_issue_attempt_state(
+    conn: sqlite3.Connection, issue_number: int
+) -> tuple[int, int]:
+    """Return (attempt_count, last_attempt_ts) for a roadmap issue."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(created_at), 0) AS last "
+            "FROM events WHERE kind=? AND target=?",
+            (ROADMAP_ISSUE_ATTEMPT_KIND, str(int(issue_number))),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0, 0
+    if not row:
+        return 0, 0
+    return int(row["c"] or 0), int(row["last"] or 0)
+
+
+def _roadmap_issue_backoff_window_s(attempts: int) -> int:
+    """Escalating cooldown after `attempts` failed spawns: base * 2^(n-1),
+    capped at ROADMAP_ISSUE_BACKOFF_CAP_S. 0 when no attempts yet."""
+    if attempts <= 0:
+        return 0
+    window = float(ROADMAP_ISSUE_BACKOFF_BASE_S) * (2 ** (attempts - 1))
+    return int(min(window, float(ROADMAP_ISSUE_BACKOFF_CAP_S)))
+
+
+def _roadmap_issue_dead_lettered(
+    conn: sqlite3.Connection, issue_number: int
+) -> bool:
+    """True once an issue has been flagged dead-letter (its marker exists)."""
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM events WHERE kind=? AND target=? LIMIT 1",
+            (ROADMAP_ISSUE_DEAD_LETTER_KIND, str(int(issue_number))),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
+
+
+def _classify_roadmap_issue(
+    conn: sqlite3.Connection, issue_number: int, now_t: float
+) -> tuple[str, int, int]:
+    """Map a (non-applied) issue to ('ready'|'backoff'|'dead_letter',
+    attempts, last_ts).
+
+    'dead_letter' once attempts reach ROADMAP_ISSUE_MAX_ATTEMPTS (cap>0);
+    'backoff' while the escalating cooldown since the last attempt has not
+    elapsed; else 'ready'."""
+    attempts, last_ts = _roadmap_issue_attempt_state(conn, issue_number)
+    cap = int(ROADMAP_ISSUE_MAX_ATTEMPTS)
+    if cap > 0 and attempts >= cap:
+        return "dead_letter", attempts, last_ts
+    if attempts > 0:
+        window = _roadmap_issue_backoff_window_s(attempts)
+        if float(now_t) < last_ts + window:
+            return "backoff", attempts, last_ts
+    return "ready", attempts, last_ts
+
+
+def _record_roadmap_issue_attempt(
+    conn: sqlite3.Connection, issue_number: int, summary: str = ""
+) -> None:
+    """Append one attempt row for a roadmap issue (best-effort)."""
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (identity._session_id or "", ROADMAP_ISSUE_ATTEMPT_KIND,
+             str(int(issue_number)), (summary or "")[:300], int(time.time())),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.debug("evolve_applier: failed to record attempt", exc_info=True)
+
+
+def _apply_blocked_label(
+    issue_number: int, repo_root: Optional[Path] = None
+) -> str:
+    """Add the `blocked` label to a dead-lettered issue. Empty string =
+    success; best-effort (a label failure never blocks the marker write)."""
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "issue", "edit", str(int(issue_number)),
+        "--add-label", ROADMAP_ISSUE_BLOCKED_LABEL,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=repo, text=True, capture_output=True, timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "gh_issue_edit_timeout"
+    except OSError as e:
+        return f"gh_issue_edit_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return f"gh_issue_edit_failed: {msg[:180]}"
+    return ""
+
+
+def _roadmap_issue_dead_letter_body(issue: dict, attempts: int) -> str:
+    num = int(issue["number"])
+    title = str(issue.get("title") or f"issue {num}")
+    return (
+        "Evolve applier: dead-lettered after repeated failed attempts.\n\n"
+        f"- Issue: #{num} {title}\n"
+        f"- Attempts: {attempts} implementer child(ren) spawned, no PR opened\n"
+        f"- Action: applied the `{ROADMAP_ISSUE_BLOCKED_LABEL}` label and "
+        "stopped auto-attempting this issue.\n\n"
+        "This issue is excluded from the automatic drain to stop burning a "
+        "bypassPermissions implementer child every cycle with no progress. A "
+        f"human should unblock it (remove the `{ROADMAP_ISSUE_BLOCKED_LABEL}` "
+        "label, then split/clarify the issue) before it is retried. A manual "
+        f"`evolve_apply_roadmap_issue(issue_number={num})` still force-retries "
+        "it regardless of this dead-letter state."
+    )
+
+
+def _comment_dead_letter(
+    issue: dict, attempts: int, repo_root: Optional[Path] = None
+) -> tuple[str, str]:
+    """Post the one-time dead-letter summary comment. Returns (url, error)."""
+    repo = str(repo_root or _repo_root())
+    num = int(issue["number"])
+    cmd = [
+        "gh", "issue", "comment", str(num),
+        "--body", _roadmap_issue_dead_letter_body(issue, attempts),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=repo, text=True, capture_output=True, timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "", "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "", "gh_issue_comment_timeout"
+    except OSError as e:
+        return "", f"gh_issue_comment_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return "", f"gh_issue_comment_failed: {msg[:180]}"
+    url_lines = [
+        ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()
+    ]
+    return (url_lines[0] if url_lines else ""), ""
+
+
+def _dead_letter_issue(
+    conn: sqlite3.Connection,
+    issue: dict,
+    attempts: int,
+    repo_root: Optional[Path] = None,
+) -> str:
+    """Flag a poison issue once: apply the `blocked` label, post a one-time
+    summary comment, and write the dead-letter marker. The marker is
+    authoritative for exclusion; the label/comment are best-effort signals."""
+    num = int(issue["number"])
+    if _roadmap_issue_dead_lettered(conn, num):
+        return f"already_dead_letter=#{num}"
+    label_err = _apply_blocked_label(num, repo_root)
+    _, comment_err = _comment_dead_letter(issue, attempts, repo_root)
+    note = f"attempts={attempts}"
+    if label_err:
+        note += f" label_err={label_err[:80]}"
+    if comment_err:
+        note += f" comment_err={comment_err[:80]}"
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (identity._session_id or "", ROADMAP_ISSUE_DEAD_LETTER_KIND,
+             str(num), note[:300], int(time.time())),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.debug("evolve_applier: failed to record dead-letter",
+                     exc_info=True)
+    return f"dead_letter=#{num} {note}"
+
+
+def roadmap_attempt_ledger(conn: sqlite3.Connection) -> list[dict]:
+    """Per-issue attempt summary for non-applied roadmap issues, newest
+    activity first. Pure read of the event ledger (no `gh`): each entry is
+    {number, attempts, last_ts, state, backoff_left_s} where state is
+    'dead_letter' | 'backoff' | 'ready'. Applied issues are omitted — they are
+    done, not stuck. Drives the status view + dashboard counters."""
+    try:
+        rows = conn.execute(
+            "SELECT target, COUNT(*) AS attempts, "
+            "COALESCE(MAX(created_at), 0) AS last "
+            "FROM events WHERE kind=? GROUP BY target "
+            "ORDER BY last DESC",
+            (ROADMAP_ISSUE_ATTEMPT_KIND,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now_t = time.time()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            num = int(r["target"])
+        except (TypeError, ValueError):
+            continue
+        if _roadmap_issue_applied(conn, num):
+            continue
+        state, attempts, last_ts = _classify_roadmap_issue(conn, num, now_t)
+        backoff_left = 0
+        if state == "backoff":
+            backoff_left = max(
+                0,
+                int(last_ts + _roadmap_issue_backoff_window_s(attempts) - now_t),
+            )
+        out.append({
+            "number": num,
+            "attempts": attempts,
+            "last_ts": last_ts,
+            "state": state,
+            "backoff_left_s": backoff_left,
+        })
+    return out
+
+
 def _open_roadmap_issues(
     conn: sqlite3.Connection,
     repo_root: Optional[Path] = None,
     *,
     skip_claimed: bool = True,
     enforce_author_trust: bool = True,
+    skip_backoff: bool = True,
+    flag_dead_letter: bool = False,
 ) -> tuple[list[dict], str]:
     """Open GitHub issues not already handed off by evolve_applier.
 
@@ -1061,6 +1324,12 @@ def _open_roadmap_issues(
     bypassing implementer child without explicit human promotion (#63). Exact-
     issue invocation passes `enforce_author_trust=False`: naming the number is
     itself the human promotion.
+    `skip_backoff` (default True) additionally excludes issues in failure
+    backoff and dead-lettered poison issues from auto-selection; pass False for
+    a manual exact-issue override that should ignore the cooldown/cap. When
+    `flag_dead_letter` is set, a dead-lettered issue is flagged once (a
+    `blocked` label + one summary comment) as it is excluded — only the real
+    drain paths pass this so the read-only status view never writes to GitHub.
     """
     issues, err = _fetch_open_issues(repo_root)
     if err:
@@ -1079,6 +1348,14 @@ def _open_roadmap_issues(
         if enforce_author_trust and not _issue_author_trusted(issue):
             untrusted.append(num)
             continue
+        if skip_backoff:
+            state, attempts, _ = _classify_roadmap_issue(conn, num, now_t)
+            if state == "dead_letter":
+                if flag_dead_letter:
+                    _dead_letter_issue(conn, issue, attempts, repo_root)
+                continue
+            if state == "backoff":
+                continue
         if skip_claimed:
             claimed, claim_err = _issue_has_active_claim(
                 num, repo_root, now_t
@@ -1330,7 +1607,9 @@ def mark_roadmap_issue_applied(
     return f"ok issue=#{num} applied=1 pr={pr_url}"
 
 
-def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]:
+def _start_roadmap_issue_child(
+    conn: sqlite3.Connection, issue: dict, repo_root: Path
+) -> tuple[bool, str]:
     """Try to claim and spawn one roadmap issue.
 
     Multi-host safe. Order of checks:
@@ -1406,6 +1685,14 @@ def _start_roadmap_issue_child(issue: dict, repo_root: Path) -> tuple[bool, str]
         # issue immediately (no 24h-TTL hold on a transient spawn failure).
         _delete_issue_comment(comment_url, repo_root)
         return False, f"spawn_error issue=#{num}: {e}"
+    # Record the spawn as an attempt: the failure ledger that drives backoff +
+    # dead-letter. A child that completes the PR writes roadmap_issue_applied
+    # (checked first everywhere), so this only accrues on issues that fail.
+    _record_roadmap_issue_attempt(
+        conn, num,
+        "spawned branch="
+        f"{roadmap_issue_branch_name(num, str(issue.get('title') or ''))}",
+    )
     return True, f"spawned roadmap_issue=#{num} {str(result)[:140]}"
 
 
@@ -1442,8 +1729,14 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
         if repo_err:
             return repo_err
         exact = bool(issue_number)
+        # Queue mode honours the backoff/dead-letter gate and flags poison
+        # issues; exact mode is a deliberate human override that ignores it.
         issues, err = _open_roadmap_issues(
-            conn, skip_claimed=not exact, enforce_author_trust=not exact
+            conn, repo_root,
+            skip_claimed=not exact,
+            enforce_author_trust=not exact,
+            skip_backoff=not exact,
+            flag_dead_letter=not exact,
         )
         if err:
             return f"ERR roadmap_issue_fetch_failed: {err}"
@@ -1468,7 +1761,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
 
         failures: list[str] = []
         for issue in candidates:
-            started, status = _start_roadmap_issue_child(issue, repo_root)
+            started, status = _start_roadmap_issue_child(
+                conn, issue, repo_root
+            )
             if started:
                 if failures:
                     return f"{status} after_skipping={len(failures)}"
@@ -1697,7 +1992,12 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     # clone exists on PyPI installs. A repo error is non-fatal here: the Curator
     # fallback below is memory-only and needs no checkout.
     _, repo_err = _ensure_repo_ready()
-    issues, issue_err = ([], repo_err) if repo_err else _open_roadmap_issues(conn)
+    # flag_dead_letter=True so a poison issue is flagged (label + one comment)
+    # and dropped even on a pass where it is the only open issue left.
+    issues, issue_err = (
+        ([], repo_err) if repo_err
+        else _open_roadmap_issues(conn, flag_dead_letter=True)
+    )
     if issues:
         out = apply_roadmap_issue()
         if out.startswith("spawned roadmap_issue=") or out.startswith(

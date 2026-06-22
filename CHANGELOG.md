@@ -324,6 +324,25 @@ version bumps follow semver per the policy in
   `lesson_remove` — `concept_manage` needs no `force` guard. The `concepts`
   table gains `embedding`/`embed_backend` columns to power the dedup gate.
   README, ARCHITECTURE, and ROADMAP document the lifecycle.
+- **Poison-issue backoff + dead-letter for the evolve applier (#82).** A roadmap
+  issue whose implementer child repeatedly aborts without opening a PR was
+  re-selected every ~24h once its claim TTL lapsed, burning a fresh
+  `bypassPermissions` Opus child each pass with no escalation or signal. The
+  applier now records a `roadmap_issue_attempt` event per spawned child and
+  gates re-selection on an **escalating backoff**
+  (`ROADMAP_ISSUE_BACKOFF_BASE_S * 2^(attempts-1)`, default base 2 days so it
+  exceeds the 24h claim TTL). After `ROADMAP_ISSUE_MAX_ATTEMPTS` (default 3) the
+  issue is **dead-lettered**: a `blocked` label and a one-time summary comment
+  are applied (composes with the #50 skip-label gate) and it is excluded from
+  the auto-drain until a human intervenes. A `roadmap_issue_dead_letter` event
+  is the authoritative idempotent marker; the label/comment are best-effort
+  signals. A successful child still writes `roadmap_issue_applied` (checked
+  first everywhere), so only genuinely-failing issues accrue attempts, and an
+  exact `evolve_apply_roadmap_issue(issue_number=N)` override bypasses the
+  cooldown/cap for a human-forced retry. Per-issue attempt counts/states surface
+  in `evolve_apply_status()` and stuck/dead-letter counts in `mp_dashboard()`.
+  Two new knobs: `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS`,
+  `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S`.
 
 - **Shadow-review production telemetry in `shadow_review_status()` (#6).** The
   status tool now appends a production-validation rollup for the 24h and 7d

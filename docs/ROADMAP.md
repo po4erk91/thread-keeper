@@ -368,6 +368,17 @@ full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
 can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
 spawn-after-claim test. (#23) Scope: S.
 
+**Poison-issue backoff + dead-letter (done, #82).** An issue whose implementer
+child repeatedly aborts without opening a PR used to be re-selected every ~24h
+once its claim TTL lapsed, burning a fresh `bypassPermissions` child each time
+with no escalation. Each spawn now records a `roadmap_issue_attempt` event; an
+escalating cooldown (`ROADMAP_ISSUE_BACKOFF_BASE_S * 2^(attempts-1)`, default
+base 2 days) defers re-selection, and after `ROADMAP_ISSUE_MAX_ATTEMPTS`
+(default 3) the issue is dead-lettered — a `blocked` label + one summary
+comment — and excluded from the auto-drain until a human intervenes (composes
+with the #50 skip-label gate). Attempt counts/states show in
+`evolve_apply_status()`; stuck/dead-letter counts in `mp_dashboard()`.
+
 **Daemon robustness under load.** Curator lacks the machine-wide single-flight
 every other spawning daemon has, and `candidate_reviewer`/`curator` dump an
 unbounded queue/inventory into the child prompt argv (the `E2BIG` class already

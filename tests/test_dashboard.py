@@ -200,6 +200,38 @@ def test_dashboard_lesson_append_emits_countable_outcome(fresh_mp):
     # One create, one in-place patch.
     assert _net_field(after, "added") - net_add0 == 1, after
     assert _net_field(after, "patched") - net_patch0 == 1, after
+def test_dashboard_surfaces_roadmap_applier_counts(fresh_mp):
+    """The roadmap-applier rollup splits attempted issues into stuck (mid-retry)
+    vs dead_letter (capped, blocked). Delta-based so it is contamination-proof."""
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+
+    def dead(out: str) -> int:
+        return _count(out, "dead_letter")
+
+    def stuck(out: str) -> int:
+        return _count(out, "stuck")
+
+    before = _tool(fresh_mp, "mp_dashboard")()
+    d0, s0 = dead(before), stuck(before)
+    # a stuck issue: attempted, not applied, not dead-lettered
+    for _ in range(2):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('s','roadmap_issue_attempt','991001','',?)", (now,))
+    # a dead-lettered issue: attempted + flagged
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s','roadmap_issue_attempt','991002','',?)", (now,))
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s','roadmap_issue_dead_letter','991002','',?)", (now,))
+    conn.commit()
+
+    out = _tool(fresh_mp, "mp_dashboard")()
+    assert "roadmap applier" in out, out
+    assert dead(out) - d0 == 1, out
+    assert stuck(out) - s0 == 1, out
 
 
 def test_dashboard_accept_rate(fresh_mp):

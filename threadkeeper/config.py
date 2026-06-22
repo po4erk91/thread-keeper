@@ -283,6 +283,17 @@ class Settings(BaseSettings):
     # itself a maintainer endorsement. Empty by default — association is the
     # sole gate. CSV string or list.
     evolve_trust_labels: Annotated[list[str], NoDecode] = []
+    # Poison-issue guard for the evolve applier. After an implementer child is
+    # spawned for a roadmap issue but no PR results, the issue stays selectable
+    # once its 24h claim TTL lapses. Without a cap that re-spawns a costly
+    # bypassPermissions child every ~24h forever. So each spawn records an
+    # attempt; an escalating backoff (base * 2^(attempts-1)) defers re-selection,
+    # and after this many attempts the issue is dead-lettered: a `blocked` label
+    # is applied and it drops out of auto-selection until a human intervenes.
+    roadmap_issue_max_attempts: int = 3
+    # Base backoff window after the first failed attempt (seconds). The window
+    # doubles per attempt. Default 2 days so it always exceeds the 24h claim TTL.
+    roadmap_issue_backoff_base_s: float = 172800.0
 
     # ── Thread janitor daemon ─────────────────────────────────────────────────
     thread_janitor_interval_s: float = 0.0
@@ -461,6 +472,8 @@ def _derive_constants(s: "Settings") -> dict:
             s.evolve_trusted_author_associations
         ),
         "EVOLVE_TRUST_LABELS": s.evolve_trust_labels,
+        "ROADMAP_ISSUE_MAX_ATTEMPTS": s.roadmap_issue_max_attempts,
+        "ROADMAP_ISSUE_BACKOFF_BASE_S": s.roadmap_issue_backoff_base_s,
         "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
         "THREAD_IDLE_CLOSE_DAYS": s.thread_idle_close_days,
         "DIALECTIC_MINE_INTERVAL_S": s.dialectic_mine_interval_s,
