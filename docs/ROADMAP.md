@@ -442,10 +442,14 @@ verified at the cited file:line, deduplicated against the issues above):
   identity is recorded in a local `roadmap_issue_claim_host` event. Removes the
   untrusted input at the boundary (complements #22/#76 fencing and #50
   skip-label) and is documented in README + ARCHITECTURE.
-- Spawn budget is blind to **visible (pid=0)** children: their real RSS is
-  never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
-  never resolves pins its full-estimate budget share forever. (The
-  admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.) (#64).
+- ✅ DONE (#64). Spawn budget was blind to **visible (pid=0)** children: their
+  real RSS was never measured (the daemon skipped `pid<=0`), and a visible row
+  whose jsonl never resolved pinned its full-estimate budget share forever. Now:
+  the budget daemon resolves a visible child's live pid from the `--session-id`
+  it carries in `ps` argv and measures its real subtree RSS, and a
+  `SPAWN_VISIBLE_TTL_S` (1 h default) wall-clock backstop reaps any `pid<=0` row
+  whose cid never resolves to a live process so it can't pin capacity forever.
+  (The admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.)
 - ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
   `chmod` and embedded the host server `env` block, while the stdin prompt file
   is correctly `0600` and the `.command` script was `0755`. Now: slim config
