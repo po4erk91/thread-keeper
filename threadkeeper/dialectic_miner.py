@@ -16,7 +16,7 @@ import time
 
 from .config import DIALECTIC_MINE_INTERVAL_S
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, resolve_ingest_watermark
 from . import identity
 from .identity import _ensure_session, _emit
 
@@ -295,7 +295,14 @@ def _is_low_value_observation(content: str) -> bool:
     return _dialectic_signal_score(content) <= 0
 
 
-def _last_mine_ts(conn: sqlite3.Connection) -> int:
+def _last_mine_rowid(conn: sqlite3.Connection) -> int:
+    """Ingest-order rowid high-water mark for the miner (issue #69).
+
+    The watermark in the latest `events.kind='dialectic_mine_pass'.target` is
+    a dialog_messages rowid (ingest order), not a transcript timestamp, so a
+    late/out-of-order ingested user turn can't fall below it. A pre-#69
+    watermark held a created_at timestamp; it is translated to the matching
+    rowid once. Returns 0 when no prior pass exists."""
     try:
         row = conn.execute(
             "SELECT target FROM events WHERE kind='dialectic_mine_pass' "
@@ -306,9 +313,10 @@ def _last_mine_ts(conn: sqlite3.Connection) -> int:
     if not row or not row["target"]:
         return 0
     try:
-        return int(row["target"])
+        stored = int(row["target"])
     except (ValueError, TypeError):
         return 0
+    return resolve_ingest_watermark(conn, stored)
 
 
 def _record_pass(conn: sqlite3.Connection, ts: int, outcome: str) -> None:
@@ -345,7 +353,7 @@ def run_mine_pass(force: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
-    cursor = _last_mine_ts(conn)
+    cursor = _last_mine_rowid(conn)
 
     from .shadow_review import (
         _INTERNAL_PROMPT_PREFIXES,
@@ -363,8 +371,8 @@ def run_mine_pass(force: bool = False) -> str:
     spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
 
     rows = conn.execute(
-        "SELECT uuid, session_id, content, created_at FROM dialog_messages "
-        "WHERE role='user' AND created_at >= ? "
+        "SELECT rowid, uuid, session_id, content, created_at FROM dialog_messages "
+        "WHERE role='user' AND rowid > ? "
         "AND coalesce(project, '') != 'subagents' "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
         "AND length(content) >= 1 "
@@ -379,12 +387,15 @@ def run_mine_pass(force: bool = False) -> str:
         "AND session_id NOT IN ("
         "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ") "
-        "ORDER BY created_at ASC",
+        "ORDER BY rowid ASC",
         (cursor, *sess_prefix_params, *spawned_marker_params),
     ).fetchall()
 
     if not rows:
-        _record_pass(conn, now, "no_user_dialog")
+        # Nothing new above the ingest-order cursor — keep it where it is.
+        # (Pre-#69 this recorded `now`, a transcript timestamp, which pushed
+        # the created_at cursor into the future and dropped late arrivals.)
+        _record_pass(conn, cursor, "no_user_dialog")
         return "no_user_dialog"
 
     captured = skipped = 0
@@ -395,9 +406,9 @@ def run_mine_pass(force: bool = False) -> str:
             "WHERE status='pending'"
         ).fetchall()
     }
-    max_ts = cursor
+    max_rowid = cursor
     for r in rows:
-        max_ts = max(max_ts, r["created_at"])
+        max_rowid = max(max_rowid, r["rowid"])
         if _is_noise_user_message(r["content"] or ""):
             skipped += 1
             continue
@@ -422,7 +433,7 @@ def run_mine_pass(force: bool = False) -> str:
             skipped += 1
     _emit(conn, "dialectic_mine_capture", summary=f"captured={captured}")
     conn.commit()
-    _record_pass(conn, max_ts, f"ok captured={captured} skipped={skipped}")
+    _record_pass(conn, max_rowid, f"ok captured={captured} skipped={skipped}")
     return f"ok captured={captured} skipped={skipped}"
 
 

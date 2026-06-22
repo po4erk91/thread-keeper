@@ -160,6 +160,23 @@ def test_panel_roles_is_list(monkeypatch):
     assert "skeptic" in c.PANEL_ROLES
 
 
+def test_evolve_author_trust_knobs_default_and_override(monkeypatch):
+    """#63: the autonomous-pickup author-trust gate is configurable."""
+    c = _fresh_config(monkeypatch)
+    assert c.EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS == [
+        "OWNER", "MEMBER", "COLLABORATOR",
+    ]
+    assert c.EVOLVE_TRUST_LABELS == []
+
+    c = _fresh_config(monkeypatch, env={
+        "THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS": "owner, collaborator",
+        "THREADKEEPER_EVOLVE_TRUST_LABELS": "Approved, Roadmap",
+    })
+    # Associations normalize to upper, labels to lower; CSV is parsed to a list.
+    assert c.EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS == ["OWNER", "COLLABORATOR"]
+    assert c.EVOLVE_TRUST_LABELS == ["approved", "roadmap"]
+
+
 def test_spawn_settings_defaults(monkeypatch):
     """settings.spawn has the right defaults."""
     c = _fresh_config(monkeypatch)

@@ -9,7 +9,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age
 from ..identity import _ensure_session, _detect_self_cid, _emit
@@ -70,7 +70,7 @@ def _snippet_for(conn: sqlite3.Connection, kind: str, eid: str) -> str:
     return text
 
 
-@mcp.tool()
+@write_tool()
 def link(from_kind: str, from_id: str, to_kind: str, to_id: str,
          relation: str, weight: float = 1.0) -> str:
     """Create a typed edge between two entities.
@@ -124,7 +124,7 @@ def link(from_kind: str, from_id: str, to_kind: str, to_id: str,
     return f"ok edge={eid}"
 
 
-@mcp.tool()
+@write_tool(destructive=True, idempotent=True)
 def unlink(edge_id: int) -> str:
     """Remove an edge by id."""
     conn = get_db()
@@ -137,7 +137,7 @@ def unlink(edge_id: int) -> str:
     return "ok"
 
 
-@mcp.tool()
+@read_tool()
 def neighbors(kind: str, id: str, depth: int = 1, max_n: int = 12) -> str:
     """BFS the graph from a starting node up to `depth` hops away.
     Returns each visited node with its kind, id, and a short content snippet

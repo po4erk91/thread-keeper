@@ -31,7 +31,11 @@ def test_context_sees_live_session_id(fresh_mp):
     `sess=-` in production briefs.
     """
     mcp = fresh_mp["mcp"]
-    out = mcp._tool_manager._tools["context"].fn()
+    res = mcp._tool_manager._tools["context"].fn()
+    # context() now returns a CallToolResult (structuredContent + legacy text, #67)
+    out = "\n".join(
+        c.text for c in res.content if getattr(c, "type", None) == "text"
+    )
     # Whatever happens, must be a non-empty string with sess= prefix populated
     assert isinstance(out, str)
     assert "sess=s_" in out, f"context didn't see live session: {out!r}"

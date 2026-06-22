@@ -66,7 +66,7 @@ def _seed_dialog(conn, role, content, ts, session_id="sess-x"):
 def test_cursor_initial_is_zero(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
-    assert pkg["shadow_review"]._last_shadow_ts(conn) == 0
+    assert pkg["shadow_review"]._last_shadow_rowid(conn) == 0
 
 
 def test_cursor_reads_summary_from_events(tmp_path, monkeypatch):
@@ -75,7 +75,7 @@ def test_cursor_reads_summary_from_events(tmp_path, monkeypatch):
     pkg["shadow_review"]._record_shadow_pass(conn, 12345, "no_window")
     pkg["shadow_review"]._record_shadow_pass(conn, 67890, "too_short")
     # most-recent wins
-    assert pkg["shadow_review"]._last_shadow_ts(conn) == 67890
+    assert pkg["shadow_review"]._last_shadow_rowid(conn) == 67890
 
 
 def test_collect_window_returns_nothing_when_empty(tmp_path, monkeypatch):
@@ -85,20 +85,48 @@ def test_collect_window_returns_nothing_when_empty(tmp_path, monkeypatch):
     assert dump == "" and n_chars == 0
 
 
-def test_collect_window_skips_messages_before_floor(tmp_path, monkeypatch):
+def test_collect_window_skips_rows_at_or_below_floor_rowid(tmp_path, monkeypatch):
+    """The cursor is an ingest-order rowid (#69): rows with rowid <= floor are
+    skipped, rows with a higher rowid are kept, high_water is the max rowid."""
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
     now = int(time.time())
-    _seed_dialog(conn, "user", "old message before floor", now - 1000)
-    _seed_dialog(conn, "user", "fresh message after floor", now - 10)
+    _seed_dialog(conn, "user", "old message at or below floor", now - 1000)
     conn.commit()
-    # floor at now-500 → old skipped, fresh kept
-    dump, hw, n_chars = pkg["shadow_review"]._collect_window(
-        conn, now - 500, 3600,
-    )
+    floor = conn.execute("SELECT MAX(rowid) FROM dialog_messages").fetchone()[0]
+    _seed_dialog(conn, "user", "fresh message above floor", now - 10)
+    conn.commit()
+    fresh_rowid = conn.execute(
+        "SELECT MAX(rowid) FROM dialog_messages"
+    ).fetchone()[0]
+    dump, hw, n_chars = pkg["shadow_review"]._collect_window(conn, floor, 3600)
     assert "fresh message" in dump
     assert "old message" not in dump
-    assert hw == now - 10
+    assert hw == fresh_rowid
+
+
+def test_collect_window_picks_up_late_out_of_order_ingest(tmp_path, monkeypatch):
+    """Issue #69: a message ingested AFTER the cursor advanced but carrying an
+    OLDER created_at (a resumed/backfilled session) gets a fresh, higher rowid,
+    so the ingest-order cursor still evaluates it — a created_at cursor would
+    have stepped right over it."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    # A fresh message that pushes the cursor forward on the first pass.
+    _seed_dialog(conn, "user", "fresh forward message advancing the cursor",
+                 now - 10)
+    conn.commit()
+    dump1, hw1, n1 = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    assert "fresh forward message" in dump1
+    # Now a late/out-of-order row lands: created_at is far BELOW the cursor's
+    # transcript time, but its rowid is higher (ingested later).
+    _seed_dialog(conn, "user", "late backfilled resumed-session message",
+                 now - 5000, session_id="resumed-sess")
+    conn.commit()
+    dump2, hw2, n2 = pkg["shadow_review"]._collect_window(conn, hw1, 3600)
+    assert "late backfilled resumed-session message" in dump2
+    assert hw2 > hw1
 
 
 def test_collect_window_excludes_shadow_observer_sessions(
@@ -376,7 +404,7 @@ def test_run_shadow_pass_single_flight_when_child_running(tmp_path, monkeypatch)
     out = pkg["shadow_review"].run_shadow_pass(force=True)
     assert out == "shadow_child_running n=1"
     # Cursor does not advance; retry the same window when the child exits.
-    assert pkg["shadow_review"]._last_shadow_ts(conn) == 0
+    assert pkg["shadow_review"]._last_shadow_rowid(conn) == 0
 
 
 def test_run_shadow_pass_idempotent_after_cursor_advance(tmp_path, monkeypatch):
@@ -398,6 +426,39 @@ def test_run_shadow_pass_idempotent_after_cursor_advance(tmp_path, monkeypatch):
     assert second == "no_window"
 
 
+def test_run_shadow_pass_late_ingest_spawns_once_no_duplicate(tmp_path, monkeypatch):
+    """Issue #69 acceptance: a late out-of-order ingest is evaluated by a NEW
+    spawn (not skipped), and re-running with nothing new does not re-spawn — the
+    ingest-order watermark gives shadow_review per-row dedup for free."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_chars="50")
+    import threadkeeper.tools.spawn as spawn_mod
+    spawns: list = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: spawns.append(kw) or f"spawn task_id=t{len(spawns)} pid=0",
+    )
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    _seed_dialog(conn, "user",
+                 "Pattern: in this kind of task always X. " * 4, now - 10)
+    conn.commit()
+    assert "task_id" in pkg["shadow_review"].run_shadow_pass(force=True)
+    assert len(spawns) == 1
+    # Nothing new → no re-spawn (cursor covers the evaluated window).
+    assert pkg["shadow_review"].run_shadow_pass(force=True) == "no_window"
+    assert len(spawns) == 1
+    # Late / out-of-order ingest: older created_at, newer rowid → ONE new spawn.
+    _seed_dialog(conn, "user",
+                 "Rule: never do Y here, always prefer Z. " * 4, now - 9000,
+                 session_id="resumed-sess")
+    conn.commit()
+    assert "task_id" in pkg["shadow_review"].run_shadow_pass(force=True)
+    assert len(spawns) == 2
+    # And no duplicate spawn on the very next pass.
+    assert pkg["shadow_review"].run_shadow_pass(force=True) == "no_window"
+    assert len(spawns) == 2
+
+
 # ──────────────────────────────────────────────────────────────────────
 # MCP tools
 # ──────────────────────────────────────────────────────────────────────
@@ -415,7 +476,7 @@ def test_mcp_shadow_review_run_dry_run(tmp_path, monkeypatch):
     assert "would_spawn=yes" in out
     assert "We learned X" in out
     # cursor MUST NOT advance on dry_run
-    assert pkg["shadow_review"]._last_shadow_ts(conn) == 0
+    assert pkg["shadow_review"]._last_shadow_rowid(conn) == 0
 
 
 def test_daemon_does_not_start_in_slim_child(tmp_path, monkeypatch):

@@ -43,6 +43,8 @@ from .config import (
     EVOLVE_REPO_BRANCH,
     EVOLVE_REPO_ROOT,
     EVOLVE_REPO_URL,
+    EVOLVE_TRUST_LABELS,
+    EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS,
     ROADMAP_CLAIM_RACE_WINDOW_S,
 )
 from .db import get_db
@@ -140,6 +142,10 @@ When finished, output exactly ONE final line:
 CURATOR_REPORT_MARKER = "CURATOR_PASS_COMPLETE"
 CURATOR_REPORT_APPLIED_KIND = "curator_report_applied"
 ROADMAP_ISSUE_APPLIED_KIND = "roadmap_issue_applied"
+# Local-only event recording the full host identity behind a posted claim. The
+# public claim comment carries just the opaque _host_branch_slug() token; this
+# event keeps hostname/PID/git-rev in the local DB for multi-host triage (#63).
+ROADMAP_ISSUE_CLAIM_HOST_KIND = "roadmap_issue_claim_host"
 ROADMAP_ISSUE_FETCH_LIMIT = 50
 ROADMAP_ISSUE_CLAIM_MARKER = "<!-- thread-keeper:evolve-applier-claim -->"
 ROADMAP_ISSUE_CLAIM_TTL_S = 24 * 60 * 60
@@ -570,14 +576,55 @@ def _issue_labels(issue: dict) -> list[str]:
     return out
 
 
+def _issue_author_association(issue: dict) -> str:
+    """Normalized GitHub author association for an issue (e.g. 'OWNER',
+    'MEMBER', 'NONE'). Missing/blank → 'NONE' so the trust gate fails closed."""
+    raw = issue.get("authorAssociation")
+    return str(raw or "").strip().upper() or "NONE"
+
+
+def _issue_author_trusted(issue: dict) -> bool:
+    """Whether an open issue is eligible for AUTONOMOUS pickup by the applier.
+
+    This repo is public, so any GitHub account can open an issue whose body is
+    then injected into a permission-bypassing implementer child. Trust comes
+    from EITHER a maintainer-level author association
+    (EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS — OWNER/MEMBER/COLLABORATOR by default)
+    OR a maintainer-applied trust label (EVOLVE_TRUST_LABELS; empty by
+    default). On a public repo only collaborators can apply labels, so a trust
+    label is itself a maintainer endorsement. Exact-issue invocation (a human
+    naming the number) bypasses this gate upstream as explicit promotion (#63).
+    """
+    trusted = {str(a).strip().upper() for a in EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS}
+    if _issue_author_association(issue) in trusted:
+        return True
+    label_set = {str(name).strip().lower() for name in EVOLVE_TRUST_LABELS
+                 if str(name).strip()}
+    if label_set and {name.lower() for name in _issue_labels(issue)} & label_set:
+        return True
+    return False
+
+
 def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], str]:
-    """Fetch open GitHub issues via gh. Returns (issues, error)."""
+    """Fetch open GitHub issues via the REST API. Returns (issues, error).
+
+    Uses `gh api` rather than `gh issue list --json` because the autonomous-
+    pickup author-trust gate (#63) needs each issue's `author_association`
+    (OWNER/MEMBER/COLLABORATOR/…), which the `gh issue list --json` field set
+    does not expose. The REST `/issues` endpoint also returns pull requests (a
+    PR is an issue in GitHub's data model); those are filtered out so the
+    applier never treats a PR as backlog. Returned dicts keep the prior
+    internal shape (`number/title/labels/body/url`) plus the new
+    `authorAssociation`/`authorLogin` fields the gate reads.
+    """
     repo = str(repo_root or _repo_root())
     cmd = [
-        "gh", "issue", "list",
-        "--state", "open",
-        "--limit", str(ROADMAP_ISSUE_FETCH_LIMIT),
-        "--json", "number,title,labels,body,url,createdAt,updatedAt",
+        "gh", "api",
+        "-H", "Accept: application/vnd.github+json",
+        (
+            "repos/{owner}/{repo}/issues"
+            f"?state=open&per_page={ROADMAP_ISSUE_FETCH_LIMIT}"
+        ),
     ]
     try:
         proc = subprocess.run(
@@ -604,7 +651,25 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
         return [], f"gh_issue_list_bad_json: {e}"
     if not isinstance(data, list):
         return [], "gh_issue_list_bad_shape"
-    return data, ""
+    out: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if item.get("pull_request"):
+            # REST /issues includes PRs; the applier only drains real issues.
+            continue
+        user = item.get("user")
+        login = user.get("login") if isinstance(user, dict) else ""
+        out.append({
+            "number": item.get("number"),
+            "title": item.get("title") or "",
+            "labels": item.get("labels") or [],
+            "body": item.get("body") or "",
+            "url": item.get("html_url") or item.get("url") or "",
+            "authorAssociation": item.get("author_association") or "",
+            "authorLogin": login or "",
+        })
+    return out, ""
 
 
 def _fetch_issue_comments(
@@ -736,21 +801,50 @@ def _roadmap_issue_claim_body(
         timezone.utc,
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     ttl_h = int(ROADMAP_ISSUE_CLAIM_TTL_S // 3600)
-    ident = _host_identity()
+    # Public tracker — carry only the opaque per-host token, never the raw
+    # hostname/PID/git-rev. The token is enough to tell two racing hosts apart
+    # for human triage; the full identity is kept in the local event log (#63).
+    host_token = _host_branch_slug()
     return (
         f"{ROADMAP_ISSUE_CLAIM_MARKER}\n"
         "Evolve applier is starting work on this issue.\n\n"
         f"- Issue: #{num} {title}\n"
         "- Agent role: evolve_applier\n"
-        f"- Host: {ident['hostname'] or '?'}\n"
-        f"- PID: {ident['pid']}\n"
-        f"- Git rev: {ident['git_rev'] or '?'}\n"
+        f"- Host token: {host_token}\n"
         f"- Started: {ts}\n"
         f"- Claim TTL: {ttl_h}h\n\n"
         "Other agents should not start parallel implementation while this "
         "claim is active. If no PR or status update appears after the TTL, "
         "treat the claim as stale."
     )
+
+
+def _record_claim_host_identity(
+    issue_number: int,
+    comment_url: str,
+) -> None:
+    """Persist the full host identity (hostname/PID/git-rev) behind a posted
+    claim to the LOCAL event log only — it never egresses to the public
+    tracker, which gets the opaque `_host_branch_slug()` token. Best-effort
+    debugging aid for which machine owns a claim (#63)."""
+    ident = _host_identity()
+    summary = (
+        f"host={ident.get('hostname') or '?'} pid={ident.get('pid')} "
+        f"git_rev={ident.get('git_rev') or '?'} slug={_host_branch_slug()} "
+        f"comment={comment_url or '?'}"
+    )[:300]
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (identity._session_id or "", ROADMAP_ISSUE_CLAIM_HOST_KIND,
+             str(int(issue_number)), summary, int(time.time())),
+        )
+        conn.commit()
+    except (sqlite3.OperationalError, sqlite3.ProgrammingError,
+            ValueError, TypeError):
+        pass
 
 
 def _comment_issue_claim(
@@ -789,6 +883,8 @@ def _comment_issue_claim(
         ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()
     ]
     url = url_lines[0] if url_lines else ""
+    # Keep the full host identity locally (the public comment is redacted).
+    _record_claim_host_identity(num, url)
     return url, ""
 
 
@@ -950,6 +1046,7 @@ def _open_roadmap_issues(
     repo_root: Optional[Path] = None,
     *,
     skip_claimed: bool = True,
+    enforce_author_trust: bool = True,
 ) -> tuple[list[dict], str]:
     """Open GitHub issues not already handed off by evolve_applier.
 
@@ -957,12 +1054,20 @@ def _open_roadmap_issues(
     explicit `roadmap` label are prioritized first, then FIFO by number. Active
     issue-claim comments are skipped so multiple appliers do not start the same
     item in parallel.
+
+    When `enforce_author_trust` is set (the autonomous-drain default), issues
+    whose author is not trusted (`_issue_author_trusted`) are skipped — this
+    repo is public, so an untrusted issue body must not reach the permission-
+    bypassing implementer child without explicit human promotion (#63). Exact-
+    issue invocation passes `enforce_author_trust=False`: naming the number is
+    itself the human promotion.
     """
     issues, err = _fetch_open_issues(repo_root)
     if err:
         return [], err
     out: list[dict] = []
     claim_errors: list[str] = []
+    untrusted: list[int] = []
     now_t = time.time()
     for issue in issues:
         try:
@@ -970,6 +1075,9 @@ def _open_roadmap_issues(
         except (TypeError, ValueError):
             continue
         if _roadmap_issue_applied(conn, num):
+            continue
+        if enforce_author_trust and not _issue_author_trusted(issue):
+            untrusted.append(num)
             continue
         if skip_claimed:
             claimed, claim_err = _issue_has_active_claim(
@@ -987,6 +1095,13 @@ def _open_roadmap_issues(
             int(issue.get("number") or 0),
         )
     )
+    if untrusted:
+        logger.info(
+            "evolve_applier: skipped %d untrusted-author issue(s) on autonomous "
+            "pickup (no trusted authorAssociation/label): %s",
+            len(untrusted),
+            ", ".join(f"#{n}" for n in untrusted[:20]),
+        )
     if not out and claim_errors:
         return [], "roadmap_issue_claim_check_failed: " + "; ".join(
             claim_errors
@@ -1313,6 +1428,10 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
     With issue_number=0, this is queue mode: try candidates in roadmap/FIFO
     order and advance past issue-local dispatch failures. With a specific
     issue_number, this is exact mode and returns that issue's failure directly.
+
+    Queue mode enforces the author-trust gate (#63); exact mode bypasses it —
+    naming an issue number is itself the explicit human promotion the gate
+    requires for an untrusted author.
     """
     with _apply_spawn_lock() as locked:
         if not locked:
@@ -1324,7 +1443,7 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
             return repo_err
         exact = bool(issue_number)
         issues, err = _open_roadmap_issues(
-            conn, skip_claimed=not exact
+            conn, skip_claimed=not exact, enforce_author_trust=not exact
         )
         if err:
             return f"ERR roadmap_issue_fetch_failed: {err}"

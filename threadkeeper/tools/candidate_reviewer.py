@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from ..candidate_reviewer import (
@@ -26,7 +26,7 @@ from ..config import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def candidate_review_run(force: bool = False, dry_run: bool = False) -> str:
     """Fire one candidate-review pass.
 
@@ -53,7 +53,7 @@ def candidate_review_run(force: bool = False, dry_run: bool = False) -> str:
     return run_review_pass(force=force)
 
 
-@mcp.tool()
+@read_tool()
 def candidate_review_status() -> str:
     """Show candidate-reviewer configuration + last 5 passes +
     current pending queue size."""

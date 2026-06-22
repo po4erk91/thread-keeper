@@ -9,7 +9,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..helpers import fmt_age, q
 from .. import identity
@@ -23,7 +23,7 @@ from ..identity import (
 from ..brief import _append_dialog_log
 
 
-@mcp.tool()
+@read_tool()
 def whoami() -> str:
     """Return this conversation's detected conversation_id + how we know.
 
@@ -45,7 +45,7 @@ def whoami() -> str:
     return f"cid={cid} ({note})"
 
 
-@mcp.tool()
+@read_tool()
 def peers(window_min: int = 5) -> str:
     """List concurrent claude conversations active in the last `window_min`.
 
@@ -109,7 +109,7 @@ def peers(window_min: int = 5) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def broadcast(content: str) -> str:
     """Post a message visible to ALL concurrent claude conversations.
 
@@ -119,7 +119,7 @@ def broadcast(content: str) -> str:
     return _post_signal(to_cid="", content=content, kind="broadcast")
 
 
-@mcp.tool()
+@write_tool()
 def whisper(to_cid: str, content: str) -> str:
     """Post a message visible only to the specified conversation_id.
 
@@ -183,7 +183,7 @@ def _post_signal(to_cid: str, content: str, kind: str) -> str:
     return f"ok id={cur.lastrowid} broadcast{tail}"
 
 
-@mcp.tool()
+@write_tool()
 def wait(timeout_s: int = 30, kinds: str = "", mark_read: bool = True) -> str:
     """Block until a new signal arrives for me or `timeout_s` elapses.
 
@@ -240,7 +240,7 @@ def wait(timeout_s: int = 30, kinds: str = "", mark_read: bool = True) -> str:
         time.sleep(poll_interval)
 
 
-@mcp.tool()
+@write_tool()
 def ask(to_cid: str, question: str, timeout_s: int = 60) -> str:
     """Send a question to a peer and wait synchronously for their answer.
 
@@ -307,7 +307,7 @@ def ask(to_cid: str, question: str, timeout_s: int = 60) -> str:
         time.sleep(0.4)
 
 
-@mcp.tool()
+@write_tool()
 def respond(qid: int, content: str) -> str:
     """Answer a specific question (signals.id) with a directed whisper.
 
@@ -339,7 +339,7 @@ def respond(qid: int, content: str) -> str:
     return f"ok id={cur.lastrowid} -> {qrow['from_cid'][:8]}"
 
 
-@mcp.tool()
+@write_tool()
 def inbox(unread_only: bool = True, k: int = 20, mark_read: bool = True) -> str:
     """Read signals addressed to me (whispers + broadcasts).
 
@@ -382,7 +382,7 @@ def inbox(unread_only: bool = True, k: int = 20, mark_read: bool = True) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def live_status(advance_cursor: bool = True, k: int = 30) -> str:
     """See what OTHER concurrent Claude sessions did since this session last
     polled. Call when brief() shows live=N where N>0, or proactively when you
@@ -429,7 +429,7 @@ def live_status(advance_cursor: bool = True, k: int = 30) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@write_tool()
 def presence(idle_threshold_min: int = 5) -> str:
     """List concurrent Claude sessions with heartbeats within threshold
     (default 5 min). Excludes self. Useful for understanding who else is
@@ -474,7 +474,7 @@ def _resolve_parent_cid(conn) -> Optional[str]:
     return row["parent_cid"]
 
 
-@mcp.tool()
+@write_tool()
 def search_via_parent(query: str, k: int = 5,
                       scope: str = "notes",
                       mode: str = "hybrid",

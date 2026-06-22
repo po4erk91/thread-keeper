@@ -7,8 +7,145 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Resources & Prompts primitives (#78).** thread-keeper exposed its whole
+  surface as MCP **tools** and zero of the other two server primitives. It now
+  adopts both for the views that fit them. **Resources** (`tools/resources.py`,
+  `@mcp.resource`) expose the read-only memory snapshots at stable URIs —
+  `memory://brief`, `memory://context`, `memory://dashboard`,
+  `memory://agent-status` — each backed by the same render function as the
+  matching tool (`render_brief` / `render_context` / `mp_dashboard` /
+  `agent_status`). A host can now pull the brief as attachable / `@`-mentionable
+  read-only context instead of relying on a hookless agent *remembering* to call
+  `brief()`. The brief resource renders `lean=True` (and agent-status uses
+  `refresh=False`) so an automatic host pull is side-effect-free — no
+  `*_hint_shown` events, no process re-scan. **Prompts** (`tools/prompts.py`,
+  `@mcp.prompt`) expose the curation / audit / review flows as host-native,
+  parameterized commands — `review_recent_threads`, `run_library_curation`,
+  `audit_threadkeeper` — which Claude Code surfaces as
+  `/mcp__thread-keeper__<name>` slash commands. Both are additive: the server
+  advertises the `resources` / `prompts` capabilities, and a host that uses
+  neither falls back to the unchanged tool-only surface (and the SessionStart
+  hook path) with identical content. No tool was added, removed, or altered;
+  `context()` now shares `brief.render_context()` with its resource. New
+  `tests/test_mcp_resources_prompts.py` covers list/read, prompt rendering,
+  capability advertisement, side-effect-freeness, and the tool-only fallback.
+  Composes with the tool-annotation work (#67) and the elicitation item (#26);
+  both are different MCP capabilities, neither covered there.
+- **MCP tool annotations + structured outputs (#67).** Every thread-keeper tool
+  was a bare `@mcp.tool()` with no machine-readable read/write signal. Now each
+  of the 113 tools registers through one of two wrappers in
+  `threadkeeper/_mcp.py` — `@read_tool()` (sets `readOnlyHint=True`) for pure
+  queries, `@write_tool(destructive=…, idempotent=…)` for mutations — so
+  `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for every tool. The ten
+  delete/overwrite/kill tools (`compost` is **not** one — it only reads) carry
+  `destructiveHint=True`: `agent_memory_cleanup`, `concept_manage`,
+  `consolidate`, `core_remove`, `curator_run`, `lesson_remove`,
+  `memory_guard_check`, `mp_cleanup`, `skill_manage`, `unlink`. This is the
+  static metadata a confirmation/elicitation host reads to decide which calls
+  warrant a prompt (substrate for #26). The five status tools — `context`,
+  `spawn_budget_status`, `spawn_status`, `mp_health`, `agent_status` — now also
+  advertise an `outputSchema` (typed models in `threadkeeper/tool_schemas.py`)
+  and return `structuredContent`, while preserving the legacy human-readable
+  text block (per the spec's structured-content backward-compat rule). New
+  `tests/test_tool_annotations.py` fails if any tool is unclassified, a mutating
+  tool is marked read-only, or a delete-class tool drops `destructiveHint`.
+  Requires the MCP **2025-06-18** tool vocabulary (`mcp>=1.10.0`).
+
+### Fixed
+
+- **vec0 index integrity: delete-sync + EMBED_DIM dimension guard (#85).** Two
+  consistency gaps in the sqlite-vec (`notes_vec`) mirror are closed. **(1)
+  Orphaned vec rows on note delete.** `notes_fts` is trigger-synced but
+  `notes_vec` was not, so `consolidate()` deleting a merged note
+  (`DELETE FROM notes WHERE id=?`) left a permanent orphan — `notes.id` is
+  `AUTOINCREMENT`, never reused — that consumed a KNN slot and was then dropped
+  by the inner join in `_vec0_notes_search`, so a query could return *fewer than
+  `k`* live hits while dead entries piled up. `embeddings._vec_delete_note` now
+  removes the mirror row in the consolidate apply loop, and `_vec0_notes_search`
+  over-fetches (`2k+8`, trimmed to `k`) so any legacy orphan backlog drains
+  gracefully instead of shrinking results. **(2) Silent vec0-disable on
+  dimension drift.** `EMBED_DIM` was a hardcoded `384` while
+  `THREADKEEPER_EMBED_MODEL` is user-configurable; a non-384-dim model made
+  every `INSERT INTO notes_vec` raise `OperationalError` that `_vec_upsert_*`
+  silently swallowed — vec0 stayed empty while `_vec_on()` still claimed the
+  fast path, and `tk-migrate-embeddings` (same-dim only) never noticed.
+  `EMBED_DIM` is now config-driven (`THREADKEEPER_EMBED_DIM`, default 384) so a
+  different-width model can create the `*_vec` tables correctly, and
+  `embeddings._vec_dim_ok` validates vector width before insert, logging ONE
+  actionable warning (naming the model, both dimensions, and the env knob)
+  instead of swallowing the error. Tests cover delete→search consistency, the
+  over-fetch-past-orphans path, the consolidate apply path, and the
+  dimension-mismatch warning. Distinct from the closed integrity issue #56
+  (tampered-artifact verification) — this is dimension-compatibility.
+
+- **Extract H4 paraphrase-cluster path no longer re-harvests rejected
+  candidates (#62).** The semantic-cluster heuristic had its own inline dedup
+  (`status IN ('pending','accepted')`) that omitted `'rejected'`, so a rejected
+  cluster — keyed by a deterministic `cluster:<sorted-uuid-prefixes>` the daemon
+  re-derives on every overlapping window — was invisible to the gate and
+  re-enqueued on the next tick: the same incident class as the documented
+  #157/#158 prod loop, on the one path that never received the
+  `_candidate_exists` fix. The H4 path now routes through `_enqueue`, so its
+  dedup shares the rejected-counting semantics of H1/H2/H3 (single source of
+  truth). Internal heuristic only — no API or env change.
+
+- **Late / out-of-order ingested dialog was evaluated by neither learning loop
+  (#69).** `shadow_review` and `dialectic_miner` advanced a single global
+  high-water cursor over `dialog_messages.created_at` (the message's own
+  transcript timestamp), but ingestion is **not** monotonic in `created_at`: a
+  dormant/resumed session, a newly-installed adapter, or a post-downtime
+  `_ingest_all` backfill lands rows whose `created_at` sits **below** a cursor
+  that fresher sessions already pushed forward — so those rows were silently
+  never reviewed for class-level learning. Both loops now drive their cursor
+  off the `dialog_messages` **ingest-order rowid** instead, so a late row
+  (old `created_at`, fresh rowid) always lands above the cursor and is
+  evaluated exactly once. Because the rowid advances monotonically,
+  `shadow_review` no longer needs per-row dedup to avoid re-spawning a window
+  it already saw, and `dialectic_miner` no longer parks its cursor at `now` on
+  an empty pass (which had pushed the created_at cursor into the future).
+  Pre-#69 watermarks (a stored `created_at`) are translated to the matching
+  rowid once, then self-heal on the next pass. `shadow_review_status` /
+  `dialectic_mine_status` now report `cursor_rowid` (was `cursor_ts`).
+  (`candidate_reviewer` and `dialectic_validator` were never exposed — they
+  re-scan the whole pending queue and use the cursor only for telemetry.)
+
+- **Docs: reconciled the hot-config-reload status across surfaces (#77).** The
+  three doc surfaces disagreed: the README pointed at the now-closed-completed
+  issue #2 as if it were a live tracker for unfinished work, and
+  `docs/ARCHITECTURE.md`'s "What is NOT done" still listed "No hot-config
+  reload … requires restarting the MCP process" — directly contradicting the
+  same file's `config_watcher` description and ROADMAP's `✅ DONE (#2)`. In-process
+  reload is in fact shipped (the `config_watcher` daemon re-applies changed
+  `THREADKEEPER_*` knobs from the watched `settings.json` without a restart), so
+  the README now states that plainly instead of linking the closed issue, and
+  the stale ARCHITECTURE bullet was removed. Docs-only; no code or behavior change.
+
 ### Security
 
+- **Author-trust gate for autonomous issue pickup + redacted claim comments
+  (#63).** This repo is **public**, so any GitHub account can open an issue —
+  and the evolve applier injected every open issue's body into a
+  permission-bypassing, shell-enabled implementer child with no author check
+  (`_fetch_open_issues` never even requested the author). Autonomous pickup is
+  now gated: only issues whose GitHub `authorAssociation` is in
+  `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default
+  `OWNER,MEMBER,COLLABORATOR`) — or that carry a maintainer-applied label in
+  `THREADKEEPER_EVOLVE_TRUST_LABELS` (empty by default; only collaborators can
+  label a public repo, so a trust label is an endorsement) — are auto-drained.
+  Untrusted issues are skipped until a human promotes one (apply a trust label,
+  or name the exact number via `evolve_apply_roadmap_issue(issue_number=N)`,
+  which bypasses the gate as explicit promotion). Because `gh issue list --json`
+  cannot return `author_association`, `_fetch_open_issues` now fetches via the
+  REST API (`gh api …/issues`, filtering out pull requests). This removes the
+  untrusted input at the boundary and complements the in-prompt data-fencing of
+  #22/#76. Separately, the public claim comment leaked the developer machine's
+  hostname, PID, and an unreleased commit SHA on every claim; it now carries
+  only the opaque per-host token already used for branch names
+  (`sha1(hostname)[:6]`), with the full host identity kept in a local
+  `roadmap_issue_claim_host` event for multi-host triage. README +
+  `docs/ARCHITECTURE.md` document the trust model and both env knobs.
 - **Cross-provider memory egress policy + opt-out (#74).** thread-keeper shares
   one user-model across CLIs by design, but the most sensitive memory it holds —
   `verbatim_user` quotes and the `dialectic` user-model (claims *about the
@@ -202,6 +339,22 @@ version bumps follow semver per the policy in
 
 ### Changed
 
+- **`mp_dashboard` no longer has loop + mutation telemetry blind spots (#61).**
+  The dashboard's loop list was a hand-maintained tuple that silently omitted
+  `dialectic_mine`, `dialectic_validate`, `evolve_apply`, and `thread_janitor`
+  — two of which spawn *paid* LLM children — so it disagreed with
+  `agent_status` on which loops even exist. It is now **derived from
+  `agent_status._LOOP_DEFS`** (single source of truth) and can never drift;
+  loop labels are the canonical loop ids. The **outcomes** section now also
+  counts knowledge-store mutations — `lesson_append`, `lesson_remove`,
+  `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`, and
+  `dialectic_claim` / `dialectic_supersede` — and a new **`curator_net_change
+  added=/removed=/patched=/net=`** line surfaces lessons-store growth or
+  shrinkage in the window, so a daemon silently auto-pruning the store now
+  produces a visible number. `lesson_append` now records a `lesson_append`
+  event (mirroring the existing `lesson_remove` event) with an
+  `op=create|replace` summary so additions are countable and split from
+  in-place patches.
 - **Autonomous Curator is now destructive by default.**
   `THREADKEEPER_CURATOR_DESTRUCTIVE` now defaults to `1`: once the curator
   daemon is enabled (`THREADKEEPER_CURATOR_INTERVAL_S > 0`), the child writes

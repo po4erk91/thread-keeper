@@ -176,6 +176,17 @@ partial schemas. The first live run surfaced the "Shadow-review proof"
 item below (shadow fires ≫ skills materialized). Possible follow-up:
 periodic dump-to-file for historical trend lines (currently a
 point-in-time snapshot). Scope of follow-up: S.
+  - **Telemetry blind spots closed (#61). ✅ DONE.** The loop list was a
+    hand-maintained tuple that omitted `dialectic_mine`, `dialectic_validate`,
+    `evolve_apply`, and `thread_janitor` (two spawn *paid* children) — it now
+    derives from `agent_status._LOOP_DEFS` so the two surfaces can't drift.
+    Outcomes now also count knowledge-store mutations (`lesson_append` /
+    `lesson_remove` / `curator_report_applied` / `roadmap_issue_applied` /
+    `evolve_applied` / `dialectic_claim` / `dialectic_supersede`), and a
+    `curator_net_change` line makes a daemon silently pruning the lessons
+    store a visible number. Partial overlap with the #40 destructive-curator
+    telemetry ask (the *visibility* half); the snapshot/restore safety net
+    remains in #40.
 
 **Shadow-review production telemetry.** ✅ DONE (#6). `shadow_review_status()`
 now carries a per-loop production-validation rollup for the 24h / 7d windows:
@@ -408,18 +419,29 @@ Follow-up gaps from the 2026-06-17 audit:
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):
-- Extract H4 paraphrase-cluster path re-harvests **rejected** candidates
-  forever — its inline dedup checks `status IN ('pending','accepted')` only,
-  omitting `'rejected'`, so a rejected cluster reappears on the next
-  overlapping window. Same incident class as the documented #157/#158
-  prod loop, on the one heuristic path that never got the `_candidate_exists`
-  fix (#62).
-- Author-trust boundary on autonomous issue pickup: the applier fetches no
-  `authorAssociation` and treats every open issue on this **public** repo as
-  backlog for a `bypassPermissions` child; separately, the Python-generated
-  claim comment leaks hostname/PID/git-rev even though an opaque
-  `_host_branch_slug()` already exists. Gate pickup by author association and
-  redact the claim body. Complements #22 (fencing) and #50 (skip-label) (#63).
+- ✅ DONE (#62). Extract H4 paraphrase-cluster path re-harvested **rejected**
+  candidates forever — its inline dedup checked `status IN ('pending','accepted')`
+  only, omitting `'rejected'`, so a rejected cluster (keyed by a deterministic
+  `cluster:<sorted-uuid-prefixes>`) reappeared on the next overlapping window.
+  Same incident class as the documented #157/#158 prod loop, on the one
+  heuristic path that never got the `_candidate_exists` fix. The H4 path now
+  routes through `_enqueue`, so its dedup shares the rejected-counting
+  semantics of H1/H2/H3 (single source of truth).
+- ✅ DONE (#63). Author-trust boundary on autonomous issue pickup: the applier
+  fetched no `authorAssociation` and treated every open issue on this **public**
+  repo as backlog for a `bypassPermissions` child; separately, the
+  Python-generated claim comment leaked hostname/PID/git-rev even though an
+  opaque `_host_branch_slug()` already existed. Now `_fetch_open_issues` reads
+  the REST `/issues` endpoint (the `gh issue list --json` field set can't return
+  `author_association`; PRs are filtered out) and autonomous pickup is gated on
+  `EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default `OWNER,MEMBER,COLLABORATOR`) or a
+  maintainer-applied label in `EVOLVE_TRUST_LABELS` (empty by default) —
+  untrusted-author issues are skipped until promoted, while exact-number
+  invocation bypasses the gate as explicit human promotion. The public claim
+  body now carries only the opaque `_host_branch_slug()` token; the full host
+  identity is recorded in a local `roadmap_issue_claim_host` event. Removes the
+  untrusted input at the boundary (complements #22/#76 fencing and #50
+  skip-label) and is documented in README + ARCHITECTURE.
 - Spawn budget is blind to **visible (pid=0)** children: their real RSS is
   never measured (the daemon skips `pid<=0`), and a visible row whose jsonl
   never resolves pins its full-estimate budget share forever. (The
@@ -430,11 +452,19 @@ verified at the cited file:line, deduplicated against the issues above):
   `chmod 0600`, `.command` `0700`, and the slim config copies only the env keys
   a slim child needs (`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONHOME` + `THREADKEEPER_*`),
   dropping host secrets. (Spool-file retention/cleanup is #42.)
-- `shadow_review` + `dialectic_miner` advance a single global `created_at`
-  high-water cursor, so **late/out-of-order ingested** messages (resumed
-  sessions, newly-installed adapters, post-downtime backfill) that land below
-  the cursor are evaluated by neither loop. Use a grace lookback or an
-  ingest-order watermark instead of the transcript timestamp (#69).
+- ✅ DONE (#69). `shadow_review` + `dialectic_miner` advanced a single global
+  `created_at` high-water cursor, so **late/out-of-order ingested** messages
+  (resumed sessions, newly-installed adapters, post-downtime backfill) that
+  landed below the cursor were evaluated by neither loop. Both loops now drive
+  their cursor off the `dialog_messages` **ingest-order rowid** (append-only
+  table → strictly monotonic in ingest order), so a late row (old `created_at`,
+  fresh rowid) lands above the cursor and is reviewed exactly once. The
+  monotonic advance gives `shadow_review` per-row dedup for free (no re-spawn of
+  an already-seen window), and `dialectic_miner` no longer parks its cursor at
+  `now` on empty passes. Pre-#69 `created_at` watermarks are translated to a
+  rowid once (`helpers.resolve_ingest_watermark`), then self-heal. Status tools
+  report `cursor_rowid`. (`candidate_reviewer`/`dialectic_validator` were immune
+  — they re-scan the pending queue and use the cursor only for telemetry.)
 - ✅ DONE (#71). Memory **recall/abstention** eval harness (LongMemEval-style
   QA + abstention + tokens-per-retrieval) to give the lessons-decay (#27) and
   bi-temporal (#28) work a number to optimize against — complementary to the
@@ -465,10 +495,40 @@ verified at the cited file:line, deduplicated against the issues above):
   questions — **extract precision re-measurement** and **"do we even need
   tiers — metric not collected"** — a harness to measure against; point
   `--fixtures-dir` at a production-derived labeled set to collect those numbers.
-- MCP **tool annotations** (`readOnly`/`destructive`/`idempotent` hints) +
-  structured output across the tool registry (independently confirmed; canonical
-  issue #67) — gives hosts a mechanical read-vs-write signal and composes with
-  #22 and the elicitation work in #26.
+- ✅ DONE (#67). MCP **tool annotations** (`readOnlyHint`/`destructiveHint`/
+  `idempotentHint`) across the whole tool registry, plus structured
+  **`outputSchema` + `structuredContent`** on the five status tools (`context`,
+  `spawn_budget_status`, `spawn_status`, `mp_health`, `agent_status`). Every
+  tool now registers through `read_tool()` / `write_tool()` wrappers
+  (`threadkeeper/_mcp.py`) so `tools/list` carries an explicit read-vs-write
+  signal and delete-class tools carry `destructiveHint=True`. A registry test
+  (`tests/test_tool_annotations.py`) fails if any tool is unclassified, marks a
+  mutator read-only, or drops the destructive hint; the status tools keep their
+  legacy human-readable text block alongside the typed JSON. Gives hosts a
+  mechanical confirmation signal and composes with #22 and the elicitation work
+  in #26.
+- ✅ DONE (#78). MCP **Resources & Prompts** primitives. thread-keeper exposed
+  its whole surface as MCP **tools** and zero of the other two server primitives;
+  it now adopts both where they fit the read/act split. **Resources**
+  (`tools/resources.py`, `@mcp.resource`) expose the read-only memory snapshots at
+  stable URIs — `memory://brief`, `memory://context`, `memory://dashboard`,
+  `memory://agent-status` — each backed by the same render function as the
+  matching tool (`render_brief` / `render_context` / `mp_dashboard` /
+  `agent_status`), so a host can pull memory as attachable / `@`-mentionable
+  context instead of a hookless agent *remembering* to call `brief()`. The brief
+  resource renders `lean=True` and agent-status uses `refresh=False`, so an
+  automatic host pull is side-effect-free (no `*_hint_shown` events, no process
+  re-scan). **Prompts** (`tools/prompts.py`, `@mcp.prompt`) expose the curation /
+  audit / review flows as host-native parameterized commands —
+  `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` (Claude
+  Code renders them as `/mcp__thread-keeper__<name>`). Additive: the server
+  advertises the `resources` / `prompts` capabilities, and a host using neither
+  falls back to the unchanged tool-only surface + SessionStart hook with identical
+  content. Static URIs only (resource *templates* are still unevenly supported
+  across hosts — a later, host-gated step). `tests/test_mcp_resources_prompts.py`
+  pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
+  and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
+  #26 (elicitation); neither covered them.
 - **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
   `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
   **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /

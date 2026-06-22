@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import time
 
-from .._mcp import mcp
+from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
-from ..dialectic_miner import run_mine_pass, _last_mine_ts
+from ..dialectic_miner import run_mine_pass, _last_mine_rowid
 from ..dialectic_validator import (
     run_validate_pass, _collect_pending, _last_validate_ts,
 )
@@ -24,7 +24,7 @@ from ..config import (
 )
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_mine_run(force: bool = True) -> str:
     """Fire one mechanical capture pass now (force=True runs even when the
     miner daemon interval is 0)."""
@@ -33,7 +33,7 @@ def dialectic_mine_run(force: bool = True) -> str:
     return run_mine_pass(force=force)
 
 
-@mcp.tool()
+@write_tool()
 def dialectic_validate_run(force: bool = True, dry_run: bool = False) -> str:
     """Fire one validator pass. dry_run shows pending count + would_spawn
     without spawning or advancing the cursor."""
@@ -51,7 +51,7 @@ def dialectic_validate_run(force: bool = True, dry_run: bool = False) -> str:
     return run_validate_pass(force=force)
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_mine_status() -> str:
     """Miner config + buffer sizes + last 5 capture passes."""
     conn = get_db()
@@ -66,11 +66,11 @@ def dialectic_mine_status() -> str:
         ).fetchone()[0]
     except Exception:
         pending = total = "?"
-    floor = _last_mine_ts(conn)
+    floor = _last_mine_rowid(conn)
     lines = [
         f"interval_s={DIALECTIC_MINE_INTERVAL_S:.0f} buffer_pending={pending} "
         f"buffer_total={total}",
-        f"cursor_ts={floor}" if floor else "cursor_ts=0 (no prior pass)",
+        f"cursor_rowid={floor}" if floor else "cursor_rowid=0 (no prior pass)",
         "",
         "recent passes (newest first):",
     ]
@@ -83,7 +83,7 @@ def dialectic_mine_status() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@read_tool()
 def dialectic_validate_status() -> str:
     """Validator config + pending observation count + last 5 passes."""
     conn = get_db()

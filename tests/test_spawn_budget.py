@@ -18,6 +18,15 @@ def _tool(pkg, name):
     return pkg["mcp"]._tool_manager._tools[name].fn
 
 
+def _txt(res):
+    """Text payload from a tool result (str or CallToolResult, #67)."""
+    if isinstance(res, str):
+        return res
+    return "\n".join(
+        c.text for c in res.content if getattr(c, "type", None) == "text"
+    )
+
+
 def _insert_task(pkg, task_id, rss_kb=None, ended=False):
     """Insert a fake task. Uses the test process's own pid so
     _refresh_tasks (alive() check) doesn't mark it ended on a brief()
@@ -133,7 +142,7 @@ def test_spawn_budget_status_reports_running_children(mp_with_cid, monkeypatch):
     _insert_task(pkg, "tk_y", rss_kb=500 * 1024)
     _insert_task(pkg, "tk_done", rss_kb=999 * 1024, ended=True)
 
-    txt = _tool(pkg, "spawn_budget_status")()
+    txt = _txt(_tool(pkg, "spawn_budget_status")())
     assert "budget=3072MB" in txt
     # used = 400 + 500 = 900 (ended task excluded)
     assert "used=900MB" in txt
@@ -145,7 +154,7 @@ def test_spawn_budget_status_reports_running_children(mp_with_cid, monkeypatch):
 def test_spawn_budget_status_when_disabled(mp_with_cid, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "0")
     pkg = mp_with_cid(_FAKE_CID)
-    txt = _tool(pkg, "spawn_budget_status")()
+    txt = _txt(_tool(pkg, "spawn_budget_status")())
     assert "budget=disabled" in txt
 
 
@@ -161,7 +170,7 @@ def test_spawn_budget_set_lowers_cap_at_runtime(mp_with_cid, monkeypatch):
     from threadkeeper import config
     assert config.SPAWN_BUDGET_MB == 1000
 
-    txt = _tool(pkg, "spawn_budget_status")()
+    txt = _txt(_tool(pkg, "spawn_budget_status")())
     assert "budget=1000MB" in txt
 
 

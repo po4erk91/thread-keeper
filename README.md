@@ -82,8 +82,11 @@ each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 have no global instructions file, so that step is skipped for them).
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
-message; hookless clients such as Codex and Antigravity CLI follow the managed
-instructions block and call `brief()` / `context()` manually before answering.
+message; hookless clients such as Codex and Antigravity CLI either follow the
+managed instructions block and call `brief()` / `context()` before answering, or
+— on hosts that support MCP **resources** — pull the brief as the read-only
+`memory://brief` resource the host attaches automatically (see
+[MCP primitives](#mcp-primitives-tools-resources-prompts)).
 
 ### Alternative installs
 
@@ -150,6 +153,35 @@ Cline, … — so a single registration there reaches all of them at once.
 
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### MCP primitives (tools, resources, prompts)
+
+MCP has three server primitives. thread-keeper uses all three, mapped to the
+read/act split:
+
+| Primitive | Control | What thread-keeper exposes | When to use |
+|---|---|---|---|
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
+| **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
+
+**Resources** back the genuinely read-only memory views with the same render
+functions as the matching tools, so the content is identical — `memory://brief`
+is `brief()`, `memory://context` is `context()`, and so on. The win is for
+**hookless CLIs**: instead of depending on the agent *remembering* to call
+`brief()` (agents focused on their task often skip it), a resource lets the host
+surface memory as attachable / `@`-mentionable context through a mechanical
+channel. The brief resource renders lean and agent-status uses a cached snapshot,
+so an automatic host pull is **side-effect-free**.
+
+**Prompts** turn the curation / audit / review flows into discoverable,
+parameterized commands; each just drives the existing tools.
+
+Everything here is **additive and capability-gated**: a host that advertises the
+`resources` / `prompts` capabilities sees them; one that doesn't falls back to
+the SessionStart hook plus the `brief()` / `context()` tools — same content, no
+regression. Static URIs only for now (resource *templates* with `{param}` are
+still unevenly supported across hosts).
 
 ### Memory egress (cross-provider privacy)
 
@@ -512,6 +544,22 @@ pushes to `main`, and it never marks an issue applied without a real PR URL. A
 manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
 why that issue cannot start instead of silently switching to another issue.
 
+**Author-trust gate (this repo is public).** Any GitHub account can open an
+issue, and an open issue's body is injected into the permission-bypassing
+implementer child — so **autonomous** pickup is gated on the issue author's
+GitHub association. Only issues whose `authorAssociation` is in
+`THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` (default
+`OWNER,MEMBER,COLLABORATOR`) are auto-drained; everything else is skipped until
+a human promotes it — by applying a label listed in
+`THREADKEEPER_EVOLVE_TRUST_LABELS` (empty by default; on a public repo only
+collaborators can label, so a trust label is itself a maintainer endorsement),
+or by naming the exact issue number via `evolve_apply_roadmap_issue(issue_number=N)`,
+which bypasses the gate as explicit promotion. This removes the untrusted input
+at the boundary and complements the in-prompt data-fencing of #22/#76. The
+public claim comment also carries only an opaque per-host token (a 6-char hash
+of the hostname), never the raw hostname/PID/git-rev; the full host identity is
+recorded in the local event log for multi-host triage.
+
 Fallback/manual paths remain:
 
 - `evolve_apply_curator_report(report_path="")` applies safe Curator memory
@@ -656,14 +704,19 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
+| `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
 macOS, the menu-bar app's gear button can edit the same file visually, save up
 to three local presets, and request a ThreadKeeper restart after saving.
-Hot-config reload is
-[tracked](https://github.com/po4erk91/thread-keeper/issues/2).
+Hot-config reload for the watched `settings.json` env block is implemented
+(shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
+knobs in-process within ~2 s, with no Claude Code restart — toggle it via
+`THREADKEEPER_CONFIG_WATCH_INTERVAL_S` (above; `0` disables) and inspect with
+`config_watch_status()`.
 
 ### Per-loop agent dispatch
 
@@ -739,12 +792,19 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age), and **outcomes** (what those loops actually
-  produced — skills materialized, tier promotions, candidate
-  accept-vs-reject rate). Surfaces the gaps the point-tools can't:
-  a loop firing constantly while its outcomes stay flat, or a queue
-  backing up. Complements the per-loop `*_status` tools (`mp_health`,
-  `spawn_budget_status`, `shadow_review_status`).
+  plus last-fire age — the loop list is derived from the same source as
+  `agent_status`, so it covers *every* daemon including the paid-spawn
+  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  **outcomes** (what those loops actually produced — skills materialized,
+  tier promotions, candidate accept-vs-reject rate, plus knowledge-store
+  mutation counts: `lesson_append` / `lesson_remove`,
+  `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`,
+  `dialectic_claim` / `dialectic_supersede`). A `curator_net_change
+  added/removed/patched/net` line makes a loop silently shrinking the
+  lessons store visible at a glance. Surfaces the gaps the point-tools
+  can't: a loop firing constantly while its outcomes stay flat, or a
+  queue backing up. Complements the per-loop `*_status` tools
+  (`mp_health`, `spawn_budget_status`, `shadow_review_status`).
 - **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
   often the daemon fired, the outcome mix (`no_window` / `too_short` /
@@ -804,6 +864,15 @@ tk-migrate-embeddings --dry-run      # report stale counts only
 The migration is batched, resumable, and idempotent (a second run finds
 nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
 unchanged.
+
+**Swapping in a different-width model.** The `notes_vec` / `dialog_vec` tables
+are created as `FLOAT[EMBED_DIM]`, default 384. If you point
+`THREADKEEPER_EMBED_MODEL` at a model of a different dimension, also set
+`THREADKEEPER_EMBED_DIM` to its width and recreate the `*_vec` tables —
+otherwise every vec0 insert mismatches the schema and the fast KNN path goes
+dead (semantic search still works via the legacy BLOB cosine path). thread-keeper
+logs a one-line warning naming both dimensions and this knob when it detects the
+mismatch, rather than failing silently.
 
 ---
 
@@ -949,6 +1018,8 @@ the suite on every push and PR.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
+├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults
 ├── db.py                 # SQLite schema + sqlite-vec loader
@@ -967,7 +1038,7 @@ threadkeeper/
 │   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @mcp.tool entries — 89 of them
+└── tools/                # @read_tool()/@write_tool() entries — 113 of them
     ├── threads.py
     ├── peers.py
     ├── spawn.py
@@ -976,6 +1047,19 @@ threadkeeper/
     ├── validate.py
     └── ...
 ```
+
+**Tool annotation contract (#67).** Every tool registers through
+`@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
+so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
+`readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
+`dialog_search`, `lesson_list`, the status tools, …) and `readOnlyHint=False`
+for mutations, with `destructiveHint=True` on the ten delete/overwrite/kill
+tools (`compost` is read-only — it only surfaces idle threads). A
+confirmation/elicitation host reads this to decide which calls warrant a
+prompt. The five status tools (`context`, `spawn_budget_status`,
+`spawn_status`, `mp_health`, `agent_status`) additionally advertise an
+`outputSchema` and return `structuredContent` alongside the legacy text
+block. The contract is enforced by `tests/test_tool_annotations.py`.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the
