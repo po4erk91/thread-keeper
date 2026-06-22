@@ -33,6 +33,7 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
+from ..helpers import fmt_age
 from ..identity import _ensure_session
 from ..config import EVOLVE_APPLY_INTERVAL_S
 from ..evolve_applier import (
@@ -42,6 +43,7 @@ from ..evolve_applier import (
     mark_curator_report_applied,
     mark_applied,
     mark_roadmap_issue_applied,
+    roadmap_attempt_ledger,
     _open_roadmap_issues,
     _pending_curator_reports,
     _promoted_unapplied,
@@ -153,6 +155,9 @@ def evolve_apply_status() -> str:
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
     issues, issue_err = _open_roadmap_issues(conn)
+    ledger = roadmap_attempt_ledger(conn)
+    backoff = [e for e in ledger if e["state"] == "backoff"]
+    dead = [e for e in ledger if e["state"] == "dead_letter"]
     running = _running_applier_children(conn)
     floor = _last_apply_ts(conn)
     now = int(time.time())
@@ -160,6 +165,8 @@ def evolve_apply_status() -> str:
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
         f"roadmap_issues={len(issues)} "
+        f"roadmap_backoff={len(backoff)} "
+        f"roadmap_dead_letter={len(dead)} "
         f"curator_reports={len(reports)} "
         f"promoted_unapplied={len(pending)} "
         f"applier_running={len(running)}",
@@ -174,6 +181,19 @@ def evolve_apply_status() -> str:
         for issue in issues[:10]:
             title = str(issue.get("title") or "")[:90].replace("\n", " ")
             lines.append(f"  #{int(issue['number'])}  {title}")
+    if ledger:
+        lines.append("")
+        lines.append("roadmap attempt ledger (non-applied; newest first):")
+        for e in ledger[:10]:
+            last = fmt_age(now - e["last_ts"]) + "_ago" if e["last_ts"] else "?"
+            if e["state"] == "backoff":
+                state = f"backoff(~{fmt_age(e['backoff_left_s'])} left)"
+            else:
+                state = e["state"]
+            lines.append(
+                f"  #{e['number']}  attempts={e['attempts']}  {state}  "
+                f"last={last}"
+            )
     if reports:
         lines.append("")
         lines.append("curator report pending:")
@@ -191,7 +211,8 @@ def evolve_apply_status() -> str:
         rows = conn.execute(
             "SELECT kind, created_at, summary FROM events "
             "WHERE kind IN ('evolve_apply_pass', 'curator_report_applied', "
-            "'evolve_applied', 'roadmap_issue_applied') "
+            "'evolve_applied', 'roadmap_issue_applied', "
+            "'roadmap_issue_dead_letter') "
             "ORDER BY created_at DESC, id DESC LIMIT 5"
         ).fetchall()
     except Exception:

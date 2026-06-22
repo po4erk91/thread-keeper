@@ -732,6 +732,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
 | `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
 | `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
+| `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` still force-retries it |
+| `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,

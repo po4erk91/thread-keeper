@@ -77,6 +77,19 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
         evolve_applier, "_delete_issue_comment",
         lambda comment_url, repo_root=None: "",
     )
+    # Dead-letter side effects (gh label + summary comment) are stubbed so no
+    # test ever shells out to gh; the dead-letter tests below override these
+    # with capturing fakes.
+    monkeypatch.setattr(
+        evolve_applier, "_apply_blocked_label",
+        lambda issue_number, repo_root=None: "",
+    )
+    monkeypatch.setattr(
+        evolve_applier, "_comment_dead_letter",
+        lambda issue, attempts, repo_root=None: (
+            "https://x/issues/0#issuecomment-dl", ""
+        ),
+    )
     # Skip the real-time race-detection sleep in unit tests so the suite stays
     # snappy. The bootstrap defaults already make the race resolver return True
     # in the "no competing claim" common path.
@@ -1454,3 +1467,227 @@ def test_run_apply_pass_single_flight(tmp_path, monkeypatch):
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn", _boom)
     assert "applier_running" in pkg["ea"].run_evolve_apply_pass(force=True)
+
+
+# ── poison-issue backoff + dead-letter (#82) ───────────────────────────────
+
+def _seed_attempts(conn, ea, issue_number, n, created_at=None):
+    """Insert `n` roadmap_issue_attempt event rows for an issue."""
+    import time as _t
+    ts = created_at if created_at is not None else int(_t.time())
+    for _ in range(int(n)):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("s_seed", ea.ROADMAP_ISSUE_ATTEMPT_KIND, str(int(issue_number)),
+             "spawned", ts),
+        )
+    conn.commit()
+
+
+def test_roadmap_issue_backoff_window_escalates(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    base = ea.ROADMAP_ISSUE_BACKOFF_BASE_S
+    assert ea._roadmap_issue_backoff_window_s(0) == 0
+    assert ea._roadmap_issue_backoff_window_s(1) == int(base)
+    assert ea._roadmap_issue_backoff_window_s(2) == int(base * 2)
+    assert ea._roadmap_issue_backoff_window_s(3) == int(base * 4)
+    # never exceeds the cap, even for a large attempt count
+    assert ea._roadmap_issue_backoff_window_s(50) == ea.ROADMAP_ISSUE_BACKOFF_CAP_S
+    # the first backoff window genuinely exceeds the fixed 24h claim TTL, so it
+    # defers re-selection beyond the claim expiry rather than re-firing at 24h
+    assert ea._roadmap_issue_backoff_window_s(1) > ea.ROADMAP_ISSUE_CLAIM_TTL_S
+
+
+def test_open_roadmap_issues_defers_issue_in_backoff(tmp_path, monkeypatch):
+    """A roadmap issue that just had an attempt is NOT re-selected on the very
+    next eligible pass — the escalating cooldown excludes it (acceptance: no
+    re-attempt on the next pass)."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Poison issue")], ""),
+    )
+    _seed_attempts(conn, pkg["ea"], 6, 1)  # one recent attempt → in backoff
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+    assert err == ""
+    assert issues == []  # deferred by backoff
+
+    # an exact human override bypasses the cooldown
+    issues2, _ = pkg["ea"]._open_roadmap_issues(conn, skip_backoff=False)
+    assert [int(i["number"]) for i in issues2] == [6]
+
+
+def test_open_roadmap_issues_reselectable_after_backoff_lapses(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Slow issue")], ""),
+    )
+    # the single attempt is older than the first backoff window → eligible again
+    old = int(time.time()) - pkg["ea"]._roadmap_issue_backoff_window_s(1) - 10
+    _seed_attempts(conn, pkg["ea"], 6, 1, created_at=old)
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [6]
+
+
+def test_open_roadmap_issues_dead_letters_after_max_attempts(
+    tmp_path, monkeypatch,
+):
+    """After K attempts the issue is excluded from auto-selection and flagged
+    once (blocked label + summary comment); the flag is idempotent and the
+    read-only path never writes (acceptance: dead-letter excludes after K)."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Poison issue")], ""),
+    )
+    labeled, commented = [], []
+    monkeypatch.setattr(
+        pkg["ea"], "_apply_blocked_label",
+        lambda issue_number, repo_root=None: (
+            labeled.append(int(issue_number)) or ""
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_dead_letter",
+        lambda issue, attempts, repo_root=None: (
+            commented.append((int(issue["number"]), attempts))
+            or ("https://x/issues/6#issuecomment-dl", "")
+        ),
+    )
+    K = pkg["ea"].ROADMAP_ISSUE_MAX_ATTEMPTS
+    _seed_attempts(conn, pkg["ea"], 6, K)
+
+    # read-only selection: excluded, but NO gh writes
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+    assert err == "" and issues == []
+    assert labeled == [] and commented == []
+
+    # the real drain path flags it exactly once
+    issues2, _ = pkg["ea"]._open_roadmap_issues(conn, flag_dead_letter=True)
+    assert issues2 == []
+    assert labeled == [6]
+    assert commented == [(6, K)]
+    assert pkg["ea"]._roadmap_issue_dead_lettered(conn, 6) is True
+
+    # idempotent: a second flagging pass does not re-label / re-comment
+    pkg["ea"]._open_roadmap_issues(conn, flag_dead_letter=True)
+    assert labeled == [6]
+    assert commented == [(6, K)]
+
+
+def test_apply_roadmap_issue_records_attempt_then_backs_off(
+    tmp_path, monkeypatch,
+):
+    """End-to-end: a spawned (mocked) child records an attempt; the very next
+    queue pass defers the issue via backoff instead of re-spawning a child."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Poison issue")], ""),
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue()
+    assert out.startswith("spawned roadmap_issue=#6"), out
+    assert pkg["ea"]._roadmap_issue_attempt_state(conn, 6)[0] == 1
+
+    # next pass: #6 in backoff → nothing startable, child NOT re-spawned
+    def _boom(**kw):
+        raise AssertionError("issue in backoff must not re-spawn a child")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out2 = pkg["ea"].apply_roadmap_issue()
+    assert out2 == "no_roadmap_issue", out2
+    assert pkg["ea"]._roadmap_issue_attempt_state(conn, 6)[0] == 1
+
+
+def test_apply_roadmap_issue_dead_letter_blocks_auto_but_exact_overrides(
+    tmp_path, monkeypatch,
+):
+    """After the cap, the auto-drain excludes + flags the issue and never
+    spawns; an explicit exact-issue call still force-retries it."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Poison issue")], ""),
+    )
+    labeled = []
+    monkeypatch.setattr(
+        pkg["ea"], "_apply_blocked_label",
+        lambda issue_number, repo_root=None: (
+            labeled.append(int(issue_number)) or ""
+        ),
+    )
+    K = pkg["ea"].ROADMAP_ISSUE_MAX_ATTEMPTS
+    _seed_attempts(conn, pkg["ea"], 6, K)
+
+    def _boom(**kw):
+        raise AssertionError("dead-lettered issue must not auto-spawn")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue()
+    assert out == "no_roadmap_issue", out
+    assert labeled == [6]
+
+    # exact mode bypasses the cap and spawns (records attempt K+1)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+    out2 = pkg["ea"].apply_roadmap_issue(issue_number=6)
+    assert out2.startswith("spawned roadmap_issue=#6"), out2
+    assert pkg["ea"]._roadmap_issue_attempt_state(conn, 6)[0] == K + 1
+
+
+def test_roadmap_attempt_ledger_classifies_and_omits_applied(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    K = pkg["ea"].ROADMAP_ISSUE_MAX_ATTEMPTS
+    _seed_attempts(conn, pkg["ea"], 6, 1)        # backoff
+    _seed_attempts(conn, pkg["ea"], 7, K)        # dead-letter
+    _seed_attempts(conn, pkg["ea"], 8, 1)        # attempted then applied
+    pkg["ea"].mark_roadmap_issue_applied(conn, 8, "https://github.com/o/r/pull/8")
+
+    ledger = pkg["ea"].roadmap_attempt_ledger(conn)
+    states = {e["number"]: e["state"] for e in ledger}
+    assert states.get(6) == "backoff"
+    assert states.get(7) == "dead_letter"
+    assert 8 not in states  # applied issues are done, not stuck
+    six = next(e for e in ledger if e["number"] == 6)
+    assert six["attempts"] == 1
+    assert six["backoff_left_s"] > 0
+
+
+def test_evolve_apply_status_surfaces_attempt_ledger(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([], ""),
+    )
+    K = pkg["ea"].ROADMAP_ISSUE_MAX_ATTEMPTS
+    _seed_attempts(conn, pkg["ea"], 82, K)  # dead-letter
+    _seed_attempts(conn, pkg["ea"], 50, 1)  # backoff
+
+    out = _tool(pkg, "evolve_apply_status")()
+    assert "roadmap_dead_letter=1" in out
+    assert "roadmap_backoff=1" in out
+    assert "roadmap attempt ledger" in out
+    assert "#82  attempts=" in out and "dead_letter" in out
+    assert "#50  attempts=" in out and "backoff" in out
