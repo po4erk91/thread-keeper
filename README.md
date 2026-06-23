@@ -550,6 +550,9 @@ with problem statement, proposed direction, acceptance criteria, test/docs
 impact, and research sources when applicable. Legacy `evolve_format(...)`
 suggestions are still included as audit input, but durable implementation work
 should become GitHub issues.
+Before filing new issues, the privileged audit phase checks the open backlog via
+the same paginated, oldest-first GitHub REST issue view used by the applier, so
+deduplication is not limited to the newest 50 open issues.
 
 To avoid completing the **lethal trifecta** — private-data access + untrusted
 web content + exfiltration — inside one privileged child (#79), the reviewer
@@ -579,6 +582,10 @@ opens a PR whose body includes `Closes #N`, and only then calls
 pushes to `main`, and it never marks an issue applied without a real PR URL. A
 manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
 why that issue cannot start instead of silently switching to another issue.
+The queue fetch uses paginated GitHub REST reads in oldest-created order, then
+applies the documented roadmap/FIFO sort locally. A generous local candidate
+window is retained as a runaway guard; if it ever truncates, the applier logs
+how many open issues were outside the window.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing

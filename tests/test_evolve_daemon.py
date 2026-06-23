@@ -80,6 +80,17 @@ def _seed_research(pkg, conn, text="- idea: adopt Y\n  sources: https://ex.com\n
     return f, text
 
 
+def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    prompt = pkg["ed"].EVOLVE_AUDIT_PROMPT
+
+    assert "gh issue list --state open --limit 50" not in prompt
+    assert "gh api --paginate --slurp" in prompt
+    assert "sort=created" in prompt
+    assert "direction=asc" in prompt
+    assert "pull_request" in prompt
+
+
 # ── pending selection ──────────────────────────────────────────────────
 
 def test_pending_excludes_applied_and_decided(tmp_path, monkeypatch):
