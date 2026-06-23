@@ -7,6 +7,26 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Wall-clock watchdog for spawned children (#80).** A spawned learning-loop
+  child that hung while still alive — a wedged `WebFetch`/`gh`/`git`, an agent
+  loop that never converged, a prompt that never arrived — was never terminated:
+  it stalled its loop's single-flight slot (`_running_*_children` =
+  `ended_at IS NULL AND alive(pid)`) and burned model tokens forever, because
+  every existing reaper keyed off something other than age (dead pid, orphaned
+  parent, RSS threshold). The budget sweep (`spawn_budget._refresh_all_running`,
+  already running every ~10 s) is now also an age-based watchdog: a `pid>0` row
+  older than `THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; `0` disables, so
+  there are no surprise kills on upgrade) is `SIGTERM`'d, then `SIGKILL`'d on its
+  process group after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row is
+  closed with `return_code` 124 (the `timeout(1)` convention) so the loop's
+  single-flight releases and the next tick can retry. The daemon now also runs
+  when the RSS budget is disabled but the watchdog is on. Timed-out children are
+  surfaced as `tasks_timed_out` in `mp_dashboard` and `timed_out` in
+  `agent_status`. Complements #25 (aggregate cost, no kill), #66 (kill-path
+  liveness correctness), and #64 (visible/pid=0 RSS measurement).
+
 ### Changed
 
 - **Background daemon resource hygiene (#86).** Three low-grade resource gaps in

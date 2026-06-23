@@ -43,6 +43,8 @@ from .config import (
     SPAWN_ESTIMATE_FULL_MB,
     SPAWN_BUDGET_POLL_S,
     SPAWN_VISIBLE_TTL_S,
+    SPAWN_MAX_RUNTIME_S,
+    SPAWN_KILL_GRACE_S,
 )
 from .helpers import daemon_sleep
 from .db import get_db
@@ -51,6 +53,12 @@ from .helpers import alive
 logger = logging.getLogger(__name__)
 
 _started = False
+
+# return_code stamped on a child the wall-clock watchdog kills (#80). 124 is
+# the GNU `timeout(1)` convention for "command timed out", so it reads as a
+# timeout marker rather than a normal exit (0-255) or a signal-kill (negative).
+# Surfaced by agent_status / mp_dashboard so a runtime kill is observable.
+SPAWN_TIMEOUT_RETURN_CODE = 124
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -248,6 +256,79 @@ def _measure_visible(conn, row, now: int) -> int:
     return 0
 
 
+def _terminate_tree(pid: int, grace_s: float) -> None:
+    """Kill a timed-out child: SIGTERM the process group, wait up to `grace_s`,
+    then SIGKILL whatever is left (#80).
+
+    Spawned children start in their own session (`start_new_session=True`), so
+    the tracked pid is the session/group leader and signalling the whole group
+    reaches both the `_spawn_wrap` recorder and the real CLI underneath it —
+    SIGTERM is forwarded by the wrapper, and the SIGKILL fallback reaps any
+    child that ignored it without leaving an orphan. Falls back to a bare
+    per-pid signal when the group can't be resolved."""
+    import signal as _sig
+
+    def _send(sig) -> None:
+        try:
+            os.killpg(os.getpgid(pid), sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    _send(_sig.SIGTERM)
+    deadline = time.time() + max(0.0, float(grace_s or 0.0))
+    while time.time() < deadline:
+        if not alive(pid):
+            return
+        time.sleep(0.2)
+    if alive(pid):
+        _send(_sig.SIGKILL)
+
+
+def _over_runtime_cap(row, now: int) -> bool:
+    """True when this running row has outlived SPAWN_MAX_RUNTIME_S (#80).
+    Cap of 0 disables the watchdog entirely."""
+    if SPAWN_MAX_RUNTIME_S <= 0:
+        return False
+    started = row["started_at"] or 0
+    return bool(started) and (now - started) >= SPAWN_MAX_RUNTIME_S
+
+
+def _reap_timed_out(conn, row, now: int) -> bool:
+    """Kill a child that has run past the wall-clock cap and close its row so
+    the spawning loop's single-flight slot releases (#80).
+
+    SIGTERM→grace→SIGKILL the process tree, then stamp ended_at + the timeout
+    return_code. The ended_at guard keeps it idempotent: a second sweep over an
+    already-reaped row is a no-op. Returns True when this call closed the row."""
+    pid = int(row["pid"] or 0)
+    if pid > 0:
+        _terminate_tree(pid, SPAWN_KILL_GRACE_S)
+    cur = conn.execute(
+        "UPDATE tasks SET ended_at=?, return_code=? "
+        "WHERE id=? AND ended_at IS NULL",
+        (now, SPAWN_TIMEOUT_RETURN_CODE, row["id"]),
+    )
+    closed = cur.rowcount > 0
+    if closed:
+        age = now - (row["started_at"] or now)
+        logger.warning(
+            "spawn watchdog: killed task %s after %ss (cap=%ss)",
+            row["id"], age, SPAWN_MAX_RUNTIME_S,
+        )
+        try:
+            from .identity import _emit
+            _emit(conn, "spawn_timeout", target=row["id"],
+                  summary=f"runtime {age}s exceeded cap {SPAWN_MAX_RUNTIME_S}s")
+        except Exception:
+            pass
+    return closed
+
+
 def _refresh_all_running(conn) -> int:
     """Sweep running tasks, update rss_kb with real measurement.
 
@@ -279,6 +360,12 @@ def _refresh_all_running(conn) -> int:
                 (now, r["id"]),
             )
             changed = True
+            continue
+        if _over_runtime_cap(r, now):
+            # Alive but hung past the wall-clock cap — kill it and close the
+            # row so the loop's single-flight releases (#80).
+            if _reap_timed_out(conn, r, now):
+                changed = True
             continue
         rss = measure_tree_rss_kb(pid)
         if rss is None:
@@ -317,8 +404,8 @@ def start_budget_daemon() -> None:
         return
     if SPAWN_BUDGET_POLL_S <= 0:
         return
-    if SPAWN_BUDGET_MB <= 0:
-        return  # budget disabled, no need to track
+    if SPAWN_BUDGET_MB <= 0 and SPAWN_MAX_RUNTIME_S <= 0:
+        return  # both RSS budget and wall-clock watchdog (#80) off — nothing to do
     t = threading.Thread(
         target=_daemon_loop, name="spawn_budget", daemon=True,
     )

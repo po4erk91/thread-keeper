@@ -687,6 +687,24 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     return results
 
 
+def _timed_out_count(conn, now: int) -> int:
+    """Children the wall-clock watchdog killed in the recent window (#80).
+
+    The watchdog stamps `return_code = SPAWN_TIMEOUT_RETURN_CODE` (124) on a
+    child it kills for running past `SPAWN_MAX_RUNTIME_S`. Counting them here
+    makes a runtime kill observable in the status surface instead of silent."""
+    from .spawn_budget import SPAWN_TIMEOUT_RETURN_CODE
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM tasks "
+            "WHERE return_code=? AND ended_at>=?",
+            (SPAWN_TIMEOUT_RETURN_CODE, now - _RESULT_WINDOW_S),
+        ).fetchone()
+    except Exception:
+        return 0
+    return int(row[0] or 0) if row else 0
+
+
 def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]:
     """Run the safe ThreadKeeper memory cleanup path.
 
@@ -798,16 +816,19 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "ready_loop_count": sum(1 for loop in loops if loop["status"] == "ready"),
         "loops": loops,
         "recent_results": _recent_results(conn, now),
+        "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
     }
 
 
 def format_agent_status(snapshot: dict[str, Any]) -> str:
+    timed_out = snapshot.get("timed_out_count", 0)
+    timed_out_disp = f" timed_out={timed_out}" if timed_out else ""
     lines = [
         f"loops enabled={snapshot.get('enabled_loop_count', 0)} "
         f"running={snapshot.get('running_loop_count', 0)} "
         f"ready={snapshot.get('ready_loop_count', 0)} "
-        f"child_rss={snapshot['total_rss_mb']}MB"
+        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp}"
     ]
     for loop in snapshot.get("loops", []):
         backlog = ""
