@@ -101,7 +101,10 @@ and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
 `pip install --upgrade` in the current interpreter environment. Successful
 updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code.
+default true) so the host reconnects to the new code, but only after setup and a
+subprocess import smoke check both pass. Install/setup/import failures are
+recorded on the `auto_update_pass` event with `restart=suppressed`, and the
+already-running process stays alive on its current in-memory code.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -1036,7 +1039,7 @@ rubric-sensitivity + a subprocess end-to-end run).
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after applying an update |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |

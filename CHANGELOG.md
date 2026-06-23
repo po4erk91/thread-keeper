@@ -102,6 +102,15 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Auto-update restart gate (#19).** A successful-looking self-update could
+  still schedule a process exit even when `pip install -e` or
+  `threadkeeper._setup` failed, because the daemon keyed restart only on
+  `result.startswith("updated ")`. Restarts now require install/setup success
+  plus a subprocess smoke import of `threadkeeper.server`; install/setup/import
+  failures append `restart=suppressed` to the recorded `auto_update_pass` event,
+  keeping the current known-working server process alive for manual recovery
+  (for packages: `pip install threadkeeper==<previous>`).
+
 - **vec0 index integrity: delete-sync + EMBED_DIM dimension guard (#85).** Two
   consistency gaps in the sqlite-vec (`notes_vec`) mirror are closed. **(1)
   Orphaned vec rows on note delete.** `notes_fts` is trigger-synced but
