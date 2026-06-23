@@ -238,6 +238,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `Bash,Edit,Write` but **no** `WebSearch`/`WebFetch`) that audits the repo and
   does the GitHub/ROADMAP writes, consuming the digest inside an explicit
   `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` fence it must treat as data.
+  Its duplicate-issue check uses a paginated oldest-first REST issue listing,
+  not a newest-first 50-item `gh issue list` window, so older open issues remain
+  visible as the backlog grows.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
@@ -245,8 +248,13 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
-  response are filtered out), prioritizes `roadmap`-labeled issues then FIFO,
-  and spawns one `evolve_applier` child to implement exactly one issue.
+  response are filtered out). The fetch is explicit `--paginate --slurp`,
+  `sort=created&direction=asc`, so the subsequent local priority
+  (`roadmap`-labeled issues first, then FIFO by issue number) applies across
+  the open backlog rather than only the newest page. A generous local candidate
+  window is retained as a runaway guard; if exceeded, a warning logs the number
+  of open issues outside the window. The applier then spawns one
+  `evolve_applier` child to implement exactly one issue.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in

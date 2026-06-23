@@ -50,6 +50,11 @@ remains a live question.
   time behind a visible GitHub issue claim comment and PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
+- Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
+  paginated, oldest-first GitHub REST issue reads instead of a newest-first
+  50-item window. The applier still prioritizes `roadmap` labels then FIFO by
+  issue number locally; if its generous candidate window ever truncates, it logs
+  exactly how many open issues were not considered.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

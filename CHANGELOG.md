@@ -29,6 +29,16 @@ version bumps follow semver per the policy in
 
 ### Changed
 
+- **Roadmap issue drain pagination (#81).** The evolve applier no longer asks
+  GitHub for a single newest-first 50-issue window before applying its
+  `roadmap`-label/FIFO sort. `_fetch_open_issues()` now uses paginated,
+  oldest-first REST reads (`gh api --paginate --slurp` with
+  `sort=created&direction=asc`), filters pull requests, and only then applies a
+  generous local candidate window with an explicit warning if any open issues
+  are left outside it. The evolve reviewer prompt now uses the same paginated
+  open-issue view for duplicate checks, so old backlog items do not disappear
+  from reviewer dedup once the queue grows.
+
 - **Background daemon resource hygiene (#86).** Three low-grade resource gaps in
   the background daemon family are closed:
   - **Wake-up jitter.** Every daemon sleep is now scaled by ±15% random jitter
