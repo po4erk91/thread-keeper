@@ -730,6 +730,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "killed": guard.get("killed", []),
             "retired": guard.get("retired", []),
             "failed": guard.get("failed", []),
+            "skipped": guard.get("skipped", []),
             "aggregate": guard.get("aggregate", {}),
             "reclaim_requests": guard.get("reclaim_requests", {}),
             "local_reclaim": guard.get("local_reclaim"),
@@ -739,6 +740,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "count": len(orphan_cleanup.get("orphans", [])),
             "killed": orphan_cleanup.get("killed", []),
             "failed": orphan_cleanup.get("failed", []),
+            "skipped": orphan_cleanup.get("skipped", []),
         },
     }
 
@@ -763,10 +765,12 @@ def format_memory_cleanup(result: dict[str, Any]) -> str:
         (
             f"guard warn={guard['warn']} kill={guard['kill']} "
             f"killed={len(guard['killed'])} retired={len(guard['retired'])} "
+            f"skipped={len(guard.get('skipped', []))} "
             f"failed={len(guard['failed'])}"
         ),
         (
             f"orphans={orphans['count']} killed={len(orphans['killed'])} "
+            f"skipped={len(orphans.get('skipped', []))} "
             f"failed={len(orphans['failed'])}"
         ),
     ]

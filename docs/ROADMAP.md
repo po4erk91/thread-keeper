@@ -36,8 +36,9 @@ remains a live question.
 - Hooks for Claude Code: SessionStart (`mp-brief.sh` — brief+context into
   system prompt), PostToolUse (`mp-status.sh` — markers of mutating
   calls), UserPromptSubmit (`inbox-check.sh`).
-- Process health: orphan detection via ppid+heartbeat, `mp_health`,
-  `mp_cleanup(dry_run, force)`.
+- Process health: orphan detection via ppid+heartbeat with zombie-aware parent
+  liveness, `mp_health`, and guarded `mp_cleanup(dry_run, force)` / memory
+  guard signal paths that re-check pid identity before killing.
 - sqlite-vec HNSW: `notes_vec` / `dialog_vec` virtual tables on vec0,
   ~10x faster than Python-side cosine, fallback when vec0 is absent.
 - FTS5 + semantic hybrid in `search` / `dialog_search`.

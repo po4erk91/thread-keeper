@@ -113,6 +113,21 @@ def test_classify_parent_dead_stale_heartbeat_is_orphan(mp_with_cid):
     assert "heartbeat_age" in out["orphan_reason"]
 
 
+def test_pid_alive_uses_zombie_aware_helper(monkeypatch):
+    from threadkeeper import process_health
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        process_health,
+        "alive",
+        lambda pid: calls.append(pid) or False,
+    )
+
+    assert process_health._pid_alive(1) is False
+    assert process_health._pid_alive(4242) is False
+    assert calls == [4242]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # cleanup() dry-run + apply
 # ─────────────────────────────────────────────────────────────────────
@@ -129,6 +144,9 @@ def test_cleanup_dry_run_does_not_kill(mp_with_cid, monkeypatch):
         "orphan_reason": "parent_gone + heartbeat_age=1000s > 300s",
     }
     monkeypatch.setattr(process_health, "scan", lambda: [fake_orphan])
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
 
     killed_pids: list = []
     monkeypatch.setattr("os.kill", lambda pid, sig: killed_pids.append(pid))
@@ -152,6 +170,9 @@ def test_cleanup_apply_sends_signal(mp_with_cid, monkeypatch):
         "orphan_reason": "parent_gone + heartbeat_age=1000s > 300s",
     }
     monkeypatch.setattr(process_health, "scan", lambda: [fake_orphan])
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
 
     killed_pids: list = []
     sigs: list = []
@@ -178,6 +199,9 @@ def test_cleanup_force_uses_sigkill(mp_with_cid, monkeypatch):
         "orphan_reason": "parent_gone + heartbeat_age=999s > 300s",
     }
     monkeypatch.setattr(process_health, "scan", lambda: [fake_orphan])
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
 
     sigs: list = []
     monkeypatch.setattr("os.kill", lambda pid, sig: sigs.append(sig))
@@ -200,6 +224,9 @@ def test_cleanup_handles_already_dead_process(mp_with_cid, monkeypatch):
         "orphan_reason": "test",
     }
     monkeypatch.setattr(process_health, "scan", lambda: [fake_orphan])
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
 
     def raise_lookup(pid, sig):
         raise ProcessLookupError(f"no such pid {pid}")
@@ -209,6 +236,40 @@ def test_cleanup_handles_already_dead_process(mp_with_cid, monkeypatch):
     assert result["killed"] == []
     assert len(result["failed"]) == 1
     assert result["failed"][0]["pid"] == 77777774
+
+
+def test_cleanup_skips_pid_reused_by_non_threadkeeper(mp_with_cid, monkeypatch):
+    """The kill path re-reads pid command and no-ops if it no longer matches."""
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import process_health
+
+    fake_orphan = {
+        "pid": 77777775, "ppid": 1, "rss_kb": 100_000, "etime": "5:00",
+        "command": "threadkeeper.server", "parent_alive": False,
+        "heartbeat_age_s": 999, "is_self": False, "is_orphaned": True,
+        "orphan_reason": "test",
+    }
+    monkeypatch.setattr(process_health, "scan", lambda: [fake_orphan])
+
+    class Result:
+        stdout = "python -m unrelated.worker\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-p", "77777775", "-o", "command="]
+        return Result()
+
+    killed: list[int] = []
+    monkeypatch.setattr(process_health.subprocess, "run", fake_run)
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+
+    result = process_health.cleanup(dry_run=False)
+
+    assert result["killed"] == []
+    assert result["failed"] == []
+    assert result["skipped"] == [
+        {"pid": 77777775, "reason": "pid_no_longer_threadkeeper_server"}
+    ]
+    assert killed == []
 
 
 # ─────────────────────────────────────────────────────────────────────
