@@ -157,6 +157,18 @@ class Settings(BaseSettings):
     # outlives this, so an unresolvable row can't pin budget capacity forever
     # (#64). 0 disables the reaper.
     spawn_visible_ttl_s: float = 3600.0
+    # Wall-clock lifetime cap for any spawned child (#80). A child that hangs
+    # while still alive — a wedged WebFetch/gh/git, an agent loop that never
+    # converges, a prompt that never arrives — would otherwise stall its loop's
+    # single-flight slot and burn tokens forever. The budget daemon SIGTERMs a
+    # pid>0 child whose row has outlived this, then SIGKILLs it after
+    # SPAWN_KILL_GRACE_S, and marks the row ended with return_code 124 (the
+    # timeout(1) convention) so the loop's single-flight releases. Generous
+    # default so legitimate long runs aren't cut; 0 disables (no surprise kills
+    # on upgrade).
+    spawn_max_runtime_s: float = 3600.0
+    # Grace between the SIGTERM and the SIGKILL of a timed-out child (#80).
+    spawn_kill_grace_s: float = 10.0
 
     # ── Memory guard ─────────────────────────────────────────────────────────
     memory_guard_poll_s: float = 30.0
@@ -430,6 +442,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
         "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
+        "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
+        "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
         "MEMORY_GUARD_POLL_S": s.memory_guard_poll_s,
         "MEMORY_GUARD_WARN_MB": s.memory_guard_warn_mb,
         "MEMORY_GUARD_KILL_MB": s.memory_guard_kill_mb,

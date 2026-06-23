@@ -247,6 +247,16 @@ live process is reaped once it outlives `THREADKEEPER_SPAWN_VISIBLE_TTL_S`
 (1 h default; 0 disables), so an unresolvable row can't pin budget
 capacity forever.
 
+The same daemon is also a **wall-clock watchdog**: a child that hangs while
+still alive — a wedged `WebFetch`/`gh`/`git`, an agent loop that never
+converges, a prompt that never arrives — would otherwise stall its loop's
+single-flight slot and burn tokens forever. Any child whose row outlives
+`THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is `SIGTERM`'d,
+then `SIGKILL`'d after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row
+is closed with the timeout `return_code` 124 so the loop's single-flight
+releases and the next tick can retry. Timed-out children are surfaced as
+`tasks_timed_out` in `mp_dashboard` and `timed_out` in `agent_status`.
+
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
 
@@ -702,6 +712,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
+| `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |

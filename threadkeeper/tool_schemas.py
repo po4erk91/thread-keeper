@@ -108,4 +108,5 @@ class AgentStatusSnapshot(_Lenient):
     ready_loop_count: int = 0
     loops: list[dict[str, Any]] = Field(default_factory=list)
     recent_results: list[dict[str, Any]] = Field(default_factory=list)
+    timed_out_count: int = 0
     agents: list[dict[str, Any]] = Field(default_factory=list)

@@ -175,7 +175,12 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   signals (see below).
 - **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
   the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
-  closes dead ones.
+  closes dead ones. The same sweep is the **wall-clock watchdog** (#80): a
+  pid>0 child whose row outlives `SPAWN_MAX_RUNTIME_S` (1 h default; 0
+  disables) is `SIGTERM`'d, then `SIGKILL`'d after `SPAWN_KILL_GRACE_S`, and
+  its row is closed with `return_code` 124 so the spawning loop's single-flight
+  (`_running_*_children`) releases. (When the RSS budget is disabled but the
+  watchdog is on, the daemon still runs.)
 - **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
   all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
   and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.
@@ -433,6 +438,16 @@ children** (the parent itself is not counted). Default 3 GB.
   the same subtree RSS, so they contribute real memory, not the estimate. A
   visible row whose cid never resolves to a live process is reaped past
   `SPAWN_VISIBLE_TTL_S` (1 h default) so it can't pin budget capacity forever.
+- Wall-clock watchdog (#80): a pid>0 child whose row outlives
+  `SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is killed
+  (`SIGTERM`→`SPAWN_KILL_GRACE_S`→`SIGKILL` on its process group) and its row is
+  closed with `return_code` `SPAWN_TIMEOUT_RETURN_CODE` (124, the `timeout(1)`
+  convention). This frees the spawning loop's single-flight slot and the pinned
+  budget share that a hung-but-alive child would otherwise hold forever. The
+  kill is idempotent (the `ended_at IS NULL` guard) and observable:
+  `mp_dashboard` reports `tasks_timed_out` and `agent_status` reports
+  `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
+  liveness correctness).
 
 Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
 (runtime override, not persisted).
@@ -899,6 +914,7 @@ tests/
 ├── test_threads.py            lifecycle: open → note → close → idle revival
 ├── test_core_memory.py        Letta-tier: set/get/list/remove + brief surfacing
 ├── test_spawn_budget.py       admission control + daemon polling
+├── test_spawn_watchdog.py     wall-clock kill + single-flight release (#80)
 ├── test_search_proxy.py       request/response signal roundtrip
 ├── test_dialectic.py          smoothed-ratio confidence
 ├── test_skills.py             skill_manage frontmatter validation + curator
@@ -1027,6 +1043,8 @@ rubric-sensitivity + a subprocess end-to-end run).
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
 | `THREADKEEPER_SPAWN_BUDGET_POLL_S` | 10 | budget daemon tick; 0 disables |
 | `THREADKEEPER_SPAWN_VISIBLE_TTL_S` | 3600 | reap a visible (pid=0) row whose cid never resolves to a live process; 0 disables |
+| `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
+| `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |

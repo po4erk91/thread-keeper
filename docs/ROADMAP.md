@@ -492,6 +492,21 @@ verified at the cited file:line, deduplicated against the issues above):
   `SPAWN_VISIBLE_TTL_S` (1 h default) wall-clock backstop reaps any `pid<=0` row
   whose cid never resolves to a live process so it can't pin capacity forever.
   (The admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.)
+- ✅ DONE (#80). No **wall-clock watchdog** for spawned learning-loop children:
+  a child that hung while still alive (wedged `WebFetch`/`gh`/`git`, an agent
+  loop that never converged, a prompt that never arrived) was never terminated —
+  it stalled its loop's single-flight slot (`_running_*_children` =
+  `ended_at IS NULL AND alive(pid)`) and burned tokens forever, since every
+  reaper keyed off something other than age (dead pid, orphaned parent, RSS).
+  Now the budget sweep (`spawn_budget._refresh_all_running`) is also an age
+  watchdog: a `pid>0` row older than `SPAWN_MAX_RUNTIME_S` (1 h default; 0
+  disables — no surprise kills on upgrade) is `SIGTERM`'d, then `SIGKILL`'d on
+  its process group after `SPAWN_KILL_GRACE_S`, and closed with `return_code`
+  124 (`timeout(1)` convention) so the single-flight releases and the next tick
+  retries. The daemon now also runs when the RSS budget is off but the watchdog
+  is on. Timed-out children are surfaced (`tasks_timed_out` in `mp_dashboard`,
+  `timed_out` in `agent_status`). Complements #25 (aggregate cost, no kill), #66
+  (kill-path liveness correctness), and #64 (visible/pid=0 RSS measurement).
 - ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
   `chmod` and embedded the host server `env` block, while the stdin prompt file
   is correctly `0600` and the `.command` script was `0755`. Now: slim config
