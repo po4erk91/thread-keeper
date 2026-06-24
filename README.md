@@ -154,10 +154,10 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### MCP primitives (tools, resources, prompts)
+### MCP primitives (tools, resources, prompts, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
-read/act split:
+read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
@@ -177,9 +177,18 @@ so an automatic host pull is **side-effect-free**.
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
+**Elicitation** is a client feature, not a server primitive. When a host
+advertises form-mode elicitation, high-stakes mutations can pause for a
+structured user choice instead of relying on an ignorable text nudge. The first
+flow using it is `dialectic_supersede`: supported hosts get a flat
+confirm/reject form before a user-model claim is replaced; unsupported hosts keep
+the previous immediate tool behavior.
+
 Everything here is **additive and capability-gated**: a host that advertises the
-`resources` / `prompts` capabilities sees them; one that doesn't falls back to
-the SessionStart hook plus the `brief()` / `context()` tools — same content, no
+`resources` / `prompts` capabilities sees those primitives; one that advertises
+`elicitation.form` gets structured confirmations for covered high-stakes writes.
+Hosts without a capability fall back to the SessionStart hook plus the `brief()`
+/ `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
 
@@ -1107,6 +1116,12 @@ prompt. The five status tools (`context`, `spawn_budget_status`,
 `spawn_status`, `mp_health`, `agent_status`) additionally advertise an
 `outputSchema` and return `structuredContent` alongside the legacy text
 block. The contract is enforced by `tests/test_tool_annotations.py`.
+
+**Elicitation contract (#26).** `threadkeeper/elicitation.py` contains the
+shared form-mode confirmation helper. It probes the host's elicitation
+capability before prompting, uses only a flat primitive schema, and leaves
+unsupported clients on the existing text/tool fallback path. The first protected
+write is `dialectic_supersede`.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

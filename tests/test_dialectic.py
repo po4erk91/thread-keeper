@@ -5,9 +5,28 @@ plus the confidence-from-evidence emergent behavior.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
+from types import SimpleNamespace
+
+from mcp.types import (
+    ClientCapabilities,
+    ElicitationCapability,
+    FormElicitationCapability,
+)
+
+from threadkeeper.elicitation import ConfirmRejectForm
+
 
 def _tools(fresh_mp):
     return fresh_mp["mcp"]._tool_manager._tools
+
+
+def _call(fn, **kwargs):
+    out = fn(**kwargs)
+    if inspect.isawaitable(out):
+        return asyncio.run(out)
+    return out
 
 
 def _id_from_ok(s: str) -> str:
@@ -288,7 +307,8 @@ def test_supersede_transitions_state_and_links(fresh_mp):
     _add(t, old, "support")
     _add(t, old, "support")
 
-    out = t["dialectic_supersede"].fn(
+    out = _call(
+        t["dialectic_supersede"].fn,
         old_claim_id=old,
         new_claim="user wants zero comments unless WHY is non-obvious",
         quote="quote: trust internal code; only comment hidden constraints",
@@ -327,7 +347,8 @@ def test_supersede_preserves_old_evidence(fresh_mp):
     ).fetchone()["c"]
     assert before == 3
 
-    t["dialectic_supersede"].fn(
+    _call(
+        t["dialectic_supersede"].fn,
         old_claim_id=old,
         new_claim="refined belief that replaces it",
     )
@@ -341,7 +362,8 @@ def test_supersede_preserves_old_evidence(fresh_mp):
 def test_cannot_add_evidence_to_superseded_claim(fresh_mp):
     t = _tools(fresh_mp)
     old = _claim(t, "stale claim", "context")
-    t["dialectic_supersede"].fn(
+    _call(
+        t["dialectic_supersede"].fn,
         old_claim_id=old,
         new_claim="fresh claim",
     )
@@ -398,7 +420,8 @@ def test_review_rejects_bad_confidence(fresh_mp):
 
 def test_supersede_rejects_unknown_old(fresh_mp):
     t = _tools(fresh_mp)
-    out = t["dialectic_supersede"].fn(
+    out = _call(
+        t["dialectic_supersede"].fn,
         old_claim_id="UCnope", new_claim="x"
     )
     assert out.startswith("ERR")
@@ -408,10 +431,120 @@ def test_supersede_rejects_unknown_old(fresh_mp):
 def test_supersede_rejects_empty_new_claim(fresh_mp):
     t = _tools(fresh_mp)
     old = _claim(t, "anything", "other")
-    out = t["dialectic_supersede"].fn(
+    out = _call(
+        t["dialectic_supersede"].fn,
         old_claim_id=old, new_claim="   "
     )
     assert out.startswith("ERR")
+
+
+class _StubElicitationContext:
+    def __init__(self, *, form_supported: bool, decision: str = "confirm",
+                 action: str = "accept"):
+        caps = ClientCapabilities()
+        if form_supported:
+            caps = ClientCapabilities(
+                elicitation=ElicitationCapability(
+                    form=FormElicitationCapability()
+                )
+            )
+        self.request_context = SimpleNamespace(
+            meta=None,
+            session=SimpleNamespace(
+                _client_params=SimpleNamespace(capabilities=caps)
+            ),
+        )
+        self.calls: list[tuple[str, type]] = []
+        self.decision = decision
+        self.action = action
+
+    async def elicit(self, message: str, schema: type):
+        self.calls.append((message, schema))
+        return SimpleNamespace(
+            action=self.action,
+            data=SimpleNamespace(decision=self.decision),
+        )
+
+
+class _UnsupportedContext(_StubElicitationContext):
+    async def elicit(self, message: str, schema: type):
+        raise AssertionError("elicitation should not be called")
+
+
+def test_supersede_withholds_elicitation_when_capability_absent(fresh_mp):
+    t = _tools(fresh_mp)
+    db = fresh_mp["db"]
+    old = _claim(t, "old unsupported-host claim", "workflow")
+    ctx = _UnsupportedContext(form_supported=False)
+
+    out = _call(
+        t["dialectic_supersede"].fn,
+        old_claim_id=old,
+        new_claim="new unsupported-host claim",
+        ctx=ctx,
+    )
+
+    assert out.startswith("ok ")
+    row = db.get_db().execute(
+        "SELECT state FROM user_dialectic WHERE id=?", (old,)
+    ).fetchone()
+    assert row["state"] == "superseded"
+
+
+def test_supersede_elicitation_confirm_applies(fresh_mp):
+    t = _tools(fresh_mp)
+    db = fresh_mp["db"]
+    old = _claim(t, "old claim behind a dialog", "workflow")
+    ctx = _StubElicitationContext(form_supported=True, decision="confirm")
+
+    out = _call(
+        t["dialectic_supersede"].fn,
+        old_claim_id=old,
+        new_claim="new claim approved in a dialog",
+        ctx=ctx,
+    )
+
+    assert out.startswith("ok ")
+    assert len(ctx.calls) == 1
+    message, schema = ctx.calls[0]
+    assert "Supersede this user-model claim?" in message
+    assert schema.__name__ == "ConfirmRejectForm"
+    row = db.get_db().execute(
+        "SELECT state FROM user_dialectic WHERE id=?", (old,)
+    ).fetchone()
+    assert row["state"] == "superseded"
+
+
+def test_supersede_elicitation_reject_leaves_claim_active(fresh_mp):
+    t = _tools(fresh_mp)
+    db = fresh_mp["db"]
+    old = _claim(t, "old claim rejected by user", "workflow")
+    ctx = _StubElicitationContext(form_supported=True, decision="reject")
+
+    out = _call(
+        t["dialectic_supersede"].fn,
+        old_claim_id=old,
+        new_claim="new claim rejected by user",
+        ctx=ctx,
+    )
+
+    assert out == f"reject no_change old={old}"
+    row = db.get_db().execute(
+        "SELECT state, superseded_by FROM user_dialectic WHERE id=?", (old,)
+    ).fetchone()
+    assert row["state"] == "active"
+    assert row["superseded_by"] is None
+
+
+def test_supersede_elicitation_schema_is_flat_enum():
+    schema = ConfirmRejectForm.model_json_schema()
+    assert schema["type"] == "object"
+    assert set(schema["properties"]) == {"decision"}
+    decision = schema["properties"]["decision"]
+    assert decision["type"] == "string"
+    assert decision["enum"] == ["confirm", "reject"]
+    assert "properties" not in decision
+    assert "items" not in decision
 
 
 # ── tool registration ───────────────────────────────────────────────────
