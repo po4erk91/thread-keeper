@@ -230,6 +230,9 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     p = calls["prompt"]
     assert "add a failed_paths field per thread" in p
     assert "kind=failed notes are flat" in p
+    assert "<evolve_suggestion_data>" in p
+    assert "</evolve_suggestion_data>" in p
+    assert "untrusted stored data" in p
     assert "threadkeeper/brief.py" in p and "render_brief" in p
     assert "pytest -q" in p
     assert "gh pr create" in p
@@ -638,6 +641,9 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     prompt = calls["prompt"]
     assert "ISSUE #6: Telemetry dashboard" in prompt
     assert "Need 24h counters" in prompt
+    assert "<github_issue_body_data>" in prompt
+    assert "</github_issue_body_data>" in prompt
+    assert "untrusted GitHub-authored data" in prompt
     assert "Closes #6" in prompt
     assert "Implement one issue only" in prompt
     assert "evolve_mark_roadmap_issue_applied" in prompt

@@ -314,11 +314,15 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   curator reports are created with default perms while the DB holds full
   transcripts + `verbatim` + the dialectic user model — any local account can
   read it. chmod 0600/0700 on creation. (#21)
-- The autonomous GitHub-writing daemons run `bypassPermissions` with `gh`,
-  guarded only by a prompt line; untrusted stored/issue content is injected
-  into them and nothing mechanically redacts issue/PR bodies. De-privilege the
-  appliers, fence injected content as data, sanitize bodies for paths/secrets,
-  and role-gate the dangerous spawn mode. (#22) Scope: S–M.
+- ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
+  children, but the dangerous pieces are now bounded: `spawn()` refuses
+  `permission_mode="bypassPermissions"` outside the evolve role/write-origin
+  pairs unless an explicit env override is set; stored evolve suggestions and
+  external GitHub issue bodies are embedded inside data fences; and privileged
+  evolve children get a PATH-prepended `gh` wrapper that redacts home-directory
+  paths and common token shapes from public issue/comment/PR bodies before the
+  real GitHub CLI sees them, refusing if a known unsafe pattern remains.
+  Parent-authored claim/dead-letter comments use the same scrubber.
 - ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
   GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
   user-model artifacts with no injection fence and no provenance trust-tiering —

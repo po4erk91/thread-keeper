@@ -299,7 +299,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   failure instead of switching tasks. The PR body must include `Closes #N`;
   after `gh pr create` prints a real URL, the child calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)` so the daemon does
-  not pick it again while human review/merge is pending. If no issue is pending,
+  not pick it again while human review/merge is pending. **Issue/body safety
+  (#22):** the issue body and legacy evolve suggestions are embedded only inside
+  explicit data fences, and privileged evolve children get a PATH-prepended
+  `gh` wrapper. For `gh issue create`, `gh issue comment`, and `gh pr create`,
+  the wrapper redacts `/Users/<name>/...` and `/home/<name>/...` paths plus
+  common token shapes before the real GitHub CLI receives the body, refusing if
+  a known unsafe pattern remains. Parent-authored claim/dead-letter comments use
+  the same scrubber before spawning `gh`. If no issue is pending,
   it falls back to the latest complete Curator `REPORT-*.md`, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
   uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
@@ -367,7 +374,12 @@ For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
 `--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
-for branch/commit/PR creation. Web tools (`WebSearch`/`WebFetch`) are never
+for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
+`bypassPermissions` unless the request comes from the evolve daemon
+role/write-origin pairs (`evolve_reviewer`/`evolve`,
+`evolve_applier`/`evolve_apply`), or the operator explicitly sets
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Web tools
+(`WebSearch`/`WebFetch`) are never
 granted to a `bypassPermissions` child: the evolve reviewer's web research runs
 in a separate read-only `permission_mode="auto"` child with no shell, so the
 untrusted web content and the exfiltration-capable context are never the same

@@ -282,6 +282,8 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert "suggestion alpha" in calls["prompt"]
     assert "suggestion beta" in calls["prompt"]
     assert "friction A" in calls["prompt"]
+    assert "<evolve_legacy_suggestions_data>" in calls["prompt"]
+    assert "</evolve_legacy_suggestions_data>" in calls["prompt"]
     # research is embedded, fenced, and explicitly flagged untrusted
     assert "adopt thing Z" in calls["prompt"]
     assert "untrusted data" in calls["prompt"].lower()
