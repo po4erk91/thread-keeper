@@ -298,6 +298,7 @@ def test_summary_table_shows_active_cli(tmp_path, monkeypatch):
     assert "shadow_observer" in out
     assert "codex" in out
     assert "active CLI" in out
+    assert "warning:" not in out
 
 
 def test_summary_table_shows_overrides(tmp_path, monkeypatch):
@@ -306,6 +307,7 @@ def test_summary_table_shows_overrides(tmp_path, monkeypatch):
     assert "curator" in out
     assert "antigravity" in out
     assert "spawn config" in out
+    assert "warning:" not in out
 
 
 def test_summary_table_includes_dialectic_validator_model(tmp_path, monkeypatch):
@@ -317,3 +319,26 @@ def test_summary_table_includes_dialectic_validator_model(tmp_path, monkeypatch)
     assert "dialectic_validator" in out
     assert "model=opus" in out
     assert "spawn config" in out
+    assert "warning:" not in out
+
+
+def test_summary_table_warns_invalid_spawn_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "claud",
+    })
+    out = sc.summary_table("codex")
+    assert "curator" in out
+    assert "codex" in out
+    assert "THREADKEEPER_SPAWN__LOOP__CURATOR='claud'" in out
+    assert "not a supported CLI" in out
+
+
+def test_summary_table_warns_unused_model_key(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__MODEL__CLAUD": "opus",
+        "THREADKEEPER_SPAWN__MODEL__CLAUDE": "sonnet",
+    })
+    out = sc.summary_table("claude")
+    assert "model=sonnet" in out
+    assert "THREADKEEPER_SPAWN__MODEL__CLAUD='opus'" in out
+    assert "not used by a supported CLI or startup role" in out

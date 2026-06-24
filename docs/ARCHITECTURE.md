@@ -1028,6 +1028,12 @@ Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
 rubric-sensitivity + a subprocess end-to-end run).
 ## Env knobs (config.py)
 
+`Settings` keeps pydantic's permissive `extra="ignore"` behavior, but startup
+and hot-config reload log a one-line warning for unknown `THREADKEEPER_*` keys
+present in the process environment. Spawn routing is similarly fail-soft:
+unsupported CLI overrides still fall through to the next priority, and
+`spawn_status()` shows the warning beside the resolution table.
+
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |

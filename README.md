@@ -759,6 +759,9 @@ Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
 macOS, the menu-bar app's gear button can edit the same file visually, save up
 to three local presets, and request a ThreadKeeper restart after saving.
+At startup and hot-reload, unknown `THREADKEEPER_*` keys present in the process
+environment are logged as warnings so mistyped host env-block overrides do not
+fail silently.
 Hot-config reload for the watched `settings.json` env block is implemented
 (shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
 knobs in-process within ~2 s, with no Claude Code restart — toggle it via
@@ -799,7 +802,9 @@ variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
 `gemini`, `copilot`). `agy` is normalized to `antigravity`; `gemini` remains a
 legacy Gemini CLI adapter for old installs/enterprise paths. See `.env.example`
-for the full knob list.
+for the full knob list. `spawn_status()` includes warnings when a configured
+spawn CLI is unsupported or a model key does not match a supported CLI/startup
+role, while keeping the same fallback resolution.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
