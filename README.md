@@ -247,6 +247,16 @@ live process is reaped once it outlives `THREADKEEPER_SPAWN_VISIBLE_TTL_S`
 (1 h default; 0 disables), so an unresolvable row can't pin budget
 capacity forever.
 
+The same daemon is also a **wall-clock watchdog**: a child that hangs while
+still alive — a wedged `WebFetch`/`gh`/`git`, an agent loop that never
+converges, a prompt that never arrives — would otherwise stall its loop's
+single-flight slot and burn tokens forever. Any child whose row outlives
+`THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is `SIGTERM`'d,
+then `SIGKILL`'d after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row
+is closed with the timeout `return_code` 124 so the loop's single-flight
+releases and the next tick can retry. Timed-out children are surfaced as
+`tasks_timed_out` in `mp_dashboard` and `timed_out` in `agent_status`.
+
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
 
@@ -540,6 +550,9 @@ with problem statement, proposed direction, acceptance criteria, test/docs
 impact, and research sources when applicable. Legacy `evolve_format(...)`
 suggestions are still included as audit input, but durable implementation work
 should become GitHub issues.
+Before filing new issues, the privileged audit phase checks the open backlog via
+the same paginated, oldest-first GitHub REST issue view used by the applier, so
+deduplication is not limited to the newest 50 open issues.
 
 To avoid completing the **lethal trifecta** — private-data access + untrusted
 web content + exfiltration — inside one privileged child (#79), the reviewer
@@ -569,6 +582,10 @@ opens a PR whose body includes `Closes #N`, and only then calls
 pushes to `main`, and it never marks an issue applied without a real PR URL. A
 manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
 why that issue cannot start instead of silently switching to another issue.
+The queue fetch uses paginated GitHub REST reads in oldest-created order, then
+applies the documented roadmap/FIFO sort locally. A generous local candidate
+window is retained as a runaway guard; if it ever truncates, the applier logs
+how many open issues were outside the window.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
@@ -702,6 +719,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
+| `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |
@@ -740,6 +759,9 @@ Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
 macOS, the menu-bar app's gear button can edit the same file visually, save up
 to three local presets, and request a ThreadKeeper restart after saving.
+At startup and hot-reload, unknown `THREADKEEPER_*` keys present in the process
+environment are logged as warnings so mistyped host env-block overrides do not
+fail silently.
 Hot-config reload for the watched `settings.json` env block is implemented
 (shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
 knobs in-process within ~2 s, with no Claude Code restart — toggle it via
@@ -780,7 +802,9 @@ variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
 `gemini`, `copilot`). `agy` is normalized to `antigravity`; `gemini` remains a
 legacy Gemini CLI adapter for old installs/enterprise paths. See `.env.example`
-for the full knob list.
+for the full knob list. `spawn_status()` includes warnings when a configured
+spawn CLI is unsupported or a model key does not match a supported CLI/startup
+role, while keeping the same fallback resolution.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any

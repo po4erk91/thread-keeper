@@ -150,12 +150,21 @@ def mp_dashboard(window_days: int = 7) -> str:
                f"{_fmt_group(cand, ('pending','accepted','rejected'))}")
     out.append(f"  evolve: "
                f"{_fmt_group(evolve, ('pending','promoted','dismissed'))}")
+    # tasks_timed_out: children the wall-clock watchdog killed for running past
+    # SPAWN_MAX_RUNTIME_S (#80), keyed off the timeout sentinel return_code so a
+    # runtime kill is observable here rather than silent.
+    from ..spawn_budget import SPAWN_TIMEOUT_RETURN_CODE
+    timed_out = _scalar(
+        conn, "SELECT COUNT(*) FROM tasks WHERE return_code=?",
+        (SPAWN_TIMEOUT_RETURN_CODE,),
+    )
     out.append(
         f"  probes={_scalar(conn, 'SELECT COUNT(*) FROM probes')} "
         f"probe_results={_scalar(conn, 'SELECT COUNT(*) FROM probe_results')} "
         f"tasks_running="
         f"{_scalar(conn, 'SELECT COUNT(*) FROM tasks WHERE ended_at IS NULL')} "
-        f"tasks_total={_scalar(conn, 'SELECT COUNT(*) FROM tasks')}"
+        f"tasks_total={_scalar(conn, 'SELECT COUNT(*) FROM tasks')} "
+        f"tasks_timed_out={timed_out}"
     )
 
     # ── loops ─────────────────────────────────────────────────────────

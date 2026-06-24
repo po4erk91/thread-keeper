@@ -14,12 +14,15 @@ Nested spawn config uses double-underscore notation:
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 from pathlib import Path
 from typing import Annotated, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
 _ENV_FILE: str = os.environ.get(
@@ -157,6 +160,18 @@ class Settings(BaseSettings):
     # outlives this, so an unresolvable row can't pin budget capacity forever
     # (#64). 0 disables the reaper.
     spawn_visible_ttl_s: float = 3600.0
+    # Wall-clock lifetime cap for any spawned child (#80). A child that hangs
+    # while still alive — a wedged WebFetch/gh/git, an agent loop that never
+    # converges, a prompt that never arrives — would otherwise stall its loop's
+    # single-flight slot and burn tokens forever. The budget daemon SIGTERMs a
+    # pid>0 child whose row has outlived this, then SIGKILLs it after
+    # SPAWN_KILL_GRACE_S, and marks the row ended with return_code 124 (the
+    # timeout(1) convention) so the loop's single-flight releases. Generous
+    # default so legitimate long runs aren't cut; 0 disables (no surprise kills
+    # on upgrade).
+    spawn_max_runtime_s: float = 3600.0
+    # Grace between the SIGTERM and the SIGKILL of a timed-out child (#80).
+    spawn_kill_grace_s: float = 10.0
 
     # ── Memory guard ─────────────────────────────────────────────────────────
     memory_guard_poll_s: float = 30.0
@@ -367,9 +382,91 @@ class Settings(BaseSettings):
         return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
 
 
+_EXTRA_THREADKEEPER_ENV_KEYS = {
+    # Consumed before Settings instantiation or by hook/app helper code.
+    "THREADKEEPER_ACTIVE_CLI",
+    "THREADKEEPER_AGENT_STATUS_COMMAND",
+    "THREADKEEPER_EGRESS_CONSUMER",
+    "THREADKEEPER_ENV_FILE",
+    "THREADKEEPER_EXTRA_SKILLS_DIRS",
+    "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_LESSONS",
+    "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
+    "THREADKEEPER_PYTHON",
+    "THREADKEEPER_REPO",
+    "THREADKEEPER_SEARCH_PROXY_POLL_S",
+    "THREADKEEPER_SKILL_WATCH_INTERVAL_S",
+    "THREADKEEPER_STATE_DIR",
+    "THREADKEEPER_TZ",
+    "THREADKEEPER_VISIBLE_STATUS",
+}
+
+_THREADKEEPER_NESTED_ENV_KEYS = {
+    "THREADKEEPER_SPAWN__DEFAULT",
+    "THREADKEEPER_SPAWN__LOOP",
+    "THREADKEEPER_SPAWN__MODEL",
+}
+_THREADKEEPER_NESTED_ENV_PREFIXES = (
+    "THREADKEEPER_SPAWN__LOOP__",
+    "THREADKEEPER_SPAWN__MODEL__",
+)
+
+
+def _alias_strings(validation_alias) -> list[str]:
+    if validation_alias is None:
+        return []
+    if isinstance(validation_alias, str):
+        return [validation_alias]
+    choices = getattr(validation_alias, "choices", None)
+    if choices is None:
+        return []
+    return [choice for choice in choices if isinstance(choice, str)]
+
+
+def _known_threadkeeper_env_keys() -> set[str]:
+    known = set(_EXTRA_THREADKEEPER_ENV_KEYS)
+    for name, field in Settings.model_fields.items():
+        known.add(f"THREADKEEPER_{name.upper()}")
+        for alias in _alias_strings(field.validation_alias):
+            if alias.upper().startswith("THREADKEEPER_"):
+                known.add(alias.upper())
+    known.update(_THREADKEEPER_NESTED_ENV_KEYS)
+    return known
+
+
+def unknown_threadkeeper_env_keys(environ: Optional[dict] = None) -> list[str]:
+    """Return THREADKEEPER_* process-env keys that Settings will not consume."""
+    env = os.environ if environ is None else environ
+    known = _known_threadkeeper_env_keys()
+    unknown = []
+    for key in env:
+        upper = key.upper()
+        if not upper.startswith("THREADKEEPER_"):
+            continue
+        if upper in known:
+            continue
+        if any(
+            upper.startswith(prefix)
+            for prefix in _THREADKEEPER_NESTED_ENV_PREFIXES
+        ):
+            continue
+        unknown.append(key)
+    return sorted(unknown, key=str.upper)
+
+
+def _warn_unknown_threadkeeper_env_keys() -> None:
+    keys = unknown_threadkeeper_env_keys()
+    if keys:
+        logger.warning(
+            "Ignoring unknown THREADKEEPER_* env key(s): %s",
+            ", ".join(keys),
+        )
+
+
 # ── Instantiate ──────────────────────────────────────────────────────────────
 
 settings = Settings()
+_warn_unknown_threadkeeper_env_keys()
 
 
 # ── Compat shim: re-export all prior module-level names ──────────────────────
@@ -430,6 +527,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
         "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
+        "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
+        "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
         "MEMORY_GUARD_POLL_S": s.memory_guard_poll_s,
         "MEMORY_GUARD_WARN_MB": s.memory_guard_warn_mb,
         "MEMORY_GUARD_KILL_MB": s.memory_guard_kill_mb,
@@ -540,6 +639,7 @@ def reload_settings(env: Optional[dict] = None,
 
     old = _derive_constants(settings)
     settings = Settings()
+    _warn_unknown_threadkeeper_env_keys()
     new = _derive_constants(settings)
 
     globals().update(new)

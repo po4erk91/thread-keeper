@@ -123,7 +123,11 @@ Run from the repo root:
   - Read README.md, docs/ARCHITECTURE.md, docs/ROADMAP.md, CHANGELOG.md.
   - Inspect threadkeeper/evolve_daemon.py, threadkeeper/evolve_applier.py,
     threadkeeper/agent_status.py, threadkeeper/curator.py, and relevant tests.
-  - Run `gh issue list --state open --limit 50` and avoid duplicate issues.
+  - Inspect all open issues before filing duplicates, oldest-first and without
+    the old 50-item window. Use a paginated REST read, for example:
+    `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)` then
+    `gh api --paginate --slurp "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
+    filter out entries with `pull_request`.
   - Review pending legacy evolve suggestions below. For each clear suggestion,
     create or link a GitHub issue; then call evolve_decide(promote|dismiss) only
     when that helps keep the legacy queue honest.

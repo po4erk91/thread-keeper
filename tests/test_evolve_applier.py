@@ -8,6 +8,8 @@ separately by actually running the role.
 """
 from __future__ import annotations
 
+import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -151,6 +153,26 @@ def _issue(number, title, labels=("roadmap",), body="Issue body",
         "url": f"https://github.com/o/r/issues/{number}",
         "authorAssociation": author_association,
     }
+
+
+def _rest_issue(number, title=None, labels=("roadmap",),
+                author_association="OWNER", pull_request=False):
+    item = {
+        "number": number,
+        "title": title or f"issue {number}",
+        "labels": [{"name": name} for name in labels],
+        "body": f"body {number}",
+        "html_url": f"https://github.com/o/r/issues/{number}",
+        "url": f"https://api.github.com/repos/o/r/issues/{number}",
+        "author_association": author_association,
+        "user": {"login": "po4erk91"},
+    }
+    if pull_request:
+        item["html_url"] = f"https://github.com/o/r/pull/{number}"
+        item["pull_request"] = {
+            "url": f"https://api.github.com/repos/o/r/pulls/{number}"
+        }
+    return item
 
 
 def _claim_comment(created_at="2026-06-14T12:00:00Z"):
@@ -498,34 +520,21 @@ def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
     # author_association). Verify the shape mapping and that PRs are dropped.
     pkg = _bootstrap(tmp_path, monkeypatch)
     rest_payload = [
-        {
-            "number": 10,
-            "title": "real issue",
-            "labels": [{"name": "roadmap"}],
-            "body": "do the thing",
-            "html_url": "https://github.com/o/r/issues/10",
-            "url": "https://api.github.com/repos/o/r/issues/10",
-            "author_association": "OWNER",
-            "user": {"login": "po4erk91"},
-        },
-        {
-            "number": 11,
-            "title": "a pull request",
-            "labels": [],
-            "body": "",
-            "html_url": "https://github.com/o/r/pull/11",
-            "author_association": "NONE",
-            "user": {"login": "outsider"},
-            "pull_request": {"url": "https://api.github.com/.../pulls/11"},
-        },
+        _rest_issue(10, "real issue"),
+        _rest_issue(11, "a pull request", labels=(), pull_request=True),
     ]
+    calls = []
 
     class _Proc:
         returncode = 0
-        stdout = __import__("json").dumps(rest_payload)
+        stdout = json.dumps([rest_payload])
         stderr = ""
 
-    monkeypatch.setattr(pkg["ea"].subprocess, "run", lambda *a, **k: _Proc())
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", _run)
 
     issues, err = pkg["orig"]["_fetch_open_issues"]()
 
@@ -536,6 +545,70 @@ def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
     assert only["authorAssociation"] == "OWNER"
     assert only["authorLogin"] == "po4erk91"
     assert pkg["ea"]._issue_labels(only) == ["roadmap"]
+    assert "--paginate" in calls[0]
+    assert "--slurp" in calls[0]
+    endpoint = calls[0][-1]
+    assert "sort=created" in endpoint
+    assert "direction=asc" in endpoint
+    assert "per_page=100" in endpoint
+
+
+def test_open_roadmap_issues_fetches_past_old_50_window_and_keeps_fifo(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues", pkg["orig"]["_fetch_open_issues"],
+    )
+    # Simulate two REST pages so the candidate set crosses the historical
+    # 50-item gh issue-list window. The first startable candidate must still be
+    # the oldest issue number, not the newest issue from the first page.
+    rest_payload = [
+        [_rest_issue(n) for n in range(1, 51)],
+        [_rest_issue(n) for n in range(51, 56)],
+    ]
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps(rest_payload)
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", lambda *a, **k: _Proc())
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert len(issues) == 55
+    assert [int(i["number"]) for i in issues[:5]] == [1, 2, 3, 4, 5]
+
+
+def test_fetch_open_issues_warns_when_candidate_window_truncates(
+    tmp_path, monkeypatch, caplog,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["ea"], "ROADMAP_ISSUE_FETCH_LIMIT", 50)
+    rest_payload = [[_rest_issue(n) for n in range(1, 56)]]
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps(rest_payload)
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", lambda *a, **k: _Proc())
+
+    with caplog.at_level(logging.WARNING, logger="threadkeeper.evolve_applier"):
+        issues, err = pkg["orig"]["_fetch_open_issues"]()
+
+    assert err == ""
+    assert len(issues) == 50
+    assert [int(i["number"]) for i in issues[:3]] == [1, 2, 3]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "55 open GitHub issues exceeds roadmap issue fetch window 50" in msg
+        and "5 newest issue(s) not considered" in msg
+        for msg in messages
+    )
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
