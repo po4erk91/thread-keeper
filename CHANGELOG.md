@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
+  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
+  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
+  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
+  spawn stdout logs are created `0600`; chmod failures are debug-only and never
+  block startup on platforms without POSIX mode bits.
+
 ### Added
 
 - **Wall-clock watchdog for spawned children (#80).** A spawned learning-loop

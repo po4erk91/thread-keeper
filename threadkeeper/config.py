@@ -21,6 +21,8 @@ from typing import Annotated, Optional
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .permissions import harden_storage_paths
+
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
 _ENV_FILE: str = os.environ.get(
     "THREADKEEPER_ENV_FILE",
@@ -502,6 +504,14 @@ def _derive_constants(s: "Settings") -> dict:
 globals().update(_derive_constants(settings))
 
 
+def _harden_current_storage() -> None:
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
+
+
 def _propagate(new_values: dict) -> None:
     """Push reloaded constant values into every loaded `threadkeeper.*` module
     that imported a copy via `from .config import X`.
@@ -557,6 +567,7 @@ def reload_settings(env: Optional[dict] = None,
     new = _derive_constants(settings)
 
     globals().update(new)
+    _harden_current_storage()
     changed = {
         name: {"old": old.get(name), "new": val}
         for name, val in new.items()
@@ -614,6 +625,7 @@ BACKGROUND_DAEMONS_ALLOWED: bool = (
 # ── DB-path setup + legacy migration ─────────────────────────────────────────
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+_harden_current_storage()
 
 # One-shot migration from the historical name `memory_partner`. If the new
 # DB doesn't exist yet but the legacy one does, copy it (including the WAL
@@ -637,3 +649,4 @@ if (
         src = _LEGACY_DIR / fname
         if src.exists():
             shutil.copy2(src, DB_PATH.parent / fname)
+    _harden_current_storage()

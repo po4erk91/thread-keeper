@@ -23,6 +23,15 @@ until coordinated disclosure. Please include:
 - Expected vs. actual behavior
 - Any mitigation you've already tried
 
+## Local storage permissions
+
+On POSIX systems, thread-keeper treats the default local store as private
+user data. Startup and `get_db()` best-effort set `~/.threadkeeper` to
+`0700` and set `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
+`~/.threadkeeper/.env`, and curator `REPORT-*.md` files to `0600`.
+Headless spawn stdout logs are also created `0600`. Permission hardening
+is skipped on platforms without POSIX mode bits and never blocks startup.
+
 ## Trust boundaries
 
 ### Learning-loop synthesis (observed dialog → auto-loaded artifacts)

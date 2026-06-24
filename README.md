@@ -880,6 +880,11 @@ mode for multi-writer concurrency. Optional `notes_vec` / `dialog_vec`
 HNSW indexes through `sqlite-vec` for sub-linear semantic search;
 fallback to Python-side cosine when the extension is missing.
 
+On POSIX systems, startup and `get_db()` harden the default local store
+best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
+`-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
+files, and headless spawn logs are owner-only (`0600`).
+
 One file. Backup = `cp`. Wipe memory = `rm`.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.

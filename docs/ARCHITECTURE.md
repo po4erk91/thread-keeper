@@ -107,7 +107,11 @@ runtime is fully on the package.
 
 ## Storage layers
 
-The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
+The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config
+startup and `get_db()` best-effort harden the default store:
+`~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
+sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
+`0600`. Logically six levels:
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
