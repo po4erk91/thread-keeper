@@ -385,7 +385,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     prompt        TEXT NOT NULL,
     started_at    INTEGER NOT NULL,
     ended_at      INTEGER,
-    return_code   INTEGER
+    return_code   INTEGER,
+    tokens_in     INTEGER,
+    tokens_out    INTEGER,
+    tokens_total  INTEGER,
+    cost_usd      REAL,
+    duration_s    INTEGER
 );
 
 -- Cross-process resource-control requests. The memory guard uses this as a
@@ -506,6 +511,11 @@ def get_db() -> sqlite3.Connection:
         "TEXT NOT NULL DEFAULT 'foreground'",
         "ALTER TABLE tasks ADD COLUMN rss_kb INTEGER",
         "ALTER TABLE tasks ADD COLUMN rss_updated_at INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_in INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_out INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_total INTEGER",
+        "ALTER TABLE tasks ADD COLUMN cost_usd REAL",
+        "ALTER TABLE tasks ADD COLUMN duration_s INTEGER",
         # Tier promotion machinery — discrete state machine over claims
         # and skills. Independent of the continuous confidence/state
         # columns; tier is what gates downstream behavior (brief framing,

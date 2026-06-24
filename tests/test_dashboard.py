@@ -119,6 +119,23 @@ def _net_removed(out: str) -> int:
     return _net_field(out, "removed")
 
 
+def _loop_line(out: str, label: str) -> str:
+    m = re.search(rf"^\s+{re.escape(label)}[^\n]+$", out, re.M)
+    return m.group(0) if m else ""
+
+
+def _loop_field(out: str, label: str, field: str) -> int:
+    line = _loop_line(out, label)
+    m = re.search(rf"\b{re.escape(field)}=(\d+)", line)
+    return int(m.group(1)) if m else 0
+
+
+def _loop_spend(out: str, label: str) -> float:
+    line = _loop_line(out, label)
+    m = re.search(r"\bspend24=\$([0-9.]+)", line)
+    return float(m.group(1)) if m else 0.0
+
+
 def test_dashboard_loop_list_matches_agent_status(fresh_mp):
     # The two telemetry surfaces must agree on which loops exist: the dashboard
     # derives its loop kinds from the same _LOOP_DEFS the menu-bar status reads.
@@ -157,6 +174,56 @@ def test_dashboard_reflects_previously_unlisted_loops(fresh_mp):
     after = dash(window_days=7)
     for label, _ in seeded:
         assert _loop_win(after, label) - before[label] == 2, (label, after)
+
+
+def test_dashboard_loop_rows_include_spend_and_mutations(fresh_mp):
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    before = dash(window_days=7)
+    base_fire = _loop_win(before, "dialectic_validator")
+    base_spawns = _loop_field(before, "dialectic_validator", "spawns24")
+    base_tokens = _loop_field(before, "dialectic_validator", "tokens24")
+    base_mutations = _loop_field(before, "dialectic_validator", "mutations24")
+    base_spend = _loop_spend(before, "dialectic_validator")
+
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s', 'dialectic_validate_pass', '', 'spawned', ?)",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s', 'dialectic_claim', 'c1', 'claim', ?)",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, ended_at, return_code, tokens_total, cost_usd, duration_s) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "tk_spend",
+            0,
+            "p",
+            "c",
+            "/tmp",
+            "You are a DIALECTIC VALIDATOR for thread-keeper",
+            now - 15,
+            now,
+            0,
+            3456,
+            0.125,
+            15,
+        ),
+    )
+    conn.commit()
+
+    after = dash(window_days=7)
+    assert _loop_win(after, "dialectic_validator") - base_fire == 1, after
+    assert _loop_field(after, "dialectic_validator", "spawns24") - base_spawns == 1
+    assert _loop_field(after, "dialectic_validator", "tokens24") - base_tokens == 3456
+    assert _loop_field(after, "dialectic_validator", "mutations24") - base_mutations == 1
+    assert _loop_spend(after, "dialectic_validator") - base_spend == 0.125
 
 
 def test_dashboard_curator_removal_outcome(fresh_mp):

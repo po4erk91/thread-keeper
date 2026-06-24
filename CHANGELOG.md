@@ -9,6 +9,18 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Per-spawn token/cost accounting and daily spend budgets (#25).** Spawned
+  children now write more than `return_code`: `_spawn_wrap.py` tees the child
+  output, parses JSON result lines and common CLI usage trailers, and stores
+  `tasks.tokens_in`, `tokens_out`, `tokens_total`, `cost_usd`, and `duration_s`
+  on completion. Optional disabled-by-default admission ceilings
+  `THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+  `THREADKEEPER_SPAWN_COST_BUDGET_USD` deny new background spawns once recorded
+  24h spend reaches the configured limit. `spawn_budget_status()` reports 24h
+  tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
+  spawns/tokens/spend/time next to mutation count, covering the cost dimension
+  of the #6 shadow-review production question.
+
 - **Wall-clock watchdog for spawned children (#80).** A spawned learning-loop
   child that hung while still alive — a wedged `WebFetch`/`gh`/`git`, an agent
   loop that never converged, a prompt that never arrived — was never terminated:

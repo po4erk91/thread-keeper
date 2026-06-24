@@ -239,6 +239,14 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
 
+The spawn wrapper also records each completed child's `duration_s`,
+`tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
+CLI emits a recognizable usage trailer. Optional daily ceilings
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
+recorded 24h spend reaches the configured limit; both default to `0`
+(disabled), so existing installs behave the same until a budget is set.
+
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
 argv and measures the real RSS tree — they count their true memory, not
@@ -719,6 +727,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
+| `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
@@ -839,9 +849,10 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age — the loop list is derived from the same source as
-  `agent_status`, so it covers *every* daemon including the paid-spawn
-  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  plus last-fire age and 24h spend/tokens/mutation counts — the loop list is
+  derived from the same source as `agent_status`, so it covers *every* daemon
+  including the paid-spawn `dialectic_validate` / `evolve_apply` and the
+  `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
   mutation counts: `lesson_append` / `lesson_remove`,

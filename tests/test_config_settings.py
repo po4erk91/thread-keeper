@@ -31,6 +31,8 @@ def test_defaults_match(monkeypatch):
     assert c.SKILL_NUDGE_INTERVAL == 10
     assert c.BRIEF_LEAN is False
     assert c.SPAWN_BUDGET_MB == 3072
+    assert c.SPAWN_TOKEN_BUDGET == 0
+    assert c.SPAWN_COST_BUDGET_USD == 0.0
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
@@ -134,8 +136,10 @@ def test_all_exported_names_present(monkeypatch):
         "SKILL_NUDGE_INTERVAL",
         "SPAWN_BUDGET_MB",
         "SPAWN_BUDGET_POLL_S",
+        "SPAWN_COST_BUDGET_USD",
         "SPAWN_ESTIMATE_FULL_MB",
         "SPAWN_ESTIMATE_SLIM_MB",
+        "SPAWN_TOKEN_BUDGET",
         "SPAWNED_CHILD",
         "TASK_LOG_DIR",
         "THREAD_IDLE_CLOSE_DAYS",

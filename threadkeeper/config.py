@@ -152,6 +152,12 @@ class Settings(BaseSettings):
     spawn_estimate_slim_mb: int = 500
     spawn_estimate_full_mb: int = 1500
     spawn_budget_poll_s: float = 10.0
+    # Optional spend guardrails for spawned children. 0 = disabled (default,
+    # preserving existing behavior). The admission path compares recorded
+    # spend/tokens over the last 24h against these ceilings before starting a
+    # new child.
+    spawn_token_budget: int = 0
+    spawn_cost_budget_usd: float = 0.0
     # Wall-clock backstop for visible (pid=0) children: a Terminal-launched
     # row whose process can't be resolved from its cid is marked ended once it
     # outlives this, so an unresolvable row can't pin budget capacity forever
@@ -441,6 +447,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_ESTIMATE_SLIM_MB": s.spawn_estimate_slim_mb,
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
         "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
+        "SPAWN_TOKEN_BUDGET": s.spawn_token_budget,
+        "SPAWN_COST_BUDGET_USD": s.spawn_cost_budget_usd,
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
         "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
         "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
