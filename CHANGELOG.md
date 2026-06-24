@@ -20,6 +20,14 @@ version bumps follow semver per the policy in
   tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
   spawns/tokens/spend/time next to mutation count, covering the cost dimension
   of the #6 shadow-review production question.
+ 
+- **Config typo warnings (#88).** Startup and hot-config reload now log a
+  one-line warning for unknown `THREADKEEPER_*` keys present in the process
+  environment, so mistyped safety-knob overrides such as
+  `THREADKEEPER_CURATOR_DESCTRUCTIVE=0` do not silently fall back to defaults.
+  `spawn_status()` / `spawn_config.summary_table()` also surface warnings for
+  unsupported configured spawn CLIs and unused model keys while preserving the
+  existing fallback behavior.
 
 - **Wall-clock watchdog for spawned children (#80).** A spawned learning-loop
   child that hung while still alive — a wedged `WebFetch`/`gh`/`git`, an agent
