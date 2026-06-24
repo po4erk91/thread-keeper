@@ -55,6 +55,10 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Config typo visibility (#88): startup and hot-config reload now warn on
+  unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
+  `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
+  CLI / unused model-key warnings beside the fallback resolution table.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

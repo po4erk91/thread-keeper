@@ -3,6 +3,7 @@
 Uses importlib.reload so each test can set/clear env before re-importing.
 """
 import importlib
+import logging
 import os
 import tempfile
 
@@ -39,6 +40,35 @@ def test_defaults_match(monkeypatch):
 def test_env_overrides_default(monkeypatch):
     c = _fresh_config(monkeypatch, env={"THREADKEEPER_MEMORY_NUDGE_INTERVAL": "3"})
     assert c.MEMORY_NUDGE_INTERVAL == 3
+
+
+def test_unknown_threadkeeper_env_key_warns(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config")
+    _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_CURATOR_DESCTRUCTIVE": "0"},
+    )
+    messages = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "threadkeeper.config"
+    ]
+    assert any("THREADKEEPER_CURATOR_DESCTRUCTIVE" in msg for msg in messages)
+    assert any("unknown THREADKEEPER_* env key" in msg for msg in messages)
+
+
+def test_known_threadkeeper_env_key_does_not_warn(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config")
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_CURATOR_DESTRUCTIVE": "0"},
+    )
+    assert c.CURATOR_DESTRUCTIVE is False
+    assert not [
+        rec for rec in caplog.records
+        if rec.name == "threadkeeper.config"
+        and "unknown THREADKEEPER_* env key" in rec.getMessage()
+    ]
 
 
 def test_dotenv_read_and_env_wins(monkeypatch):
