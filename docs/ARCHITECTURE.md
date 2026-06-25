@@ -134,7 +134,13 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
    background_review vs shadow_review). This is the input for the curator.
 
-6. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
+6. **lesson_usage** — telemetry for `lessons.md` slugs. `lesson_list` bumps
+   `view_count`, `lesson_get` bumps `use_count`, and the curator uses
+   `last_used_at` / `last_viewed_at` / pull counts for decay scoring.
+   `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
+   recommendations.
+
+7. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
    confidence; brief() renders medium+high grouped by domain.
    `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
@@ -566,6 +572,15 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `skill_record` manually. The `skill_watcher` daemon catches external edits
   to `SKILL.md` (Edit/Write directly, not through skill_manage).
 
+- **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
+  `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
+  `use_count` bump for the returned body. The curator computes
+  `access_frequency × exp(-days_since_access / tau)` over this table and
+  surfaces a ranked `STALE LESSONS (dry-run decay ranking)` section for lessons
+  with no recent access and low pull-count. The section is advisory only; it is
+  not an automatic deletion path, and foreground/user, pinned, and validated
+  lessons are excluded.
+
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
   `sessions.write_origin` and proxied into `skill_usage.created_by_origin`.
@@ -865,9 +880,11 @@ Tools register through two thin wrappers in `_mcp.py` instead of bare
 every tool:
 
 - `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
-  `search`, `dialog_search`, `lesson_list`, the status tools, `compost`, …).
+  `search`, `dialog_search`, the status tools, `compost`, …).
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
-  mutations. The ten delete/overwrite/kill tools carry `destructiveHint=True`:
+  mutations. `lesson_list` and `lesson_get` are non-destructive writes because
+  they update lesson access counters. The ten delete/overwrite/kill tools carry
+  `destructiveHint=True`:
   `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
   `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
   `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
@@ -993,8 +1010,8 @@ in CI and as a golden baseline (the bundled `ground_truth.json` demo corpus
 scores 100% under a faithful retrieval; a regression in `search()`/
 `dialog_search()` drops it). An optional `--judge llm` grades answer
 *reasoning* (true temporal ordering, knowledge-update correctness) via the
-Anthropic Messages API over `urllib` — no SDK dependency — and is the intended
-optimization target for the lessons-decay (#27) and bi-temporal (#28) work.
+Anthropic Messages API over `urllib` — no SDK dependency — and is an
+optimization target for lesson-decay tuning (#27) and bi-temporal (#28) work.
 `--db snapshot.sqlite` evaluates a real production snapshot, copied to a temp
 file first so the original is never opened for writing. Backend (`fts` vs
 `semantic`) is auto-detected and reported. Smoke-tested in
@@ -1052,6 +1069,12 @@ open questions), not a gate. `--fixtures-dir` scores a custom labeled set.
 Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
 rubric-sensitivity + a subprocess end-to-end run).
 ## Env knobs (config.py)
+
+`Settings` keeps pydantic's permissive `extra="ignore"` behavior, but startup
+and hot-config reload log a one-line warning for unknown `THREADKEEPER_*` keys
+present in the process environment. Spawn routing is similarly fail-soft:
+unsupported CLI overrides still fall through to the next priority, and
+`spawn_status()` shows the warning beside the resolution table.
 
 | Knob | Default | Purpose |
 |---|---|---|

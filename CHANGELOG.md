@@ -17,6 +17,24 @@ version bumps follow semver per the policy in
   confirm/reject dialog before replacing a user-model claim; unsupported hosts
   keep the previous immediate tool behavior and text-nudge fallback.
 
+- **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
+  `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
+  `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
+  include a ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+  `access_frequency × exp(-days_since_access / tau)` over lessons with no
+  recent access and low pull-count. The decay list is advisory only and excludes
+  foreground/user, pinned, and validated lessons; `lesson_list` / `lesson_get`
+  are now annotated as non-destructive writes because the counters are
+  intentional state.
+
+- **Config typo warnings (#88).** Startup and hot-config reload now log a
+  one-line warning for unknown `THREADKEEPER_*` keys present in the process
+  environment, so mistyped safety-knob overrides such as
+  `THREADKEEPER_CURATOR_DESCTRUCTIVE=0` do not silently fall back to defaults.
+  `spawn_status()` / `spawn_config.summary_table()` also surface warnings for
+  unsupported configured spawn CLIs and unused model keys while preserving the
+  existing fallback behavior.
+
 - **Wall-clock watchdog for spawned children (#80).** A spawned learning-loop
   child that hung while still alive — a wedged `WebFetch`/`gh`/`git`, an agent
   loop that never converged, a prompt that never arrived — was never terminated:

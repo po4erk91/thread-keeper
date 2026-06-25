@@ -28,7 +28,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from .._mcp import read_tool, write_tool
+from .._mcp import write_tool
 from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
@@ -37,9 +37,11 @@ from ..review_prompts import screen_injection_markers
 from ..lessons import (
     _slugify,
     append_lesson,
+    ensure_lesson_usage,
     iter_lessons,
     count_lessons,
     get_path,
+    record_lesson_access,
     remove_lesson,
 )
 
@@ -154,6 +156,10 @@ def lesson_append(
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
+    for item in iter_lessons():
+        if item["slug"] == slug:
+            ensure_lesson_usage(conn, item)
+            break
     # Record the write so mp_dashboard can count store growth (issue #61),
     # mirroring the lesson_remove event below. The events table always exists
     # (db schema); guard defensively anyway so a logging hiccup never loses
@@ -167,11 +173,11 @@ def lesson_append(
         )
         conn.commit()
     except sqlite3.OperationalError:
-        pass
+        conn.commit()
     return f"ok slug={slug} path={get_path()}"
 
 
-@read_tool()
+@write_tool()
 def lesson_list(k: int = 20) -> str:
     """Compact listing of materialized lessons, newest first.
 
@@ -185,7 +191,9 @@ def lesson_list(k: int = 20) -> str:
     items.sort(key=lambda x: x["ts"], reverse=True)
     now = int(datetime.now().timestamp())
     out: list[str] = [f"lessons total={len(items)} path={get_path()}"]
-    for it in items[:max(1, k)]:
+    selected = items[:max(1, k)]
+    for it in selected:
+        record_lesson_access(conn, it, kind="view", now=now)
         age_s = max(0, now - it["ts"])
         age = (
             f"{age_s}s"
@@ -199,10 +207,11 @@ def lesson_list(k: int = 20) -> str:
         snippet = " ".join(it["body"].split())[:60]
         src = it["source"] or "?"
         out.append(f"  {age:>5s}  {it['slug']:30s}  src={src:8s}  {snippet}")
+    conn.commit()
     return "\n".join(out)
 
 
-@read_tool()
+@write_tool()
 def lesson_get(slug: str) -> str:
     """Return the full body of one lesson by slug. Useful when
     `lesson_list` surfaced something you want to read in full."""
@@ -210,6 +219,8 @@ def lesson_get(slug: str) -> str:
     _ensure_session(conn)
     for it in iter_lessons():
         if it["slug"] == slug:
+            record_lesson_access(conn, it, kind="use")
+            conn.commit()
             return it["body"]
     return f"ERR not_found slug={slug}"
 
@@ -239,6 +250,7 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         return f"ERR protected_lesson slug={slug} source={source}"
     if not remove_lesson(slug):
         return f"ERR remove_failed slug={slug}"
+    conn.execute("DELETE FROM lesson_usage WHERE slug=?", (slug,))
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
         "VALUES (?, 'lesson_remove', ?, ?, strftime('%s','now'))",

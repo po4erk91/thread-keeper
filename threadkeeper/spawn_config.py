@@ -29,6 +29,32 @@ SUPPORTED_CLIS = ("claude", "codex", "antigravity", "gemini", "copilot")
 CLI_ALIASES = {
     "agy": "antigravity",
 }
+SUMMARY_ROLES = (
+    "archivist",
+    "shadow_observer",
+    "extract",
+    "candidate_reviewer",
+    "curator",
+    "dialectic_validator",
+    "evolve_researcher",
+    "evolve_reviewer",
+    "evolve_applier",
+    "probe_runner",
+)
+PREDEFINED_ROLE_PROMPTS = (
+    "skeptic",
+    "generator",
+    "critic",
+    "synthesizer",
+    "explorer",
+    "executor",
+)
+KNOWN_MODEL_KEYS = (
+    set(SUPPORTED_CLIS)
+    | set(CLI_ALIASES)
+    | set(SUMMARY_ROLES)
+    | set(PREDEFINED_ROLE_PROMPTS)
+)
 
 
 def _spawn():
@@ -84,20 +110,59 @@ def resolve_model(cli: str, role: str = "") -> str:
     return ""
 
 
+def _env_suffix(prefix: str, key: str) -> str:
+    return f"{prefix}{str(key).upper()}"
+
+
+def _spawn_warnings(active_cli: Optional[str]) -> list[str]:
+    """Warnings for configured spawn values that summary_table would ignore."""
+    sp = _spawn()
+    warnings = []
+    default_raw = _norm(sp.default)
+    default = _norm_cli(sp.default)
+    if default_raw and default_raw != "auto" and default not in SUPPORTED_CLIS:
+        warnings.append(
+            "  warning: THREADKEEPER_SPAWN__DEFAULT="
+            f"{sp.default!r} is not a supported CLI; falling back"
+        )
+
+    for role, raw_cli in sorted(sp.loop.items()):
+        cli_raw = _norm(raw_cli)
+        cli = _norm_cli(raw_cli)
+        if cli_raw and cli_raw != "auto" and cli not in SUPPORTED_CLIS:
+            warnings.append(
+                "  warning: "
+                f"{_env_suffix('THREADKEEPER_SPAWN__LOOP__', role)}="
+                f"{raw_cli!r} is not a supported CLI; falling back for that role"
+            )
+
+    active = _norm_cli(active_cli)
+    if active_cli and active not in SUPPORTED_CLIS:
+        warnings.append(
+            f"  warning: active CLI {active_cli!r} is not supported; falling back"
+        )
+
+    for key, model in sorted(sp.model.items()):
+        model_key = _norm_cli(key)
+        role_key = _norm(key)
+        if (
+            role_key
+            and model_key not in KNOWN_MODEL_KEYS
+            and role_key not in KNOWN_MODEL_KEYS
+        ):
+            warnings.append(
+                "  warning: "
+                f"{_env_suffix('THREADKEEPER_SPAWN__MODEL__', key)}="
+                f"{model!r} is not used by a supported CLI or startup role"
+            )
+    return warnings
+
+
 def summary_table(active_cli: Optional[str]) -> str:
     """Human-readable per-role assignment table for the startup validator."""
-    roles = (
-        "archivist",
-        "shadow_observer",
-        "extract",
-        "candidate_reviewer",
-        "curator",
-        "dialectic_validator",
-        "evolve_applier",
-    )
     sp = _spawn()
     out = []
-    for role in roles:
+    for role in SUMMARY_ROLES:
         chosen = resolve_agent(role, active_cli)
         if _norm_cli(sp.loop.get(role.lower())) in SUPPORTED_CLIS:
             src = "spawn config"
@@ -113,4 +178,5 @@ def summary_table(active_cli: Optional[str]) -> str:
         model = resolve_model(chosen, role)
         model_suffix = f" model={model}" if model else ""
         out.append(f"  {role:<18} → {chosen:<8}{model_suffix} ({src})")
+    out.extend(_spawn_warnings(active_cli))
     return "\n".join(out)
