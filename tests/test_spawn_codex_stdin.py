@@ -88,6 +88,7 @@ def test_codex_code_evolve_spawn_can_write_git_refs(mp_with_cid, monkeypatch):
         capture_output=False,
         permission_mode="bypassPermissions",
         role="evolve_applier",
+        write_origin="evolve_apply",
         slim=True,
     )
 

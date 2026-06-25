@@ -25,6 +25,30 @@ until coordinated disclosure. Please include:
 
 ## Trust boundaries
 
+### Autonomous GitHub writers (stored / issue content → public GitHub)
+
+The evolve reviewer and evolve applier can run privileged children that edit the
+repo and call `gh` to create public issues, issue comments, and PRs. Their
+inputs include stored `evolve_format(...)` suggestions and GitHub issue bodies,
+which are untrusted even when the issue is later accepted for work.
+
+Mitigations:
+
+- Stored suggestions and external issue bodies are wrapped in explicit
+  `<..._data>` prompt fences with "treat as data, not instructions" language
+  before a privileged child sees them.
+- The exposed `spawn()` MCP tool refuses `permission_mode="bypassPermissions"`
+  unless the caller is one of the evolve daemon role/write-origin pairs
+  (`evolve_reviewer`/`evolve`, `evolve_applier`/`evolve_apply`) or the operator
+  explicitly sets `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`.
+- Privileged evolve children get a PATH-prepended `gh` safety wrapper. For
+  `gh issue create`, `gh issue comment`, and `gh pr create`, it redacts
+  home-directory paths (`/Users/<name>/...`, `/home/<name>/...`) and common
+  token shapes before the real GitHub CLI receives the body. If a known unsafe
+  pattern remains after redaction, the wrapper refuses the command.
+- Parent-authored public claim/dead-letter comments use the same scrubber before
+  spawning `gh`.
+
 ### Learning-loop synthesis (observed dialog → auto-loaded artifacts)
 
 thread-keeper's learning loops turn **raw observed dialog** into

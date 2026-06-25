@@ -662,6 +662,18 @@ public claim comment also carries only an opaque per-host token (a 6-char hash
 of the hostname), never the raw hostname/PID/git-rev; the full host identity is
 recorded in the local event log for multi-host triage.
 
+**Privilege + public-body guard (#22).** Stored evolve suggestions and external
+GitHub issue bodies are wrapped in explicit data fences before a privileged
+child sees them. The exposed `spawn()` tool refuses
+`permission_mode="bypassPermissions"` unless the request comes from the evolve
+daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
+`evolve_applier`/`evolve_apply`) or the operator explicitly opts in with
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Privileged evolve children also
+get a PATH-prepended `gh` wrapper that scrubs `gh issue create`, `gh issue
+comment`, and `gh pr create` bodies before the real GitHub CLI sees them:
+home-directory paths and common token shapes are redacted, and a body is
+refused if a known unsafe pattern remains.
+
 Fallback/manual paths remain:
 
 - `evolve_apply_curator_report(report_path="")` applies safe Curator memory
@@ -783,6 +795,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN` | "" (off) | explicit override that lets ordinary `spawn()` calls request `permission_mode="bypassPermissions"`; default off means only evolve daemon role/write-origin pairs can use the dangerous mode |
 | `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |

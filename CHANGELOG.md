@@ -264,6 +264,20 @@ version bumps follow semver per the policy in
 
 ### Security
 
+- **De-privilege and sanitize autonomous GitHub-writing daemons (#22).** The
+  evolve reviewer/applier paths no longer rely only on prompt text around their
+  public GitHub writes. `spawn()` now refuses
+  `permission_mode="bypassPermissions"` unless the call comes from the evolve
+  daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
+  `evolve_applier`/`evolve_apply`) or the operator sets
+  `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Stored evolve suggestions and
+  GitHub issue bodies are embedded in explicit data fences before a privileged
+  child sees them. Privileged evolve children also get a PATH-prepended `gh`
+  wrapper that redacts home-directory paths and common token shapes from
+  `gh issue create`, `gh issue comment`, and `gh pr create` bodies before the
+  real GitHub CLI receives them, refusing if unsafe content remains. The
+  parent-authored public claim/dead-letter comments use the same scrubber.
+
 - **Split the evolve reviewer's web research out of its privileged child (#79).**
   The reviewer was the only learning loop granted `WebSearch`/`WebFetch`, and it
   held them in the *same* `bypassPermissions` child that also had unsandboxed
