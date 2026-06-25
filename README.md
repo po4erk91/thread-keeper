@@ -60,7 +60,9 @@ Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
 package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
 interpreter environment. Dirty or diverged git checkouts are skipped rather
-than overwritten.
+than overwritten. Restarts are gated on install/setup success plus a subprocess
+import smoke check, so a broken update is recorded but the current server keeps
+running.
 
 ---
 
@@ -248,6 +250,14 @@ refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
 
+The spawn wrapper also records each completed child's `duration_s`,
+`tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
+CLI emits a recognizable usage trailer. Optional daily ceilings
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
+recorded 24h spend reaches the configured limit; both default to `0`
+(disabled), so existing installs behave the same until a budget is set.
+
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
 argv and measures the real RSS tree — they count their true memory, not
@@ -326,9 +336,14 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
   installed version changes.
 
 After a successful update, the daemon exits the current MCP process by default
-so the host can restart it on the new code. Disable that with
+so the host can restart it on the new code. Before scheduling that exit, it
+imports `threadkeeper.server` in a subprocess; install/setup/import failures are
+recorded as `auto_update_pass` with `restart=suppressed`, and the current
+known-working process stays alive. Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
-`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. Each real check records an
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. If a packaged release needs manual
+rollback, pin the previous version explicitly, for example
+`pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
 
 Manual fallback from a source checkout:
@@ -721,7 +736,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
@@ -737,6 +752,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
+| `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
@@ -862,9 +879,10 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age — the loop list is derived from the same source as
-  `agent_status`, so it covers *every* daemon including the paid-spawn
-  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  plus last-fire age and 24h spend/tokens/mutation counts — the loop list is
+  derived from the same source as `agent_status`, so it covers *every* daemon
+  including the paid-spawn `dialectic_validate` / `evolve_apply` and the
+  `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
   mutation counts: `lesson_append` / `lesson_remove`,

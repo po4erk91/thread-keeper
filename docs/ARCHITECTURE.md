@@ -102,7 +102,10 @@ and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
 `pip install --upgrade` in the current interpreter environment. Successful
 updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code.
+default true) so the host reconnects to the new code, but only after setup and a
+subprocess import smoke check both pass. Install/setup/import failures are
+recorded on the `auto_update_pass` event with `restart=suppressed`, and the
+already-running process stays alive on its current in-memory code.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -148,8 +151,10 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    batch, and `processed` is terminal. Stale claims are requeued.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
-`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
-`shadow_review_pass` (as event.kind).
+`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
+`started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
+`tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
+trailers), `shadow_review_pass` (as event.kind).
 
 ## Identity and self-cid
 
@@ -437,16 +442,28 @@ The daemon lives in every thread-keeper process, but processes requests
 The parent's cid is resolved via `tasks.parent_cid WHERE spawned_cid=self_cid`;
 if no parent is found — the request goes broadcast to any peer with embeddings.
 
-### Spawn budget (RSS cap)
+### Spawn budget (RSS + spend caps)
 
 `spawn_budget.py` enforces a cap on the **combined RSS of all running spawned
-children** (the parent itself is not counted). Default 3 GB.
+children** (the parent itself is not counted). Default 3 GB. It also checks
+optional 24h spawned-child token and dollar ceilings when
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` or
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
+(disabled), so unset budgets preserve prior behavior.
 
 - `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
-  tasks (NULL = conservative full-estimate placeholder), refuses if the new
-  child would push past the cap. ERR carries the exact numbers + how-to-override.
+  tasks (NULL = conservative full-estimate placeholder) and the recorded 24h
+  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
+  new child would push past the RSS cap or if daily token/cost spend has already
+  reached its configured ceiling. ERR carries the exact numbers +
+  how-to-override.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
+- Headless children run through `_spawn_wrap.py`, which tees the child's
+  output, parses final JSON or human-readable usage trailers when present,
+  stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
+  stores `duration_s` from the task timestamps. If no usage trailer is emitted,
+  the row still has wall-time for cost/benefit triage.
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
@@ -464,8 +481,12 @@ children** (the parent itself is not counted). Default 3 GB.
   `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
   liveness correctness).
 
-Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted).
+Tools: `spawn_budget_status()` (RSS cap/used/free/per-task plus recorded 24h
+tokens/cost and remaining daily budget), `spawn_budget_set(MB)` (runtime RSS
+override, not persisted). `mp_dashboard()` shows each loop's fire count with
+24h spawn count, recorded tokens, dollar spend, wall-time, and mutation count,
+so the #6 "is this loop worth the Opus minutes?" question has a numeric cost
+dimension from #25 instead of only fire/outcome counts.
 
 ## Learning loop
 
@@ -776,9 +797,12 @@ Tools:
 - `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
 - `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
   so we don't accidentally kill an active mcp on a false-positive classification.
+  Before sending a signal, cleanup re-reads the pid command and skips it if the
+  pid no longer belongs to the real `threadkeeper.server` process.
 - `memory_guard_status()` — show RSS guard thresholds and current server rows.
 - `memory_guard_check(dry_run=True, notify=False)` — one-shot guard pass;
-  pass `dry_run=False` to SIGTERM processes over the hard memory limit.
+  pass `dry_run=False` to SIGTERM processes over the hard memory limit. The
+  guard uses the same pid-identity recheck before hard-kill or idle-retire.
 - `memory_guard_reclaim(scope='self')` — immediately unload local
   embedding/caches; with `scope='all'` also queues peer trim requests.
 - `agent_memory_cleanup(dry_run=False)` / `tk-agent-status --cleanup-memory` —
@@ -1092,7 +1116,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after applying an update |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |

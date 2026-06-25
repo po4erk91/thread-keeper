@@ -56,7 +56,8 @@ def _mk_task(db, task_id):
 def _read(db, task_id):
     conn = db.get_db()
     return conn.execute(
-        "SELECT ended_at, return_code FROM tasks WHERE id=?", (task_id,)
+        "SELECT ended_at, return_code, tokens_in, tokens_out, tokens_total, "
+        "cost_usd, duration_s FROM tasks WHERE id=?", (task_id,)
     ).fetchone()
 
 
@@ -79,6 +80,7 @@ def test_record_sets_return_code_and_ended_at(db_mod):
     row = _read(db, "tk_r0")
     assert row["return_code"] == 0
     assert row["ended_at"] is not None
+    assert row["duration_s"] is not None
 
 
 def test_record_coalesces_existing_ended_at(db_mod):
@@ -101,6 +103,44 @@ def test_record_bad_db_never_raises(db_mod):
     w._record("", "", 0)
 
 
+def test_parse_usage_json_result_line(db_mod):
+    import threadkeeper._spawn_wrap as w
+    usage = w.parse_usage(
+        '{"type":"result","usage":{"input_tokens":1234,'
+        '"output_tokens":56},"total_cost_usd":0.0123}'
+    )
+    assert usage.tokens_in == 1234
+    assert usage.tokens_out == 56
+    assert usage.tokens_total == 1290
+    assert usage.cost_usd == 0.0123
+
+
+def test_parse_usage_codex_tokens_used_trailer(db_mod):
+    import threadkeeper._spawn_wrap as w
+    usage = w.parse_usage("codex\nanswer\ntokens used\n44,777\n")
+    assert usage.tokens_in is None
+    assert usage.tokens_out is None
+    assert usage.tokens_total == 44777
+
+
+def test_record_persists_usage_and_duration(db_mod):
+    db, db_path = db_mod
+    _mk_task(db, "tk_usage")
+    import threadkeeper._spawn_wrap as w
+    w._record(
+        db_path,
+        "tk_usage",
+        0,
+        "input tokens: 1,200\noutput tokens: 34\ntotal cost: $0.0045\n",
+    )
+    row = _read(db, "tk_usage")
+    assert row["tokens_in"] == 1200
+    assert row["tokens_out"] == 34
+    assert row["tokens_total"] == 1234
+    assert row["cost_usd"] == 0.0045
+    assert row["duration_s"] is not None
+
+
 # ── run-and-record end-to-end (real subprocess) ──────────────────────────
 
 def test_run_and_record_success(db_mod):
@@ -120,6 +160,17 @@ def test_run_and_record_failure(db_mod):
     assert r.returncode == 1
     row = _read(db, "tk_fail")
     assert row["return_code"] == 1
+
+
+def test_run_and_record_parses_child_usage_output(db_mod):
+    db, db_path = db_mod
+    _mk_task(db, "tk_usage_e2e")
+    child = "print('answer'); print('tokens used'); print('9,876')"
+    r = _run_wrap([db_path, "tk_usage_e2e", "--", sys.executable, "-c", child])
+    assert r.returncode == 0
+    assert "tokens used" in r.stdout
+    row = _read(db, "tk_usage_e2e")
+    assert row["tokens_total"] == 9876
 
 
 def test_run_missing_binary_records_127(db_mod):

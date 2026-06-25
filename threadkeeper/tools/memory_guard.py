@@ -89,6 +89,7 @@ def memory_guard_check(dry_run: bool = True, notify: bool = False) -> str:
         out.append(
             f"killed={len(result['killed'])} retired={len(result['retired'])} "
             f"trim_requested={result['reclaim_requests']['count']} "
+            f"skipped={len(result.get('skipped', []))} "
             f"failed={len(result['failed'])}"
         )
         if result.get("local_reclaim"):
@@ -99,6 +100,8 @@ def memory_guard_check(dry_run: bool = True, notify: bool = False) -> str:
             )
         for f in result["failed"]:
             out.append(f"  ERR pid={f['pid']} {f['err']}")
+        for s in result.get("skipped", []):
+            out.append(f"  SKIP pid={s['pid']} {s['action']} {s['reason']}")
     return "\n".join(out)
 
 
