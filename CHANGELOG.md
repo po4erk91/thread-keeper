@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Process-kill safety (#66).** Orphan cleanup now uses the shared
+  zombie-aware liveness helper, so a zombie parent no longer keeps its orphaned
+  `threadkeeper.server` child classified as live. Before `mp_cleanup`,
+  memory-guard hard-kill, or memory-guard idle-retire sends a signal, it
+  re-reads the current pid command and skips the signal if the pid no longer
+  resolves to a real `threadkeeper.server` process.
+
 ### Added
 
 - **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for

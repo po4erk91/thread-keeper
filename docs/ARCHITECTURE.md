@@ -775,9 +775,12 @@ Tools:
 - `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
 - `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
   so we don't accidentally kill an active mcp on a false-positive classification.
+  Before sending a signal, cleanup re-reads the pid command and skips it if the
+  pid no longer belongs to the real `threadkeeper.server` process.
 - `memory_guard_status()` — show RSS guard thresholds and current server rows.
 - `memory_guard_check(dry_run=True, notify=False)` — one-shot guard pass;
-  pass `dry_run=False` to SIGTERM processes over the hard memory limit.
+  pass `dry_run=False` to SIGTERM processes over the hard memory limit. The
+  guard uses the same pid-identity recheck before hard-kill or idle-retire.
 - `memory_guard_reclaim(scope='self')` — immediately unload local
   embedding/caches; with `scope='all'` also queues peer trim requests.
 - `agent_memory_cleanup(dry_run=False)` / `tk-agent-status --cleanup-memory` —

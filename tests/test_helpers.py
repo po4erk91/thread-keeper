@@ -67,3 +67,20 @@ def test_daemon_sleep_non_numeric_idles(monkeypatch):
     calls = _capture_sleep(monkeypatch)
     helpers.daemon_sleep("not-a-number", idle_s=30.0)
     assert calls and calls[0] > 0
+
+
+def test_alive_returns_false_for_zombie_state(monkeypatch):
+    """A pid that exists but reports ps state Z is not a live parent."""
+    monkeypatch.setattr(helpers.os, "waitpid", lambda pid, flags: (0, 0))
+    monkeypatch.setattr(helpers.os, "kill", lambda pid, sig: None)
+
+    class Result:
+        stdout = "Z\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-p", "4242", "-o", "state="]
+        return Result()
+
+    monkeypatch.setattr(helpers.subprocess, "run", fake_run)
+
+    assert helpers.alive(4242) is False
