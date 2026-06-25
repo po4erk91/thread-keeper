@@ -51,6 +51,11 @@ remains a live question.
   time behind a visible GitHub issue claim comment and PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
+- Auto-update self-restart safety gate (#19): restarts after a daily git/pip
+  self-update now require install/setup success plus a subprocess
+  `threadkeeper.server` import smoke check. Failures are recorded on
+  `auto_update_pass` with `restart=suppressed`, and the current process stays
+  alive on its already-loaded code.
 - Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
   paginated, oldest-first GitHub REST issue reads instead of a newest-first
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
@@ -443,8 +448,7 @@ Scope: M.
 Scope: S–M each.
 
 Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
-(#18), auto-update self-restart with no smoke-check/rollback (#19), and
-Antigravity transcript ingest not yet implemented (#20).
+(#18), and Antigravity transcript ingest not yet implemented (#20).
 
 Follow-up gaps from the 2026-06-17 audit:
 - Semantic lesson dedup at write time (#34).
@@ -474,9 +478,10 @@ Follow-up gaps from the 2026-06-17 audit:
   self-update installs and runs new code with **no version pin, hash, or PyPI
   attestation/signed-tag verification**, then restarts on it. A compromised
   release auto-propagates to every install within ~24h. Distinct from #19
-  (reliability smoke-check/rollback — a malicious-but-importable release passes
-  that) and #22 (GitHub-writing daemons). Verify provenance before upgrade and
-  document auto-update as standing consent to run maintainer code (#44).
+  (closed reliability smoke-check gate — a malicious-but-importable release
+  passes that) and #22 (GitHub-writing daemons). Verify provenance before
+  upgrade and document auto-update as standing consent to run maintainer code
+  (#44).
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):
@@ -636,9 +641,10 @@ verified at the cited file:line, deduplicated against the issues above):
   Distinct from the lessons-only decay item (#27) (#75).
 
 Also folded into existing issues rather than filed anew: auto-update restarts
-even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
-the write-time dedup gate `lesson_append` has (→ #34); `agent_status` log-sample
-scraping resurfaces unredacted child `gh`/`git` output (→ #37).
+even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
+`dialectic_claim` lacks the write-time dedup gate `lesson_append` has (→ #34);
+`agent_status` log-sample scraping resurfaces unredacted child `gh`/`git` output
+(→ #37).
 
 Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
 read-only subsystem audits, each finding re-verified at the cited file:line and

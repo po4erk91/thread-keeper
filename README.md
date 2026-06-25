@@ -60,7 +60,9 @@ Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
 package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
 interpreter environment. Dirty or diverged git checkouts are skipped rather
-than overwritten.
+than overwritten. Restarts are gated on install/setup success plus a subprocess
+import smoke check, so a broken update is recorded but the current server keeps
+running.
 
 ---
 
@@ -317,9 +319,14 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
   installed version changes.
 
 After a successful update, the daemon exits the current MCP process by default
-so the host can restart it on the new code. Disable that with
+so the host can restart it on the new code. Before scheduling that exit, it
+imports `threadkeeper.server` in a subprocess; install/setup/import failures are
+recorded as `auto_update_pass` with `restart=suppressed`, and the current
+known-working process stays alive. Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
-`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. Each real check records an
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. If a packaged release needs manual
+rollback, pin the previous version explicitly, for example
+`pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
 
 Manual fallback from a source checkout:
@@ -712,7 +719,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |

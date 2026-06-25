@@ -36,6 +36,8 @@ from . import identity
 logger = logging.getLogger(__name__)
 
 PACKAGE_NAME = "threadkeeper"
+SMOKE_IMPORT_CODE = "import threadkeeper; from threadkeeper import server"
+FAILED_UPDATE_MARKERS = (" install=failed", " setup=failed", " smoke=failed")
 _started = False
 _restart_scheduled = False
 
@@ -194,6 +196,31 @@ def _run_setup() -> str:
     return " setup=ok"
 
 
+def _run_post_update_smoke_check() -> str:
+    try:
+        smoke = _run(
+            [sys.executable, "-c", SMOKE_IMPORT_CODE],
+            timeout=min(30, AUTO_UPDATE_TIMEOUT_S),
+        )
+    except Exception as e:  # noqa: BLE001 — smoke failure must not crash daemon
+        return f" smoke=failed err={_short(f'{type(e).__name__}: {e}')}"
+    if smoke.returncode != 0:
+        return f" smoke=failed err={_short(smoke.stderr or smoke.stdout)}"
+    return " smoke=ok"
+
+
+def _updated_result_allows_restart(result: str) -> bool:
+    return result.startswith("updated ") and not any(
+        marker in result for marker in FAILED_UPDATE_MARKERS
+    )
+
+
+def _suppress_restart(result: str) -> str:
+    if " restart=suppressed" in result:
+        return result
+    return f"{result} restart=suppressed"
+
+
 def _update_git_checkout(repo: Path) -> str:
     code, dirty, err = _git_stdout(
         repo, "status", "--porcelain", "--untracked-files=no"
@@ -305,6 +332,8 @@ def run_auto_update_pass(
         if not is_due:
             return f"not_due age_s={age}"
 
+    should_restart = AUTO_UPDATE_RESTART if restart_on_update is None else restart_on_update
+    restart_ready = False
     with _update_lock() as locked:
         if not locked:
             return "update_running"
@@ -313,10 +342,15 @@ def run_auto_update_pass(
         except Exception as e:  # noqa: BLE001 — never crash daemon thread
             logger.debug("auto_update: pass failed", exc_info=True)
             result = f"error {type(e).__name__}: {e}"
+        if should_restart and result.startswith("updated "):
+            if _updated_result_allows_restart(result):
+                result += _run_post_update_smoke_check()
+                restart_ready = _updated_result_allows_restart(result)
+            if not restart_ready:
+                result = _suppress_restart(result)
 
     _record_auto_update_pass(result)
-    should_restart = AUTO_UPDATE_RESTART if restart_on_update is None else restart_on_update
-    if should_restart and result.startswith("updated "):
+    if should_restart and restart_ready:
         _schedule_restart()
     return result
 
