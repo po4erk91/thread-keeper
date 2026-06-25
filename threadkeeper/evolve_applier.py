@@ -166,7 +166,8 @@ ROADMAP_ISSUE_DEAD_LETTER_KIND = "roadmap_issue_dead_letter"
 ROADMAP_ISSUE_BLOCKED_LABEL = "blocked"
 # Upper bound on the escalating backoff window regardless of attempt count.
 ROADMAP_ISSUE_BACKOFF_CAP_S = 30 * 24 * 60 * 60
-ROADMAP_ISSUE_FETCH_LIMIT = 50
+ROADMAP_ISSUE_FETCH_LIMIT = 1000
+ROADMAP_ISSUE_FETCH_PAGE_SIZE = 100
 ROADMAP_ISSUE_CLAIM_MARKER = "<!-- thread-keeper:evolve-applier-claim -->"
 ROADMAP_ISSUE_CLAIM_TTL_S = 24 * 60 * 60
 
@@ -633,17 +634,24 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
     (OWNER/MEMBER/COLLABORATOR/…), which the `gh issue list --json` field set
     does not expose. The REST `/issues` endpoint also returns pull requests (a
     PR is an issue in GitHub's data model); those are filtered out so the
-    applier never treats a PR as backlog. Returned dicts keep the prior
-    internal shape (`number/title/labels/body/url`) plus the new
-    `authorAssociation`/`authorLogin` fields the gate reads.
+    applier never treats a PR as backlog.
+
+    Pagination is explicit and oldest-first (`sort=created&direction=asc`) so
+    the downstream roadmap/FIFO drain sees the oldest open issues even when the
+    backlog grows past one GitHub page. A generous local window is retained only
+    as a runaway guard; if it truncates, a warning records the exact overflow so
+    an operator does not mistake a cap for an empty/startable-free queue.
+    Returned dicts keep the prior internal shape (`number/title/labels/body/url`)
+    plus the `authorAssociation`/`authorLogin` fields the gate reads.
     """
     repo = str(repo_root or _repo_root())
     cmd = [
-        "gh", "api",
+        "gh", "api", "--paginate", "--slurp",
         "-H", "Accept: application/vnd.github+json",
         (
             "repos/{owner}/{repo}/issues"
-            f"?state=open&per_page={ROADMAP_ISSUE_FETCH_LIMIT}"
+            "?state=open&sort=created&direction=asc"
+            f"&per_page={ROADMAP_ISSUE_FETCH_PAGE_SIZE}"
         ),
     ]
     try:
@@ -671,13 +679,33 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
         return [], f"gh_issue_list_bad_json: {e}"
     if not isinstance(data, list):
         return [], "gh_issue_list_bad_shape"
+    if data and all(isinstance(page, list) for page in data):
+        items = [
+            item
+            for page in data
+            for item in page
+            if isinstance(item, dict)
+        ]
+    else:
+        # Defensive fallback for tests/older gh behavior without --slurp.
+        items = [item for item in data if isinstance(item, dict)]
+    open_issues = [
+        item for item in items
+        if not item.get("pull_request")
+    ]
+    total_open = len(open_issues)
+    if total_open > ROADMAP_ISSUE_FETCH_LIMIT:
+        skipped = total_open - ROADMAP_ISSUE_FETCH_LIMIT
+        logger.warning(
+            "evolve_applier: %d open GitHub issues exceeds roadmap issue fetch "
+            "window %d; %d newest issue(s) not considered",
+            total_open,
+            ROADMAP_ISSUE_FETCH_LIMIT,
+            skipped,
+        )
+        open_issues = open_issues[:ROADMAP_ISSUE_FETCH_LIMIT]
     out: list[dict] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        if item.get("pull_request"):
-            # REST /issues includes PRs; the applier only drains real issues.
-            continue
+    for item in open_issues:
         user = item.get("user")
         login = user.get("login") if isinstance(user, dict) else ""
         out.append({
@@ -1316,7 +1344,9 @@ def _open_roadmap_issues(
     The user treats all open issues as roadmap backlog; issues with the
     explicit `roadmap` label are prioritized first, then FIFO by number. Active
     issue-claim comments are skipped so multiple appliers do not start the same
-    item in parallel.
+    item in parallel. The upstream issue fetch is paginated oldest-first before
+    this sort, so FIFO applies across the whole visible backlog rather than a
+    newest-first GitHub CLI window.
 
     When `enforce_author_trust` is set (the autonomous-drain default), issues
     whose author is not trusted (`_issue_author_trusted`) are skipped — this

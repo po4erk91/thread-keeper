@@ -332,6 +332,22 @@ CREATE TABLE IF NOT EXISTS skill_usage (
                       CHECK(state IN ('active','stale','archived'))
 );
 
+-- Lesson usage telemetry. One row per lessons.md slug so the curator can
+-- distinguish frequently-pulled lessons from never-consulted entries.
+-- pinned=1 and tier='validated' opt out of decay/compost recommendations.
+CREATE TABLE IF NOT EXISTS lesson_usage (
+    slug           TEXT PRIMARY KEY,
+    created_at     INTEGER NOT NULL,
+    source         TEXT,
+    last_used_at   INTEGER,
+    last_viewed_at INTEGER,
+    use_count      INTEGER NOT NULL DEFAULT 0,
+    view_count     INTEGER NOT NULL DEFAULT 0,
+    pinned         INTEGER NOT NULL DEFAULT 0,
+    tier           TEXT NOT NULL DEFAULT 'hypothesis'
+                   CHECK(tier IN ('hypothesis','observed','validated'))
+);
+
 -- Auto-extraction queue: heuristic candidates for note/concept/distill that
 -- a session can review in batch and accept/reject — saves manual scanning.
 CREATE TABLE IF NOT EXISTS extract_candidates (
@@ -443,6 +459,8 @@ CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status,
 CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
+CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
+CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     content, content='notes', content_rowid='id'

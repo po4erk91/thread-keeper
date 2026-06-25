@@ -55,6 +55,15 @@ remains a live question.
   `threadkeeper.server` import smoke check. Failures are recorded on
   `auto_update_pass` with `restart=suppressed`, and the current process stays
   alive on its already-loaded code.
+- Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
+  paginated, oldest-first GitHub REST issue reads instead of a newest-first
+  50-item window. The applier still prioritizes `roadmap` labels then FIFO by
+  issue number locally; if its generous candidate window ever truncates, it logs
+  exactly how many open issues were not considered.
+- Config typo visibility (#88): startup and hot-config reload now warn on
+  unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
+  `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
+  CLI / unused model-key warnings beside the fallback resolution table.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
@@ -264,6 +273,13 @@ inventories (#35); and making the curator's `PRUNE_CONCEPT` /
 `CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
 tool exists today (#75). Scope: S–M each.
 
+Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
+`lesson_get` update `lesson_usage` counters, and curator dry runs include a
+ranked `STALE LESSONS` advisory section using
+`access_frequency × exp(-days_since_access / tau)`. The decay list excludes
+foreground/user, pinned, and validated lessons and is not an automatic deletion
+path.
+
 **Concepts store lifecycle.** ✅ DONE (#75). The `concepts` table was
 write-only / grow-only: no remove/consolidate/confidence tool, auto-registered
 entries piling up, and `last_evidence_at` frozen at registration so the
@@ -419,8 +435,10 @@ Scope: M.
 - **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
   "invalidate, don't delete") so a superseded preference records *when* it
   stopped being valid, enabling time-scoped user-model queries. (#28)
-- **Decay/eviction** scoring for the saturating ~1054-section lessons store
-  (the curator ages skills but not lessons; mem0 Ebbinghaus pattern). (#27)
+- **Decay/eviction** scoring for the saturating ~1054-section lessons store.
+  ✅ DONE — lesson reads now update `lesson_usage`, and the curator dry-run
+  inventory surfaces ranked stale lesson candidates using a recency/frequency
+  decay score while excluding pinned/validated/protected entries. (#27)
 - Note: MCP **sampling** (host-run completions, which would let daemons skip
   paid spawn children entirely) remains *unsupported* on Claude Code
   (anthropics/claude-code#1785) — tracked, not actionable yet. The slim-spawn
