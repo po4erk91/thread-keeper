@@ -27,8 +27,10 @@ land at the bottom (chronological).
 """
 from __future__ import annotations
 
+import math
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 from typing import Iterator, Optional
@@ -87,6 +89,20 @@ _BLOCK_RE = re.compile(
     r"<!-- LESSON:END slug=(?P=slug) -->",
     re.DOTALL,
 )
+
+
+LESSON_DECAY_TAU_DAYS = 45
+LESSON_STALE_AFTER_DAYS = 30
+LESSON_STALE_MAX_PULLS = 1
+LESSON_STALE_REPORT_LIMIT = 20
+
+
+def _row_dict(row) -> dict:
+    if row is None:
+        return {}
+    if hasattr(row, "keys"):
+        return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def append_lesson(
@@ -182,6 +198,184 @@ def count_lessons(path: Optional[Path] = None) -> int:
     if not fp.exists():
         return 0
     return len(_BLOCK_RE.findall(fp.read_text()))
+
+
+def ensure_lesson_usage(
+    conn: sqlite3.Connection,
+    item: dict,
+    *,
+    now: Optional[int] = None,
+) -> None:
+    """Ensure a lesson_usage row exists for a lessons.md item.
+
+    The filesystem store remains canonical for lesson body/source/ts. This
+    side table is telemetry only: access counters, optional pin/tier fields,
+    and timestamps used by decay scoring.
+    """
+    slug = item.get("slug") or ""
+    if not slug:
+        return
+    now_t = int(now or time.time())
+    created = int(item.get("ts") or now_t)
+    source = item.get("source") or ""
+    conn.execute(
+        "INSERT INTO lesson_usage (slug, created_at, source) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT(slug) DO UPDATE SET "
+        "source=CASE "
+        "  WHEN excluded.source IS NOT NULL AND excluded.source != '' "
+        "  THEN excluded.source ELSE lesson_usage.source END",
+        (slug, created, source),
+    )
+
+
+def record_lesson_access(
+    conn: sqlite3.Connection,
+    item: dict,
+    *,
+    kind: str,
+    now: Optional[int] = None,
+) -> None:
+    """Bump access telemetry for a lesson.
+
+    kind='view' records that the lesson appeared in lesson_list output.
+    kind='use' records that lesson_get returned the lesson body.
+    """
+    if kind not in {"view", "use"}:
+        raise ValueError(f"unknown lesson access kind: {kind}")
+    slug = item.get("slug") or ""
+    if not slug:
+        return
+    now_t = int(now or time.time())
+    ensure_lesson_usage(conn, item, now=now_t)
+    if kind == "view":
+        conn.execute(
+            "UPDATE lesson_usage "
+            "SET last_viewed_at=?, view_count=view_count + 1 "
+            "WHERE slug=?",
+            (now_t, slug),
+        )
+    else:
+        conn.execute(
+            "UPDATE lesson_usage "
+            "SET last_used_at=?, use_count=use_count + 1 "
+            "WHERE slug=?",
+            (now_t, slug),
+        )
+
+
+def lesson_usage_map(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Return lesson_usage rows keyed by slug, or {} when the table is absent."""
+    try:
+        rows = conn.execute("SELECT * FROM lesson_usage").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {r["slug"]: _row_dict(r) for r in rows}
+
+
+def lesson_protection(item: dict, usage: Optional[dict] = None) -> tuple[bool, str]:
+    """Return (protected, reason) for curator decay handling."""
+    usage = usage or {}
+    source = (usage.get("source") or item.get("source") or "").strip().lower()
+    if source in {"foreground", "user"}:
+        return True, source
+    if int(usage.get("pinned") or 0):
+        return True, "pinned"
+    if (usage.get("tier") or "hypothesis") == "validated":
+        return True, "validated"
+    return False, ""
+
+
+def lesson_retention_score(
+    item: dict,
+    usage: Optional[dict] = None,
+    *,
+    now: Optional[int] = None,
+    tau_days: float = LESSON_DECAY_TAU_DAYS,
+) -> dict:
+    """Compute recency/frequency retention metadata for one lesson.
+
+    score = access_frequency * exp(-days_since_access / tau)
+    where access_frequency is pull_count per day since lesson creation.
+    """
+    usage = usage or {}
+    now_t = int(now or time.time())
+    created = int(usage.get("created_at") or item.get("ts") or now_t)
+    lesson_ts = int(item.get("ts") or created)
+    last_used = int(usage.get("last_used_at") or 0)
+    last_viewed = int(usage.get("last_viewed_at") or 0)
+    # A freshly written/replaced lesson should not be considered stale before
+    # anyone has had a chance to read it, so the file timestamp is a freshness
+    # baseline when no access timestamp exists.
+    last_access = max(last_used, last_viewed, lesson_ts, created)
+    use_count = int(usage.get("use_count") or 0)
+    view_count = int(usage.get("view_count") or 0)
+    pull_count = use_count + view_count
+    age_days = max(0.0, (now_t - last_access) / 86400.0)
+    lifetime_days = max(1.0, (now_t - min(created, lesson_ts)) / 86400.0)
+    access_frequency = pull_count / lifetime_days
+    tau = max(1.0, float(tau_days))
+    score = access_frequency * math.exp(-age_days / tau)
+    protected, reason = lesson_protection(item, usage)
+    return {
+        "slug": item.get("slug") or usage.get("slug") or "",
+        "source": usage.get("source") or item.get("source") or "",
+        "created_at": created,
+        "lesson_ts": lesson_ts,
+        "last_used_at": last_used or None,
+        "last_viewed_at": last_viewed or None,
+        "last_access_at": last_access,
+        "use_count": use_count,
+        "view_count": view_count,
+        "pull_count": pull_count,
+        "pinned": int(usage.get("pinned") or 0),
+        "tier": usage.get("tier") or "hypothesis",
+        "protected": protected,
+        "protected_reason": reason,
+        "age_days": age_days,
+        "access_frequency": access_frequency,
+        "decay_score": score,
+    }
+
+
+def rank_stale_lessons(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    stale_after_days: int = LESSON_STALE_AFTER_DAYS,
+    low_pull_count: int = LESSON_STALE_MAX_PULLS,
+    tau_days: float = LESSON_DECAY_TAU_DAYS,
+    limit: int = LESSON_STALE_REPORT_LIMIT,
+) -> list[dict]:
+    """Rank advisory stale-lesson candidates by increasing retention score.
+
+    This function never mutates lessons.md and never returns protected lessons.
+    It is the dry-run signal the curator can surface before any human decides
+    whether an old lesson should be composted.
+    """
+    now_t = int(now or time.time())
+    usage = lesson_usage_map(conn)
+    ranked: list[dict] = []
+    for item in iter_lessons():
+        score = lesson_retention_score(
+            item, usage.get(item["slug"]), now=now_t, tau_days=tau_days,
+        )
+        if score["protected"]:
+            continue
+        if score["age_days"] < stale_after_days:
+            continue
+        if score["pull_count"] > low_pull_count:
+            continue
+        ranked.append(score)
+    ranked.sort(
+        key=lambda s: (
+            s["decay_score"],
+            s["pull_count"],
+            -s["age_days"],
+            s["slug"],
+        )
+    )
+    return ranked[:max(1, int(limit))]
 
 
 def get_path() -> Path:
