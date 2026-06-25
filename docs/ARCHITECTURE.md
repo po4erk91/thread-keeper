@@ -24,6 +24,7 @@ threadkeeper/
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
+├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -952,6 +953,30 @@ their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
 
+### MCP elicitation (#26)
+
+Elicitation is a **client feature**: the server can ask the host to collect
+structured user input while a tool call is in progress. thread-keeper keeps this
+behind a thin helper in `elicitation.py`:
+
+- `supports_form_elicitation(ctx)` probes request metadata first
+  (`io.modelcontextprotocol/clientCapabilities`), then the SDK's
+  initialize-time session capabilities. If no form-mode elicitation capability
+  is present, the caller uses its existing fallback behavior.
+- `elicit_confirm_reject(ctx, message)` sends `elicitation/create` through
+  `Context.elicit()` only after that probe passes. Decline, cancel, invalid, and
+  transport-error paths are non-mutating.
+- Schemas stay **flat** and spec-valid: root object only, primitive fields only.
+  The shared `ConfirmRejectForm` has one string enum field,
+  `decision in {"confirm", "reject"}`; no nested objects, arrays of objects, or
+  sensitive data collection.
+
+The first wired flow is `dialectic_supersede`. On supported hosts, replacing a
+user-model claim prompts with a confirm/reject form before writing the new claim
+and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
+clients, older Claude clients), behavior is unchanged: the tool applies
+immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
+
 ## Tests
 
 ```
@@ -1147,6 +1172,12 @@ agent in the right direction:
 Pattern for future nudges: short section, compact format, explicit
 "→ consider X" line. Fire only when the not-doing-it cost > the brief
 real-estate cost.
+
+For high-stakes writes, nudges are now complemented by MCP elicitation when the
+host advertises it. `dialectic_supersede` is the first protected flow: a
+supported host shows a structured confirm/reject dialog; unsupported hosts keep
+the old text/tool path so Codex, Claude Desktop, Antigravity, and generic MCP
+clients do not regress.
 
 ## What is NOT done
 

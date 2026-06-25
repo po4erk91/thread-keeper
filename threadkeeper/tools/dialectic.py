@@ -59,9 +59,12 @@ import sqlite3
 import time
 from typing import Optional
 
+from mcp.server.fastmcp import Context
+
 from .._mcp import read_tool, write_tool
 from ..config import WRITE_ORIGIN
 from ..db import get_db
+from ..elicitation import elicit_confirm_reject
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
 
@@ -561,8 +564,9 @@ def dialectic_synthesis(domain: str = "") -> str:
 
 
 @write_tool()
-def dialectic_supersede(old_claim_id: str, new_claim: str,
-                        domain: str = "", quote: str = "") -> str:
+async def dialectic_supersede(old_claim_id: str, new_claim: str,
+                              domain: str = "", quote: str = "",
+                              ctx: Context | None = None) -> str:
     """Retire `old_claim_id` and register `new_claim` that refines or
     replaces it. The old claim moves to state='superseded' with
     superseded_by=<new_id>; its evidence is preserved (not deleted).
@@ -571,6 +575,10 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     piece of evidence sourced as 'supersede:<old_id>'.
 
     If `domain` is empty, the new claim inherits the old claim's domain.
+
+    On hosts that advertise MCP form-mode elicitation, this asks the user to
+    confirm/reject the supersede before mutating. Hosts without elicitation keep
+    the prior behavior and apply immediately.
 
     Returns: 'ok new=<UCxxx> old=<UCxxx> conf=<level> tier=<tier>'."""
     old_id = old_claim_id.strip()
@@ -582,7 +590,8 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     conn = get_db()
     _ensure_session(conn)
     old = conn.execute(
-        "SELECT id, domain, state FROM user_dialectic WHERE id=?", (old_id,)
+        "SELECT id, claim, domain, state FROM user_dialectic WHERE id=?",
+        (old_id,)
     ).fetchone()
     if not old:
         return f"ERR old_claim_not_found={old_id}"
@@ -591,6 +600,20 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     dom = domain.strip() or old["domain"] or None
     if dom and len(dom) > 64:
         return "ERR domain_too_long max=64"
+
+    decision = await elicit_confirm_reject(
+        ctx,
+        "Supersede this user-model claim?\n\n"
+        f"Old ({old_id}): {old['claim']}\n\n"
+        f"New: {new_claim}",
+    )
+    if decision in {"reject", "decline", "cancel"}:
+        return f"{decision} no_change old={old_id}"
+    if decision == "invalid":
+        return "ERR elicitation_invalid_response"
+    if decision == "error":
+        return "ERR elicitation_failed"
+
     cid = _detect_self_cid()
     pid = gen_dialectic_id(conn)
     now_t = int(time.time())

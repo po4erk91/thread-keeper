@@ -434,10 +434,13 @@ ceilings, `spawn_budget_status()` shows recorded spend vs remaining budget, and
 mutation count.
 
 **Research-driven memory upgrades** (sourced):
-- MCP **elicitation** — now shipping in Claude Code v2.1.76 — for high-stakes
-  confirmations (supersede, curator apply, the under-used `review_candidates`
-  flow), replacing ignorable text nudges with a real confirm/choose dialog,
-  graceful fallback where unsupported. (#26)
+- ✅ DONE (#26). MCP **elicitation** first slice: high-stakes
+  `dialectic_supersede` now probes the host's form-mode elicitation capability
+  and, when supported, sends a flat confirm/reject form before replacing a
+  user-model claim. Unsupported hosts keep the old immediate tool behavior and
+  existing text-nudge fallback, so Codex / Claude Desktop / Antigravity /
+  generic MCP clients do not regress. Curator apply and `review_candidates`
+  remain natural follow-on flows if more coverage is needed.
 - **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
   "invalidate, don't delete") so a superseded preference records *when* it
   stopped being valid, enabling time-scoped user-model queries. (#28)

@@ -18,6 +18,14 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **MCP elicitation confirmations (#26).** High-stakes memory writes can now use
+  host-native MCP form elicitation when the client advertises it. The shared
+  helper probes per-request / session capabilities, sends only flat primitive
+  schemas, and treats reject/decline/cancel/error as non-mutating outcomes. The
+  first protected flow is `dialectic_supersede`: supported hosts show a
+  confirm/reject dialog before replacing a user-model claim; unsupported hosts
+  keep the previous immediate tool behavior and text-nudge fallback.
+
 - **Per-spawn token/cost accounting and daily spend budgets (#25).** Spawned
   children now write more than `return_code`: `_spawn_wrap.py` tees the child
   output, parses JSON result lines and common CLI usage trailers, and stores
