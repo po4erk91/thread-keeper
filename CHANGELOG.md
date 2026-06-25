@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
+  dialectic mining, dialectic-validator pending cleanup, and passive skill-use
+  foreground promotion now share `threadkeeper.harvest`: a recursive
+  provenance boundary that excludes internal prompt sessions, spawn preambles,
+  direct `tasks.spawned_cid` children, native `agent-*` parent cids, and
+  descendants reached through `tasks.parent_cid -> tasks.spawned_cid`. Raw
+  dialog ingest still persists those rows for diagnostics, but the learning
+  loops no longer treat native autonomous descendants as user-facing signal.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

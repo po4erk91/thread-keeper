@@ -448,6 +448,14 @@ optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 CLI-agnostic fallback for clients without a native skills loader (Gemini
 legacy, Copilot, bare MCP).
 
+**Harvest boundary (issue #36).** The dialog-reading loops share
+`threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
+still persisted for diagnostics, but shadow-review, extract, dialectic mining,
+dialectic validation cleanup, and passive skill-use foreground promotion all
+exclude autonomous child lineage: known internal prompt openers, spawn
+preambles, direct `tasks.spawned_cid` rows, native `agent-*` parent cids, and
+descendants reached through `tasks.parent_cid → tasks.spawned_cid`.
+
 **Injection fence + provenance (issue #76).** The synthesis input is *raw
 observed dialog* — which routinely echoes content the agent read from
 untrusted web pages, files, issues, or pasted text (and, under multi-user
@@ -486,7 +494,7 @@ into every configured skills root. Opt in with
 Every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` seconds (default off,
 900 = 15 min recommended) scans the diff of `dialog_messages` since
 the last cursor **across all CLIs at once**. The window filters
-internal review-child sessions (no self-pollution) and strips adapter
+autonomous child lineage (no self-pollution) and strips adapter
 `[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
 ≥500 chars of meaningful signal remain, spawns a slim observer child
 that decides on class-level learning. It is single-flight across the shared
@@ -508,8 +516,8 @@ matchers: locale-aware "I want / next time / always" patterns,
 headers + insight markers, bullet regularities, and paraphrase
 clusters via cosine ≥ 0.80. Each match enqueues a row in
 `extract_candidates.status='pending'`. Same self-pollution filter as
-shadow_review (internal review-child sessions excluded) plus
-message-level noise filter (compaction summaries, SKILL.md
+shadow_review (autonomous child lineage excluded) plus message-level noise
+filter (compaction summaries, SKILL.md
 injections, subagent role prompts, test-runner log dumps).
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests

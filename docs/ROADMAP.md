@@ -311,13 +311,18 @@ framing ("You are auditing…", "You are analyzing whether…", "Use the
 Write tool to…") slipped through. Fix: extract_recent now also excludes
 any session whose cid is a `tasks.spawned_cid` (reusing the
 `ingest._is_spawned_child_session` provenance link) — kills the whole
-class regardless of wording. Remaining open: even with self-noise gone,
-the surviving heuristics (H2 long_insight on assistant summaries, H3
-example_regularity on bulleted reports) still over-fire on work
-artifacts; a precision re-measurement after a few real sessions decides
-whether they need tightening or a similarity-scorer (the ML-extraction
-item above). Auto-flow-to-notes is explicitly NOT pursued — at the
-observed precision it would inject garbage. Scope of remainder: S.
+class regardless of wording. ✅ DONE (#36) extends that boundary into a
+shared recursive lineage filter for shadow-review, extract, dialectic mining,
+dialectic-validator cleanup, and passive skill-use foreground promotion:
+native Agent/Workflow `agent-*` parent cids and descendants reached through
+`tasks.parent_cid -> tasks.spawned_cid` are excluded even when their prompt has
+no daemon spawn marker. Remaining open: even with self-noise gone, the
+surviving heuristics (H2 long_insight on assistant summaries, H3
+example_regularity on bulleted reports) still over-fire on work artifacts; a
+precision re-measurement after a few real sessions decides whether they need
+tightening or a similarity-scorer (the ML-extraction item above).
+Auto-flow-to-notes is explicitly NOT pursued — at the observed precision it
+would inject garbage. Scope of remainder: S.
 
 ---
 
@@ -465,7 +470,8 @@ Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
 Follow-up gaps from the 2026-06-17 audit:
 - Semantic lesson dedup at write time (#34).
 - Curator pass debounce / unchanged-inventory coalescing (#35).
-- Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
+- ✅ DONE (#36). Full-lineage harvest exclusion for native Agent/Workflow
+  descendants.
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
 - Shared GitHub API budget/backoff across roadmap automation (#38).

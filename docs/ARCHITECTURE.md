@@ -541,7 +541,8 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 1. _last_shadow_rowid(): ingest-order high-water mark from
    events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
 2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
-   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own.
+   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own — then
+   apply the shared harvest lineage exclusion from `threadkeeper.harvest`.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
@@ -564,6 +565,15 @@ whose `created_at` lands below the cursor — still gets a fresh rowid above it
 and is reviewed exactly once (a `created_at` cursor silently stepped over it).
 Idempotent: the monotonic rowid advance means a repeated tick will not
 re-evaluate (or re-spawn on) what it has already seen.
+
+Harvest boundary (#36): raw transcript ingest keeps autonomous child rows for
+diagnostics, but dialog-derived memory loops must not learn from their own
+exhaust. `threadkeeper.harvest` builds a recursive excluded-session set from
+known internal prompt openers, spawn preambles, direct `tasks.spawned_cid`
+children, native `agent-*` parent cids, and descendants reached through
+`tasks.parent_cid -> tasks.spawned_cid`. `shadow_review`, `extract_recent`,
+`dialectic_miner`, dialectic-validator pending cleanup, and passive skill-use
+foreground promotion all consult this same boundary.
 SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
 a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
@@ -613,8 +623,10 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
   from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
   the curator gets real numbers without the agent being required to call
-  `skill_record` manually. The `skill_watcher` daemon catches external edits
-  to `SKILL.md` (Edit/Write directly, not through skill_manage).
+  `skill_record` manually. `foreground_use_count` is gated by the same harvest
+  lineage exclusion, so autonomous child self-use cannot promote a skill tier.
+  The `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
+  directly, not through skill_manage).
 
 - **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
   `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
