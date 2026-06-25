@@ -72,6 +72,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "Checks the installed thread-keeper package or git checkout and applies "
         "safe daily updates when a newer version is available."
     ),
+    "skill_update": (
+        "Checks installed Skill.md directories for local mirror drift and "
+        "source-tracked upstream updates, then mirrors successful updates."
+    ),
 }
 
 _LOOP_DEFS: tuple[dict[str, Any], ...] = (
@@ -225,6 +229,16 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "interval": "AUTO_UPDATE_INTERVAL_S",
         "description": _ROLE_DESCRIPTIONS["auto_update"],
         "work": "Checks for and applies safe thread-keeper updates",
+    },
+    {
+        "id": "skill_update",
+        "name": "Skill updater",
+        "event": "skill_update_pass",
+        "interval": "SKILL_UPDATE_INTERVAL_S",
+        "description": _ROLE_DESCRIPTIONS["skill_update"],
+        "work": "Checks installed skills for updates and mirrors them",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_label": "tracked skills",
     },
 )
 
@@ -748,6 +762,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "killed": guard.get("killed", []),
             "retired": guard.get("retired", []),
             "failed": guard.get("failed", []),
+            "skipped": guard.get("skipped", []),
             "aggregate": guard.get("aggregate", {}),
             "reclaim_requests": guard.get("reclaim_requests", {}),
             "local_reclaim": guard.get("local_reclaim"),
@@ -757,6 +772,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "count": len(orphan_cleanup.get("orphans", [])),
             "killed": orphan_cleanup.get("killed", []),
             "failed": orphan_cleanup.get("failed", []),
+            "skipped": orphan_cleanup.get("skipped", []),
         },
     }
 
@@ -781,10 +797,12 @@ def format_memory_cleanup(result: dict[str, Any]) -> str:
         (
             f"guard warn={guard['warn']} kill={guard['kill']} "
             f"killed={len(guard['killed'])} retired={len(guard['retired'])} "
+            f"skipped={len(guard.get('skipped', []))} "
             f"failed={len(guard['failed'])}"
         ),
         (
             f"orphans={orphans['count']} killed={len(orphans['killed'])} "
+            f"skipped={len(orphans.get('skipped', []))} "
             f"failed={len(orphans['failed'])}"
         ),
     ]

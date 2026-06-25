@@ -1067,7 +1067,13 @@ def spawn_budget_status() -> SpawnBudgetStatus:
     resolves past SPAWN_VISIBLE_TTL_S (#64).
 
     Returns structuredContent (SpawnBudgetStatus) plus the legacy text block."""
-    from ..config import SPAWN_BUDGET_MB, SPAWN_BUDGET_POLL_S
+    from ..config import (
+        SPAWN_BUDGET_MB,
+        SPAWN_BUDGET_POLL_S,
+        SPAWN_TOKEN_BUDGET,
+        SPAWN_COST_BUDGET_USD,
+    )
+    from ..spawn_budget import _daily_spawn_usage
     conn = get_db()
     _ensure_session(conn)
     _refresh_tasks(conn)
@@ -1082,16 +1088,31 @@ def spawn_budget_status() -> SpawnBudgetStatus:
     )
     enabled = SPAWN_BUDGET_MB > 0
     free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb) if enabled else None
+    tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
+    token_enabled = SPAWN_TOKEN_BUDGET > 0
+    cost_enabled = SPAWN_COST_BUDGET_USD > 0
+    tokens_free = (
+        max(0, SPAWN_TOKEN_BUDGET - tokens_24h) if token_enabled else None
+    )
+    cost_free = (
+        max(0.0, SPAWN_COST_BUDGET_USD - cost_24h) if cost_enabled else None
+    )
+    spend_suffix = (
+        f" tokens_24h={tokens_24h}"
+        + (f"/{SPAWN_TOKEN_BUDGET}" if token_enabled else "")
+        + f" cost_24h=${cost_24h:.4f}"
+        + (f"/${SPAWN_COST_BUDGET_USD:.4f}" if cost_enabled else "")
+    )
     if not enabled:
         header = (
             f"budget=disabled used={used_kb // 1024}MB "
-            f"running={len(rows)}"
+            f"running={len(rows)}{spend_suffix}"
         )
     else:
         header = (
             f"budget={SPAWN_BUDGET_MB}MB used={used_kb // 1024}MB "
             f"free={free_kb // 1024}MB running={len(rows)} "
-            f"poll={SPAWN_BUDGET_POLL_S}s"
+            f"poll={SPAWN_BUDGET_POLL_S}s{spend_suffix}"
         )
     tasks: list[SpawnTaskRss] = []
     lines = [header]
@@ -1118,6 +1139,14 @@ def spawn_budget_status() -> SpawnBudgetStatus:
         cap_mb=SPAWN_BUDGET_MB if enabled else None,
         used_mb=used_kb // 1024,
         free_mb=(free_kb // 1024) if free_kb is not None else None,
+        token_budget_enabled=token_enabled,
+        token_budget=SPAWN_TOKEN_BUDGET if token_enabled else None,
+        tokens_24h=tokens_24h,
+        tokens_free=tokens_free,
+        cost_budget_enabled=cost_enabled,
+        cost_budget_usd=SPAWN_COST_BUDGET_USD if cost_enabled else None,
+        cost_usd_24h=cost_24h,
+        cost_free_usd=cost_free,
         running=len(rows),
         poll_s=SPAWN_BUDGET_POLL_S if enabled else None,
         tasks=tasks,

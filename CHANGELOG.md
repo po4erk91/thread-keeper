@@ -7,8 +7,50 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.14.0 — 2026-06-25
+
+### Fixed
+
+- **Process-kill safety (#66).** Orphan cleanup now uses the shared
+  zombie-aware liveness helper, so a zombie parent no longer keeps its orphaned
+  `threadkeeper.server` child classified as live. Before `mp_cleanup`,
+  memory-guard hard-kill, or memory-guard idle-retire sends a signal, it
+  re-reads the current pid command and skips the signal if the pid no longer
+  resolves to a real `threadkeeper.server` process.
+
 ### Added
 
+- **Twice-weekly skill updater daemon.** Foreground MCP parents now start a
+  `skill_update` loop by default (`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`,
+  0 disables). Each due pass is single-flight across live servers, imports the
+  newest local copy of an installed skill from any configured CLI skill root into
+  the primary `~/.claude/skills` root, mirrors successful updates back to every
+  known root, and records `skill_update_pass` telemetry for `agent_status`.
+  Source-tracked GitHub skills can also be updated from configured
+  `owner/repo@ref:path` roots; local edits after the last tracked upstream hash
+  are skipped instead of overwritten, and replaced skills are backed up under the
+  thread-keeper state dir.
+
+- **MCP elicitation confirmations (#26).** High-stakes memory writes can now use
+  host-native MCP form elicitation when the client advertises it. The shared
+  helper probes per-request / session capabilities, sends only flat primitive
+  schemas, and treats reject/decline/cancel/error as non-mutating outcomes. The
+  first protected flow is `dialectic_supersede`: supported hosts show a
+  confirm/reject dialog before replacing a user-model claim; unsupported hosts
+  keep the previous immediate tool behavior and text-nudge fallback.
+
+- **Per-spawn token/cost accounting and daily spend budgets (#25).** Spawned
+  children now write more than `return_code`: `_spawn_wrap.py` tees the child
+  output, parses JSON result lines and common CLI usage trailers, and stores
+  `tasks.tokens_in`, `tokens_out`, `tokens_total`, `cost_usd`, and `duration_s`
+  on completion. Optional disabled-by-default admission ceilings
+  `THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+  `THREADKEEPER_SPAWN_COST_BUDGET_USD` deny new background spawns once recorded
+  24h spend reaches the configured limit. `spawn_budget_status()` reports 24h
+  tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
+  spawns/tokens/spend/time next to mutation count, covering the cost dimension
+  of the #6 shadow-review production question.
+ 
 - **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
   `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
   `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
@@ -129,6 +171,15 @@ version bumps follow semver per the policy in
   Requires the MCP **2025-06-18** tool vocabulary (`mcp>=1.10.0`).
 
 ### Fixed
+
+- **Auto-update restart gate (#19).** A successful-looking self-update could
+  still schedule a process exit even when `pip install -e` or
+  `threadkeeper._setup` failed, because the daemon keyed restart only on
+  `result.startswith("updated ")`. Restarts now require install/setup success
+  plus a subprocess smoke import of `threadkeeper.server`; install/setup/import
+  failures append `restart=suppressed` to the recorded `auto_update_pass` event,
+  keeping the current known-working server process alive for manual recovery
+  (for packages: `pip install threadkeeper==<previous>`).
 
 - **vec0 index integrity: delete-sync + EMBED_DIM dimension guard (#85).** Two
   consistency gaps in the sqlite-vec (`notes_vec`) mirror are closed. **(1)

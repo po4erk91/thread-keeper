@@ -24,6 +24,7 @@ threadkeeper/
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
+├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -36,6 +37,7 @@ threadkeeper/
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
+├── skill_updater.py   daemon: twice-weekly installed skill update + mirror sync
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
 ├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
@@ -101,7 +103,10 @@ and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
 `pip install --upgrade` in the current interpreter environment. Successful
 updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code.
+default true) so the host reconnects to the new code, but only after setup and a
+subprocess import smoke check both pass. Install/setup/import failures are
+recorded on the `auto_update_pass` event with `restart=suppressed`, and the
+already-running process stays alive on its current in-memory code.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -147,8 +152,10 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    batch, and `processed` is terminal. Stale claims are requeued.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
-`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
-`shadow_review_pass` (as event.kind).
+`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
+`started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
+`tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
+trailers), `shadow_review_pass` (as event.kind).
 
 ## Identity and self-cid
 
@@ -199,6 +206,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
+- **skill_updater** — once per `SKILL_UPDATE_INTERVAL_S` (default 302400 s,
+  twice weekly) runs single-flight across live MCP servers, imports the newest
+  local installed skill copy from any configured CLI root into the primary
+  `~/.claude/skills` root, mirrors successful updates back to every root, and
+  updates GitHub-backed skills that carry `.threadkeeper-skill-source.json` or
+  can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`. Replaced local
+  skills are backed up under the state dir, and source-tracked local edits after
+  the last upstream hash are skipped rather than overwritten.
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
   `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
@@ -448,16 +463,28 @@ The daemon lives in every thread-keeper process, but processes requests
 The parent's cid is resolved via `tasks.parent_cid WHERE spawned_cid=self_cid`;
 if no parent is found — the request goes broadcast to any peer with embeddings.
 
-### Spawn budget (RSS cap)
+### Spawn budget (RSS + spend caps)
 
 `spawn_budget.py` enforces a cap on the **combined RSS of all running spawned
-children** (the parent itself is not counted). Default 3 GB.
+children** (the parent itself is not counted). Default 3 GB. It also checks
+optional 24h spawned-child token and dollar ceilings when
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` or
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
+(disabled), so unset budgets preserve prior behavior.
 
 - `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
-  tasks (NULL = conservative full-estimate placeholder), refuses if the new
-  child would push past the cap. ERR carries the exact numbers + how-to-override.
+  tasks (NULL = conservative full-estimate placeholder) and the recorded 24h
+  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
+  new child would push past the RSS cap or if daily token/cost spend has already
+  reached its configured ceiling. ERR carries the exact numbers +
+  how-to-override.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
+- Headless children run through `_spawn_wrap.py`, which tees the child's
+  output, parses final JSON or human-readable usage trailers when present,
+  stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
+  stores `duration_s` from the task timestamps. If no usage trailer is emitted,
+  the row still has wall-time for cost/benefit triage.
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
@@ -475,8 +502,12 @@ children** (the parent itself is not counted). Default 3 GB.
   `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
   liveness correctness).
 
-Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted).
+Tools: `spawn_budget_status()` (RSS cap/used/free/per-task plus recorded 24h
+tokens/cost and remaining daily budget), `spawn_budget_set(MB)` (runtime RSS
+override, not persisted). `mp_dashboard()` shows each loop's fire count with
+24h spawn count, recorded tokens, dollar spend, wall-time, and mutation count,
+so the #6 "is this loop worth the Opus minutes?" question has a numeric cost
+dimension from #25 instead of only fire/outcome counts.
 
 ## Learning loop
 
@@ -570,6 +601,8 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `~/.claude/skills/`, `~/.codex/skills/`,
   `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
+  The scheduled `skill_updater` repairs drift in the same mirror set and can
+  import newer copies that were installed into a non-primary CLI root.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
@@ -787,9 +820,12 @@ Tools:
 - `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
 - `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
   so we don't accidentally kill an active mcp on a false-positive classification.
+  Before sending a signal, cleanup re-reads the pid command and skips it if the
+  pid no longer belongs to the real `threadkeeper.server` process.
 - `memory_guard_status()` — show RSS guard thresholds and current server rows.
 - `memory_guard_check(dry_run=True, notify=False)` — one-shot guard pass;
-  pass `dry_run=False` to SIGTERM processes over the hard memory limit.
+  pass `dry_run=False` to SIGTERM processes over the hard memory limit. The
+  guard uses the same pid-identity recheck before hard-kill or idle-retire.
 - `memory_guard_reclaim(scope='self')` — immediately unload local
   embedding/caches; with `scope='all'` also queues peer trim requests.
 - `agent_memory_cleanup(dry_run=False)` / `tk-agent-status --cleanup-memory` —
@@ -940,6 +976,30 @@ their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
 
+### MCP elicitation (#26)
+
+Elicitation is a **client feature**: the server can ask the host to collect
+structured user input while a tool call is in progress. thread-keeper keeps this
+behind a thin helper in `elicitation.py`:
+
+- `supports_form_elicitation(ctx)` probes request metadata first
+  (`io.modelcontextprotocol/clientCapabilities`), then the SDK's
+  initialize-time session capabilities. If no form-mode elicitation capability
+  is present, the caller uses its existing fallback behavior.
+- `elicit_confirm_reject(ctx, message)` sends `elicitation/create` through
+  `Context.elicit()` only after that probe passes. Decline, cancel, invalid, and
+  transport-error paths are non-mutating.
+- Schemas stay **flat** and spec-valid: root object only, primitive fields only.
+  The shared `ConfirmRejectForm` has one string enum field,
+  `decision in {"confirm", "reject"}`; no nested objects, arrays of objects, or
+  sensitive data collection.
+
+The first wired flow is `dialectic_supersede`. On supported hosts, replacing a
+user-model claim prompts with a confirm/reject form before writing the new claim
+and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
+clients, older Claude clients), behavior is unchanged: the tool applies
+immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
+
 ## Tests
 
 ```
@@ -1075,11 +1135,16 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
 | `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
 | `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) for inferred upstream updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_AUTO_REVIEW` | off | enable auto-review on close_thread |
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after applying an update |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
@@ -1135,6 +1200,12 @@ agent in the right direction:
 Pattern for future nudges: short section, compact format, explicit
 "→ consider X" line. Fire only when the not-doing-it cost > the brief
 real-estate cost.
+
+For high-stakes writes, nudges are now complemented by MCP elicitation when the
+host advertises it. `dialectic_supersede` is the first protected flow: a
+supported host shows a structured confirm/reject dialog; unsupported hosts keep
+the old text/tool path so Codex, Claude Desktop, Antigravity, and generic MCP
+clients do not regress.
 
 ## What is NOT done
 

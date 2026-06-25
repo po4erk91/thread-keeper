@@ -60,7 +60,14 @@ Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
 package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
 interpreter environment. Dirty or diverged git checkouts are skipped rather
-than overwritten.
+than overwritten. Restarts are gated on install/setup success plus a subprocess
+import smoke check, so a broken update is recorded but the current server keeps
+running.
+
+They also run a twice-weekly installed-skill updater by default. It keeps all
+configured CLI skill roots in sync, adopts newer local copies installed into a
+non-primary root, and updates GitHub-backed skills when a tracked upstream
+source changes.
 
 ---
 
@@ -154,10 +161,10 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### MCP primitives (tools, resources, prompts)
+### MCP primitives (tools, resources, prompts, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
-read/act split:
+read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
@@ -177,9 +184,18 @@ so an automatic host pull is **side-effect-free**.
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
+**Elicitation** is a client feature, not a server primitive. When a host
+advertises form-mode elicitation, high-stakes mutations can pause for a
+structured user choice instead of relying on an ignorable text nudge. The first
+flow using it is `dialectic_supersede`: supported hosts get a flat
+confirm/reject form before a user-model claim is replaced; unsupported hosts keep
+the previous immediate tool behavior.
+
 Everything here is **additive and capability-gated**: a host that advertises the
-`resources` / `prompts` capabilities sees them; one that doesn't falls back to
-the SessionStart hook plus the `brief()` / `context()` tools — same content, no
+`resources` / `prompts` capabilities sees those primitives; one that advertises
+`elicitation.form` gets structured confirmations for covered high-stakes writes.
+Hosts without a capability fall back to the SessionStart hook plus the `brief()`
+/ `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
 
@@ -238,6 +254,14 @@ A daemon measures combined child RSS every 10 s; admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
+
+The spawn wrapper also records each completed child's `duration_s`,
+`tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
+CLI emits a recognizable usage trailer. Optional daily ceilings
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
+recorded 24h spend reaches the configured limit; both default to `0`
+(disabled), so existing installs behave the same until a budget is set.
 
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
@@ -317,10 +341,35 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
   installed version changes.
 
 After a successful update, the daemon exits the current MCP process by default
-so the host can restart it on the new code. Disable that with
+so the host can restart it on the new code. Before scheduling that exit, it
+imports `threadkeeper.server` in a subprocess; install/setup/import failures are
+recorded as `auto_update_pass` with `restart=suppressed`, and the current
+known-working process stays alive. Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
-`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. Each real check records an
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. If a packaged release needs manual
+rollback, pin the previous version explicitly, for example
+`pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
+
+### Skill Update
+
+The MCP server also starts a skill updater in foreground parent processes. By
+default it checks twice per week
+(`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`):
+
+- local root sync: scan every configured skill root, import the newest local
+  copy of a skill into the primary `~/.claude/skills` root, then mirror it back
+  to `~/.codex/skills`, Antigravity, `~/.agents/skills`, extra roots, and the
+  canonical `~/.threadkeeper/skills` fallback;
+- source-tracked updates: skills with `.threadkeeper-skill-source.json`, or
+  skills whose name can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`,
+  are compared with upstream GitHub directories and updated when the remote tree
+  changes.
+
+The pass is single-flight across live MCP servers and backs up replaced local
+skills under the thread-keeper state dir. If a source-tracked skill has local
+edits after the last applied upstream hash, the updater skips it instead of
+overwriting. Disable it with `THREADKEEPER_SKILL_UPDATE_INTERVAL_S=0`.
 
 Manual fallback from a source checkout:
 
@@ -389,6 +438,7 @@ shows agents focused on their primary task rarely do).
 | 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
+| 10 | skill_updater daemon | every 302400 s / twice weekly (env knob) | configured skill roots + tracked GitHub skill sources | mirrored SKILL.md directories + `skill_update_pass` telemetry |
 
 Learning loops write into the universal Skill format (`SKILL.md` under each
 known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
@@ -724,8 +774,13 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) used to infer upstream skill updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer upstream source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
@@ -741,6 +796,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
 | `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN` | "" (off) | explicit override that lets ordinary `spawn()` calls request `permission_mode="bypassPermissions"`; default off means only evolve daemon role/write-origin pairs can use the dangerous mode |
+| `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
+| `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
@@ -866,9 +923,10 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age — the loop list is derived from the same source as
-  `agent_status`, so it covers *every* daemon including the paid-spawn
-  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  plus last-fire age and 24h spend/tokens/mutation counts — the loop list is
+  derived from the same source as `agent_status`, so it covers *every* daemon
+  including the paid-spawn `dialectic_validate` / `evolve_apply` and the
+  `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
   mutation counts: `lesson_append` / `lesson_remove`,
@@ -1135,6 +1193,12 @@ warrant a prompt. The five status tools (`context`, `spawn_budget_status`,
 `spawn_status`, `mp_health`, `agent_status`) additionally advertise an
 `outputSchema` and return `structuredContent` alongside the legacy text
 block. The contract is enforced by `tests/test_tool_annotations.py`.
+
+**Elicitation contract (#26).** `threadkeeper/elicitation.py` contains the
+shared form-mode confirmation helper. It probes the host's elicitation
+capability before prompting, uses only a flat primitive schema, and leaves
+unsupported clients on the existing text/tool fallback path. The first protected
+write is `dialectic_supersede`.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

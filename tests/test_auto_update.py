@@ -12,6 +12,7 @@ def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": interval,
         "THREADKEEPER_AUTO_UPDATE_RESTART": "0",
+        "THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "0",
         "THREADKEEPER_DISABLE_BG_DAEMONS": disable_bg,
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
@@ -67,6 +68,118 @@ def test_force_pass_records_event(tmp_path, monkeypatch):
     ).fetchone()
     assert row is not None
     assert row["summary"] == "no_update mode=test"
+
+
+def test_healthy_update_runs_smoke_and_schedules_restart(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, cwd=None, timeout=None):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=ok",
+    )
+    monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == "updated mode=test setup=ok smoke=ok"
+    assert scheduled["value"] is True
+    assert calls == [
+        [sys.executable, "-c", pkg["auto_update"].SMOKE_IMPORT_CODE],
+    ]
+
+
+def test_smoke_failure_suppresses_restart_and_records_failure(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=ok",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run",
+        lambda args, *, cwd=None, timeout=None: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="broken import",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == (
+        "updated mode=test setup=ok smoke=failed err=broken import "
+        "restart=suppressed"
+    )
+    assert scheduled["value"] is False
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
+
+
+def test_setup_failure_suppresses_restart_and_records_failure(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+    smoke_called = {"value": False}
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=failed err=boom",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run_post_update_smoke_check",
+        lambda: smoke_called.__setitem__("value", True) or " smoke=ok",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == "updated mode=test setup=failed err=boom restart=suppressed"
+    assert smoke_called["value"] is False
+    assert scheduled["value"] is False
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
 
 
 def test_recent_pass_makes_daemon_tick_not_due(tmp_path, monkeypatch):

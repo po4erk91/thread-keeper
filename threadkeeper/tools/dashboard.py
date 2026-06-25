@@ -69,6 +69,99 @@ def _fmt_group(d: dict[str, int], order: tuple[str, ...]) -> str:
     return " ".join(parts) if parts else "0"
 
 
+def _task_spend_24h(
+    conn: sqlite3.Connection,
+    prompt_prefix: str,
+    cut_24: int,
+) -> tuple[int, int, float, int]:
+    """Return (spawns, tokens, cost_usd, seconds) for matching task prompts."""
+    if not prompt_prefix:
+        return 0, 0, 0.0, 0
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(COALESCE(tokens_total, "
+            "COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0))), 0), "
+            "COALESCE(SUM(COALESCE(cost_usd, 0.0)), 0.0), "
+            "COALESCE(SUM(COALESCE(duration_s, "
+            "COALESCE(ended_at, started_at) - started_at)), 0) "
+            "FROM tasks WHERE prompt LIKE ? "
+            "AND COALESCE(ended_at, started_at) >= ?",
+            (prompt_prefix + "%", cut_24),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0, 0, 0.0, 0
+    if not row:
+        return 0, 0, 0.0, 0
+    return int(row[0] or 0), int(row[1] or 0), float(row[2] or 0.0), int(row[3] or 0)
+
+
+def _loop_mutations_24h(conn: sqlite3.Connection, label: str, cut_24: int) -> int:
+    """Best-effort count of mutation events attributable to a loop."""
+    if label == "shadow_review":
+        return (
+            _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind='lesson_append' "
+                "AND summary LIKE '%source=shadow%' AND created_at>=?",
+                (cut_24,),
+            )
+            + _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind='skill_materialized' "
+                "AND created_at>=?",
+                (cut_24,),
+            )
+        )
+    if label == "candidate_reviewer":
+        return (
+            _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind LIKE 'accept_candidate%' "
+                "AND created_at>=?",
+                (cut_24,),
+            )
+            + _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind='reject_candidate' "
+                "AND created_at>=?",
+                (cut_24,),
+            )
+        )
+    if label == "curator":
+        return (
+            _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind='lesson_append' "
+                "AND summary LIKE '%source=curator%' AND created_at>=?",
+                (cut_24,),
+            )
+            + _scalar(
+                conn,
+                "SELECT COUNT(*) FROM events WHERE kind='lesson_remove' "
+                "AND created_at>=?",
+                (cut_24,),
+            )
+        )
+    if label == "dialectic_validator":
+        return _scalar(
+            conn,
+            "SELECT COUNT(*) FROM events WHERE kind IN "
+            "('dialectic_claim','dialectic_supersede','tier_promoted',"
+            "'tier_demoted') AND created_at>=?",
+            (cut_24,),
+        )
+    if label == "evolve_apply":
+        return _scalar(
+            conn,
+            "SELECT COUNT(*) FROM events WHERE kind IN "
+            "('curator_report_applied','roadmap_issue_applied',"
+            "'evolve_applied') AND created_at>=?",
+            (cut_24,),
+        )
+    return 0
+
+
 # The autonomous loops, keyed by their events.kind='*_pass' marker. Derived
 # from agent_status._LOOP_DEFS — the SAME source the menu-bar status surface
 # reads — so the two telemetry views can never disagree on which loops exist.
@@ -77,6 +170,15 @@ def _fmt_group(d: dict[str, int], order: tuple[str, ...]) -> str:
 # paid LLM children.) Label is the loop id; kind is the '*_pass' event.
 _LOOP_KINDS = tuple((d["id"], d["event"]) for d in _LOOP_DEFS)
 _LOOP_LABEL_W = max((len(label) for label, _ in _LOOP_KINDS), default=10)
+_LOOP_TASK_PREFIXES: dict[str, str] = {
+    "shadow_review": "You are a SHADOW LEARNING OBSERVER",
+    "candidate_reviewer": "You are a CANDIDATE REVIEWER",
+    "curator": "You are an autonomous CURATOR",
+    "dialectic_validator": "You are a DIALECTIC VALIDATOR",
+    "evolve_review": "You are an EVOLVE REVIEWER",
+    "evolve_apply": "You are an EVOLVE APPLIER",
+    "probe": "You are a PROBE RUNNER",
+}
 
 # Outcome event kinds the loops are supposed to PRODUCE. Beyond the original
 # skill/tier/reject set, this now counts knowledge-store MUTATIONS — the most
@@ -119,6 +221,7 @@ def mp_dashboard(window_days: int = 7) -> str:
     now = int(time.time())
     win_s = max(1, int(window_days)) * 86400
     cut_win = now - win_s
+    cut_24 = now - 86400
     cut_30 = now - 30 * 86400
 
     out: list[str] = [
@@ -172,7 +275,9 @@ def mp_dashboard(window_days: int = 7) -> str:
     # that fires a lot but whose outcomes stay flat is a duplication / waste
     # signal (the question ROADMAP item "shadow-review proof" asks).
     out.append("")
-    out.append(f"loops (fires {window_days}d / 30d, last)")
+    out.append(
+        f"loops (fires {window_days}d / 30d, last, 24h spend/mutations)"
+    )
     for label, kind in _LOOP_KINDS:
         n_win = _scalar(
             conn,
@@ -192,7 +297,16 @@ def mp_dashboard(window_days: int = 7) -> str:
         if n_30 == 0 and last == 0:
             continue  # never fired — skip to keep the view tight
         age = fmt_age(now - last) + "_ago" if last else "never"
-        out.append(f"  {label:<{_LOOP_LABEL_W}} {n_win} / {n_30}   last={age}")
+        spawns24, tokens24, cost24, seconds24 = _task_spend_24h(
+            conn, _LOOP_TASK_PREFIXES.get(label, ""), cut_24,
+        )
+        mutations24 = _loop_mutations_24h(conn, label, cut_24)
+        out.append(
+            f"  {label:<{_LOOP_LABEL_W}} {n_win} / {n_30}   last={age} "
+            f"spawns24={spawns24} tokens24={tokens24} "
+            f"spend24=${cost24:.4f} time24={seconds24}s "
+            f"mutations24={mutations24}"
+        )
 
     # ── outcomes ──────────────────────────────────────────────────────
     out.append("")

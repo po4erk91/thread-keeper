@@ -461,6 +461,7 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
     killed: list[int] = []
     failed: list[dict] = []
     retired: list[int] = []
+    skipped: list[dict] = []
     reclaim_requests: dict = {"requested": [], "count": 0, "reason": ""}
     local_reclaim: dict | None = None
 
@@ -510,12 +511,28 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
             continue
         if p["pid"] != os.getpid() and not is_coordinator:
             continue
+        if not process_health.is_threadkeeper_server_pid(p["pid"]):
+            skipped.append({
+                "pid": p["pid"],
+                "action": "kill",
+                "reason": "pid_no_longer_threadkeeper_server",
+            })
+            continue
         _emit_event("memory_guard_kill", p["pid"], msg)
         if notify:
             _maybe_notify(p["pid"], "kill", msg, force=True)
         try:
-            os.kill(p["pid"], _sig.SIGTERM)
-            killed.append(p["pid"])
+            sent, reason = process_health.signal_if_threadkeeper(
+                p["pid"], _sig.SIGTERM
+            )
+            if sent:
+                killed.append(p["pid"])
+            else:
+                skipped.append({
+                    "pid": p["pid"],
+                    "action": "kill",
+                    "reason": reason,
+                })
         except (ProcessLookupError, PermissionError, OSError) as e:
             failed.append({"pid": p["pid"], "err": str(e)})
 
@@ -528,18 +545,35 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
             )
             if dry_run:
                 continue
+            if not process_health.is_threadkeeper_server_pid(p["pid"]):
+                skipped.append({
+                    "pid": p["pid"],
+                    "action": "retire",
+                    "reason": "pid_no_longer_threadkeeper_server",
+                })
+                continue
             _emit_event("memory_guard_retire_idle", p["pid"], msg)
             if notify:
                 _maybe_notify(p["pid"], "retire", msg, force=aggregate["kill"])
             try:
-                os.kill(p["pid"], _sig.SIGTERM)
-                retired.append(p["pid"])
+                sent, reason = process_health.signal_if_threadkeeper(
+                    p["pid"], _sig.SIGTERM
+                )
+                if sent:
+                    retired.append(p["pid"])
+                else:
+                    skipped.append({
+                        "pid": p["pid"],
+                        "action": "retire",
+                        "reason": reason,
+                    })
             except (ProcessLookupError, PermissionError, OSError) as e:
                 failed.append({"pid": p["pid"], "err": str(e)})
 
     result["killed"] = killed
     result["retired"] = retired
     result["failed"] = failed
+    result["skipped"] = skipped
     result["dry_run"] = dry_run
     result["reclaim_requests"] = reclaim_requests
     result["local_reclaim"] = local_reclaim
