@@ -271,10 +271,15 @@ before autonomous prune (#40, #41, #52); a write lock for the unlocked
 `lessons.md` read-modify-write now that the curator and shadow_review both
 mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
 full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
-landed but the argv bound has not (#24); debouncing passes on unchanged
-inventories (#35); and making the curator's `PRUNE_CONCEPT` /
-`CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
-tool exists today (#75). Scope: S–M each.
+landed but the argv bound has not (#24). Scope: S–M each.
+
+✅ DONE (#35): curator wake-ups now hash the stable lessons / lesson_usage /
+skills / concepts inventory before spawning. If the hash matches the last
+complete/endorsed pass, the scheduler records an `unchanged_inventory` no-op
+instead of asking another curator child to re-grade the same snapshot. The same
+dispatch lock and running-child guard coalesce concurrent foreground wake-ups
+before they re-read the inventory, and `curator_review_status()` surfaces the
+last endorsed `inventory_sha256` plus the current hash for quiescence checks.
 
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a

@@ -243,6 +243,15 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   queue is machine-wide single-flight: running-task detection plus
   `candidate-reviewer.lock` prevents multiple foreground MCP servers from
   spawning duplicate reviewers for the same pending candidates.
+- **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
+  existing lessons / skills / concepts inventory through one slim child. Before
+  spawning, it hashes the stable inventory state and compares it to the last
+  recorded complete/endorsed pass; unchanged snapshots record an
+  `unchanged_inventory` no-op event instead of re-deriving the same report.
+  Wake-ups also coalesce behind a non-blocking `curator.lock` plus the running
+  curator-task check, so multiple foreground servers do not re-read and spawn
+  against the same snapshot. `curator_review_status()` exposes the last
+  endorsed `inventory_sha256` and the current inventory hash.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
   for security/privacy risks, memory leaks, runaway daemons, cost waste,

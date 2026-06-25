@@ -556,6 +556,14 @@ multiple MCP server instances can't run overlapping (now destructive) passes
 against the same store. A manual `curator_run(force=True)` bypasses the
 interval but still respects the lock.
 
+Before spawning, the scheduler hashes the stable inventory state (lessons,
+lesson usage, active/stale skills, and concepts). If the hash matches the last
+recorded complete/endorsed curator pass, the wake-up records an
+`unchanged_inventory` no-op event and endorses the last report instead of
+asking another child to re-grade the same snapshot. `curator_review_status()`
+shows both the last endorsed `inventory_sha256` and the current inventory hash
+so operators can tell whether the store is quiescent.
+
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
 can actually prune and consolidate duplicate lessons). Set

@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
+  a stable `inventory_sha256` over lessons, lesson usage, active/stale skills,
+  and concepts before spawning. If the snapshot matches the last complete or
+  endorsed pass, the scheduler records an `unchanged_inventory` no-op event
+  instead of launching another full curator child. Concurrent wake-ups still
+  coalesce behind the existing `curator.lock` plus running-child guard, and
+  `curator_review_status()` now shows the last endorsed and current inventory
+  hashes so operators can see when the store is quiescent.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed
