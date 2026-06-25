@@ -117,6 +117,21 @@ class Settings(BaseSettings):
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
 
+    # ── Skill update daemon ─────────────────────────────────────────────────
+    # Twice weekly by default. It syncs installed skills across known CLI roots
+    # and can update GitHub-backed skills from configured source roots.
+    skill_update_interval_s: float = 7 * 86400 / 2
+    skill_update_timeout_s: int = 300
+    # Comma-separated specs: owner/repo@ref:path/to/skills/root. The default
+    # covers Codex's curated skill installer source; exact source metadata in a
+    # skill directory is always honored even when this list is empty.
+    skill_update_sources: str = "openai/skills@main:skills/.curated"
+    skill_update_infer_sources: bool = True
+    # Safety default: an untracked local skill that merely shares an upstream
+    # name is adopted only when its tree already matches that upstream. Set this
+    # to 1 to let the daemon overwrite inferred, untracked older copies.
+    skill_update_allow_untracked_overwrite: bool = False
+
     # ── Hot-config reload (config_watcher daemon) ────────────────────────────
     # Poll interval for the watcher that re-reads ~/.claude/settings.json and
     # hot-reloads threadkeeper config in-process (no Claude Code restart). The
@@ -512,6 +527,13 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
         "AUTO_UPDATE_RESTART": s.auto_update_restart,
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
+        "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
+        "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
+        "SKILL_UPDATE_SOURCES": s.skill_update_sources,
+        "SKILL_UPDATE_INFER_SOURCES": s.skill_update_infer_sources,
+        "SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE": (
+            s.skill_update_allow_untracked_overwrite
+        ),
         "CONFIG_WATCH_INTERVAL_S": s.config_watch_interval_s,
         "CONFIG_WATCH_PATH": s.config_watch_path,
         "CLAUDE_SKILLS_DIR": s.claude_skills_dir,

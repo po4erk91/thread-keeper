@@ -12,6 +12,7 @@ def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": interval,
         "THREADKEEPER_AUTO_UPDATE_RESTART": "0",
+        "THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "0",
         "THREADKEEPER_DISABLE_BG_DAEMONS": disable_bg,
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",

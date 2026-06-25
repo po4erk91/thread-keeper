@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.14.0 — 2026-06-25
+
 ### Fixed
 
 - **Process-kill safety (#66).** Orphan cleanup now uses the shared
@@ -17,6 +19,17 @@ version bumps follow semver per the policy in
   resolves to a real `threadkeeper.server` process.
 
 ### Added
+
+- **Twice-weekly skill updater daemon.** Foreground MCP parents now start a
+  `skill_update` loop by default (`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`,
+  0 disables). Each due pass is single-flight across live servers, imports the
+  newest local copy of an installed skill from any configured CLI skill root into
+  the primary `~/.claude/skills` root, mirrors successful updates back to every
+  known root, and records `skill_update_pass` telemetry for `agent_status`.
+  Source-tracked GitHub skills can also be updated from configured
+  `owner/repo@ref:path` roots; local edits after the last tracked upstream hash
+  are skipped instead of overwritten, and replaced skills are backed up under the
+  thread-keeper state dir.
 
 - **MCP elicitation confirmations (#26).** High-stakes memory writes can now use
   host-native MCP form elicitation when the client advertises it. The shared

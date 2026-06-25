@@ -72,6 +72,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "Checks the installed thread-keeper package or git checkout and applies "
         "safe daily updates when a newer version is available."
     ),
+    "skill_update": (
+        "Checks installed Skill.md directories for local mirror drift and "
+        "source-tracked upstream updates, then mirrors successful updates."
+    ),
 }
 
 _LOOP_DEFS: tuple[dict[str, Any], ...] = (
@@ -225,6 +229,16 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "interval": "AUTO_UPDATE_INTERVAL_S",
         "description": _ROLE_DESCRIPTIONS["auto_update"],
         "work": "Checks for and applies safe thread-keeper updates",
+    },
+    {
+        "id": "skill_update",
+        "name": "Skill updater",
+        "event": "skill_update_pass",
+        "interval": "SKILL_UPDATE_INTERVAL_S",
+        "description": _ROLE_DESCRIPTIONS["skill_update"],
+        "work": "Checks installed skills for updates and mirrors them",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_label": "tracked skills",
     },
 )
 

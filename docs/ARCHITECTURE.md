@@ -37,6 +37,7 @@ threadkeeper/
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
+├── skill_updater.py   daemon: twice-weekly installed skill update + mirror sync
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
 ├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
@@ -205,6 +206,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
+- **skill_updater** — once per `SKILL_UPDATE_INTERVAL_S` (default 302400 s,
+  twice weekly) runs single-flight across live MCP servers, imports the newest
+  local installed skill copy from any configured CLI root into the primary
+  `~/.claude/skills` root, mirrors successful updates back to every root, and
+  updates GitHub-backed skills that carry `.threadkeeper-skill-source.json` or
+  can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`. Replaced local
+  skills are backed up under the state dir, and source-tracked local edits after
+  the last upstream hash are skipped rather than overwritten.
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
   `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
@@ -580,6 +589,8 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `~/.claude/skills/`, `~/.codex/skills/`,
   `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
+  The scheduled `skill_updater` repairs drift in the same mirror set and can
+  import newer copies that were installed into a non-primary CLI root.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
@@ -1112,6 +1123,11 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
 | `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
 | `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) for inferred upstream updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_AUTO_REVIEW` | off | enable auto-review on close_thread |
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |

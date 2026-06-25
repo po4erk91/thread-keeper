@@ -64,6 +64,11 @@ than overwritten. Restarts are gated on install/setup success plus a subprocess
 import smoke check, so a broken update is recorded but the current server keeps
 running.
 
+They also run a twice-weekly installed-skill updater by default. It keeps all
+configured CLI skill roots in sync, adopts newer local copies installed into a
+non-primary root, and updates GitHub-backed skills when a tracked upstream
+source changes.
+
 ---
 
 ## Quickstart
@@ -346,6 +351,26 @@ rollback, pin the previous version explicitly, for example
 `pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
 
+### Skill Update
+
+The MCP server also starts a skill updater in foreground parent processes. By
+default it checks twice per week
+(`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`):
+
+- local root sync: scan every configured skill root, import the newest local
+  copy of a skill into the primary `~/.claude/skills` root, then mirror it back
+  to `~/.codex/skills`, Antigravity, `~/.agents/skills`, extra roots, and the
+  canonical `~/.threadkeeper/skills` fallback;
+- source-tracked updates: skills with `.threadkeeper-skill-source.json`, or
+  skills whose name can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`,
+  are compared with upstream GitHub directories and updated when the remote tree
+  changes.
+
+The pass is single-flight across live MCP servers and backs up replaced local
+skills under the thread-keeper state dir. If a source-tracked skill has local
+edits after the last applied upstream hash, the updater skips it instead of
+overwriting. Disable it with `THREADKEEPER_SKILL_UPDATE_INTERVAL_S=0`.
+
 Manual fallback from a source checkout:
 
 ```sh
@@ -413,6 +438,7 @@ shows agents focused on their primary task rarely do).
 | 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
+| 10 | skill_updater daemon | every 302400 s / twice weekly (env knob) | configured skill roots + tracked GitHub skill sources | mirrored SKILL.md directories + `skill_update_pass` telemetry |
 
 Learning loops write into the universal Skill format (`SKILL.md` under each
 known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
@@ -738,6 +764,11 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) used to infer upstream skill updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer upstream source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
