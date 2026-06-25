@@ -51,6 +51,14 @@ class SpawnBudgetStatus(BaseModel):
     cap_mb: int | None = None
     used_mb: int = 0
     free_mb: int | None = None
+    token_budget_enabled: bool = False
+    token_budget: int | None = None
+    tokens_24h: int = 0
+    tokens_free: int | None = None
+    cost_budget_enabled: bool = False
+    cost_budget_usd: float | None = None
+    cost_usd_24h: float = 0.0
+    cost_free_usd: float | None = None
     running: int = 0
     poll_s: int | None = None
     tasks: list[SpawnTaskRss] = Field(default_factory=list)

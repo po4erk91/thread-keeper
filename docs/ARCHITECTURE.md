@@ -150,8 +150,10 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    batch, and `processed` is terminal. Stale claims are requeued.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
-`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
-`shadow_review_pass` (as event.kind).
+`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
+`started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
+`tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
+trailers), `shadow_review_pass` (as event.kind).
 
 ## Identity and self-cid
 
@@ -439,16 +441,28 @@ The daemon lives in every thread-keeper process, but processes requests
 The parent's cid is resolved via `tasks.parent_cid WHERE spawned_cid=self_cid`;
 if no parent is found — the request goes broadcast to any peer with embeddings.
 
-### Spawn budget (RSS cap)
+### Spawn budget (RSS + spend caps)
 
 `spawn_budget.py` enforces a cap on the **combined RSS of all running spawned
-children** (the parent itself is not counted). Default 3 GB.
+children** (the parent itself is not counted). Default 3 GB. It also checks
+optional 24h spawned-child token and dollar ceilings when
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` or
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
+(disabled), so unset budgets preserve prior behavior.
 
 - `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
-  tasks (NULL = conservative full-estimate placeholder), refuses if the new
-  child would push past the cap. ERR carries the exact numbers + how-to-override.
+  tasks (NULL = conservative full-estimate placeholder) and the recorded 24h
+  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
+  new child would push past the RSS cap or if daily token/cost spend has already
+  reached its configured ceiling. ERR carries the exact numbers +
+  how-to-override.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
+- Headless children run through `_spawn_wrap.py`, which tees the child's
+  output, parses final JSON or human-readable usage trailers when present,
+  stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
+  stores `duration_s` from the task timestamps. If no usage trailer is emitted,
+  the row still has wall-time for cost/benefit triage.
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
@@ -466,8 +480,12 @@ children** (the parent itself is not counted). Default 3 GB.
   `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
   liveness correctness).
 
-Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted).
+Tools: `spawn_budget_status()` (RSS cap/used/free/per-task plus recorded 24h
+tokens/cost and remaining daily budget), `spawn_budget_set(MB)` (runtime RSS
+override, not persisted). `mp_dashboard()` shows each loop's fire count with
+24h spawn count, recorded tokens, dollar spend, wall-time, and mutation count,
+so the #6 "is this loop worth the Opus minutes?" question has a numeric cost
+dimension from #25 instead of only fire/outcome counts.
 
 ## Learning loop
 

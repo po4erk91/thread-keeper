@@ -185,7 +185,8 @@ mtime-cursor + JSON-parse guard.
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,
 `mp_health`) lacked: store sizes, per-loop fire counts (window vs 30d +
-last-fire age), and outcomes (skills materialized, tier promotions,
+last-fire age), 24h spend/tokens/mutation counts, and outcomes
+(skills materialized, tier promotions,
 candidate accept-vs-reject rate). Read-only, degrades gracefully on
 partial schemas. The first live run surfaced the "Shadow-review proof"
 item below (shadow fires ≫ skills materialized). Possible follow-up:
@@ -212,7 +213,8 @@ child's captured log tail), durable skill writes attributable to
 loop earning its Opus minutes or just emitting SKIPs?" is now a number, not a
 guess. Pure aggregator `shadow_telemetry()`; `snapshot_path` dumps a markdown
 table for human review; ephemeral/aged-out child logs count as `unknown` so the
-hit-rate denominator stays honest. The token/$ half of spawn cost remains #25.
+hit-rate denominator stays honest. The token/$ half of spawn cost is covered by
+the per-spawn accounting and daily budget in #25.
 
 **Shadow-review proof in production.** ✅ ANSWERED (~16d of live data,
 read via `mp_dashboard` + an evidence dive). Verdict: **complementary,
@@ -421,12 +423,15 @@ unbounded queue/inventory into the child prompt argv (the `E2BIG` class already
 fixed for `dialectic_validator`). Add curator single-flight + bound the
 prompts. (#24) Scope: S.
 
-**Spawn cost accounting.** The spawn budget caps child RSS only; there is no
-token/$ accounting, so "is this loop worth the Opus minutes?" (the recurring
-shadow-review-proof question, #6) can't be answered with a number. Capture
-token/cost in the `_spawn_wrap` recorder, add a daily cost/token ceiling in the
-admission path, surface per-loop spend in `mp_dashboard`. (#25, extends #6)
-Scope: M.
+**Spawn cost accounting.** ✅ DONE (#25, extends #6). The spawn budget now
+tracks more than child RSS: `_spawn_wrap.py` parses JSON or human-readable CLI
+usage trailers into `tasks.tokens_in`, `tokens_out`, `tokens_total`, and
+`cost_usd`, and records `duration_s` even when no usage data is available.
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` add disabled-by-default 24h admission
+ceilings, `spawn_budget_status()` shows recorded spend vs remaining budget, and
+`mp_dashboard()` shows each loop's 24h spawns/tokens/spend/time next to the
+mutation count.
 
 **Research-driven memory upgrades** (sourced):
 - MCP **elicitation** — now shipping in Claude Code v2.1.76 — for high-stakes
