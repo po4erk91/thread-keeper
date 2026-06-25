@@ -607,11 +607,23 @@ evidence accumulates, confidence via **weighted** smoothed ratio:
 - Smoothing 3 prevents jumping into `high` after a single supporting note:
   3 foreground supports → medium (3/6=0.5), 5 → high (5/8=0.625).
 - A heavy contradict knocks back to `disputed`.
-- `dialectic_supersede(old, new, reason)` — versioning of claims.
+- Each row is bi-temporal: `created_at` is ingestion/transaction time;
+  `valid_from` / `valid_to` are valid-time bounds for when the claim applies.
+  New claims get `valid_from=created_at`; open-ended current claims have
+  `valid_to=NULL`.
+- `dialectic_supersede(old, new, reason)` — invalidate-don't-delete versioning:
+  the old claim moves to `state='superseded'`, keeps its evidence, links
+  `superseded_by=<new_id>`, and gets `valid_to=<new.valid_from>`.
+- `dialectic_review(..., as_of=...)` — time-scoped review over valid-time
+  intervals; `include_validity=True` prints `valid_from` / `valid_to`.
+- `dialectic_synthesis(domain, include_history=True)` — optionally renders
+  superseded history with validity intervals.
 - `dialectic_synthesis(domain)` — text-render `support` vs `contradict`.
 - `brief()` renders the `user_model (dialectic)` section gated by **tier**,
   groups by domain. `★` — validated, `·` — observed. Hypothesis-tier
-  claims with ≥1 support surface separately under `currently_testing`.
+  claims with ≥1 support surface separately under `currently_testing`. When
+  any closed validity interval exists, the section header says
+  `current as of <date>` to make clear the brief is the current slice.
 
 ### Source-based evidence discount
 

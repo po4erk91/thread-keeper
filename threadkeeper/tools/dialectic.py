@@ -49,6 +49,11 @@ Tools:
   dialectic_synthesis   — terse 'who is this user' rendering for brief()
   dialectic_supersede   — retire claim A in favor of claim B (claim_B refines A)
 
+Claims are bi-temporal: `created_at` is ingestion/transaction time, while
+`valid_from` / `valid_to` record when the proposition applies to the user.
+Supersession invalidates the old claim by setting its `valid_to` to the
+new claim's `valid_from`; evidence rows remain intact.
+
 Confidence and tier are recomputed on every evidence add. domain is
 free-text but a small enumeration is recommended:
   'style','workflow','values','context','skills','other'.
@@ -57,6 +62,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from .._mcp import read_tool, write_tool
@@ -109,6 +115,41 @@ TIER_VALIDATED_QUIET_S = 14 * 86400  # no contradict in this window
 # recompute_all_tiers() is itself the first caller of _ensure_session — which
 # would otherwise consume tier promotions before the outer call sees them.
 _recompute_in_flight: bool = False
+
+
+def _parse_as_of(as_of: object) -> int | None:
+    if as_of is None:
+        return None
+    if isinstance(as_of, (int, float)):
+        return int(as_of)
+    raw = str(as_of).strip()
+    if not raw:
+        return None
+    try:
+        return int(float(raw))
+    except ValueError:
+        pass
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"bad_as_of={raw!r}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _fmt_valid_time(ts: object) -> str:
+    if ts is None:
+        return "?"
+    return datetime.fromtimestamp(int(ts), timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _fmt_validity(row: sqlite3.Row) -> str:
+    start = _fmt_valid_time(row["valid_from"])
+    end = _fmt_valid_time(row["valid_to"]) if row["valid_to"] is not None else "now"
+    return f"valid={start}..{end}"
 
 
 def _evidence_weight(write_origin: str, base_weight: float) -> float:
@@ -352,8 +393,9 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at, tier, tier_changed_at) VALUES (?,?,?,?,?,?,?)",
-        (pid, claim, dom, cid_db, now_t, "hypothesis", now_t),
+        "created_at, valid_from, tier, tier_changed_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (pid, claim, dom, cid_db, now_t, now_t, "hypothesis", now_t),
     )
     seed_quote = evidence.strip()
     if seed_quote:
@@ -417,9 +459,16 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
 @read_tool()
 def dialectic_review(min_confidence: str = "low",
                      domain: str = "",
-                     k: int = 20) -> str:
+                     k: int = 20,
+                     as_of: str = "",
+                     include_validity: bool = False) -> str:
     """List active claims filtered by confidence floor and optional
-    domain. Retired/superseded claims are omitted.
+    domain. Retired/superseded claims are omitted by default.
+
+    If `as_of` is provided (unix seconds or ISO-8601), returns claims whose
+    valid-time interval covered that instant, including currently superseded
+    claims that were valid then. `include_validity=True` appends
+    state + valid_from/valid_to without changing the default output.
 
     `min_confidence`: one of 'low','medium','high','disputed'. Note that
     'disputed' is treated as its own bucket (not ordered against the
@@ -434,13 +483,26 @@ def dialectic_review(min_confidence: str = "low",
         klim = max(1, int(k))
     except (TypeError, ValueError):
         return f"ERR bad_k={k}"
+    try:
+        as_of_ts = _parse_as_of(as_of)
+    except ValueError:
+        return f"ERR bad_as_of={as_of}"
     conn = get_db()
     sql = (
         "SELECT id, claim, domain, support_count, contradict_count, "
-        "confidence, tier, last_evidence_at, created_at "
-        "FROM user_dialectic WHERE state='active'"
+        "confidence, tier, state, last_evidence_at, created_at, "
+        "valid_from, valid_to FROM user_dialectic "
     )
     params: list = []
+    if as_of_ts is None:
+        sql += "WHERE state='active'"
+    else:
+        sql += (
+            "WHERE state!='retired' "
+            "AND COALESCE(valid_from, created_at) <= ? "
+            "AND (valid_to IS NULL OR valid_to > ?)"
+        )
+        params.extend([as_of_ts, as_of_ts])
     dom_filter = domain.strip()
     if dom_filter:
         sql += " AND domain=?"
@@ -462,11 +524,13 @@ def dialectic_review(min_confidence: str = "low",
                 continue
         dom_str = r["domain"] or "-"
         tier_str = r["tier"] or "hypothesis"
-        out.append(
+        meta = (
             f"{r['id']} [{conf}] tier={tier_str} domain={dom_str} "
-            f"support={r['support_count']} contradict={r['contradict_count']} "
-            f"{r['claim']}"
+            f"support={r['support_count']} contradict={r['contradict_count']}"
         )
+        if include_validity or as_of_ts is not None:
+            meta += f" state={r['state']} {_fmt_validity(r)}"
+        out.append(f"{meta} {r['claim']}")
         if len(out) >= klim:
             break
     if not out:
@@ -479,10 +543,14 @@ def dialectic_review(min_confidence: str = "low",
 
 
 @read_tool()
-def dialectic_synthesis(domain: str = "") -> str:
+def dialectic_synthesis(domain: str = "",
+                        as_of: str = "",
+                        include_history: bool = False) -> str:
     """Terse rendering of accumulated beliefs about the user, grouped by
-    domain. Used as brief() input. Excludes low/disputed claims and
-    non-active states. Returns at most 12 lines.
+    domain. Used as brief() input. Excludes low/disputed claims. By
+    default only active claims are rendered; `as_of` switches to valid-time
+    filtering, and `include_history=True` also includes superseded claims
+    with their validity interval. Returns at most 12 lines.
 
     Tier markers in the output:
       ★ validated   — load-bearing; act on it without asking
@@ -493,13 +561,29 @@ def dialectic_synthesis(domain: str = "") -> str:
 
     If `domain` is provided, restricts to that domain (no group headers
     in that case)."""
+    try:
+        as_of_ts = _parse_as_of(as_of)
+    except ValueError:
+        return f"ERR bad_as_of={as_of}"
     conn = get_db()
     sql = (
         "SELECT id, claim, domain, confidence, tier, "
-        "  support_count, contradict_count FROM user_dialectic "
-        "WHERE state='active' AND confidence IN ('medium','high')"
+        "  support_count, contradict_count, state, valid_from, valid_to "
+        "FROM user_dialectic "
+        "WHERE confidence IN ('medium','high') "
     )
     params: list = []
+    if as_of_ts is not None:
+        sql += (
+            "AND state!='retired' "
+            "AND COALESCE(valid_from, created_at) <= ? "
+            "AND (valid_to IS NULL OR valid_to > ?) "
+        )
+        params.extend([as_of_ts, as_of_ts])
+    elif include_history:
+        sql += "AND state!='retired' "
+    else:
+        sql += "AND state='active' "
     dom_filter = domain.strip()
     if dom_filter:
         sql += " AND domain=?"
@@ -513,7 +597,8 @@ def dialectic_synthesis(domain: str = "") -> str:
         "    WHEN 'hypothesis' THEN 2 "
         "    ELSE 3 END, "
         "  (support_count - contradict_count) DESC, "
-        "  domain ASC"
+        "  domain ASC, "
+        "  COALESCE(valid_from, created_at) DESC"
     )
     rows = conn.execute(sql, tuple(params)).fetchall()
     if not rows:
@@ -532,7 +617,11 @@ def dialectic_synthesis(domain: str = "") -> str:
                 tag = "·"
             else:
                 tag = "?"
-            lines.append(f"  {tag} {r['claim']}")
+            suffix = (
+                f" [{_fmt_validity(r)}]"
+                if include_history or as_of_ts is not None else ""
+            )
+            lines.append(f"  {tag} {r['claim']}{suffix}")
     else:
         grouped: dict[str, list[sqlite3.Row]] = {}
         order: list[str] = []
@@ -556,7 +645,11 @@ def dialectic_synthesis(domain: str = "") -> str:
                     tag = "·"
                 else:
                     tag = "?"
-                lines.append(f"  {tag} {r['claim']}")
+                suffix = (
+                    f" [{_fmt_validity(r)}]"
+                    if include_history or as_of_ts is not None else ""
+                )
+                lines.append(f"  {tag} {r['claim']}{suffix}")
     return "\n".join(lines)
 
 
@@ -596,8 +689,9 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at, tier, tier_changed_at) VALUES (?,?,?,?,?,?,?)",
-        (pid, new_claim, dom, cid, now_t, "hypothesis", now_t),
+        "created_at, valid_from, tier, tier_changed_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (pid, new_claim, dom, cid, now_t, now_t, "hypothesis", now_t),
     )
     seed_quote = quote.strip()
     if seed_quote:
@@ -606,9 +700,10 @@ def dialectic_supersede(old_claim_id: str, new_claim: str,
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     conn.execute(
-        "UPDATE user_dialectic SET state='superseded', superseded_by=? "
+        "UPDATE user_dialectic "
+        "SET state='superseded', superseded_by=?, valid_to=? "
         "WHERE id=?",
-        (pid, old_id),
+        (pid, now_t, old_id),
     )
     _emit(conn, "dialectic_supersede", target=pid,
           summary=f"{old_id}→{pid} {new_claim[:100]}")

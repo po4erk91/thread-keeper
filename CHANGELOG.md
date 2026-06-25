@@ -9,6 +9,17 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Bi-temporal dialectic claims (#28).** `user_dialectic` now carries
+  `valid_from` / `valid_to` valid-time bounds alongside `created_at` ingestion
+  time. New claims start at `valid_from=created_at`, and
+  `dialectic_supersede` now preserves the old row while closing its interval at
+  the new claim's `valid_from`. Existing rows are backfilled on migration
+  (`valid_from=created_at`, superseded rows closed at their successor start).
+  `dialectic_review(as_of=...)` supports time-scoped queries,
+  `dialectic_synthesis(include_history=True)` can render validity history, and
+  `brief()` labels the dialectic section as `current as of <date>` once closed
+  validity intervals exist.
+
 - **Config typo warnings (#88).** Startup and hot-config reload now log a
   one-line warning for unknown `THREADKEEPER_*` keys present in the process
   environment, so mistyped safety-knob overrides such as

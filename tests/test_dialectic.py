@@ -5,6 +5,8 @@ plus the confidence-from-evidence emergent behavior.
 """
 from __future__ import annotations
 
+import sqlite3
+
 
 def _tools(fresh_mp):
     return fresh_mp["mcp"]._tool_manager._tools
@@ -50,6 +52,8 @@ def test_claim_creates_row_with_low_confidence_by_default(fresh_mp):
     assert row["confidence"] == "low"
     assert row["state"] == "active"
     assert row["superseded_by"] is None
+    assert row["valid_from"] == row["created_at"]
+    assert row["valid_to"] is None
 
 
 def test_claim_with_initial_evidence_bumps_support_count(fresh_mp):
@@ -300,17 +304,22 @@ def test_supersede_transitions_state_and_links(fresh_mp):
 
     conn = db.get_db()
     old_row = conn.execute(
-        "SELECT state, superseded_by FROM user_dialectic WHERE id=?", (old,)
+        "SELECT state, superseded_by, valid_to FROM user_dialectic WHERE id=?",
+        (old,),
     ).fetchone()
     assert old_row["state"] == "superseded"
     assert old_row["superseded_by"] == new
 
     new_row = conn.execute(
-        "SELECT claim, domain, state FROM user_dialectic WHERE id=?", (new,)
+        "SELECT claim, domain, state, valid_from, valid_to "
+        "FROM user_dialectic WHERE id=?",
+        (new,),
     ).fetchone()
     assert new_row["state"] == "active"
     # Domain inherited from old when not specified
     assert new_row["domain"] == "style"
+    assert new_row["valid_from"] == old_row["valid_to"]
+    assert new_row["valid_to"] is None
 
 
 def test_supersede_preserves_old_evidence(fresh_mp):
@@ -348,6 +357,145 @@ def test_cannot_add_evidence_to_superseded_claim(fresh_mp):
     out = t["dialectic_evidence"].fn(claim_id=old, kind="support")
     assert out.startswith("ERR")
     assert "not_active" in out
+
+
+def test_review_as_of_queries_validity_interval(fresh_mp):
+    t = _tools(fresh_mp)
+    db = fresh_mp["db"]
+    old = _claim(t, "user used to prefer feature branches", "workflow")
+    out = t["dialectic_supersede"].fn(
+        old_claim_id=old,
+        new_claim="user now prefers direct-to-main for small fixes",
+    )
+    new = _new_id_from_supersede(out)
+
+    conn = db.get_db()
+    conn.execute(
+        "UPDATE user_dialectic SET created_at=?, valid_from=?, valid_to=? "
+        "WHERE id=?",
+        (86400, 86400, 172800, old),
+    )
+    conn.execute(
+        "UPDATE user_dialectic SET created_at=?, valid_from=?, valid_to=NULL "
+        "WHERE id=?",
+        (172800, 172800, new),
+    )
+    conn.commit()
+
+    past = t["dialectic_review"].fn(min_confidence="low", as_of="129600")
+    assert old in past
+    assert "user used to prefer feature branches" in past
+    assert new not in past
+    assert "state=superseded" in past
+    assert "valid=1970-01-02T00:00:00Z..1970-01-03T00:00:00Z" in past
+
+    current = t["dialectic_review"].fn(min_confidence="low", as_of="259200")
+    assert new in current
+    assert "user now prefers direct-to-main for small fixes" in current
+    assert old not in current
+
+
+def test_synthesis_can_include_validity_history(fresh_mp):
+    t = _tools(fresh_mp)
+    old = _claim(t, "user wanted feature branches", "workflow")
+    _add(t, old, "support")
+    _add(t, old, "support")
+    out = t["dialectic_supersede"].fn(
+        old_claim_id=old,
+        new_claim="user wants direct-to-main for small fixes",
+        quote="small fix can go straight to main",
+    )
+    new = _new_id_from_supersede(out)
+    _add(t, new, "support")
+
+    default = t["dialectic_synthesis"].fn(domain="workflow")
+    assert "user wants direct-to-main for small fixes" in default
+    assert "user wanted feature branches" not in default
+    assert "valid=" not in default
+
+    history = t["dialectic_synthesis"].fn(
+        domain="workflow",
+        include_history=True,
+    )
+    assert "user wants direct-to-main for small fixes" in history
+    assert "user wanted feature branches" in history
+    assert "valid=" in history
+
+
+def test_brief_marks_current_as_of_when_validity_history_exists(fresh_mp):
+    t = _tools(fresh_mp)
+    db = fresh_mp["db"]
+    conn = db.get_db()
+    current_only = _claim(t, "user prefers precise diffs", "workflow")
+    _add(t, current_only, "support")
+    _add(t, current_only, "support")
+
+    before = fresh_mp["brief"].render_brief(conn)
+    assert "user_model (dialectic)" in before
+    assert "current as of" not in before
+
+    out = t["dialectic_supersede"].fn(
+        old_claim_id=current_only,
+        new_claim="user prefers precise diffs plus test evidence",
+        quote="include test evidence with the diff",
+    )
+    new = _new_id_from_supersede(out)
+    _add(t, new, "support")
+
+    after = fresh_mp["brief"].render_brief(conn)
+    assert "user_model (dialectic, current as of " in after
+    assert "user prefers precise diffs plus test evidence" in after
+    assert "user prefers precise diffs\n" not in after
+
+
+def test_legacy_schema_migration_backfills_validity_intervals(fresh_mp):
+    path = fresh_mp["db"].DB_PATH
+    raw = sqlite3.connect(str(path))
+    raw.execute("DROP TABLE IF EXISTS user_dialectic")
+    raw.execute(
+        """
+        CREATE TABLE user_dialectic (
+            id                TEXT PRIMARY KEY,
+            claim             TEXT NOT NULL,
+            domain            TEXT,
+            support_count     INTEGER NOT NULL DEFAULT 0,
+            contradict_count  INTEGER NOT NULL DEFAULT 0,
+            confidence        TEXT NOT NULL DEFAULT 'low',
+            state             TEXT NOT NULL DEFAULT 'active',
+            superseded_by     TEXT REFERENCES user_dialectic(id),
+            created_by_cid    TEXT,
+            created_at        INTEGER NOT NULL,
+            last_evidence_at  INTEGER
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO user_dialectic "
+        "(id, claim, domain, confidence, state, superseded_by, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("UCold", "old claim", "workflow", "medium", "superseded", "UCnew", 100),
+    )
+    raw.execute(
+        "INSERT INTO user_dialectic "
+        "(id, claim, domain, confidence, state, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        ("UCnew", "new claim", "workflow", "medium", "active", 200),
+    )
+    raw.commit()
+    raw.close()
+
+    conn = fresh_mp["db"].get_db()
+    old = conn.execute(
+        "SELECT valid_from, valid_to FROM user_dialectic WHERE id='UCold'"
+    ).fetchone()
+    new = conn.execute(
+        "SELECT valid_from, valid_to FROM user_dialectic WHERE id='UCnew'"
+    ).fetchone()
+
+    assert old["valid_from"] == 100
+    assert old["valid_to"] == 200
+    assert new["valid_from"] == 200
+    assert new["valid_to"] is None
 
 
 # ── error paths ──────────────────────────────────────────────────────────

@@ -420,9 +420,12 @@ Scope: M.
   confirmations (supersede, curator apply, the under-used `review_candidates`
   flow), replacing ignorable text nudges with a real confirm/choose dialog,
   graceful fallback where unsupported. (#26)
-- **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
-  "invalidate, don't delete") so a superseded preference records *when* it
-  stopped being valid, enabling time-scoped user-model queries. (#28)
+- ✅ DONE (#28). **Bi-temporal** dialectic claims (`valid_from`/`valid_to`,
+  Zep/Graphiti "invalidate, don't delete") so a superseded preference records
+  *when* it stopped being valid. `dialectic_supersede` now closes the old valid
+  interval at the new claim's start; `dialectic_review(as_of=...)` and
+  `dialectic_synthesis(include_history=True)` expose time-scoped user-model
+  queries.
 - **Decay/eviction** scoring for the saturating ~1054-section lessons store
   (the curator ages skills but not lessons; mem0 Ebbinghaus pattern). (#27)
 - Note: MCP **sampling** (host-run completions, which would let daemons skip
