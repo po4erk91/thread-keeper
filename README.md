@@ -362,7 +362,7 @@ shows agents focused on their primary task rarely do).
             │                  │                           │
             ▼                  ▼                           │
          brief()    SKILL.md + lessons.md ─► skill_usage   │
-            │              │                  │            │
+            │              │          └─────► lesson_usage │
             │              ▼                  ▼            │
             │         (every configured       │            │
             │          skills/ root)          │            │
@@ -495,7 +495,7 @@ queue.
 
 Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
 = 7 days recommended) spawns a slim child that reviews the EXISTING
-`lessons.md` + `skill_usage` inventory and writes
+`lessons.md` + `lesson_usage` + `skill_usage` inventory and writes
 `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
 CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
@@ -521,6 +521,15 @@ still-current memory maintenance through `lesson_append` / `lesson_remove` /
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
 the same report.
+
+Lesson access is tracked the same way skill access is: `lesson_list` increments
+`lesson_usage.view_count` for displayed rows and `lesson_get` increments
+`lesson_usage.use_count` for the returned lesson. Curator dry runs include a
+ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+`access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
+lessons with no recent access and low pull-count. That decay list is advisory
+only; it never becomes an automatic `lesson_remove` path by itself, and pinned
+or validated lessons are excluded.
 
 The curator also audits the `concepts` store (abstract regularities triangulated
 across paraphrase runs). Concepts are no longer write-only: `register_concept`
@@ -1003,8 +1012,8 @@ and the original is never opened for writing. The default judge is **lexical**
 (deterministic, offline, no API key, no embeddings) so the command is
 reproducible and CI-safe; `--judge llm` grades answer *reasoning* (not just
 retrieval recall) with an Anthropic model when a key is set — the intended
-optimization target for the planned lessons-decay (#27) and bi-temporal
-claims (#28) work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
+optimization target for lesson-decay tuning (#27) and bi-temporal claims (#28)
+work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
 axes map onto thread-keeper's retrieval surface.
 
 ## Evaluating learning-loop decision quality
@@ -1104,11 +1113,12 @@ threadkeeper/
 `@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
 so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
 `readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
-`dialog_search`, `lesson_list`, the status tools, …) and `readOnlyHint=False`
-for mutations, with `destructiveHint=True` on the ten delete/overwrite/kill
-tools (`compost` is read-only — it only surfaces idle threads). A
-confirmation/elicitation host reads this to decide which calls warrant a
-prompt. The five status tools (`context`, `spawn_budget_status`,
+`dialog_search`, the status tools, …) and `readOnlyHint=False`
+for mutations. `lesson_list` / `lesson_get` are classified as non-destructive
+writes because they bump lesson access counters. The ten delete/overwrite/kill
+tools carry `destructiveHint=True` (`compost` is read-only — it only surfaces
+idle threads). A confirmation/elicitation host reads this to decide which calls
+warrant a prompt. The five status tools (`context`, `spawn_budget_status`,
 `spawn_status`, `mp_health`, `agent_status`) additionally advertise an
 `outputSchema` and return `structuredContent` alongside the legacy text
 block. The contract is enforced by `tests/test_tool_annotations.py`.

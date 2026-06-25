@@ -18,6 +18,16 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
+  `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
+  `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
+  include a ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+  `access_frequency × exp(-days_since_access / tau)` over lessons with no
+  recent access and low pull-count. The decay list is advisory only and excludes
+  foreground/user, pinned, and validated lessons; `lesson_list` / `lesson_get`
+  are now annotated as non-destructive writes because the counters are
+  intentional state.
+
 - **Config typo warnings (#88).** Startup and hot-config reload now log a
   one-line warning for unknown `THREADKEEPER_*` keys present in the process
   environment, so mistyped safety-knob overrides such as

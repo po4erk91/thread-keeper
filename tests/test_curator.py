@@ -129,6 +129,7 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     # background_review skill (not pinned) is NOT protected
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
+    assert "STALE LESSONS (dry-run decay ranking)" in dump
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -185,6 +186,8 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "PATCH" in kw["prompt"]
     assert "CONSOLIDATE" in kw["prompt"]
     assert "PRUNE" in kw["prompt"]
+    assert "STALE LESSONS DRY-RUN" in kw["prompt"]
+    assert "do NOT call lesson_remove solely" in kw["prompt"]
     assert "EVOLVE_CANDIDATE" in kw["prompt"]
     assert "evolve_format" in kw["prompt"]
     assert "lesson-one" in kw["prompt"]
@@ -239,6 +242,7 @@ def test_mcp_curator_review_dry_run_shows_inventory(tmp_path, monkeypatch):
     assert "would_spawn=yes" in out
     assert "reset-wifi-before-wda" in out
     assert "testid-drift-detection" in out
+    assert "STALE LESSONS (dry-run decay ranking)" in out
     # cursor MUST NOT advance on dry_run
     conn = pkg["db"].get_db()
     n = conn.execute(
@@ -260,6 +264,59 @@ def test_mcp_curator_review_status_reports(tmp_path, monkeypatch):
     assert "latest_report=(none yet)" in out
     # Default mode is now destructive (CURATOR_DESTRUCTIVE defaults to 1)
     assert "mode=destructive" in out
+
+
+def test_curator_dry_run_ranks_stale_lessons_by_decay_score(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    now = 1_800_000_000
+    old = now - 90 * 86400
+    monkeypatch.setattr(pkg["lessons"].time, "time", lambda: old)
+    for title in [
+        "never pulled",
+        "one old pull",
+        "pinned lesson",
+        "validated lesson",
+    ]:
+        pkg["lessons"].append_lesson(
+            title=title, body=f"{title} body", source="shadow"
+        )
+
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_used_at, use_count) "
+        "VALUES (?, ?, 'shadow', ?, 1)",
+        ("one-old-pull", old, now - 70 * 86400),
+    )
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_viewed_at, view_count, pinned) "
+        "VALUES (?, ?, 'shadow', ?, 1, 1)",
+        ("pinned-lesson", old, now - 80 * 86400),
+    )
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_viewed_at, view_count, tier) "
+        "VALUES (?, ?, 'shadow', ?, 1, 'validated')",
+        ("validated-lesson", old, now - 80 * 86400),
+    )
+    conn.commit()
+    monkeypatch.setattr(pkg["lessons"].time, "time", lambda: now)
+    monkeypatch.setattr(pkg["curator"].time, "time", lambda: now)
+
+    from threadkeeper._mcp import mcp
+    tool = mcp._tool_manager._tools["curator_review"].fn
+    out = tool(dry_run=True)
+
+    stale = out.split("## STALE LESSONS (dry-run decay ranking)", 1)[1]
+    stale = stale.split("## SKILLS", 1)[0]
+    assert "Advisory only" in stale
+    assert "score=" in stale
+    assert stale.index("never-pulled") < stale.index("one-old-pull")
+    assert "pinned-lesson" not in stale
+    assert "validated-lesson" not in stale
 
 
 def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):

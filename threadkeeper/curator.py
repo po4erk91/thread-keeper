@@ -5,7 +5,7 @@ minutes, the Curator REVIEWS THE STORE every few days:
 
   1. Daemon thread wakes every CURATOR_INTERVAL_S seconds (0 = off).
   2. Collects inventory: every lesson slug + every recently-touched
-     skill + usage telemetry.
+     skill + usage telemetry + advisory lesson decay ranking.
   3. Spawns slim child with CURATOR_PROMPT + inventory dump.
   4. Child grades each entry, suggests KEEP / PATCH / CONSOLIDATE /
      PRUNE, and writes REPORT-<isodate>.md under CURATOR_REPORTS_DIR.
@@ -126,6 +126,15 @@ recently-active skill):
     PRUNE: <slug>
       reason: <one line; note "false_positive" if from the criteria above>
 
+STALE LESSONS DRY-RUN — if the inventory includes a
+`## STALE LESSONS (dry-run decay ranking)` section, include a matching
+section in the REPORT.md. The ranking is computed as
+`access_frequency × exp(-days_since_access / tau)` and pre-filtered to
+unprotected lessons with no recent access and low pull-count. This is an
+advisory compost list only: do NOT call lesson_remove solely because a
+lesson appears in this section. Pinned, validated, foreground, and user
+entries are excluded from this list and remain off-limits.
+
 CONCEPTS RUBRIC — if a `## CONCEPTS` section is present below, review it
 with the SAME verbs (KEEP / CONSOLIDATE / PRUNE; PATCH rarely applies).
 Concepts are abstract regularities the system noticed; they are all
@@ -221,23 +230,34 @@ def _record_curator_pass(conn: sqlite3.Connection,
         logger.debug("curator: failed to record pass", exc_info=True)
 
 
-def _format_lesson(item: dict) -> str:
+def _format_lesson(item: dict, usage: dict | None = None) -> str:
     """One inventory line per lesson.
 
-    Lessons aren't pinned in the same way skills are — but lessons
-    flagged with `source=foreground` (i.e. user-typed via lesson_append
-    in a live session, not auto-spawned) get the PROTECTED marker so
-    the curator never proposes destructive changes against them."""
-    src = (item.get("source") or "").strip()
-    protected = " [PROTECTED]" if src in ("foreground", "user") else ""
+    Foreground/user lessons, pinned lesson_usage rows, and validated
+    lesson_usage rows get the PROTECTED marker so the curator never proposes
+    destructive changes against them."""
+    usage = usage or {}
+    src = (usage.get("source") or item.get("source") or "").strip()
+    is_protected, _reason = lessons.lesson_protection(item, usage)
+    protected = " [PROTECTED]" if is_protected else ""
     ts = item.get("ts") or 0
-    age_d = (int(time.time()) - ts) // 86400 if ts else "?"
+    now_t = int(time.time())
+    age_d = (now_t - ts) // 86400 if ts else "?"
+    last_active = max(
+        usage.get("last_used_at") or 0,
+        usage.get("last_viewed_at") or 0,
+        ts or 0,
+    )
+    last_active_d = (now_t - last_active) // 86400 if last_active else "?"
     body_preview = (item.get("body") or "")[:200].replace("\n", " ")
     if len(item.get("body") or "") > 200:
         body_preview += "…"
     return (
         f"- LESSON {item['slug']}{protected} "
-        f"(source={src or '?'}, age={age_d}d)\n"
+        f"(source={src or '?'}, tier={usage.get('tier') or 'hypothesis'}, "
+        f"uses={usage.get('use_count', 0)}, views={usage.get('view_count', 0)}, "
+        f"pinned={usage.get('pinned', 0)}, age={age_d}d, "
+        f"last_active={last_active_d}d_ago)\n"
         f"    body: {body_preview}"
     )
 
@@ -266,6 +286,37 @@ def _format_skill(row: dict) -> str:
     )
 
 
+def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
+    """Build the advisory stale-lessons decay section.
+
+    This is intentionally a dry-run list. It gives the human/curator a ranked
+    compost candidate set, but the score by itself is not a deletion command.
+    """
+    try:
+        rows = lessons.rank_stale_lessons(conn)
+    except Exception:
+        logger.debug("curator: rank_stale_lessons failed", exc_info=True)
+        rows = []
+    lines = [
+        "## STALE LESSONS (dry-run decay ranking)\n",
+        "Advisory only; never auto-delete solely from this list.",
+    ]
+    if not rows:
+        lines.append("(none)")
+        return "\n".join(lines), 0
+    for r in rows:
+        age = int(r["age_days"])
+        lines.append(
+            f"- {r['slug']} score={r['decay_score']:.6f} "
+            f"freq={r['access_frequency']:.4f}/d "
+            f"pulls={r['pull_count']} uses={r['use_count']} "
+            f"views={r['view_count']} last_access={age}d_ago "
+            f"tier={r['tier']} pinned={r['pinned']} "
+            f"source={r['source'] or '?'}"
+        )
+    return "\n".join(lines), len(rows)
+
+
 def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
     """Build the inventory dump the curator child will read.
 
@@ -277,8 +328,9 @@ def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
     lesson_lines: list[str] = []
     n_lessons = 0
     try:
+        usage = lessons.lesson_usage_map(conn)
         for item in lessons.iter_lessons():
-            lesson_lines.append(_format_lesson(item))
+            lesson_lines.append(_format_lesson(item, usage.get(item["slug"])))
             n_lessons += 1
     except Exception:
         logger.debug("curator: iter_lessons failed", exc_info=True)
@@ -305,6 +357,8 @@ def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
     parts: list[str] = []
     parts.append(f"## LESSONS (n={n_lessons})\n")
     parts.extend(lesson_lines if lesson_lines else ["(none)"])
+    stale_text, _n_stale = _collect_stale_lessons(conn)
+    parts.append("\n" + stale_text)
     parts.append(f"\n## SKILLS (n={n_skills})\n")
     parts.extend(skill_lines if skill_lines else ["(none)"])
 
