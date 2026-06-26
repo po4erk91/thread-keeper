@@ -126,7 +126,13 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
 3. **dialog_messages + dialog_fts (+ dialog_vec)** — full conversation
    transcripts, pulled live from `~/.claude/projects/**/*.jsonl`.
    Used by `peers()`, `brief()`, `search()`, `dialog_search()` and the
-   shadow-review daemon.
+   shadow-review daemon. Before new transcript content is written to
+   `dialog_messages`, mirrored into `dialog_fts`, embedded, or backfilled into
+   FTS, ingest masks common credential-shaped values such as authorization
+   headers, bearer/OAuth tokens, AWS keys, `.npmrc` / `.netrc` credentials, and
+   `*_TOKEN=` / `*_SECRET=` assignments. The redaction is default-on and can be
+   disabled with `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for local debugging
+   that intentionally trades away the durable secret-scrubbing guarantee.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`

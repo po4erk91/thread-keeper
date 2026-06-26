@@ -76,6 +76,12 @@ remains a live question.
   (`agy`) successor adapter does not yet parse its sqlite/protobuf
   conversation store (tracked below under "more adapters"), so on a
   migrated-to-`agy` box that slot reports absent until that ingestion lands.
+- Dialog transcript secret redaction (#37): live ingest now scrubs common
+  credential-shaped values before writing transcript content to
+  `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The default-on
+  `THREADKEEPER_REDACT_DIALOG_SECRETS` knob can be disabled only for rare local
+  debugging where raw transcript fidelity intentionally wins over durable
+  secret protection.
 
 ---
 

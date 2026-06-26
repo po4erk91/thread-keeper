@@ -98,6 +98,32 @@ principle to the always-on, auto-loaded-output loops):
   and refused — the inbound analogue of the secret scrubber. Foreground
   (human) writes are never screened.
 
+### Transcript ingest (observed dialog → durable local search)
+
+Live ingest and manual/backfill ingest read local CLI transcripts and persist
+searchable text into `dialog_messages`, `dialog_fts`, and optional embedding
+stores. Raw chat text is untrusted and may accidentally contain credentials
+pasted by the user, echoed by a tool, or copied from a config file.
+
+Mitigations:
+
+- **Default-on redaction.** Before transcript content is persisted, mirrored
+  into FTS, embedded, or inserted by FTS backfill, thread-keeper masks common
+  credential-shaped values. Covered shapes include `Authorization:` /
+  `Proxy-Authorization:` headers, bearer/OAuth tokens, AWS access-key IDs,
+  common API-token prefixes, `.npmrc` auth lines, `.netrc` login/password pairs,
+  and sensitive assignments such as `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=`, and
+  `*_PASSWORD=`.
+- **Searchable markers, not reversible secrets.** The scrubber preserves the
+  surrounding key/header name and replaces the value with typed markers such as
+  `[REDACTED:AUTHORIZATION]` or `[REDACTED:SECRET]`, so troubleshooting can
+  still find the kind of credential involved without exposing the original
+  value.
+- **Local opt-out only.** Set `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for a
+  deliberate local debugging session where exact raw transcript fidelity is
+  required. With the knob disabled, thread-keeper may persist credential-shaped
+  strings into durable local search.
+
 ## Scope
 
 In-scope:
