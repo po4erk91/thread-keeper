@@ -89,8 +89,9 @@ PROCEDURE
       `mcp__thread-keeper__skill_list()`.
    b. If a close slug/skill already exists, read it with `lesson_get` when
       needed and PATCH the existing skill, or reuse the exact existing
-      lesson title so lesson_append replaces in-place. Do not append a
-      second overlapping lesson.
+      lesson title so lesson_append replaces in-place. `lesson_append`
+      also enforces slug and semantic body duplicate gates for shadow
+      writes; do not append a second overlapping lesson.
    c. Only create new memory if no existing lesson/skill covers the rule.
 4. Materialization preference order:
    a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an

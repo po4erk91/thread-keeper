@@ -463,7 +463,10 @@ Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
 (#18), and Antigravity transcript ingest not yet implemented (#20).
 
 Follow-up gaps from the 2026-06-17 audit:
-- Semantic lesson dedup at write time (#34).
+- ✅ DONE (#34). Semantic lesson dedup at write time: loop-authored
+  `lesson_append` calls compare candidate bodies against existing lessons,
+  patch the closest incumbent on strong matches, and surface borderline or
+  protected matches instead of writing a sibling slug.
 - Curator pass debounce / unchanged-inventory coalescing (#35).
 - Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
 - Transcript secret scrubbing before persistence into `dialog_messages` /

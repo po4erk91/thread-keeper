@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Semantic lesson dedup at write time (#34).** Loop-authored
+  `lesson_append` calls now embed candidate lesson bodies and compare them
+  against existing lessons. Strong semantic matches patch/append evidence to
+  the incumbent lesson, while borderline or protected matches return a
+  duplicate signal instead of creating a sibling slug.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed
