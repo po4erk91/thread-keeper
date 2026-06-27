@@ -57,7 +57,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status
-    ├── lessons.py     lesson_append/list/get
+    ├── lessons.py     lesson_append/list/get/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -589,7 +589,7 @@ skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
-  `create | edit | patch | write_file | remove_file | delete`.
+  `create | edit | patch | write_file | remove_file | delete | restore`.
   Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
   `description` ≤1024 chars, total ≤100k chars. Generated frontmatter writes
   `name` and `description` as quoted YAML scalars so colon-containing
@@ -624,6 +624,17 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   with no recent access and low pull-count. The section is advisory only; it is
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
+
+- **Curator trash recovery** — destructive knowledge-store deletes persist a
+  full pre-image before mutating. `lesson_remove` writes the exact
+  `LESSON:BEGIN/END` section plus its `lesson_usage` row under
+  `<db dir>/curator/trash/`; `skill_manage(action='delete')` writes the whole
+  skill directory plus its `skill_usage` row there. Restore through
+  `lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+  Trash is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30);
+  expired artifacts are swept on new trash writes. Protected refusal behavior
+  is unchanged: user/foreground lessons still require `force`, and pinned
+  skills still refuse deletion.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
@@ -877,7 +888,7 @@ backend in `embed_backend` (NULL = legacy). The two backends are not
 numerically identical, so after a switch run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (107 total)
+## MCP tools (108 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -899,7 +910,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 4 | lesson_append, lesson_list, lesson_get, lesson_remove |
+| lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
@@ -1169,6 +1180,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick; 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only |
+| `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |

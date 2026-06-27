@@ -248,6 +248,10 @@ class Settings(BaseSettings):
     # for advisory REPORT-only. [PROTECTED] (foreground/user/pinned/validated)
     # entries are never mutated regardless.
     curator_destructive: bool = True
+    # Recovery artifacts for destructive curator operations. Lesson prune and
+    # skill delete capture full pre-images under <db dir>/curator/trash before
+    # mutating; this TTL bounds disk growth.
+    curator_trash_ttl_days: int = 30
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -577,6 +581,8 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
+        "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
+        "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
