@@ -646,6 +646,16 @@ applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
 
+Before any PR-producing reviewer/audit or applier child is spawned, the parent
+checks the target checkout with `git status --porcelain --untracked-files=no`.
+Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
+untracked scratch files do not block. The child prompts also fetch the configured
+base branch and create feature branches from `origin/main` (or the configured
+`THREADKEEPER_EVOLVE_REPO_BRANCH`), not from whatever `HEAD` the daemon happens
+to have checked out. A shared git-writer running-task check prevents the
+privileged reviewer audit and code/PR applier from overlapping in the same
+checkout.
+
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
 implementer child — so **autonomous** pickup is gated on the issue author's
@@ -686,8 +696,9 @@ Set `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S>0` to run periodic audit/research
 passes and `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S>0` to drain one issue per pass.
 Pin the agent/model with `THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
 `THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`. Single-flight (one applier child at
-a time, enforced by a short dispatch file lock plus running-task detection)
-keeps code edits and memory maintenance from colliding.
+a time, enforced by a short dispatch file lock plus running-task detection) and
+the shared git-writer guard keep code edits and roadmap PR writes from
+colliding.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
 Manual tools such as `evolve_apply_roadmap_issue()` dispatch immediately. If no

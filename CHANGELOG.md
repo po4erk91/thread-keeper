@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Evolve git working-tree safety (#43).** PR-producing evolve reviewer/applier
+  children now require a clean tracked-file checkout before spawn
+  (`skipped_dirty_worktree` is recorded when dirty), branch from a fetched
+  `origin/main` / configured base ref, and refuse to overlap reviewer/applier
+  git writers in the shared checkout.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

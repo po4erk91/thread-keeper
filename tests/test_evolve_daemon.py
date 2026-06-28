@@ -44,8 +44,22 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2"):
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
         del sys.modules[name]
     import threadkeeper.server  # noqa: F401
-    from threadkeeper import _mcp, db, evolve_daemon, identity
-    return {"mcp": _mcp.mcp, "db": db, "ed": evolve_daemon, "identity": identity}
+    from threadkeeper import _mcp, db, evolve_applier, evolve_daemon, identity
+    orig = {
+        "_git_worktree_precondition": evolve_daemon._git_worktree_precondition,
+    }
+    monkeypatch.setattr(
+        evolve_daemon, "_git_worktree_precondition",
+        lambda conn, repo_root, actor: "",
+    )
+    return {
+        "mcp": _mcp.mcp,
+        "db": db,
+        "ea": evolve_applier,
+        "ed": evolve_daemon,
+        "identity": identity,
+        "orig": orig,
+    }
 
 
 def _tool(pkg, name):
@@ -89,6 +103,8 @@ def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
     assert "sort=created" in prompt
     assert "direction=asc" in prompt
     assert "pull_request" in prompt
+    assert "git fetch origin {base_branch}" in prompt
+    assert "git checkout -b <branch> {base_ref}" in prompt
 
 
 # ── pending selection ──────────────────────────────────────────────────
@@ -288,6 +304,50 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert "adopt thing Z" in calls["prompt"]
     assert "untrusted data" in calls["prompt"].lower()
     assert pkg["ed"].EVOLVE_RESEARCH_FENCE in calls["prompt"]
+    assert "git fetch origin main" in calls["prompt"]
+    assert "git checkout -b <branch> origin/main" in calls["prompt"]
+
+
+def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "suggestion alpha")
+    _seed_research(pkg, conn)
+    monkeypatch.setattr(
+        pkg["ed"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda repo_root: (" M docs/ROADMAP.md", ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children",
+        lambda conn: [],
+    )
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn reviewer audit from dirty checkout")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "skipped_dirty_worktree mode=git"
+    safety = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=?",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert safety["target"] == "evolve_reviewer_audit"
+    assert safety["summary"] == "skipped_dirty_worktree mode=git"
+    review = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert review["summary"] == "skipped_dirty_worktree mode=git"
 
 
 def test_web_research_and_privileged_write_never_cogranted(tmp_path, monkeypatch):

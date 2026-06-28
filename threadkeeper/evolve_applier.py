@@ -25,8 +25,9 @@ Fallback paths:
   suggestion behind a PR and call `evolve_mark_applied(evolve_id, pr_url)`.
 
 All code-changing paths are PR-gated. The child never commits to main or marks
-work applied without a real PR URL. The file lock plus prompt-prefix running
-task check enforce one applier child at a time across foreground servers.
+work applied without a real PR URL. Before any git-writing child is spawned, the
+parent refuses dirty tracked files and refuses to overlap reviewer/applier git
+writers in the shared checkout.
 """
 
 from __future__ import annotations
@@ -70,6 +71,7 @@ _started = False
 # shadow_review._INTERNAL_PROMPT_PREFIXES so the child's transcript (it edits
 # code + runs gh) doesn't pollute extract/shadow learning windows on re-ingest.
 EVOLVE_APPLY_PROMPT_PREFIX = "You are an EVOLVE APPLIER"
+EVOLVE_REVIEW_AUDIT_PROMPT_PREFIX = "You are an EVOLVE REVIEWER (audit phase)"
 
 EVOLVE_APPLY_PROMPT = """\
 You are an EVOLVE APPLIER for thread-keeper. A past session filed a suggestion
@@ -121,7 +123,8 @@ DO, strictly in order:
 
 5. OPEN A PR — only after the suite is GREEN:
      • Create a NEW feature branch (NEVER commit on main):
-         git checkout -b {branch}
+         git fetch origin {base_branch}
+         git checkout -b {branch} {base_ref}
      • Choose a Conventional Commits type allowed by CONTRIBUTING.md and
        .github/workflows/pr-title.yml. Use `feat` for new/changed brief output
        and `fix` for a broken existing brief behavior. Do NOT use `evolve:`:
@@ -170,6 +173,7 @@ ROADMAP_ISSUE_CLAIM_HOST_KIND = "roadmap_issue_claim_host"
 # written when an issue crosses the attempt cap and is flagged for a human.
 ROADMAP_ISSUE_ATTEMPT_KIND = "roadmap_issue_attempt"
 ROADMAP_ISSUE_DEAD_LETTER_KIND = "roadmap_issue_dead_letter"
+EVOLVE_GIT_SAFETY_KIND = "evolve_git_safety"
 # Label applied to a dead-lettered issue so it is visibly excluded from the
 # auto-drain and surfaced for a human (composes with the #50 skip-label gate).
 ROADMAP_ISSUE_BLOCKED_LABEL = "blocked"
@@ -317,7 +321,8 @@ the blocker/status so a later agent has enough context.
    It MUST report 0 failed. Fix related failures and re-run until green.
 
 5. Open a PR on a new branch; never commit on main:
-     git checkout -b {branch}
+     git fetch origin {base_branch}
+     git checkout -b {branch} {base_ref}
      git add <only files you changed>
      git commit -m "<type>: <short imperative summary>"
      git push -u origin {branch}
@@ -454,6 +459,124 @@ def _run(cmd: list[str], timeout: int, cwd: Optional[Path] = None) -> str:
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
         return (err[-1] if err else f"exit={proc.returncode}")[:180]
+    return ""
+
+
+def _short(text: str, limit: int = 160) -> str:
+    return " ".join((text or "").split())[:limit]
+
+
+def _base_branch_name() -> str:
+    return str(EVOLVE_REPO_BRANCH or "main").strip() or "main"
+
+
+def _base_ref() -> str:
+    return f"origin/{_base_branch_name()}"
+
+
+def _tracked_worktree_status(repo_root: Path) -> tuple[str, str]:
+    """Return (`dirty_output`, `error`) for tracked-file changes only."""
+    try:
+        proc = subprocess.run(
+            [
+                "git", "-C", str(repo_root), "status", "--porcelain",
+                "--untracked-files=no",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "", "git_not_found"
+    except subprocess.TimeoutExpired:
+        return "", "git_status_timeout"
+    except OSError as e:
+        return "", f"git_status_error: {e}"
+    if proc.returncode != 0:
+        return "", _short(proc.stderr or proc.stdout or f"exit={proc.returncode}")
+    return (proc.stdout or "").strip(), ""
+
+
+def _record_git_safety_event(
+    conn: sqlite3.Connection,
+    actor: str,
+    outcome: str,
+) -> None:
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                identity._session_id or "",
+                EVOLVE_GIT_SAFETY_KIND,
+                (actor or "")[:120],
+                (outcome or "")[:300],
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.debug("evolve_applier: failed to record git safety event",
+                     exc_info=True)
+
+
+def _running_git_writer_children(conn: sqlite3.Connection) -> list[str]:
+    """Running PR-producing reviewer/applier task ids, reaping dead rows."""
+    from .helpers import alive
+    try:
+        rows = conn.execute(
+            "SELECT id, pid FROM tasks WHERE ended_at IS NULL "
+            "AND (prompt LIKE ? OR prompt LIKE ?)",
+            (
+                EVOLVE_APPLY_PROMPT_PREFIX + "%",
+                EVOLVE_REVIEW_AUDIT_PROMPT_PREFIX + "%",
+            ),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    now = int(time.time())
+    running: list[str] = []
+    touched = False
+    for r in rows:
+        pid = int(r["pid"] or 0)
+        if pid > 0 and not alive(pid):
+            conn.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=? AND ended_at IS NULL",
+                (now, r["id"]),
+            )
+            touched = True
+            continue
+        running.append(r["id"])
+    if touched:
+        conn.commit()
+    return running
+
+
+def _git_worktree_precondition(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    actor: str,
+) -> str:
+    """Parent-side gate before spawning any child that may commit/push.
+
+    Untracked scratch files intentionally do not block, matching auto_update's
+    `git status --porcelain --untracked-files=no` safety contract.
+    """
+    dirty, err = _tracked_worktree_status(repo_root)
+    if err:
+        outcome = f"ERR git_status_failed mode=git err={err}"
+        _record_git_safety_event(conn, actor, outcome)
+        return outcome
+    if dirty:
+        outcome = "skipped_dirty_worktree mode=git"
+        _record_git_safety_event(conn, actor, outcome)
+        return outcome
+    running = _running_git_writer_children(conn)
+    if running:
+        outcome = f"evolve_git_writer_running n={len(running)}"
+        _record_git_safety_event(conn, actor, outcome)
+        return outcome
     return ""
 
 
@@ -1469,6 +1592,8 @@ def build_apply_prompt(evolve_id: int, suggestion: str,
         suggestion_block=suggestion_block,
         repo=repo,
         branch=branch_name(evolve_id, suggestion),
+        base_branch=_base_branch_name(),
+        base_ref=_base_ref(),
     )
 
 
@@ -1507,6 +1632,8 @@ def build_roadmap_issue_apply_prompt(
         claim_marker=ROADMAP_ISSUE_CLAIM_MARKER,
         repo=repo,
         branch=roadmap_issue_branch_name(number, title),
+        base_branch=_base_branch_name(),
+        base_ref=_base_ref(),
     )
 
 
@@ -1800,6 +1927,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
         repo_root, repo_err = _ensure_repo_ready()
         if repo_err:
             return repo_err
+        running = _running_applier_children(conn)
+        if running:
+            return f"applier_running n={len(running)} (single-flight)"
         exact = bool(issue_number)
         # Queue mode honours the backoff/dead-letter gate and flags poison
         # issues; exact mode is a deliberate human override that ignores it.
@@ -1827,9 +1957,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
                 return "no_roadmap_issue"
             candidates = issues
 
-        running = _running_applier_children(conn)
-        if running:
-            return f"applier_running n={len(running)} (single-flight)"
+        guard = _git_worktree_precondition(conn, repo_root, "roadmap_issue")
+        if guard:
+            return guard
 
         failures: list[str] = []
         for issue in candidates:
@@ -1966,6 +2096,9 @@ def apply_evolve(evolve_id: int) -> str:
         running = _running_applier_children(conn)
         if running:
             return f"applier_running n={len(running)} (single-flight)"
+        guard = _git_worktree_precondition(conn, repo_root, "legacy_evolve")
+        if guard:
+            return guard
 
         prompt = build_apply_prompt(
             row["id"], row["suggestion"], row["rationale"], repo_root

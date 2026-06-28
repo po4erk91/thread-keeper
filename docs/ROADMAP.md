@@ -61,6 +61,12 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Evolve roadmap automation git safety (#43): before a privileged reviewer
+  audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
+  with `skipped_dirty_worktree` (untracked scratch files do not block), refuses
+  overlapping reviewer/applier git writers in the shared checkout, and prompts
+  children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
+  instead of arbitrary current `HEAD`.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -481,11 +487,6 @@ Follow-up gaps from the 2026-06-17 audit:
   holds curator/issue/audit content indefinitely and the default
   `/tmp/thread-keeper-tasks` spool sits outside the `~/.threadkeeper`
   perimeter that #21 hardens (#42).
-- Git working-tree safety for evolve roadmap automation: dirty-tree guard
-  (mirroring `auto_update`'s `skipped_dirty_checkout`), branch-from-clean-`main`,
-  and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
-  PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
-  with unrelated working-tree WIP (#43).
 - Auto-update payload integrity/provenance: the on-by-default daily pip/git
   self-update installs and runs new code with **no version pin, hash, or PyPI
   attestation/signed-tag verification**, then restarts on it. A compromised

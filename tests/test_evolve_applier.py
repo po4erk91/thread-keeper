@@ -54,6 +54,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     orig = {
         "_fetch_open_issues": evolve_applier._fetch_open_issues,
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
+        "_git_worktree_precondition": evolve_applier._git_worktree_precondition,
     }
     monkeypatch.setattr(
         evolve_applier, "_fetch_open_issues",
@@ -66,6 +67,10 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     monkeypatch.setattr(
         evolve_applier, "_comment_issue_claim",
         lambda issue, repo_root=None: ("https://x/issues/0#issuecomment-1", ""),
+    )
+    monkeypatch.setattr(
+        evolve_applier, "_git_worktree_precondition",
+        lambda conn, repo_root, actor: "",
     )
     monkeypatch.setattr(
         evolve_applier, "_open_prs_for_issue",
@@ -238,6 +243,11 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert "gh pr create" in p
     assert 'git commit -m "<type>: <short imperative summary>"' in p
     assert 'gh pr create --title "<type>: <short>"' in p
+    assert "git fetch origin main" in p
+    assert (
+        f"git checkout -b {pkg['ea'].branch_name(eid, 'add a failed_paths field per thread')} "
+        "origin/main"
+    ) in p
     assert 'git commit -m "evolve:' not in p
     assert 'gh pr create --title "evolve:' not in p
     assert "evolve_mark_applied" in p
@@ -649,6 +659,104 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "evolve_mark_roadmap_issue_applied" in prompt
     assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
     assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
+    assert "git fetch origin main" in prompt
+    assert (
+        f"git checkout -b {pkg['ea'].roadmap_issue_branch_name(6, 'Telemetry dashboard')} "
+        "origin/main"
+    ) in prompt
+
+
+def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda repo_root: (" M threadkeeper/config.py", ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children",
+        lambda conn: [],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: (_ for _ in ()).throw(
+            AssertionError("must not claim a dirty checkout")
+        ),
+    )
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn with a dirty checkout")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out == "skipped_dirty_worktree mode=git"
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=?",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert row["target"] == "roadmap_issue"
+    assert row["summary"] == "skipped_dirty_worktree mode=git"
+
+
+def test_apply_roadmap_issue_blocks_during_reviewer_audit_git_writer(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda repo_root: ("", ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    import os
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at) "
+        "VALUES (?,?,?,?,?)",
+        (
+            "tk_evr_audit",
+            os.getpid(),
+            "/tmp",
+            pkg["ea"].EVOLVE_REVIEW_AUDIT_PROMPT_PREFIX + " working",
+            int(time.time()),
+        ),
+    )
+    conn.commit()
+
+    def _boom(**kw):
+        raise AssertionError("must not spawn while reviewer audit writes git")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue()
+
+    assert out == "evolve_git_writer_running n=1"
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=?",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert row["target"] == "roadmap_issue"
+    assert row["summary"] == "evolve_git_writer_running n=1"
 
 
 def test_apply_roadmap_issue_comments_before_spawn(
