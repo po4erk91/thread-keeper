@@ -126,12 +126,14 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
 3. **dialog_messages + dialog_fts (+ dialog_vec)** — full conversation
    transcripts, pulled live from `~/.claude/projects/**/*.jsonl`.
    Used by `peers()`, `brief()`, `search()`, `dialog_search()` and the
-   shadow-review daemon.
+   shadow-review daemon. The retention pass can prune aged dialog rows and
+   deletes their FTS/vec mirrors in the same pass.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`
    counts `live=N` by cursor delta. Signals — broadcast/whisper/
-   search_request/search_response between parallel windows.
+   search_request/search_response between parallel windows. Event and signal
+   pruning is owned by the retention daemon, not by read tools.
 
 5. **skill_usage** — telemetry for mirrored Skill.md entries. Fields:
    `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
@@ -184,6 +186,10 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **background_ingester** (`ingest._start_background_ingester`) — ticks every
   `INGEST_INTERVAL_S` (default 3 s), reads fresh jsonl chunks, tops up
   dialog_messages/_fts and backfills NULL-embeddings on notes.
+- **retention** — ticks every `RETENTION_INTERVAL_S` (default 0/off). When
+  enabled, prunes opted-in aged `dialog_messages`/`tasks`/`signals`/`events`/
+  `probe_results`, keeps dialog FTS/vec mirrors consistent, and can run
+  `VACUUM` plus `PRAGMA wal_checkpoint(TRUNCATE)`.
 - **search_proxy** — serves `search_via_parent` from slim children via
   signals (see below).
 - **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
@@ -1126,6 +1132,14 @@ unsupported CLI overrides still fall through to the next priority, and
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
+| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
+| `THREADKEEPER_TASK_RETENTION_DAYS` | 0 | prune completed `tasks` older than this many days; 0 keeps forever |
+| `THREADKEEPER_SIGNAL_RETENTION_DAYS` | 0 | prune handled old `signals` and aged search proxy messages; 0 keeps forever |
+| `THREADKEEPER_EVENTS_RETENTION_DAYS` | 0 | prune old `events` during retention passes; 0 keeps forever |
+| `THREADKEEPER_PROBE_RESULT_RETENTION_DAYS` | 0 | prune old `probe_results` and refresh reliability aggregates; 0 keeps forever |
+| `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
+| `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after at least this many deleted rows; 0 disables |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | personal-class memory egress scope: `all` / `same-vendor` / `work-only` (see Spawn → Cross-provider memory egress) |
 | `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | `onnx` (fastembed, no PyTorch) or `sentence-transformers` (fallback) |

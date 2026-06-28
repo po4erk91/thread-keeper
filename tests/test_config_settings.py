@@ -36,6 +36,14 @@ def test_defaults_match(monkeypatch):
     assert c.SPAWN_COST_BUDGET_USD == 0.0
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
+    assert c.RETENTION_INTERVAL_S == 0.0
+    assert c.DIALOG_RETENTION_DAYS == 0.0
+    assert c.TASK_RETENTION_DAYS == 0.0
+    assert c.SIGNAL_RETENTION_DAYS == 0.0
+    assert c.EVENTS_RETENTION_DAYS == 0.0
+    assert c.PROBE_RESULT_RETENTION_DAYS == 0.0
+    assert c.RETENTION_WAL_CHECKPOINT is False
+    assert c.RETENTION_VACUUM_AFTER_ROWS == 0
     assert c.SKILL_UPDATE_INTERVAL_S == 302400
     assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
@@ -44,6 +52,27 @@ def test_defaults_match(monkeypatch):
 def test_env_overrides_default(monkeypatch):
     c = _fresh_config(monkeypatch, env={"THREADKEEPER_MEMORY_NUDGE_INTERVAL": "3"})
     assert c.MEMORY_NUDGE_INTERVAL == 3
+
+
+def test_retention_env_overrides(monkeypatch):
+    c = _fresh_config(monkeypatch, env={
+        "THREADKEEPER_RETENTION_INTERVAL_S": "3600",
+        "THREADKEEPER_DIALOG_RETENTION_DAYS": "90",
+        "THREADKEEPER_TASK_RETENTION_DAYS": "14",
+        "THREADKEEPER_SIGNAL_RETENTION_DAYS": "7",
+        "THREADKEEPER_EVENTS_RETENTION_DAYS": "30",
+        "THREADKEEPER_PROBE_RESULT_RETENTION_DAYS": "60",
+        "THREADKEEPER_RETENTION_WAL_CHECKPOINT": "1",
+        "THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS": "1000",
+    })
+    assert c.RETENTION_INTERVAL_S == 3600
+    assert c.DIALOG_RETENTION_DAYS == 90
+    assert c.TASK_RETENTION_DAYS == 14
+    assert c.SIGNAL_RETENTION_DAYS == 7
+    assert c.EVENTS_RETENTION_DAYS == 30
+    assert c.PROBE_RESULT_RETENTION_DAYS == 60
+    assert c.RETENTION_WAL_CHECKPOINT is True
+    assert c.RETENTION_VACUUM_AFTER_ROWS == 1000
 
 
 def test_unknown_threadkeeper_env_key_warns(monkeypatch, caplog):
@@ -138,6 +167,14 @@ def test_all_exported_names_present(monkeypatch):
         "INGEST_CAP_PER_CALL",
         "INGEST_INTERVAL_S",
         "INGEST_RECENT_WINDOW_S",
+        "RETENTION_INTERVAL_S",
+        "DIALOG_RETENTION_DAYS",
+        "TASK_RETENTION_DAYS",
+        "SIGNAL_RETENTION_DAYS",
+        "EVENTS_RETENTION_DAYS",
+        "PROBE_RESULT_RETENTION_DAYS",
+        "RETENTION_WAL_CHECKPOINT",
+        "RETENTION_VACUUM_AFTER_ROWS",
         "MEMORY_GUARD_AGG_KILL_MB",
         "MEMORY_GUARD_AGG_WARN_MB",
         "MEMORY_GUARD_COOLDOWN_S",
