@@ -403,10 +403,6 @@ def live_status(advance_cursor: bool = True, k: int = 30) -> str:
         (cur_id, identity._session_id, k),
     ).fetchall()
     _heartbeat(conn)
-    conn.execute(
-        "DELETE FROM events WHERE created_at < ?",
-        (int(time.time()) - 30 * 86400,),
-    )
     if not rows:
         conn.commit()
         return "no_fresh_events"

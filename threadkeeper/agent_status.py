@@ -91,6 +91,17 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "work": "Reads CLI transcripts into dialog memory",
     },
     {
+        "id": "retention",
+        "name": "Retention",
+        "event": "retention_pass",
+        "interval": "RETENTION_INTERVAL_S",
+        "description": (
+            "Prunes opted-in high-volume SQLite tables and runs checkpoint/"
+            "VACUUM maintenance for the local store."
+        ),
+        "work": "Prunes aged DB rows and compacts SQLite storage",
+    },
+    {
         "id": "shadow_review",
         "name": "Shadow review",
         "event": "shadow_review_pass",

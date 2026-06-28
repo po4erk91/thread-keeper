@@ -771,6 +771,14 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
+| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
+| `THREADKEEPER_TASK_RETENTION_DAYS` | 0 | prune completed `tasks` rows older than this many days; 0 keeps forever |
+| `THREADKEEPER_SIGNAL_RETENTION_DAYS` | 0 | prune handled old `signals` plus aged `search_request`/`search_response`; 0 keeps forever |
+| `THREADKEEPER_EVENTS_RETENTION_DAYS` | 0 | prune old `events` on the retention pass; 0 keeps forever |
+| `THREADKEEPER_PROBE_RESULT_RETENTION_DAYS` | 0 | prune old `probe_results` and refresh reliability aggregates; 0 keeps forever |
+| `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
+| `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after a pass deletes at least this many rows; 0 disables VACUUM |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
@@ -966,6 +974,20 @@ HNSW indexes through `sqlite-vec` for sub-linear semantic search;
 fallback to Python-side cosine when the extension is missing.
 
 One file. Backup = `cp`. Wipe memory = `rm`.
+
+### Retention
+
+Retention is opt-in. All destructive windows default to `0` (keep forever), so
+upgrading does not delete historical transcripts, tasks, signals, events, or
+probe results. Set `THREADKEEPER_RETENTION_INTERVAL_S` plus the per-table day
+windows above to prune aged rows on a deterministic daemon tick. Dialog pruning
+keeps `dialog_fts`, `dialog_vec`, and `dialog_vec_map` consistent with
+`dialog_messages`.
+
+`mp_dashboard()` reports DB file size, WAL/SHM sidecar size, and row counts for
+the high-volume tables (`dialog_messages`, `dialog_fts`, `dialog_vec`,
+`signals`, `events`, `tasks`, `probe_results`) so growth is visible before it
+becomes a problem.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 

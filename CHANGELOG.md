@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **DB retention/compaction (#45).** Added a default-off retention daemon with
+  `0`-means-keep-forever knobs for dialog, task, signal, event, and probe
+  result pruning. Dialog pruning deletes `dialog_fts` / `dialog_vec` mirrors
+  with the source row, optional WAL checkpoint and VACUUM maintenance are
+  available, and `mp_dashboard()` now reports DB file size plus high-volume row
+  counts.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed
