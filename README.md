@@ -59,10 +59,11 @@ make it more than a memory store:
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
 package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
-interpreter environment. Dirty or diverged git checkouts are skipped rather
-than overwritten. Restarts are gated on install/setup success plus a subprocess
-import smoke check, so a broken update is recorded but the current server keeps
-running.
+interpreter environment only after the latest PyPI release files have matching
+Integrity API provenance from the expected GitHub Trusted Publisher. Dirty or
+diverged git checkouts are skipped rather than overwritten. Restarts are gated
+on install/setup success plus a subprocess import smoke check, so a broken or
+unverified update is recorded but the current server keeps running.
 
 They also run a twice-weekly installed-skill updater by default. It keeps all
 configured CLI skill roots in sync, adopts newer local copies installed into a
@@ -337,16 +338,25 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
   editable package, and rerun `threadkeeper._setup`;
 - installed package: run `pip install --upgrade threadkeeper` or
   `threadkeeper[semantic]` in the current interpreter environment, preserving
-  semantic extras when they are already installed, then rerun setup when the
-  installed version changes.
+  semantic extras when they are already installed, but only after the candidate
+  PyPI release's non-yanked files have PyPI Integrity API provenance from the
+  expected GitHub Trusted Publisher (`po4erk91/thread-keeper`, `publish.yml`,
+  environment `pypi`), then rerun setup when the installed version changes.
 
-After a successful update, the daemon exits the current MCP process by default
-so the host can restart it on the new code. Before scheduling that exit, it
-imports `threadkeeper.server` in a subprocess; install/setup/import failures are
-recorded as `auto_update_pass` with `restart=suppressed`, and the current
-known-working process stays alive. Disable restart with
+Auto-update is standing consent for thread-keeper to fetch and run future
+maintainer code. A packaged update whose provenance is missing, whose publisher
+identity does not match policy, or whose attested subject digest does not match
+PyPI metadata is refused before `pip` runs and is recorded as
+`auto_update_pass` with `mode=pip` and `refused`. After a successful update, the
+daemon exits the current MCP process by default so the host can restart it on
+the new code. Before scheduling that exit, it imports `threadkeeper.server` in a
+subprocess; install/setup/import failures are recorded as `auto_update_pass`
+with `restart=suppressed`, and the current known-working process stays alive.
+Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
-`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. If a packaged release needs manual
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. The provenance gate is on by default;
+`THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE=0` is a break-glass opt-out for
+private mirrors or disconnected installs. If a packaged release needs manual
 rollback, pin the previous version explicitly, for example
 `pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
@@ -784,6 +794,11 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |

@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
+  resolve the candidate PyPI release before running `pip`, require PyPI
+  Integrity API provenance from the expected GitHub Trusted Publisher
+  (`po4erk91/thread-keeper`, `publish.yml`, environment `pypi`), and verify the
+  attested filename/SHA-256 against PyPI metadata. Missing or mismatched
+  provenance records a refused `auto_update_pass` and keeps the current
+  known-good process running. New env knobs document the break-glass provenance
+  opt-out and the expected publisher identity.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

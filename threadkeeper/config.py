@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     auto_update_interval_s: float = 86400.0
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
+    auto_update_verify_provenance: bool = True
+    auto_update_pypi_base_url: str = "https://pypi.org"
+    auto_update_expected_publisher_repository: str = "po4erk91/thread-keeper"
+    auto_update_expected_publisher_workflow: str = "publish.yml"
+    auto_update_expected_publisher_environment: str = "pypi"
 
     # ── Skill update daemon ─────────────────────────────────────────────────
     # Twice weekly by default. It syncs installed skills across known CLI roots
@@ -529,6 +534,17 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
         "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
         "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
+        "AUTO_UPDATE_VERIFY_PROVENANCE": s.auto_update_verify_provenance,
+        "AUTO_UPDATE_PYPI_BASE_URL": s.auto_update_pypi_base_url,
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY": (
+            s.auto_update_expected_publisher_repository
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW": (
+            s.auto_update_expected_publisher_workflow
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
+            s.auto_update_expected_publisher_environment
+        ),
         "SKILL_UPDATE_SOURCES": s.skill_update_sources,
         "SKILL_UPDATE_INFER_SOURCES": s.skill_update_infer_sources,
         "SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE": (

@@ -101,12 +101,22 @@ Foreground parent MCP sessions also start `auto_update.py` when
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
-`pip install --upgrade` in the current interpreter environment. Successful
-updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code, but only after setup and a
-subprocess import smoke check both pass. Install/setup/import failures are
-recorded on the `auto_update_pass` event with `restart=suppressed`, and the
-already-running process stays alive on its current in-memory code.
+`pip install --upgrade` in the current interpreter environment only after the
+latest PyPI release's non-yanked files pass the provenance gate. That gate
+queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
+bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
+and checks the attested subject filename/SHA-256 against PyPI metadata before
+`pip` is invoked. Missing provenance, mismatched publisher identity, or digest
+mismatch returns `refused mode=pip ...` and records an `auto_update_pass` without
+restarting. Successful updates optionally exit the current MCP process
+(`THREADKEEPER_AUTO_UPDATE_RESTART` default true) so the host reconnects to the
+new code, but only after setup and a subprocess import smoke check both pass.
+Install/setup/import failures are recorded on the `auto_update_pass` event with
+`restart=suppressed`, and the already-running process stays alive on its current
+in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt out of the
+standing-consent update channel entirely; the provenance gate itself is
+controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
+mirrors.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -1158,6 +1168,11 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_WARN_MB` | 1536 | notify/log above this server RSS |
 | `THREADKEEPER_MEMORY_GUARD_KILL_MB` | 3072 | SIGTERM server above this RSS; 0 disables killing |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB` | 2048 | notify/request trim above combined server RSS |
 | `THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB` | 3072 | retire stale idle servers under aggregate pressure |
 | `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
