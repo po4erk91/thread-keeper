@@ -9,7 +9,9 @@ minutes, the Curator REVIEWS THE STORE every few days:
   3. Spawns slim child with CURATOR_PROMPT + inventory dump.
   4. Child grades each entry, suggests KEEP / PATCH / CONSOLIDATE /
      PRUNE, and writes REPORT-<isodate>.md under CURATOR_REPORTS_DIR.
-  5. Parent records `curator_pass` event with high-water timestamp.
+  5. In destructive mode, parent writes a pre-mutation snapshot before
+     spawning the child; child tool calls add tombstones/action telemetry.
+  6. Parent records `curator_pass` event with high-water timestamp.
 
 Design choices:
 
@@ -22,10 +24,11 @@ Design choices:
     Read/Write. No shell, no web, no spawn. Curator can't sprawl into
     anything else.
   • **Per-run REPORT.md** — every pass leaves an auditable trail.
-  • **Destructive-by-default (Phase 2)** — child writes the REPORT.md
-    first (audit trail), then applies its own PATCH / PRUNE / CONSOLIDATE
-    directly via lesson_append / lesson_remove / skill_manage, and its
-    CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
+  • **Destructive-by-default (Phase 2)** — parent first writes a recoverable
+    snapshot under CURATOR_REPORTS_DIR/snapshots/<pass-id>. The child writes
+    the REPORT.md first (audit trail), then applies its own PATCH / PRUNE /
+    CONSOLIDATE directly via lesson_append / lesson_remove / skill_manage, and
+    its CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
     Set THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
     [PROTECTED] entries are never mutated, and lesson_remove is always
     called without force so it refuses user/foreground lessons by design.
@@ -40,6 +43,7 @@ duplicate, or stale content.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -50,11 +54,17 @@ from .config import (
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_SNAPSHOT_RETENTION,
     DB_PATH,
 )
 from .db import get_db
 from .helpers import daemon_sleep
 from . import identity, lessons
+from .curator_snapshots import (
+    PASS_ID_ENV,
+    SNAPSHOT_DIR_ENV,
+    create_curator_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -525,6 +535,20 @@ def run_curator_pass(force: bool = False) -> str:
 
         # Ensure reports dir exists before the child tries to Write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        pass_id = time.strftime('%Y%m%dT%H%M%S')
+        snapshot_dir = None
+
+        if CURATOR_DESTRUCTIVE:
+            try:
+                snapshot_dir = create_curator_snapshot(
+                    pass_id,
+                    conn=conn,
+                    retention=CURATOR_SNAPSHOT_RETENTION,
+                )
+            except Exception as e:
+                out = f"snapshot_error: {e}"
+                _record_curator_pass(conn, now, out)
+                return out
 
         # Default: destructive — the curator applies its own recommendations
         # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
@@ -553,7 +577,8 @@ def run_curator_pass(force: bool = False) -> str:
                 "source=foreground/user lessons by design and that refusal is "
                 "your safety net. NEVER touch any entry marked [PROTECTED], even "
                 "in destructive mode. Apply changes ONLY after the REPORT.md is "
-                "written (audit trail first, mutation second)."
+                "written (audit trail first, mutation second). A recovery "
+                f"snapshot for this pass already exists at {snapshot_dir}."
             )
             allowed_tools = (
                 "mcp__thread-keeper__lesson_list,"
@@ -593,22 +618,37 @@ def run_curator_pass(force: bool = False) -> str:
             + inventory
             + "\n\n"
             + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
-            f"{time.strftime('%Y%m%dT%H%M%S')}.md\n"
+            f"{pass_id}.md\n"
             + "Write the REPORT.md to that exact path."
         )
 
         from .tools.spawn import spawn  # type: ignore
+        old_pass = os.environ.get(PASS_ID_ENV)
+        old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
+        if CURATOR_DESTRUCTIVE:
+            os.environ[PASS_ID_ENV] = pass_id
+            os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
         try:
-            result = spawn(
-                prompt=full_prompt,
-                visible=False,
-                capture_output=True,
-                permission_mode="auto",
-                role="curator",
-                write_origin="curator",
-                slim=True,
-                extra_allowed_tools=allowed_tools,
-            )
+            try:
+                result = spawn(
+                    prompt=full_prompt,
+                    visible=False,
+                    capture_output=True,
+                    permission_mode="auto",
+                    role="curator",
+                    write_origin="curator",
+                    slim=True,
+                    extra_allowed_tools=allowed_tools,
+                )
+            finally:
+                if old_pass is None:
+                    os.environ.pop(PASS_ID_ENV, None)
+                else:
+                    os.environ[PASS_ID_ENV] = old_pass
+                if old_snap is None:
+                    os.environ.pop(SNAPSHOT_DIR_ENV, None)
+                else:
+                    os.environ[SNAPSHOT_DIR_ENV] = old_snap
         except Exception as e:
             _record_curator_pass(conn, now, f"spawn_error: {e}")
             return f"spawn_error: {e}"
@@ -616,7 +656,8 @@ def run_curator_pass(force: bool = False) -> str:
         _record_curator_pass(
             conn, now,
             f"spawned lessons={n_lessons} skills={n_skills} "
-            f"concepts={n_concepts} :: {str(result)[:140]}",
+            f"concepts={n_concepts} snapshot={pass_id if snapshot_dir else '-'} "
+            f":: {str(result)[:140]}",
         )
         return str(result)
 

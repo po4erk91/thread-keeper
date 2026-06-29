@@ -248,6 +248,10 @@ class Settings(BaseSettings):
     # for advisory REPORT-only. [PROTECTED] (foreground/user/pinned/validated)
     # entries are never mutated regardless.
     curator_destructive: bool = True
+    # Keep the last N destructive curator snapshots under
+    # CURATOR_REPORTS_DIR/snapshots. The current pass is always retained, so
+    # values below 1 behave as 1.
+    curator_snapshot_retention: int = 10
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -411,15 +415,19 @@ _EXTRA_THREADKEEPER_ENV_KEYS = {
     "THREADKEEPER_ENV_FILE",
     "THREADKEEPER_EXTRA_SKILLS_DIRS",
     "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_GH_WRAPPER_DIR",
     "THREADKEEPER_LESSONS",
     "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
     "THREADKEEPER_PYTHON",
+    "THREADKEEPER_REAL_GH",
     "THREADKEEPER_REPO",
     "THREADKEEPER_SEARCH_PROXY_POLL_S",
     "THREADKEEPER_SKILL_WATCH_INTERVAL_S",
     "THREADKEEPER_STATE_DIR",
     "THREADKEEPER_TZ",
     "THREADKEEPER_VISIBLE_STATUS",
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
 }
 
 _THREADKEEPER_NESTED_ENV_KEYS = {
@@ -577,6 +585,7 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
+        "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,

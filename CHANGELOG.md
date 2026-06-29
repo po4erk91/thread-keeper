@@ -7,6 +7,19 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Recoverable destructive curator passes (#40).** Destructive curator runs now
+  fail closed unless a pre-mutation snapshot is written under
+  `<curator_reports_dir>/snapshots/<pass-id>/`. Each snapshot includes
+  `lessons.md`, copied in-scope skill dirs, a manifest, and tombstones for
+  curator lesson prunes / skill deletes. `curator_restore(pass_id,
+  lesson_slug=...)` and `curator_restore(pass_id, skill_name=...)` restore items
+  from the archive; `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` bounds retention
+  (default 10, current pass always kept). `mp_dashboard()` now surfaces
+  `curator_destructive_actions` counts for snapshots, lesson prune/patch/
+  consolidate, and skill delete/patch actions in the selected window.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

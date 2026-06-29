@@ -119,6 +119,11 @@ def _net_removed(out: str) -> int:
     return _net_field(out, "removed")
 
 
+def _curator_action_field(out: str, field: str) -> int:
+    m = re.search(rf"curator_destructive_actions [^\n]*\b{field}=(\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
 def _loop_line(out: str, label: str) -> str:
     m = re.search(rf"^\s+{re.escape(label)}[^\n]+$", out, re.M)
     return m.group(0) if m else ""
@@ -244,6 +249,62 @@ def test_dashboard_curator_removal_outcome(fresh_mp):
     after = dash(window_days=7)
     assert _outcome_all(after, "lesson_remove") - rem0 == 3, after
     assert _net_removed(after) - net0 == 3, after
+
+
+def test_dashboard_surfaces_curator_destructive_action_counts(fresh_mp):
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    before = dash(window_days=7)
+    base = {
+        "snapshots": _curator_action_field(before, "snapshots"),
+        "lesson_pruned": _curator_action_field(before, "lesson_pruned"),
+        "lesson_consolidated": _curator_action_field(
+            before, "lesson_consolidated"
+        ),
+        "lesson_patched": _curator_action_field(before, "lesson_patched"),
+        "skill_deleted": _curator_action_field(before, "skill_deleted"),
+    }
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s', 'curator_snapshot', 'pass-a', 'path=x', ?)",
+        (now,),
+    )
+    for action in (
+        "lesson_pruned",
+        "lesson_consolidated",
+        "lesson_patched",
+        "skill_deleted",
+    ):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('s', 'curator_destructive_action', 'pass-a', ?, ?)",
+            (f"action={action} artifact=test key=x snapshot=-", now),
+        )
+    conn.commit()
+
+    after = dash(window_days=7)
+    assert _curator_action_field(after, "snapshots") - base["snapshots"] == 1
+    assert (
+        _curator_action_field(after, "lesson_pruned")
+        - base["lesson_pruned"]
+        == 1
+    )
+    assert (
+        _curator_action_field(after, "lesson_consolidated")
+        - base["lesson_consolidated"]
+        == 1
+    )
+    assert (
+        _curator_action_field(after, "lesson_patched")
+        - base["lesson_patched"]
+        == 1
+    )
+    assert (
+        _curator_action_field(after, "skill_deleted")
+        - base["skill_deleted"]
+        == 1
+    )
 
 
 def test_dashboard_lesson_append_emits_countable_outcome(fresh_mp):

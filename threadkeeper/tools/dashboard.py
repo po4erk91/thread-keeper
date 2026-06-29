@@ -129,6 +129,14 @@ def _loop_mutations_24h(conn: sqlite3.Connection, label: str, cut_24: int) -> in
             )
         )
     if label == "curator":
+        action_events = _scalar(
+            conn,
+            "SELECT COUNT(*) FROM events "
+            "WHERE kind='curator_destructive_action' AND created_at>=?",
+            (cut_24,),
+        )
+        if action_events:
+            return action_events
         return (
             _scalar(
                 conn,
@@ -197,6 +205,9 @@ _OUTCOME_KINDS = (
     ("reject_candidate", "reject_candidate"),
     ("lesson_append", "lesson_append"),
     ("lesson_remove", "lesson_remove"),
+    ("curator_snapshot", "curator_snapshot"),
+    ("curator_destructive_action", "curator_destructive_action"),
+    ("curator_restore", "curator_restore"),
     ("curator_report_applied", "curator_report_applied"),
     ("roadmap_issue_applied", "roadmap_issue_applied"),
     ("evolve_applied", "evolve_applied"),
@@ -371,6 +382,36 @@ def mp_dashboard(window_days: int = 7) -> str:
     out.append(
         f"  curator_net_change added={added} removed={removed} "
         f"patched={patched} net={added - removed:+d} (lessons, {window_days}d)"
+    )
+    action_labels = (
+        "lesson_pruned",
+        "lesson_consolidated",
+        "lesson_patched",
+        "skill_deleted",
+        "skill_consolidated",
+        "skill_patched",
+    )
+    action_counts = {
+        label: _scalar(
+            conn,
+            "SELECT COUNT(*) FROM events "
+            "WHERE kind='curator_destructive_action' "
+            "AND summary LIKE ? AND created_at>=?",
+            (f"action={label} %", cut_win),
+        )
+        for label in action_labels
+    }
+    snapshots = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='curator_snapshot' "
+        "AND created_at>=?",
+        (cut_win,),
+    )
+    out.append(
+        "  curator_destructive_actions "
+        f"snapshots={snapshots} "
+        + " ".join(f"{k}={v}" for k, v in action_counts.items())
+        + f" ({window_days}d)"
     )
     # ── roadmap applier (poison-issue backoff / dead-letter) ───────────
     # Issues the evolve applier has spawned a child for, split by outcome.

@@ -11,7 +11,10 @@ audit pass:
 
   curator_review_status()
     Diagnostic: env config, last cursor, last 5 passes, latest REPORT
-    path.
+    path, latest destructive snapshot path.
+
+  curator_restore(pass_id, lesson_slug="", skill_name="")
+    Restore one lesson or skill from a destructive pass snapshot.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from ..curator import (
     _last_curator_ts,
     run_curator_pass,
 )
+from ..curator_snapshots import restore_lesson, restore_skill, snapshots_root
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
@@ -118,4 +122,41 @@ def curator_review_status() -> str:
         lines.append(f"latest_report={reports[0]}")
     else:
         lines.append("latest_report=(none yet)")
+    root = snapshots_root(CURATOR_REPORTS_DIR)
+    try:
+        snaps = sorted(
+            [p for p in root.iterdir() if p.is_dir()],
+            key=lambda p: p.name,
+            reverse=True,
+        )
+    except FileNotFoundError:
+        snaps = []
+    if snaps:
+        lines.append(f"latest_snapshot={snaps[0]}")
+    else:
+        lines.append("latest_snapshot=(none yet)")
     return "\n".join(lines)
+
+
+@write_tool(destructive=True, idempotent=True)
+def curator_restore(
+    pass_id: str,
+    lesson_slug: str = "",
+    skill_name: str = "",
+) -> str:
+    """Restore one lesson or skill from a curator pre-mutation snapshot.
+
+    Pass exactly one of `lesson_slug` or `skill_name`. Restoring a lesson
+    replaces the current same-slug section if present, otherwise re-adds it.
+    Restoring a skill replaces the primary skill dir and mirrors it to the
+    configured skill roots.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    lesson_slug = lesson_slug.strip()
+    skill_name = skill_name.strip()
+    if bool(lesson_slug) == bool(skill_name):
+        return "ERR pass exactly one of lesson_slug or skill_name"
+    if lesson_slug:
+        return restore_lesson(pass_id, lesson_slug, conn)
+    return restore_skill(pass_id, skill_name, conn)

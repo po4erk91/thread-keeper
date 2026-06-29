@@ -37,6 +37,10 @@ import yaml
 
 from .._mcp import read_tool, write_tool
 from ..config import CLAUDE_SKILLS_DIR, WRITE_ORIGIN
+from ..curator_snapshots import (
+    capture_skill_tombstone,
+    record_curator_action,
+)
 from ..db import get_db
 from ..helpers import q
 from .. import identity
@@ -655,6 +659,13 @@ def _action_create(name: str, content: str, description: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     _emit(conn, "skill_create", target=name, summary=str(md))
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_consolidated",
+            artifact="skill",
+            key=name,
+        )
     conn.commit()
     _mirror_skill_dir(name)
     return f"ok path={md}"
@@ -673,6 +684,13 @@ def _action_edit(name: str, content: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     _emit(conn, "skill_edit", target=name, summary=str(md))
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_patched",
+            artifact="skill",
+            key=name,
+        )
     conn.commit()
     _mirror_skill_dir(name)
     return f"ok path={md}"
@@ -705,6 +723,13 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     _emit(conn, "skill_patch", target=name)
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_patched",
+            artifact="skill",
+            key=name,
+        )
     conn.commit()
     _mirror_skill_dir(name)
     return "ok"
@@ -739,6 +764,13 @@ def _action_write_file(name: str, sub_path: str, content: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     _emit(conn, "skill_write_file", target=name, summary=sub_path)
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_patched",
+            artifact="skill",
+            key=name,
+        )
     conn.commit()
     _mirror_skill_dir(name)
     return f"ok path={target}"
@@ -761,6 +793,16 @@ def _action_remove_file(name: str, sub_path: str) -> str:
         return f"ERR file_not_found={sub_path}"
     target.unlink()
     _record_event(name, "patch")
+    conn = get_db()
+    _ensure_session(conn)
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_patched",
+            artifact="skill",
+            key=name,
+        )
+        conn.commit()
     _mirror_skill_dir(name)
     return "ok"
 
@@ -779,10 +821,21 @@ def _action_delete(name: str) -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
+    tombstone = ""
+    if WRITE_ORIGIN == "curator":
+        tombstone = capture_skill_tombstone("skill_deleted", name, sdir)
     shutil.rmtree(sdir)
     _unmirror_skill(name)
     conn.execute("DELETE FROM skill_usage WHERE name=?", (name,))
     _emit(conn, "skill_delete", target=name)
+    if WRITE_ORIGIN == "curator":
+        record_curator_action(
+            conn,
+            action="skill_deleted",
+            artifact="skill",
+            key=name,
+            snapshot_rel=tombstone,
+        )
     conn.commit()
     return "ok"
 

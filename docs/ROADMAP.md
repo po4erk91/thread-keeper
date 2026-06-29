@@ -200,9 +200,8 @@ point-in-time snapshot). Scope of follow-up: S.
     `lesson_remove` / `curator_report_applied` / `roadmap_issue_applied` /
     `evolve_applied` / `dialectic_claim` / `dialectic_supersede`), and a
     `curator_net_change` line makes a daemon silently pruning the lessons
-    store a visible number. Partial overlap with the #40 destructive-curator
-    telemetry ask (the *visibility* half); the snapshot/restore safety net
-    remains in #40.
+    store a visible number. The remaining destructive-curator snapshot/restore
+    and per-action telemetry gap is now closed by #40.
 
 **Shadow-review production telemetry.** ✅ DONE (#6). `shadow_review_status()`
 now carries a per-loop production-validation rollup for the 24h / 7d windows:
@@ -266,8 +265,8 @@ mutated, and the pass is single-flight across processes (a non-blocking
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Open follow-ups (issue-backed): restorable deletion / pre-mutation snapshot
-before autonomous prune (#40, #41, #52); a write lock for the unlocked
+Open follow-ups (issue-backed): broader recovery paths still tracked outside
+the curator snapshot safety net (#41, #52); a write lock for the unlocked
 `lessons.md` read-modify-write now that the curator and shadow_review both
 mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
 full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
@@ -469,12 +468,16 @@ Follow-up gaps from the 2026-06-17 audit:
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
 - Shared GitHub API budget/backoff across roadmap automation (#38).
-- Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
-  the autonomous child now prunes/consolidates lessons + skills in place with no
-  pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
-  records the slug only; `lessons.md` is not version-controlled), and no
-  destructive-action telemetry in `mp_dashboard`. Add a snapshot/restore safety
-  net + structured prune/consolidate counts (#40).
+- ✅ DONE (#40). Curator went **destructive-by-default**
+  (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`), so the autonomous child needed a
+  recovery path before pruning/consolidating lessons + skills in place. A
+  destructive pass now writes `<curator_reports_dir>/snapshots/<pass-id>/`
+  before spawning the child, with `lessons.md`, in-scope skill dirs, a manifest,
+  and tombstones for curator prunes/deletes. `curator_restore(...)` restores a
+  lesson or skill from that archive, retention is bounded by
+  `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION`, advisory mode writes no snapshot,
+  and `mp_dashboard` surfaces per-window `curator_destructive_actions` counts
+  for snapshot, lesson prune/patch/consolidate, and skill delete/patch actions.
 - Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool files — every
   spawn leaves a permanent `tasks` row (full `prompt`) plus
   `.log`/`.stdin.txt`/`.command` files that nothing prunes; `tasks.prompt`

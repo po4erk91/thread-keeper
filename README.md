@@ -562,7 +562,16 @@ can actually prune and consolidate duplicate lessons). Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
 `[PROTECTED]` / foreground / user / pinned / validated entries, and
 `lesson_remove` is always called without `force` (so user/foreground lessons are
-refused by design). The existing Evolve applier is
+refused by design). Before a destructive child is spawned, thread-keeper writes
+a recoverable snapshot under
+`<reports_dir>/snapshots/<pass-id>/` (default
+`~/.threadkeeper/curator/snapshots/<pass-id>/`). The snapshot contains
+`lessons.md`, copied in-scope skill dirs, a `manifest.json`, and per-action
+tombstones for curator prunes/deletes. Retention is bounded by
+`THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` (default 10, current pass always kept).
+Use `curator_restore(pass_id, lesson_slug="...")` or
+`curator_restore(pass_id, skill_name="...")` to restore an item from a snapshot.
+Advisory mode does not write snapshots. The existing Evolve applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
 been marked applied, then spawns an `evolve_applier` child to apply only safe,
@@ -792,6 +801,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
+| `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
@@ -933,9 +943,12 @@ them with `dry_run=False` to apply:
   `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`,
   `dialectic_claim` / `dialectic_supersede`). A `curator_net_change
   added/removed/patched/net` line makes a loop silently shrinking the
-  lessons store visible at a glance. Surfaces the gaps the point-tools
-  can't: a loop firing constantly while its outcomes stay flat, or a
-  queue backing up. Complements the per-loop `*_status` tools
+  lessons store visible at a glance, and `curator_destructive_actions`
+  breaks destructive curator passes down into snapshot, lesson prune,
+  lesson patch/consolidate, and skill delete/patch counts for the window.
+  Surfaces the gaps the point-tools can't: a loop firing constantly while
+  its outcomes stay flat, or a queue backing up. Complements the per-loop
+  `*_status` tools
   (`mp_health`, `spawn_budget_status`, `shadow_review_status`).
 - **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
