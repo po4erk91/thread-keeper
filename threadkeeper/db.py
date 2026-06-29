@@ -423,6 +423,20 @@ CREATE TABLE IF NOT EXISTS resource_controls (
     result        TEXT
 );
 
+-- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
+-- across foreground status processes, reviewer/applier daemons, and spawned
+-- gh-wrapper children so one account-level throttle stops all workers.
+CREATE TABLE IF NOT EXISTS github_rate_budget (
+    account          TEXT PRIMARY KEY,
+    remaining        INTEGER,
+    reset_at         INTEGER,
+    cooldown_until   INTEGER NOT NULL DEFAULT 0,
+    backoff_attempts INTEGER NOT NULL DEFAULT 0,
+    last_status      INTEGER,
+    last_reason      TEXT,
+    updated_at       INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -442,6 +456,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_github_rate_budget_cooldown
+    ON github_rate_budget(cooldown_until);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
 CREATE INDEX IF NOT EXISTS idx_probes_enabled     ON probes(enabled) WHERE enabled=1;
 CREATE INDEX IF NOT EXISTS idx_probe_results_cat  ON probe_results(category, created_at DESC);

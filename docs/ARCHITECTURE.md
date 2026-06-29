@@ -25,6 +25,7 @@ threadkeeper/
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
+├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -155,7 +156,9 @@ In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
 `started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
 `tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
-trailers), `shadow_review_pass` (as event.kind).
+trailers), `github_rate_budget` (per-account GitHub API remaining/reset and
+cooldown state shared by roadmap automation), `shadow_review_pass` (as
+event.kind).
 
 ## Identity and self-cid
 
@@ -269,13 +272,22 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
-  response are filtered out). The fetch is explicit `--paginate --slurp`,
+  response are filtered out). The fetch is explicit `--include --paginate`,
   `sort=created&direction=asc`, so the subsequent local priority
   (`roadmap`-labeled issues first, then FIFO by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
   of open issues outside the window. The applier then spawns one
   `evolve_applier` child to implement exactly one issue.
+  **Shared GitHub budget (#38):** parent `gh` calls and the privileged child
+  PATH `gh` wrapper consult `github_rate_budget` before every request. Included
+  REST headers update `X-RateLimit-Remaining` / `X-RateLimit-Reset`; primary
+  403s cool down until reset (bounded to one hour), and secondary-limit or
+  `Retry-After` responses create a bounded exponential cooldown. While the
+  cooldown is active, foreground status commands, reviewer/applier daemons, and
+  spawned shell `gh` calls fail fast instead of independently retrying the same
+  account quota. `agent_status` / `tk-agent-status` and
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in

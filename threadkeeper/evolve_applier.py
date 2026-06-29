@@ -58,6 +58,7 @@ from .config import (
     ROADMAP_ISSUE_MAX_ATTEMPTS,
 )
 from .db import get_db
+from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .github_safety import GithubBodySafetyError, sanitize_public_github_body
 from .helpers import daemon_sleep
 from . import identity
@@ -457,6 +458,23 @@ def _run(cmd: list[str], timeout: int, cwd: Optional[Path] = None) -> str:
     return ""
 
 
+def _run_gh(
+    cmd: list[str],
+    *,
+    cwd: Path | str,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess:
+    return run_gh(
+        cmd,
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+        runner=subprocess.run,
+    )
+
+
 def _ensure_managed_venv(dest: Path) -> str:
     """Create dest/.venv and editable-install thread-keeper with semantic+test
     extras so the evolve children can run `.venv/bin/python -m pytest`. Idempotent
@@ -673,7 +691,7 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
     """
     repo = str(repo_root or _repo_root())
     cmd = [
-        "gh", "api", "--paginate", "--slurp",
+        "gh", "api", "--include", "--paginate",
         "-H", "Accept: application/vnd.github+json",
         (
             "repos/{owner}/{repo}/issues"
@@ -682,14 +700,7 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
         ),
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return [], "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -700,22 +711,31 @@ def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], st
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
         msg = err[-1] if err else f"exit={proc.returncode}"
         return [], f"gh_issue_list_failed: {msg[:180]}"
+    _responses, bodies = split_gh_api_output(proc.stdout or "")
+    if not bodies:
+        bodies = [strip_gh_api_headers(proc.stdout or "")]
+    pages: list[object] = []
     try:
-        data = json.loads(proc.stdout or "[]")
+        for body in bodies:
+            if body.strip():
+                pages.append(json.loads(body))
     except json.JSONDecodeError as e:
         return [], f"gh_issue_list_bad_json: {e}"
-    if not isinstance(data, list):
-        return [], "gh_issue_list_bad_shape"
-    if data and all(isinstance(page, list) for page in data):
-        items = [
-            item
-            for page in data
-            for item in page
-            if isinstance(item, dict)
-        ]
-    else:
-        # Defensive fallback for tests/older gh behavior without --slurp.
-        items = [item for item in data if isinstance(item, dict)]
+    if not pages:
+        pages = [[]]
+    items: list[dict] = []
+    for page in pages:
+        if not isinstance(page, list):
+            return [], "gh_issue_list_bad_shape"
+        if page and all(isinstance(nested, list) for nested in page):
+            items.extend(
+                item
+                for nested in page
+                for item in nested
+                if isinstance(item, dict)
+            )
+        else:
+            items.extend(item for item in page if isinstance(item, dict))
     open_issues = [
         item for item in items
         if not item.get("pull_request")
@@ -758,14 +778,7 @@ def _fetch_issue_comments(
         "--json", "comments",
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return [], "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -940,14 +953,7 @@ def _comment_issue_claim(
         "--body", body,
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return "", "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -992,14 +998,7 @@ def _delete_issue_comment(
         f"repos/{{owner}}/{{repo}}/issues/comments/{cid}",
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -1029,14 +1028,7 @@ def _open_prs_for_issue(
         "--limit", "5",
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return [], "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -1220,10 +1212,7 @@ def _apply_blocked_label(
         "--add-label", ROADMAP_ISSUE_BLOCKED_LABEL,
     ]
     try:
-        proc = subprocess.run(
-            cmd, cwd=repo, text=True, capture_output=True, timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return "gh_not_found"
     except subprocess.TimeoutExpired:
@@ -1272,10 +1261,7 @@ def _comment_dead_letter(
         "--body", body,
     ]
     try:
-        proc = subprocess.run(
-            cmd, cwd=repo, text=True, capture_output=True, timeout=30,
-            check=False,
-        )
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
     except FileNotFoundError:
         return "", "gh_not_found"
     except subprocess.TimeoutExpired:

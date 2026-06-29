@@ -224,6 +224,39 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
     assert loop["status"] == "ready"
 
 
+def test_agent_status_reports_github_budget_cooldown(mp_with_cid):
+    pkg = mp_with_cid(_FAKE_CID)
+    conn = pkg["db"].get_db()
+    import threadkeeper.github_budget as gb
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO github_rate_budget "
+        "(account, remaining, reset_at, cooldown_until, backoff_attempts, "
+        "last_status, last_reason, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            gb.github_account_key(),
+            0,
+            now + 600,
+            now + 300,
+            2,
+            403,
+            "secondary_rate_limit",
+            now,
+        ),
+    )
+    conn.commit()
+
+    from threadkeeper.agent_status import agent_status_snapshot, format_agent_status
+
+    snap = agent_status_snapshot(refresh=False)
+
+    assert snap["github_budget"]["cooldown_active"] is True
+    assert snap["github_budget"]["cooldown_left_s"] > 0
+    text = format_agent_status(snap)
+    assert "github_budget=cooldown" in text
+    assert "secondary_rate_limit" in text
+
+
 def test_agent_status_evolve_reviewer_ready_when_due_without_legacy_backlog(
     mp_with_cid,
 ):
