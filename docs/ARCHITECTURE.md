@@ -56,7 +56,7 @@ threadkeeper/
     ├── distill.py     distill/vote/pending/export
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
-    ├── curator.py     curator_review/status
+    ├── curator.py     curator_review/status/restore
     ├── lessons.py     lesson_append/list/get
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
@@ -144,7 +144,15 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
    recommendations.
 
-7. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
+7. **curator snapshots** — file archives under
+   `<curator_reports_dir>/snapshots/<pass-id>/` written before a destructive
+   curator child is spawned. Each snapshot contains `lessons.md`, copied
+   in-scope skill dirs, `manifest.json`, and tombstones emitted by curator
+   prune/delete tool calls. `curator_restore` restores a lesson or skill from
+   that archive. Retention is bounded by
+   `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION`.
+
+8. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
    confidence; brief() renders medium+high grouped by domain.
    `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
@@ -356,7 +364,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   Provisioning is serialized by `evolve-repo-provision.lock`. Curator report
   apply needs no git tree and runs regardless.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
-  report-first, but when a skill or lesson exposes a concrete improvement for
+  snapshot-first and report-first: destructive mode writes a recoverable
+  snapshot before spawning the child, then the child writes its REPORT before
+  mutating. When a skill or lesson exposes a concrete improvement for
   thread-keeper itself it may call `evolve_format(...)` and record an
   `EVOLVE_CANDIDATE:` line in the report. That candidate is input for
   `evolve_reviewer`, not something the Curator implements directly.
@@ -625,6 +635,14 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **curator destructive telemetry** — curator children receive a pass id and
+  snapshot dir in their environment. When the normal `lesson_append`,
+  `lesson_remove`, or `skill_manage` tools run under that pass, they emit
+  `events.kind='curator_destructive_action'` rows such as `lesson_pruned`,
+  `lesson_patched`, `lesson_consolidated`, and `skill_deleted`, with a tombstone
+  path when there is a deleted body. `mp_dashboard()` renders those counts by
+  window.
+
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
   `sessions.write_origin` and proxied into `skill_usage.created_by_origin`.
@@ -877,7 +895,7 @@ backend in `embed_backend` (NULL = legacy). The two backends are not
 numerically identical, so after a switch run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (107 total)
+## MCP tools (108 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -902,7 +920,7 @@ below).
 | lessons | 4 | lesson_append, lesson_list, lesson_get, lesson_remove |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 2 | curator_review, curator_review_status |
+| curator | 3 | curator_review, curator_review_status, curator_restore |
 | evolve_applier | 7 | evolve_apply, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
@@ -930,11 +948,12 @@ every tool:
   `search`, `dialog_search`, the status tools, `compost`, …).
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
   mutations. `lesson_list` and `lesson_get` are non-destructive writes because
-  they update lesson access counters. The ten delete/overwrite/kill tools carry
+  they update lesson access counters. The eleven delete/overwrite/kill tools carry
   `destructiveHint=True`:
   `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
-  `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
-  `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
+  `curator_restore`, `curator_run`, `lesson_remove`, `memory_guard_check`,
+  `mp_cleanup`, `skill_manage`, `unlink`. `idempotentHint=True` marks
+  no-op-on-repeat tools
   (`close_thread`, `mark_skill_materialized`, `core_set`, deletes-by-key, …).
 
 This is the static metadata a confirmation/elicitation host reads to decide

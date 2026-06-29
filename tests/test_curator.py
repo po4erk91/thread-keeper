@@ -14,6 +14,7 @@ in unit tests. We exercise the pure scaffolding:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -23,9 +24,18 @@ from pathlib import Path
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
 
-def _bootstrap(tmp_path, monkeypatch, interval="0", min_lessons="3"):
+def _bootstrap(
+    tmp_path,
+    monkeypatch,
+    interval="0",
+    min_lessons="3",
+    destructive=None,
+    retention=None,
+    write_origin="foreground",
+):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
+        "CLAUDE_SKILLS_DIR": str(tmp_path / "skills"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
@@ -40,7 +50,12 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", min_lessons="3"):
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
+        "THREADKEEPER_WRITE_ORIGIN": write_origin,
     }
+    if destructive is not None:
+        env["THREADKEEPER_CURATOR_DESTRUCTIVE"] = destructive
+    if retention is not None:
+        env["THREADKEEPER_CURATOR_SNAPSHOT_RETENTION"] = retention
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -55,6 +70,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", min_lessons="3"):
         "lessons": lessons,
         "reports_dir": Path(env["THREADKEEPER_CURATOR_REPORTS_DIR"]),
         "lessons_path": Path(env["THREADKEEPER_LESSONS"]),
+        "skills_dir": Path(env["CLAUDE_SKILLS_DIR"]),
     }
 
 
@@ -168,6 +184,16 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     captured: list[dict] = []
 
     def fake_spawn(**kwargs):
+        snap_raw = os.environ.get("THREADKEEPER_CURATOR_SNAPSHOT_DIR", "")
+        pass_id = os.environ.get("THREADKEEPER_CURATOR_PASS_ID", "")
+        assert pass_id
+        assert snap_raw
+        snap = Path(snap_raw)
+        assert snap.is_dir()
+        assert (snap / "lessons.md").is_file()
+        manifest = json.loads((snap / "manifest.json").read_text())
+        assert manifest["pass_id"] == pass_id
+        assert manifest["lessons"]["count"] == 2
         captured.append(kwargs)
         return "spawn task_id=fake-curator-task pid=0"
 
@@ -206,6 +232,92 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Bash" not in allowed
     # REPORTS_DIR was created so the child has a place to write
     assert pkg["reports_dir"].is_dir()
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
+    assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+
+def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", destructive="0",
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson two", body="body two", source="shadow"
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
+        assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+        captured.append(kwargs)
+        return "spawn task_id=fake-curator-task pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-task" in out
+    assert len(captured) == 1
+    assert not (pkg["reports_dir"] / "snapshots").exists()
+    allowed = captured[0]["extra_allowed_tools"]
+    assert "lesson_remove" not in allowed
+    assert "skill_manage" not in allowed
+
+
+def test_curator_snapshot_retention_is_bounded(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, retention="2")
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    from threadkeeper.curator_snapshots import create_curator_snapshot
+
+    conn = pkg["db"].get_db()
+    for pass_id in ("20260101T000000", "20260102T000000", "20260103T000000"):
+        create_curator_snapshot(pass_id, conn=conn, retention=2)
+
+    root = pkg["reports_dir"] / "snapshots"
+    assert not (root / "20260101T000000").exists()
+    assert (root / "20260102T000000").is_dir()
+    assert (root / "20260103T000000").is_dir()
+
+
+def test_curator_restore_recovers_pruned_lesson_body(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    pkg["lessons"].append_lesson(
+        title="restore target lesson",
+        body="recover this durable body",
+        summary="recover me",
+        source="shadow",
+    )
+    from threadkeeper.curator_snapshots import create_curator_snapshot
+
+    conn = pkg["db"].get_db()
+    pass_id = "20260101T000000"
+    snap = create_curator_snapshot(pass_id, conn=conn, retention=10)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", pass_id)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snap))
+
+    from threadkeeper._mcp import mcp
+
+    remove = mcp._tool_manager._tools["lesson_remove"].fn
+    restore = mcp._tool_manager._tools["curator_restore"].fn
+    get = mcp._tool_manager._tools["lesson_get"].fn
+
+    out = remove(slug="restore-target-lesson")
+    assert out.startswith("ok removed="), out
+    assert "ERR not_found" in get(slug="restore-target-lesson")
+    tombstone = snap / "tombstones" / "lesson" / "lesson_pruned" / (
+        "restore-target-lesson.md"
+    )
+    assert tombstone.is_file()
+    assert "recover this durable body" in tombstone.read_text()
+
+    out = restore(pass_id=pass_id, lesson_slug="restore-target-lesson")
+    assert out.startswith("ok restored_lesson="), out
+    assert "recover this durable body" in get(slug="restore-target-lesson")
 
 
 def test_daemon_does_not_start_in_slim_child(tmp_path, monkeypatch):
