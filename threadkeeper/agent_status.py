@@ -15,6 +15,7 @@ from typing import Any
 
 from .config import TASK_LOG_DIR
 from .db import get_db
+from .github_budget import format_github_budget, github_budget_state
 from .helpers import alive, fmt_age
 
 
@@ -823,6 +824,7 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
     now = int(time.time())
     agents = _running_agents(conn, now, limit)
     loops = _loop_statuses(conn, agents, now)
+    github_budget = github_budget_state(conn, now_t=now)
 
     return {
         "generated_at": now,
@@ -833,6 +835,7 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "running_loop_count": sum(1 for loop in loops if loop["status"] == "running"),
         "ready_loop_count": sum(1 for loop in loops if loop["status"] == "ready"),
         "loops": loops,
+        "github_budget": github_budget,
         "recent_results": _recent_results(conn, now),
         "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
@@ -846,7 +849,8 @@ def format_agent_status(snapshot: dict[str, Any]) -> str:
         f"loops enabled={snapshot.get('enabled_loop_count', 0)} "
         f"running={snapshot.get('running_loop_count', 0)} "
         f"ready={snapshot.get('ready_loop_count', 0)} "
-        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp}"
+        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp} "
+        f"{format_github_budget(snapshot.get('github_budget') or {})}"
     ]
     for loop in snapshot.get("loops", []):
         backlog = ""

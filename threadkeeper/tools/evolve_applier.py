@@ -33,6 +33,7 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
+from ..github_budget import format_github_budget, github_budget_state
 from ..helpers import fmt_age
 from ..identity import _ensure_session
 from ..config import EVOLVE_APPLY_INTERVAL_S
@@ -170,6 +171,7 @@ def evolve_apply_status() -> str:
         f"curator_reports={len(reports)} "
         f"promoted_unapplied={len(pending)} "
         f"applier_running={len(running)}",
+        format_github_budget(github_budget_state(conn, now_t=now)),
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
     ]

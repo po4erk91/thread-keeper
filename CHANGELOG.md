@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Shared GitHub API budget/cooldown ledger for roadmap automation (#38).**
+  Roadmap issue fetch/comment/PR-guard calls and privileged child `gh` wrapper
+  invocations now consult one SQLite `github_rate_budget` row per local GitHub
+  account before making requests. Included REST headers record
+  remaining/reset values, primary 403s cool down until reset, secondary
+  rate-limit / `Retry-After` responses use bounded exponential backoff, and
+  `agent_status` / `tk-agent-status` plus `evolve_apply_status()` expose the
+  current remaining count or cooldown window.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

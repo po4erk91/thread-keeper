@@ -527,6 +527,14 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
         child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
+    inherited_wrapper_dir = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
+    child_env.pop("THREADKEEPER_REAL_GH", None)
+    if inherited_wrapper_dir:
+        wrapper_path = Path(inherited_wrapper_dir)
+        child_env["PATH"] = os.pathsep.join(
+            part for part in child_env.get("PATH", "").split(os.pathsep)
+            if part and Path(part) != wrapper_path
+        )
     if _permission_mode_is_bypass(permission_mode):
         wrapper_dir, real_gh = _install_gh_safety_wrapper(task_id)
         if wrapper_dir is None:

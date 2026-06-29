@@ -548,8 +548,9 @@ def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
     assert only["authorAssociation"] == "OWNER"
     assert only["authorLogin"] == "po4erk91"
     assert pkg["ea"]._issue_labels(only) == ["roadmap"]
+    assert "--include" in calls[0]
     assert "--paginate" in calls[0]
-    assert "--slurp" in calls[0]
+    assert "--slurp" not in calls[0]
     endpoint = calls[0][-1]
     assert "sort=created" in endpoint
     assert "direction=asc" in endpoint

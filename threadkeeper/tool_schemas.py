@@ -115,6 +115,7 @@ class AgentStatusSnapshot(_Lenient):
     running_loop_count: int = 0
     ready_loop_count: int = 0
     loops: list[dict[str, Any]] = Field(default_factory=list)
+    github_budget: dict[str, Any] = Field(default_factory=dict)
     recent_results: list[dict[str, Any]] = Field(default_factory=list)
     timed_out_count: int = 0
     agents: list[dict[str, Any]] = Field(default_factory=list)

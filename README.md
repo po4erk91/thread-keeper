@@ -645,6 +645,14 @@ The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
+All roadmap-automation GitHub calls share a local `github_rate_budget` ledger:
+the applier's parent-side `gh` calls and the PATH-prepended child `gh` wrapper
+honor the same per-account cooldown. Included REST response headers update
+remaining/reset values; primary 403s cool down until reset (bounded), and
+secondary-rate-limit / `Retry-After` responses use bounded exponential backoff.
+`agent_status` / `tk-agent-status` and `evolve_apply_status()` show the current
+remaining count or cooldown window so operators can see when GitHub is
+throttling the roadmap loop.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
@@ -952,9 +960,10 @@ them with `dry_run=False` to apply:
   loop status, shaped for UI clients. Shows every loop's enabled/running/ready
   state, last pass, backlog, and active spawned-child RSS; running child agents
   are included as detail rows in the JSON. The JSON also includes
-  `recent_results` for useful completed loop tasks, which the macOS menu-bar app
-  uses for notifications. The `tk-agent-status` console command and macOS
-  menu-bar app use the same underlying snapshot.
+  `github_budget` (GitHub remaining/reset or active cooldown for roadmap
+  automation) and `recent_results` for useful completed loop tasks, which the
+  macOS menu-bar app uses for notifications. The `tk-agent-status` console
+  command and macOS menu-bar app use the same underlying snapshot.
 
 ---
 

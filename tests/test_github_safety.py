@@ -70,3 +70,34 @@ def test_body_file_is_sanitized_before_real_gh(tmp_path, monkeypatch):
     assert "/home/bob" not in seen
     assert "[REDACTED_SECRET]" in seen
     assert "[REDACTED_HOME_PATH]" in seen
+
+
+def test_wrapped_gh_honors_shared_budget_cooldown(
+    fresh_mp, tmp_path, monkeypatch,
+):
+    import threadkeeper.github_budget as gb
+    from threadkeeper.github_safety import run_wrapped_gh
+
+    monkeypatch.setattr(gb.time, "time", lambda: 1000)
+    gb.record_github_response(
+        status_code=403,
+        headers={"x-ratelimit-remaining": "10"},
+        body='{"message":"secondary rate limit"}',
+    )
+
+    capture = tmp_path / "called"
+    fake_gh = tmp_path / "gh-real"
+    fake_gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['CAPTURE']).write_text('called')\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("CAPTURE", str(capture))
+
+    rc = run_wrapped_gh(["issue", "view", "38"], real_gh=str(fake_gh))
+
+    assert rc == gb.GITHUB_RATE_COOLDOWN_EXIT
+    assert not capture.exists()
