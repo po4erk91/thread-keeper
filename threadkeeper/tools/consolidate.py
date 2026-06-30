@@ -1,12 +1,14 @@
 """Consolidate MCP tool: periodic memory hygiene.
 
 Extracted from server.py. Provides a dry-run-by-default sweep that
-reports (and optionally applies) four kinds of cleanup:
+reports (and optionally applies) several kinds of cleanup:
 
   merge_dup_notes : intra-thread cosine ≥ note_cosine, keep oldest
   idle_stale      : active threads not touched in stale_days
   dedupe_verbatim : exact text + (if embeddings) cosine ≥ verbatim_cosine
   release_orphan  : claim ≥ orphan_days old, no progress past claim mark
+  prune_tasks     : ended tasks outside retention age/count bounds
+  gc_task_spool   : task spool files with no retained tasks row
 """
 
 import sqlite3
@@ -14,7 +16,12 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
-from ..config import SEMANTIC_AVAILABLE
+from ..config import (
+    SEMANTIC_AVAILABLE,
+    TASK_LOG_DIR,
+    TASK_RETENTION_COUNT,
+    TASK_RETENTION_DAYS,
+)
 from ..helpers import fmt_age, q, normalize_text
 from ..identity import _ensure_session, _emit
 from ..embeddings import _get_model, _encode, _vec_delete_note
@@ -24,6 +31,104 @@ CONSOLIDATE_NOTE_COSINE = 0.95
 CONSOLIDATE_VERBATIM_COSINE = 0.90
 CONSOLIDATE_STALE_THREAD_DAYS = 30
 CONSOLIDATE_ORPHAN_CLAIM_DAYS = 7
+TASK_SPOOL_SUFFIXES = (".stdin.txt", ".command", ".log")
+
+
+def _task_retention_label() -> str:
+    days = max(0, int(TASK_RETENTION_DAYS))
+    count = max(0, int(TASK_RETENTION_COUNT))
+    parts = []
+    if days:
+        parts.append(f"ended within {days}d")
+    if count:
+        parts.append(f"newest {count} ended")
+    return " or ".join(parts) if parts else "row pruning disabled"
+
+
+def _task_rows_to_prune(conn: sqlite3.Connection, now: int) -> list[dict]:
+    """Ended tasks outside the configured age/count retention protections.
+
+    Live rows are excluded at the SQL boundary because spawn single-flight and
+    budget accounting depend on `ended_at IS NULL` rows being durable while the
+    child is still alive.
+    """
+    days = max(0, int(TASK_RETENTION_DAYS))
+    count = max(0, int(TASK_RETENTION_COUNT))
+    if days <= 0 and count <= 0:
+        return []
+
+    keep_by_count = set()
+    if count > 0:
+        keep_by_count = {
+            r["id"] for r in conn.execute(
+                "SELECT id FROM tasks WHERE ended_at IS NOT NULL "
+                "ORDER BY ended_at DESC, started_at DESC LIMIT ?",
+                (count,),
+            ).fetchall()
+        }
+    cutoff = now - days * 86400 if days > 0 else None
+    out = []
+    for r in conn.execute(
+        "SELECT id, prompt, started_at, ended_at FROM tasks "
+        "WHERE ended_at IS NOT NULL ORDER BY ended_at ASC, started_at ASC"
+    ).fetchall():
+        keep_age = cutoff is not None and int(r["ended_at"]) >= cutoff
+        keep_count = r["id"] in keep_by_count
+        if keep_age or keep_count:
+            continue
+        out.append({
+            "task": r["id"],
+            "prompt": (r["prompt"] or "")[:120],
+            "ended_age": fmt_age(max(0, now - int(r["ended_at"]))),
+        })
+    return out
+
+
+def _spool_task_id(name: str) -> tuple[str, str] | None:
+    for suffix in TASK_SPOOL_SUFFIXES:
+        if not name.endswith(suffix):
+            continue
+        task_id = name[:-len(suffix)]
+        # TASK_LOG_DIR also holds non-task logs/configs (dialog.log,
+        # memory-guard.log, slim-mcp-*.json). Only spawn task ids are GC'd.
+        if task_id.startswith("tk_"):
+            return task_id, suffix
+    return None
+
+
+def _task_spool_gc_candidates(
+    conn: sqlite3.Connection,
+    pruned_task_ids: set[str],
+) -> list[dict]:
+    retained = {
+        r["id"] for r in conn.execute("SELECT id FROM tasks").fetchall()
+    } - pruned_task_ids
+    try:
+        entries = sorted(TASK_LOG_DIR.iterdir(), key=lambda p: p.name)
+    except (FileNotFoundError, OSError):
+        return []
+
+    out = []
+    for p in entries:
+        try:
+            is_file = p.is_file()
+        except OSError:
+            continue
+        if not is_file:
+            continue
+        parsed = _spool_task_id(p.name)
+        if parsed is None:
+            continue
+        task_id, suffix = parsed
+        if task_id in retained:
+            continue
+        out.append({
+            "task": task_id,
+            "name": p.name,
+            "path": str(p),
+            "kind": suffix.lstrip("."),
+        })
+    return out
 
 
 @write_tool(destructive=True)
@@ -37,13 +142,16 @@ def consolidate(dry_run: bool = True,
       merge_dup_notes : intra-thread cosine ≥ note_cosine, keep oldest
       idle_stale      : active threads not touched in stale_days
       dedupe_verbatim : exact text + (if embeddings) cosine ≥ verbatim_cosine
-      release_orphan  : claim ≥ orphan_days old, no progress past claim mark"""
+      release_orphan  : claim ≥ orphan_days old, no progress past claim mark
+      prune_tasks     : ended task rows outside retention bounds
+      gc_task_spool   : task spool files with no retained task row"""
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
     findings = {
         "merge_dup_notes": [], "idle_stale": [],
         "dedupe_verbatim": [], "release_orphan": [],
+        "prune_tasks": [], "gc_task_spool": [],
     }
     np = None
     if SEMANTIC_AVAILABLE:
@@ -151,9 +259,16 @@ def consolidate(dry_run: bool = True,
             "question": t["question"][:120],
         })
 
+    findings["prune_tasks"].extend(_task_rows_to_prune(conn, now))
+    pruned_task_ids = {f["task"] for f in findings["prune_tasks"]}
+    findings["gc_task_spool"].extend(
+        _task_spool_gc_candidates(conn, pruned_task_ids)
+    )
+
     applied = {
         "merge_dup_notes": 0, "idle_stale": 0,
         "dedupe_verbatim": 0, "release_orphan": 0,
+        "prune_tasks": 0, "gc_task_spool": 0,
     }
     if not dry_run:
         for f in findings["merge_dup_notes"]:
@@ -177,6 +292,21 @@ def consolidate(dry_run: bool = True,
                 "WHERE id=?", (f["thread"],)
             )
             applied["release_orphan"] += 1
+        for f in findings["prune_tasks"]:
+            conn.execute(
+                "DELETE FROM tasks WHERE id=? AND ended_at IS NOT NULL",
+                (f["task"],),
+            )
+            applied["prune_tasks"] += 1
+        for f in findings["gc_task_spool"]:
+            try:
+                TASK_LOG_DIR.joinpath(f["name"]).unlink()
+            except FileNotFoundError:
+                applied["gc_task_spool"] += 1
+            except OSError:
+                continue
+            else:
+                applied["gc_task_spool"] += 1
         _emit(conn, "consolidate_apply",
               summary=" ".join(f"{k}={v}" for k, v in applied.items()))
         conn.commit()
@@ -186,7 +316,9 @@ def consolidate(dry_run: bool = True,
         f"merge={len(findings['merge_dup_notes'])} "
         f"idle={len(findings['idle_stale'])} "
         f"dedupe={len(findings['dedupe_verbatim'])} "
-        f"orphan={len(findings['release_orphan'])}"
+        f"orphan={len(findings['release_orphan'])} "
+        f"task_prune={len(findings['prune_tasks'])} "
+        f"spool_gc={len(findings['gc_task_spool'])}"
     ]
     if not dry_run:
         out.append("applied " + " ".join(f"{k}={v}" for k, v in applied.items()))
@@ -221,5 +353,25 @@ def consolidate(dry_run: bool = True,
             out.append(
                 f"  {f['thread']} by={f['claimed_by']} "
                 f"age={f['claimed_age']} q={q(f['question'])}"
+            )
+    if findings["prune_tasks"]:
+        out.append("")
+        out.append(
+            "task_retention "
+            f"({_task_retention_label()}; live rows protected)"
+        )
+        for f in findings["prune_tasks"][:10]:
+            out.append(
+                f"  task={f['task']} ended={f['ended_age']} "
+                f"prompt={q(f['prompt'])}"
+            )
+    if findings["gc_task_spool"]:
+        out.append("")
+        out.append(
+            f"task_spool_gc (dir={TASK_LOG_DIR}; no retained task row)"
+        )
+        for f in findings["gc_task_spool"][:10]:
+            out.append(
+                f"  task={f['task']} kind={f['kind']} file={q(f['name'])}"
             )
     return "\n".join(out)

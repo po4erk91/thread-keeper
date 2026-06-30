@@ -155,7 +155,12 @@ In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
 `started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
 `tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
-trailers), `shadow_review_pass` (as event.kind).
+trailers), `shadow_review_pass` (as event.kind). Ended `tasks` rows are
+bounded by `consolidate()`: it retains rows protected by either
+`THREADKEEPER_TASK_RETENTION_DAYS` (30 by default) or
+`THREADKEEPER_TASK_RETENTION_COUNT` (1000 by default), never deletes live
+`ended_at IS NULL` rows, and garbage-collects task spool files whose task row is
+no longer retained.
 
 ## Identity and self-cid
 
@@ -484,7 +489,9 @@ optional 24h spawned-child token and dollar ceilings when
   output, parses final JSON or human-readable usage trailers when present,
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
   stores `duration_s` from the task timestamps. If no usage trailer is emitted,
-  the row still has wall-time for cost/benefit triage.
+  the row still has wall-time for cost/benefit triage. Captured `.log` files
+  in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
+  stdin prompt spool.
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
