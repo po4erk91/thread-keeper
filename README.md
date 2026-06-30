@@ -632,11 +632,12 @@ shell/`bypassPermissions` to the same child:
 A full research → audit cycle therefore spans two due passes.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
-picks one open GitHub issue at a time (`roadmap` label first, then FIFO), skips
-issues with an active Evolve claim comment, posts its own claim comment before
-spawning, and advances to the next issue when an issue-local dispatch failure
-prevents startup. The child implements exactly that issue, runs the full suite,
-opens a PR whose body includes `Closes #N`, and only then calls
+picks one open GitHub issue at a time (`roadmap` label first, then FIFO),
+skips issues carrying denylisted human-gate labels, skips issues with an active
+Evolve claim comment, posts its own claim comment before spawning, and advances
+to the next issue when an issue-local dispatch failure prevents startup. The
+child implements exactly that issue, runs the full suite, opens a PR whose body
+includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
 pushes to `main`, and it never marks an issue applied without a real PR URL. A
 manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
@@ -645,6 +646,16 @@ The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
+
+**Skip-label gate.** Autonomous issue pickup refuses issues with labels listed
+in `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` (default
+`blocked,needs-design,wontfix,question,discussion,help wanted`). These labels
+mean the issue needs human design, discussion, or intervention before a
+permission-bypassing implementer should try it. Queue mode excludes those
+issues and records `roadmap_issue_skipped` telemetry; exact mode returns
+`skipped: label X` for the named issue rather than selecting a different one.
+Set the knob to another comma-separated list, or to `off`, to override the
+default.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
@@ -828,9 +839,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
 | `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
 | `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
-| `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` still force-retries it |
+| `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` bypasses the cap, but the default skip-label gate still refuses the `blocked` label until it is removed or reconfigured |
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 
@@ -930,8 +942,9 @@ them with `dry_run=False` to apply:
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
   mutation counts: `lesson_append` / `lesson_remove`,
-  `curator_report_applied`, `roadmap_issue_applied`, `evolve_applied`,
-  `dialectic_claim` / `dialectic_supersede`). A `curator_net_change
+  `curator_report_applied`, `roadmap_issue_applied`,
+  `roadmap_issue_skipped`, `evolve_applied`, `dialectic_claim` /
+  `dialectic_supersede`). A `curator_net_change
   added/removed/patched/net` line makes a loop silently shrinking the
   lessons store visible at a glance. Surfaces the gaps the point-tools
   can't: a loop firing constantly while its outcomes stay flat, or a

@@ -48,6 +48,7 @@ from .config import (
     DB_PATH,
     EVOLVE_APPLY_INTERVAL_S,
     EVOLVE_AUTO_CLONE,
+    EVOLVE_APPLY_SKIP_LABELS,
     EVOLVE_REPO_BRANCH,
     EVOLVE_REPO_ROOT,
     EVOLVE_REPO_URL,
@@ -170,6 +171,7 @@ ROADMAP_ISSUE_CLAIM_HOST_KIND = "roadmap_issue_claim_host"
 # written when an issue crosses the attempt cap and is flagged for a human.
 ROADMAP_ISSUE_ATTEMPT_KIND = "roadmap_issue_attempt"
 ROADMAP_ISSUE_DEAD_LETTER_KIND = "roadmap_issue_dead_letter"
+ROADMAP_ISSUE_SKIPPED_KIND = "roadmap_issue_skipped"
 # Label applied to a dead-lettered issue so it is visibly excluded from the
 # auto-drain and surfaced for a human (composes with the #50 skip-label gate).
 ROADMAP_ISSUE_BLOCKED_LABEL = "blocked"
@@ -651,6 +653,57 @@ def _issue_author_trusted(issue: dict) -> bool:
     if label_set and {name.lower() for name in _issue_labels(issue)} & label_set:
         return True
     return False
+
+
+def _roadmap_issue_skip_label(issue: dict) -> str:
+    """Return the denylisted label that excludes this issue, if any."""
+    deny = {str(label).strip().lower() for label in EVOLVE_APPLY_SKIP_LABELS
+            if str(label).strip()}
+    if not deny:
+        return ""
+    for label in _issue_labels(issue):
+        normalized = str(label).strip().lower()
+        if normalized in deny:
+            return normalized
+    return ""
+
+
+def _format_label_skip(skipped: list[tuple[int, str]], limit: int = 6) -> str:
+    if not skipped:
+        return ""
+    head = ", ".join(f"#{num} label {label}" for num, label in skipped[:limit])
+    more = len(skipped) - limit
+    if more > 0:
+        head += f", +{more} more"
+    return f"roadmap_issue_skipped_label: skipped: {head}"
+
+
+def _record_roadmap_issue_skipped(
+    conn: sqlite3.Connection,
+    skipped: list[tuple[int, str]],
+) -> None:
+    """Persist visible telemetry for human-gated issues skipped by label."""
+    now = int(time.time())
+    for num, label in skipped:
+        try:
+            conn.execute(
+                "INSERT INTO events (session_id, kind, target, summary, "
+                "created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    identity._session_id or "",
+                    ROADMAP_ISSUE_SKIPPED_KIND,
+                    str(int(num)),
+                    f"skipped: label {label}"[:300],
+                    now,
+                ),
+            )
+        except sqlite3.OperationalError:
+            logger.debug(
+                "evolve_applier: failed to record roadmap issue skip",
+                exc_info=True,
+            )
+            return
+    conn.commit()
 
 
 def _fetch_open_issues(repo_root: Optional[Path] = None) -> tuple[list[dict], str]:
@@ -1250,8 +1303,9 @@ def _roadmap_issue_dead_letter_body(issue: dict, attempts: int) -> str:
         "bypassPermissions implementer child every cycle with no progress. A "
         f"human should unblock it (remove the `{ROADMAP_ISSUE_BLOCKED_LABEL}` "
         "label, then split/clarify the issue) before it is retried. A manual "
-        f"`evolve_apply_roadmap_issue(issue_number={num})` still force-retries "
-        "it regardless of this dead-letter state."
+        f"`evolve_apply_roadmap_issue(issue_number={num})` bypasses the "
+        "dead-letter attempt cap, but label-denylisted issues remain skipped "
+        "until the label gate is cleared or reconfigured."
     )
 
 
@@ -1376,6 +1430,25 @@ def _open_roadmap_issues(
     skip_backoff: bool = True,
     flag_dead_letter: bool = False,
 ) -> tuple[list[dict], str]:
+    issues, err, _ = _open_roadmap_issue_candidates(
+        conn, repo_root,
+        skip_claimed=skip_claimed,
+        enforce_author_trust=enforce_author_trust,
+        skip_backoff=skip_backoff,
+        flag_dead_letter=flag_dead_letter,
+    )
+    return issues, err
+
+
+def _open_roadmap_issue_candidates(
+    conn: sqlite3.Connection,
+    repo_root: Optional[Path] = None,
+    *,
+    skip_claimed: bool = True,
+    enforce_author_trust: bool = True,
+    skip_backoff: bool = True,
+    flag_dead_letter: bool = False,
+) -> tuple[list[dict], str, list[tuple[int, str]]]:
     """Open GitHub issues not already handed off by evolve_applier.
 
     The user treats all open issues as roadmap backlog; issues with the
@@ -1397,13 +1470,17 @@ def _open_roadmap_issues(
     `flag_dead_letter` is set, a dead-lettered issue is flagged once (a
     `blocked` label + one summary comment) as it is excluded — only the real
     drain paths pass this so the read-only status view never writes to GitHub.
+    Issues carrying a label from `EVOLVE_APPLY_SKIP_LABELS` are excluded before
+    claim/spawn work. Exact issue mode reads the returned skipped list so it can
+    report the human-gated label instead of falling through to "not open."
     """
     issues, err = _fetch_open_issues(repo_root)
     if err:
-        return [], err
+        return [], err, []
     out: list[dict] = []
     claim_errors: list[str] = []
     untrusted: list[int] = []
+    label_skipped: list[tuple[int, str]] = []
     now_t = time.time()
     for issue in issues:
         try:
@@ -1411,6 +1488,10 @@ def _open_roadmap_issues(
         except (TypeError, ValueError):
             continue
         if _roadmap_issue_applied(conn, num):
+            continue
+        skip_label = _roadmap_issue_skip_label(issue)
+        if skip_label:
+            label_skipped.append((num, skip_label))
             continue
         if enforce_author_trust and not _issue_author_trusted(issue):
             untrusted.append(num)
@@ -1449,8 +1530,8 @@ def _open_roadmap_issues(
     if not out and claim_errors:
         return [], "roadmap_issue_claim_check_failed: " + "; ".join(
             claim_errors
-        )[:240]
-    return out, ""
+        )[:240], label_skipped
+    return out, "", label_skipped
 
 
 def build_apply_prompt(evolve_id: int, suggestion: str,
@@ -1803,7 +1884,9 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
         exact = bool(issue_number)
         # Queue mode honours the backoff/dead-letter gate and flags poison
         # issues; exact mode is a deliberate human override that ignores it.
-        issues, err = _open_roadmap_issues(
+        # Label-denylisted issues are skipped in both modes; exact mode reports
+        # that skip explicitly instead of switching tasks.
+        issues, err, label_skipped = _open_roadmap_issue_candidates(
             conn, repo_root,
             skip_claimed=not exact,
             enforce_author_trust=not exact,
@@ -1820,16 +1903,31 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
                 None,
             )
             if issue is None:
+                skipped = [
+                    (num, label) for num, label in label_skipped
+                    if num == int(issue_number)
+                ]
+                if skipped:
+                    _record_roadmap_issue_skipped(conn, skipped)
+                    return (
+                        f"ERR roadmap_issue_skipped={int(issue_number)}: "
+                        f"skipped: label {skipped[0][1]}"
+                    )
                 return f"ERR roadmap_issue_not_open={int(issue_number)}"
             candidates = [issue]
         else:
             if not issues:
+                if label_skipped:
+                    _record_roadmap_issue_skipped(conn, label_skipped)
+                    return "no_roadmap_issue " + _format_label_skip(label_skipped)
                 return "no_roadmap_issue"
             candidates = issues
 
         running = _running_applier_children(conn)
         if running:
             return f"applier_running n={len(running)} (single-flight)"
+        if label_skipped:
+            _record_roadmap_issue_skipped(conn, label_skipped)
 
         failures: list[str] = []
         for issue in candidates:
@@ -1839,6 +1937,8 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
             if started:
                 if failures:
                     return f"{status} after_skipping={len(failures)}"
+                if label_skipped:
+                    return f"{status} skipped_labels={len(label_skipped)}"
                 return status
             failures.append(status)
             if exact or not _roadmap_dispatch_can_try_next(status):
@@ -2066,10 +2166,15 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     _, repo_err = _ensure_repo_ready()
     # flag_dead_letter=True so a poison issue is flagged (label + one comment)
     # and dropped even on a pass where it is the only open issue left.
-    issues, issue_err = (
-        ([], repo_err) if repo_err
-        else _open_roadmap_issues(conn, flag_dead_letter=True)
-    )
+    label_skipped: list[tuple[int, str]] = []
+    if repo_err:
+        issues, issue_err = [], repo_err
+    else:
+        issues, issue_err, label_skipped = _open_roadmap_issue_candidates(
+            conn, flag_dead_letter=True
+        )
+        if label_skipped and not issues:
+            _record_roadmap_issue_skipped(conn, label_skipped)
     if issues:
         out = apply_roadmap_issue()
         if out.startswith("spawned roadmap_issue=") or out.startswith(
@@ -2088,8 +2193,15 @@ def run_evolve_apply_pass(force: bool = False) -> str:
 
     pending = _promoted_unapplied(conn)
     if not pending:
+        if label_skipped and not issue_err:
+            out = _format_label_skip(label_skipped)
+            _record_apply_pass(conn, now_t, out)
+            return out
         if issue_err:
-            out = f"roadmap_issue_fetch_error: {issue_err}"
+            if issue_err.startswith("roadmap_issue_skipped_label"):
+                out = issue_err
+            else:
+                out = f"roadmap_issue_fetch_error: {issue_err}"
             _record_apply_pass(conn, now_t, out)
             return out
         if not force and not _pass_due(conn, now_t):

@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Evolve applier skip-label gate (#50).** Autonomous roadmap issue pickup now
+  excludes GitHub issues carrying labels in
+  `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` (default
+  `blocked,needs-design,wontfix,question,discussion,help wanted`) before claim
+  or spawn. Exact-number apply returns `skipped: label X` for a denylisted issue
+  instead of silently switching tasks, and skip telemetry is visible through
+  `evolve_apply_status()` plus the `roadmap_issue_skipped` dashboard outcome.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

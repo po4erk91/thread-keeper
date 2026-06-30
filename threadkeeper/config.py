@@ -319,6 +319,15 @@ class Settings(BaseSettings):
     # itself a maintainer endorsement. Empty by default — association is the
     # sole gate. CSV string or list.
     evolve_trust_labels: Annotated[list[str], NoDecode] = []
+    # Label denylist for autonomous roadmap-issue pickup (#50). These labels
+    # mean "not safe/suitable for an unsupervised permission-bypassing
+    # implementer" even when the issue otherwise sorts into the roadmap queue.
+    # Exact issue-number invocation still reports the label skip instead of
+    # silently switching tasks. CSV string or list; set to "off" to clear.
+    evolve_apply_skip_labels: Annotated[list[str], NoDecode] = [
+        "blocked", "needs-design", "wontfix", "question", "discussion",
+        "help wanted",
+    ]
     # Poison-issue guard for the evolve applier. After an implementer child is
     # spawned for a roadmap issue but no PR results, the issue stays selectable
     # once its 24h claim TTL lapses. Without a cap that re-spawns a costly
@@ -399,6 +408,17 @@ class Settings(BaseSettings):
     def _parse_trust_labels(cls, v):
         """Accept CSV string or list; normalize to lower (case-insensitive)."""
         if isinstance(v, str):
+            v = [a for a in v.split(",")]
+        return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
+
+    @field_validator("evolve_apply_skip_labels", mode="before")
+    @classmethod
+    def _parse_apply_skip_labels(cls, v):
+        """Accept CSV string or list; normalize to lower (case-insensitive)."""
+        if isinstance(v, str):
+            raw = v.strip().lower()
+            if raw in {"0", "false", "none", "off"}:
+                return []
             v = [a for a in v.split(",")]
         return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
 
@@ -601,6 +621,7 @@ def _derive_constants(s: "Settings") -> dict:
             s.evolve_trusted_author_associations
         ),
         "EVOLVE_TRUST_LABELS": s.evolve_trust_labels,
+        "EVOLVE_APPLY_SKIP_LABELS": s.evolve_apply_skip_labels,
         "ROADMAP_ISSUE_MAX_ATTEMPTS": s.roadmap_issue_max_attempts,
         "ROADMAP_ISSUE_BACKOFF_BASE_S": s.roadmap_issue_backoff_base_s,
         "THREAD_JANITOR_INTERVAL_S": s.thread_janitor_interval_s,
