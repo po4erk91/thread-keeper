@@ -15,6 +15,7 @@ from typing import Any
 
 from .config import TASK_LOG_DIR
 from .db import get_db
+from .github_budget import format_github_budget, github_budget_state
 from .helpers import alive, fmt_age
 
 
@@ -49,8 +50,9 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "about preferences, constraints, and working style."
     ),
     "evolve_applier": (
-        "Implements one open roadmap issue at a time, then falls back to "
-        "Curator memory-maintenance reports and promoted evolve suggestions."
+        "Repairs conflicted applier PRs first, then implements one roadmap "
+        "issue at a time, then falls back to Curator memory-maintenance reports "
+        "and promoted evolve suggestions."
     ),
     "evolve_reviewer": (
         "Audits thread-keeper for safety, leaks, optimization, and new ideas; "
@@ -71,6 +73,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
     "auto_update": (
         "Checks the installed thread-keeper package or git checkout and applies "
         "safe daily updates when a newer version is available."
+    ),
+    "skill_update": (
+        "Checks installed Skill.md directories for local mirror drift and "
+        "source-tracked upstream updates, then mirrors successful updates."
     ),
 }
 
@@ -226,11 +232,22 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "description": _ROLE_DESCRIPTIONS["auto_update"],
         "work": "Checks for and applies safe thread-keeper updates",
     },
+    {
+        "id": "skill_update",
+        "name": "Skill updater",
+        "event": "skill_update_pass",
+        "interval": "SKILL_UPDATE_INTERVAL_S",
+        "description": _ROLE_DESCRIPTIONS["skill_update"],
+        "work": "Checks installed skills for updates and mirrors them",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_label": "tracked skills",
+    },
 )
 
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
 _ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
+_CONFLICTED_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
 
 
 def _detect_role(prompt: str) -> str:
@@ -379,11 +396,27 @@ def _roadmap_issue_apply_count(conn, now: int) -> int:
     return len(issues)
 
 
+def _conflicted_pr_apply_count(now: int) -> int:
+    if now - _CONFLICTED_PR_CACHE["at"] < 300:
+        return _CONFLICTED_PR_CACHE["count"]
+    try:
+        from .evolve_applier import _conflicted_applier_prs
+
+        prs, err = _conflicted_applier_prs()
+    except Exception:
+        return _CONFLICTED_PR_CACHE["count"]
+    if err:
+        return _CONFLICTED_PR_CACHE["count"]
+    _CONFLICTED_PR_CACHE["at"] = int(now)
+    _CONFLICTED_PR_CACHE["count"] = len(prs)
+    return len(prs)
+
+
 def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
     if loop.get("backlog_metric") == "evolve_apply":
-        return _scalar(
+        return _conflicted_pr_apply_count(now) + _scalar(
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",
@@ -748,6 +781,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "killed": guard.get("killed", []),
             "retired": guard.get("retired", []),
             "failed": guard.get("failed", []),
+            "skipped": guard.get("skipped", []),
             "aggregate": guard.get("aggregate", {}),
             "reclaim_requests": guard.get("reclaim_requests", {}),
             "local_reclaim": guard.get("local_reclaim"),
@@ -757,6 +791,7 @@ def memory_cleanup(dry_run: bool = False, force: bool = False) -> dict[str, Any]
             "count": len(orphan_cleanup.get("orphans", [])),
             "killed": orphan_cleanup.get("killed", []),
             "failed": orphan_cleanup.get("failed", []),
+            "skipped": orphan_cleanup.get("skipped", []),
         },
     }
 
@@ -781,10 +816,12 @@ def format_memory_cleanup(result: dict[str, Any]) -> str:
         (
             f"guard warn={guard['warn']} kill={guard['kill']} "
             f"killed={len(guard['killed'])} retired={len(guard['retired'])} "
+            f"skipped={len(guard.get('skipped', []))} "
             f"failed={len(guard['failed'])}"
         ),
         (
             f"orphans={orphans['count']} killed={len(orphans['killed'])} "
+            f"skipped={len(orphans.get('skipped', []))} "
             f"failed={len(orphans['failed'])}"
         ),
     ]
@@ -805,6 +842,7 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
     now = int(time.time())
     agents = _running_agents(conn, now, limit)
     loops = _loop_statuses(conn, agents, now)
+    github_budget = github_budget_state(conn, now_t=now)
 
     return {
         "generated_at": now,
@@ -815,6 +853,7 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "running_loop_count": sum(1 for loop in loops if loop["status"] == "running"),
         "ready_loop_count": sum(1 for loop in loops if loop["status"] == "ready"),
         "loops": loops,
+        "github_budget": github_budget,
         "recent_results": _recent_results(conn, now),
         "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
@@ -828,7 +867,8 @@ def format_agent_status(snapshot: dict[str, Any]) -> str:
         f"loops enabled={snapshot.get('enabled_loop_count', 0)} "
         f"running={snapshot.get('running_loop_count', 0)} "
         f"ready={snapshot.get('ready_loop_count', 0)} "
-        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp}"
+        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp} "
+        f"{format_github_budget(snapshot.get('github_budget') or {})}"
     ]
     for loop in snapshot.get("loops", []):
         backlog = ""

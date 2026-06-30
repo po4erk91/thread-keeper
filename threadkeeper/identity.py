@@ -151,6 +151,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            from . import skill_updater
+            skill_updater.start_skill_update_daemon()
+        except Exception:
+            pass
+        try:
             from . import config_watcher
             config_watcher.start_config_watcher()
         except Exception:

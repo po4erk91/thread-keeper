@@ -42,6 +42,8 @@ from .config import (
     SPAWN_ESTIMATE_SLIM_MB,
     SPAWN_ESTIMATE_FULL_MB,
     SPAWN_BUDGET_POLL_S,
+    SPAWN_TOKEN_BUDGET,
+    SPAWN_COST_BUDGET_USD,
     SPAWN_VISIBLE_TTL_S,
     SPAWN_MAX_RUNTIME_S,
     SPAWN_KILL_GRACE_S,
@@ -196,11 +198,63 @@ def _running_tasks_rss(conn) -> int:
     return total
 
 
+def _daily_spawn_usage(conn, now: int | None = None) -> tuple[int, float]:
+    """Return (tokens, cost_usd) recorded over the last 24 hours.
+
+    Missing columns mean the DB has not yet been migrated in this process; fail
+    open so introducing the accounting columns cannot block spawns on partial
+    installations.
+    """
+    cut = (int(time.time()) if now is None else int(now)) - 86400
+    try:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(COALESCE(tokens_total, "
+            "COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0))), 0), "
+            "COALESCE(SUM(COALESCE(cost_usd, 0.0)), 0.0) "
+            "FROM tasks WHERE COALESCE(ended_at, started_at) >= ?",
+            (cut,),
+        ).fetchone()
+    except Exception:
+        return 0, 0.0
+    if not row:
+        return 0, 0.0
+    return int(row[0] or 0), float(row[1] or 0.0)
+
+
+def _check_daily_spend_budget(conn) -> Tuple[bool, str]:
+    tokens_24h, cost_24h = _daily_spawn_usage(conn)
+    if SPAWN_TOKEN_BUDGET > 0 and tokens_24h >= SPAWN_TOKEN_BUDGET:
+        return False, (
+            f"token_budget_exceeded: tokens_24h={tokens_24h} >= "
+            f"limit={SPAWN_TOKEN_BUDGET}. Raise "
+            "THREADKEEPER_SPAWN_TOKEN_BUDGET, wait for the 24h window to "
+            "roll over, or disable with 0."
+        )
+    if SPAWN_COST_BUDGET_USD > 0 and cost_24h >= SPAWN_COST_BUDGET_USD:
+        return False, (
+            f"cost_budget_exceeded: cost_24h=${cost_24h:.4f} >= "
+            f"limit=${SPAWN_COST_BUDGET_USD:.4f}. Raise "
+            "THREADKEEPER_SPAWN_COST_BUDGET_USD, wait for the 24h window to "
+            "roll over, or disable with 0."
+        )
+    return True, (
+        f"spend_ok: tokens_24h={tokens_24h}"
+        f"{('/' + str(SPAWN_TOKEN_BUDGET)) if SPAWN_TOKEN_BUDGET > 0 else ''} "
+        f"cost_24h=${cost_24h:.4f}"
+        f"{('/$' + format(SPAWN_COST_BUDGET_USD, '.4f')) if SPAWN_COST_BUDGET_USD > 0 else ''}"
+    )
+
+
 def check_budget(conn, new_child_kb: int) -> Tuple[bool, str]:
     """Decide whether spawning a child of `new_child_kb` would breach the
-    budget. Returns (ok, message). When SPAWN_BUDGET_MB=0, always ok."""
+    budget. Returns (ok, message). When all budgets are unset/disabled, always
+    ok."""
+    spend_ok, spend_msg = _check_daily_spend_budget(conn)
+    if not spend_ok:
+        return False, spend_msg
     if SPAWN_BUDGET_MB <= 0:
-        return True, "budget_disabled"
+        return True, "budget_disabled " + spend_msg
     budget_kb = SPAWN_BUDGET_MB * 1024
     current = _running_tasks_rss(conn)
     projected = current + new_child_kb

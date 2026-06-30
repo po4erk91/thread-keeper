@@ -11,9 +11,12 @@ restart it against the newly installed code.
 """
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
+from dataclasses import dataclass
 import importlib.metadata
 import importlib.util
+import json
 import logging
 import os
 from pathlib import Path
@@ -21,12 +24,20 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from .config import (
+    AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT,
+    AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY,
+    AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW,
     AUTO_UPDATE_INTERVAL_S,
+    AUTO_UPDATE_PYPI_BASE_URL,
     AUTO_UPDATE_RESTART,
     AUTO_UPDATE_TIMEOUT_S,
+    AUTO_UPDATE_VERIFY_PROVENANCE,
     BACKGROUND_DAEMONS_ALLOWED,
     DB_PATH,
 )
@@ -36,8 +47,23 @@ from . import identity
 logger = logging.getLogger(__name__)
 
 PACKAGE_NAME = "threadkeeper"
+SMOKE_IMPORT_CODE = "import threadkeeper; from threadkeeper import server"
+FAILED_UPDATE_MARKERS = (" install=failed", " setup=failed", " smoke=failed")
+PYPI_JSON_ACCEPT = "application/json"
+PYPI_INTEGRITY_ACCEPT = "application/vnd.pypi.integrity.v1+json"
+ATTESTATION_PREDICATE_TYPES = {
+    "https://docs.pypi.org/attestations/publish/v1",
+    "https://slsa.dev/provenance/v1",
+}
 _started = False
 _restart_scheduled = False
+
+
+@dataclass(frozen=True)
+class _ProvenanceDecision:
+    allowed: bool
+    version: str = ""
+    reason: str = ""
 
 
 def _run(
@@ -160,6 +186,213 @@ def _short(text: str, limit: int = 160) -> str:
     return " ".join((text or "").split())[:limit]
 
 
+def _pypi_url(path: str) -> str:
+    return f"{AUTO_UPDATE_PYPI_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _fetch_json(url: str, *, accept: str = PYPI_JSON_ACCEPT) -> dict[str, Any]:
+    request = Request(
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": "threadkeeper-auto-update",
+        },
+    )
+    timeout = min(30, AUTO_UPDATE_TIMEOUT_S)
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed PyPI URL
+        payload = response.read()
+    data = json.loads(payload.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("expected JSON object")
+    return data
+
+
+def _pypi_project_metadata() -> dict[str, Any]:
+    return _fetch_json(_pypi_url(f"pypi/{quote(PACKAGE_NAME)}/json"))
+
+
+def _release_files(metadata: dict[str, Any], version: str) -> list[dict[str, Any]]:
+    releases = metadata.get("releases")
+    files = (
+        releases.get(version)
+        if isinstance(releases, dict)
+        else None
+    )
+    if not files:
+        files = metadata.get("urls", [])
+    if not isinstance(files, list):
+        return []
+    return [
+        f for f in files
+        if isinstance(f, dict) and not bool(f.get("yanked"))
+    ]
+
+
+def _fetch_pypi_provenance(version: str, filename: str) -> dict[str, Any]:
+    project = quote(PACKAGE_NAME)
+    ver = quote(version, safe="")
+    name = quote(filename, safe="")
+    return _fetch_json(
+        _pypi_url(f"integrity/{project}/{ver}/{name}/provenance"),
+        accept=PYPI_INTEGRITY_ACCEPT,
+    )
+
+
+def _publisher_matches_expected(publisher: Any) -> bool:
+    if not isinstance(publisher, dict):
+        return False
+    if publisher.get("kind") != "GitHub":
+        return False
+    expected_repo = AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY.strip().lower()
+    actual_repo = str(publisher.get("repository") or "").strip().lower()
+    if not expected_repo or actual_repo != expected_repo:
+        return False
+    expected_workflow = AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW.strip()
+    if expected_workflow and publisher.get("workflow") != expected_workflow:
+        return False
+    expected_environment = AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT.strip()
+    if expected_environment and publisher.get("environment") != expected_environment:
+        return False
+    return True
+
+
+def _decode_attestation_statement(attestation: dict[str, Any]) -> dict[str, Any]:
+    envelope = attestation.get("envelope")
+    if not isinstance(envelope, dict):
+        raise ValueError("missing envelope")
+    raw_statement = envelope.get("statement")
+    if not isinstance(raw_statement, str) or not raw_statement:
+        raise ValueError("missing statement")
+    decoded = base64.b64decode(raw_statement, validate=True)
+    statement = json.loads(decoded.decode("utf-8"))
+    if not isinstance(statement, dict):
+        raise ValueError("statement_not_object")
+    return statement
+
+
+def _attestation_matches_file(
+    attestation: dict[str, Any],
+    *,
+    filename: str,
+    sha256: str,
+) -> bool:
+    try:
+        statement = _decode_attestation_statement(attestation)
+    except Exception:
+        return False
+    if statement.get("predicateType") not in ATTESTATION_PREDICATE_TYPES:
+        return False
+    subject = statement.get("subject")
+    if not isinstance(subject, list) or len(subject) != 1:
+        return False
+    item = subject[0]
+    if not isinstance(item, dict) or item.get("name") != filename:
+        return False
+    digest = item.get("digest")
+    if not isinstance(digest, dict):
+        return False
+    return str(digest.get("sha256") or "").lower() == sha256.lower()
+
+
+def _provenance_matches_file(
+    provenance: dict[str, Any],
+    *,
+    filename: str,
+    sha256: str,
+) -> tuple[bool, str]:
+    if provenance.get("version") != 1:
+        return False, "provenance_version"
+    bundles = provenance.get("attestation_bundles")
+    if not isinstance(bundles, list) or not bundles:
+        return False, "provenance_empty"
+
+    saw_expected_publisher = False
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            continue
+        if not _publisher_matches_expected(bundle.get("publisher")):
+            continue
+        saw_expected_publisher = True
+        attestations = bundle.get("attestations")
+        if not isinstance(attestations, list):
+            continue
+        for attestation in attestations:
+            if isinstance(attestation, dict) and _attestation_matches_file(
+                attestation,
+                filename=filename,
+                sha256=sha256,
+            ):
+                return True, "ok"
+
+    if saw_expected_publisher:
+        return False, "attestation_mismatch"
+    return False, "publisher_mismatch"
+
+
+def _verify_pypi_release_provenance(old_version: str) -> _ProvenanceDecision:
+    try:
+        metadata = _pypi_project_metadata()
+    except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError) as e:
+        return _ProvenanceDecision(
+            False,
+            old_version,
+            f"metadata_unavailable err={_short(str(e))}",
+        )
+
+    info = metadata.get("info")
+    version = str((info or {}).get("version") or "").strip() if isinstance(info, dict) else ""
+    if not version:
+        return _ProvenanceDecision(False, old_version, "metadata_missing_version")
+    if old_version != "unknown" and version == old_version:
+        return _ProvenanceDecision(True, version, "already_current")
+
+    files = _release_files(metadata, version)
+    if not files:
+        return _ProvenanceDecision(False, version, "release_files_missing")
+
+    for file_info in files:
+        filename = str(file_info.get("filename") or "").strip()
+        digests = file_info.get("digests")
+        sha256 = (
+            str((digests or {}).get("sha256") or "").strip().lower()
+            if isinstance(digests, dict)
+            else ""
+        )
+        if not filename:
+            return _ProvenanceDecision(False, version, "release_file_missing_name")
+        if not sha256:
+            return _ProvenanceDecision(
+                False,
+                version,
+                f"release_file_missing_sha256 file={filename}",
+            )
+
+        try:
+            provenance = _fetch_pypi_provenance(version, filename)
+        except HTTPError as e:
+            if e.code == 404:
+                reason = "provenance_missing"
+            else:
+                reason = f"provenance_http_{e.code}"
+            return _ProvenanceDecision(False, version, f"{reason} file={filename}")
+        except (URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError) as e:
+            return _ProvenanceDecision(
+                False,
+                version,
+                f"provenance_unavailable file={filename} err={_short(str(e))}",
+            )
+
+        ok, reason = _provenance_matches_file(
+            provenance,
+            filename=filename,
+            sha256=sha256,
+        )
+        if not ok:
+            return _ProvenanceDecision(False, version, f"{reason} file={filename}")
+
+    return _ProvenanceDecision(True, version, "verified")
+
+
 def _git_stdout(repo: Path, *args: str, timeout: int = 60) -> tuple[int, str, str]:
     res = _run(["git", "-C", str(repo), *args], timeout=timeout)
     return res.returncode, res.stdout.strip(), res.stderr.strip()
@@ -192,6 +425,31 @@ def _run_setup() -> str:
     if setup.returncode != 0:
         return f" setup=failed err={_short(setup.stderr)}"
     return " setup=ok"
+
+
+def _run_post_update_smoke_check() -> str:
+    try:
+        smoke = _run(
+            [sys.executable, "-c", SMOKE_IMPORT_CODE],
+            timeout=min(30, AUTO_UPDATE_TIMEOUT_S),
+        )
+    except Exception as e:  # noqa: BLE001 — smoke failure must not crash daemon
+        return f" smoke=failed err={_short(f'{type(e).__name__}: {e}')}"
+    if smoke.returncode != 0:
+        return f" smoke=failed err={_short(smoke.stderr or smoke.stdout)}"
+    return " smoke=ok"
+
+
+def _updated_result_allows_restart(result: str) -> bool:
+    return result.startswith("updated ") and not any(
+        marker in result for marker in FAILED_UPDATE_MARKERS
+    )
+
+
+def _suppress_restart(result: str) -> str:
+    if " restart=suppressed" in result:
+        return result
+    return f"{result} restart=suppressed"
 
 
 def _update_git_checkout(repo: Path) -> str:
@@ -253,6 +511,17 @@ def _update_git_checkout(repo: Path) -> str:
 
 def _update_installed_package() -> str:
     old_version = _installed_version()
+    if AUTO_UPDATE_VERIFY_PROVENANCE:
+        provenance = _verify_pypi_release_provenance(old_version)
+        if not provenance.allowed:
+            version = provenance.version or old_version
+            return (
+                f"refused mode=pip version={version} "
+                f"reason={_short(provenance.reason)}"
+            )
+        if provenance.version and provenance.version == old_version:
+            return f"no_update mode=pip version={old_version}"
+
     install = _run(
         [sys.executable, "-m", "pip", "install", "--upgrade", _package_spec()],
         timeout=AUTO_UPDATE_TIMEOUT_S,
@@ -305,6 +574,8 @@ def run_auto_update_pass(
         if not is_due:
             return f"not_due age_s={age}"
 
+    should_restart = AUTO_UPDATE_RESTART if restart_on_update is None else restart_on_update
+    restart_ready = False
     with _update_lock() as locked:
         if not locked:
             return "update_running"
@@ -313,10 +584,15 @@ def run_auto_update_pass(
         except Exception as e:  # noqa: BLE001 — never crash daemon thread
             logger.debug("auto_update: pass failed", exc_info=True)
             result = f"error {type(e).__name__}: {e}"
+        if should_restart and result.startswith("updated "):
+            if _updated_result_allows_restart(result):
+                result += _run_post_update_smoke_check()
+                restart_ready = _updated_result_allows_restart(result)
+            if not restart_ready:
+                result = _suppress_restart(result)
 
     _record_auto_update_pass(result)
-    should_restart = AUTO_UPDATE_RESTART if restart_on_update is None else restart_on_update
-    if should_restart and result.startswith("updated "):
+    if should_restart and restart_ready:
         _schedule_restart()
     return result
 

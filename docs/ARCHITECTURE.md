@@ -24,6 +24,8 @@ threadkeeper/
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
+├── elicitation.py     capability-gated MCP form confirmations (#26)
+├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -36,6 +38,7 @@ threadkeeper/
 ├── memory_guard.py    daemon: notify + SIGTERM when server RSS exceeds limits
 ├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
+├── skill_updater.py   daemon: twice-weekly installed skill update + mirror sync
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
 ├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
@@ -99,9 +102,22 @@ Foreground parent MCP sessions also start `auto_update.py` when
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
-`pip install --upgrade` in the current interpreter environment. Successful
-updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code.
+`pip install --upgrade` in the current interpreter environment only after the
+latest PyPI release's non-yanked files pass the provenance gate. That gate
+queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
+bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
+and checks the attested subject filename/SHA-256 against PyPI metadata before
+`pip` is invoked. Missing provenance, mismatched publisher identity, or digest
+mismatch returns `refused mode=pip ...` and records an `auto_update_pass` without
+restarting. Successful updates optionally exit the current MCP process
+(`THREADKEEPER_AUTO_UPDATE_RESTART` default true) so the host reconnects to the
+new code, but only after setup and a subprocess import smoke check both pass.
+Install/setup/import failures are recorded on the `auto_update_pass` event with
+`restart=suppressed`, and the already-running process stays alive on its current
+in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt out of the
+standing-consent update channel entirely; the provenance gate itself is
+controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
+mirrors.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -133,7 +149,13 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
    background_review vs shadow_review). This is the input for the curator.
 
-6. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
+6. **lesson_usage** — telemetry for `lessons.md` slugs. `lesson_list` bumps
+   `view_count`, `lesson_get` bumps `use_count`, and the curator uses
+   `last_used_at` / `last_viewed_at` / pull counts for decay scoring.
+   `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
+   recommendations.
+
+7. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
    confidence; brief() renders medium+high grouped by domain.
    `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
@@ -141,8 +163,12 @@ The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
    batch, and `processed` is terminal. Stale claims are requeued.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
-`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children),
-`shadow_review_pass` (as event.kind).
+`extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
+`started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
+`tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
+trailers), `github_rate_budget` (per-account GitHub API remaining/reset and
+cooldown state shared by roadmap automation), `shadow_review_pass` (as
+event.kind).
 
 ## Identity and self-cid
 
@@ -193,6 +219,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
   if the file was changed outside `skill_manage`.
+- **skill_updater** — once per `SKILL_UPDATE_INTERVAL_S` (default 302400 s,
+  twice weekly) runs single-flight across live MCP servers, imports the newest
+  local installed skill copy from any configured CLI root into the primary
+  `~/.claude/skills` root, mirrors successful updates back to every root, and
+  updates GitHub-backed skills that carry `.threadkeeper-skill-source.json` or
+  can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`. Replaced local
+  skills are backed up under the state dir, and source-tracked local edits after
+  the last upstream hash are skipped rather than overwritten.
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
   `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
@@ -245,16 +279,38 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
+  `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest
+  same-repo applier PR whose merge state is conflicted (`DIRTY` /
+  `CONFLICTING`). This sweep is a hard preflight before new work: if PR state
+  cannot be read, the pass records `conflicted_pr_fetch_error` and does not
+  pick a fresh roadmap issue, Curator report, or promoted evolve suggestion.
+  Only same-repository `roadmap/…` and `evolve/…` head branches are eligible;
+  fork PRs are never fed to the privileged repair child. The repair child checks
+  out the existing PR branch, merges the current base branch, resolves
+  conflicts, runs the full suite, and pushes back to the same branch. It then
+  runs `gh pr merge --squash --auto --delete-branch`, so GitHub lands the PR
+  into `main` through branch protection/required checks instead of a raw local
+  `git push origin main`.
+  When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
-  response are filtered out). The fetch is explicit `--paginate --slurp`,
+  response are filtered out). The fetch is explicit `--include --paginate`,
   `sort=created&direction=asc`, so the subsequent local priority
   (`roadmap`-labeled issues first, then FIFO by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
   of open issues outside the window. The applier then spawns one
   `evolve_applier` child to implement exactly one issue.
+  **Shared GitHub budget (#38):** parent `gh` calls and the privileged child
+  PATH `gh` wrapper consult `github_rate_budget` before every request. Included
+  REST headers update `X-RateLimit-Remaining` / `X-RateLimit-Reset`; primary
+  403s cool down until reset (bounded to one hour), and secondary-limit or
+  `Retry-After` responses create a bounded exponential cooldown. While the
+  cooldown is active, foreground status commands, reviewer/applier daemons, and
+  spawned shell `gh` calls fail fast instead of independently retrying the same
+  account quota. `agent_status` / `tk-agent-status` and
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in
@@ -299,7 +355,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   failure instead of switching tasks. The PR body must include `Closes #N`;
   after `gh pr create` prints a real URL, the child calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)` so the daemon does
-  not pick it again while human review/merge is pending. If no issue is pending,
+  not pick it again while human review/merge is pending. **Issue/body safety
+  (#22):** the issue body and legacy evolve suggestions are embedded only inside
+  explicit data fences, and privileged evolve children get a PATH-prepended
+  `gh` wrapper. For `gh issue create`, `gh issue comment`, and `gh pr create`,
+  the wrapper redacts `/Users/<name>/...` and `/home/<name>/...` paths plus
+  common token shapes before the real GitHub CLI receives the body, refusing if
+  a known unsafe pattern remains. Parent-authored claim/dead-letter comments use
+  the same scrubber before spawning `gh`. If no issue is pending,
   it falls back to the latest complete Curator `REPORT-*.md`, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
   uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
@@ -367,7 +430,12 @@ For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
 `--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
-for branch/commit/PR creation. Web tools (`WebSearch`/`WebFetch`) are never
+for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
+`bypassPermissions` unless the request comes from the evolve daemon
+role/write-origin pairs (`evolve_reviewer`/`evolve`,
+`evolve_applier`/`evolve_apply`), or the operator explicitly sets
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Web tools
+(`WebSearch`/`WebFetch`) are never
 granted to a `bypassPermissions` child: the evolve reviewer's web research runs
 in a separate read-only `permission_mode="auto"` child with no shell, so the
 untrusted web content and the exfiltration-capable context are never the same
@@ -430,16 +498,28 @@ The daemon lives in every thread-keeper process, but processes requests
 The parent's cid is resolved via `tasks.parent_cid WHERE spawned_cid=self_cid`;
 if no parent is found — the request goes broadcast to any peer with embeddings.
 
-### Spawn budget (RSS cap)
+### Spawn budget (RSS + spend caps)
 
 `spawn_budget.py` enforces a cap on the **combined RSS of all running spawned
-children** (the parent itself is not counted). Default 3 GB.
+children** (the parent itself is not counted). Default 3 GB. It also checks
+optional 24h spawned-child token and dollar ceilings when
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` or
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
+(disabled), so unset budgets preserve prior behavior.
 
 - `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
-  tasks (NULL = conservative full-estimate placeholder), refuses if the new
-  child would push past the cap. ERR carries the exact numbers + how-to-override.
+  tasks (NULL = conservative full-estimate placeholder) and the recorded 24h
+  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
+  new child would push past the RSS cap or if daily token/cost spend has already
+  reached its configured ceiling. ERR carries the exact numbers +
+  how-to-override.
 - After admission, INSERT into `tasks` writes an initial estimate
   (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
+- Headless children run through `_spawn_wrap.py`, which tees the child's
+  output, parses final JSON or human-readable usage trailers when present,
+  stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
+  stores `duration_s` from the task timestamps. If no usage trailer is emitted,
+  the row still has wall-time for cost/benefit triage.
 - Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
@@ -457,8 +537,12 @@ children** (the parent itself is not counted). Default 3 GB.
   `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
   liveness correctness).
 
-Tools: `spawn_budget_status()` (cap/used/free/per-task), `spawn_budget_set(MB)`
-(runtime override, not persisted).
+Tools: `spawn_budget_status()` (RSS cap/used/free/per-task plus recorded 24h
+tokens/cost and remaining daily budget), `spawn_budget_set(MB)` (runtime RSS
+override, not persisted). `mp_dashboard()` shows each loop's fire count with
+24h spawn count, recorded tokens, dollar spend, wall-time, and mutation count,
+so the #6 "is this loop worth the Opus minutes?" question has a numeric cost
+dimension from #25 instead of only fire/outcome counts.
 
 ## Learning loop
 
@@ -552,6 +636,8 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `~/.claude/skills/`, `~/.codex/skills/`,
   `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
+  The scheduled `skill_updater` repairs drift in the same mirror set and can
+  import newer copies that were installed into a non-primary CLI root.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
@@ -564,6 +650,15 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   the curator gets real numbers without the agent being required to call
   `skill_record` manually. The `skill_watcher` daemon catches external edits
   to `SKILL.md` (Edit/Write directly, not through skill_manage).
+
+- **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
+  `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
+  `use_count` bump for the returned body. The curator computes
+  `access_frequency × exp(-days_since_access / tau)` over this table and
+  surfaces a ranked `STALE LESSONS (dry-run decay ranking)` section for lessons
+  with no recent access and low pull-count. The section is advisory only; it is
+  not an automatic deletion path, and foreground/user, pinned, and validated
+  lessons are excluded.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
@@ -772,9 +867,12 @@ Tools:
 - `mp_health()` — list of orphan candidates with pid/rss/etime/heartbeat-age.
 - `mp_cleanup(dry_run=True, force=False)` — kill orphans. Default is dry-run,
   so we don't accidentally kill an active mcp on a false-positive classification.
+  Before sending a signal, cleanup re-reads the pid command and skips it if the
+  pid no longer belongs to the real `threadkeeper.server` process.
 - `memory_guard_status()` — show RSS guard thresholds and current server rows.
 - `memory_guard_check(dry_run=True, notify=False)` — one-shot guard pass;
-  pass `dry_run=False` to SIGTERM processes over the hard memory limit.
+  pass `dry_run=False` to SIGTERM processes over the hard memory limit. The
+  guard uses the same pid-identity recheck before hard-kill or idle-retire.
 - `memory_guard_reclaim(scope='self')` — immediately unload local
   embedding/caches; with `scope='all'` also queues peer trim requests.
 - `agent_memory_cleanup(dry_run=False)` / `tk-agent-status --cleanup-memory` —
@@ -852,7 +950,7 @@ below).
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
-| evolve_applier | 7 | evolve_apply, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
+| evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
@@ -876,9 +974,11 @@ Tools register through two thin wrappers in `_mcp.py` instead of bare
 every tool:
 
 - `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
-  `search`, `dialog_search`, `lesson_list`, the status tools, `compost`, …).
+  `search`, `dialog_search`, the status tools, `compost`, …).
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
-  mutations. The ten delete/overwrite/kill tools carry `destructiveHint=True`:
+  mutations. `lesson_list` and `lesson_get` are non-destructive writes because
+  they update lesson access counters. The ten delete/overwrite/kill tools carry
+  `destructiveHint=True`:
   `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
   `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
   `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
@@ -922,6 +1022,30 @@ the `brief()` / `context()` tools, with identical content. Resource/prompt funct
 their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
+
+### MCP elicitation (#26)
+
+Elicitation is a **client feature**: the server can ask the host to collect
+structured user input while a tool call is in progress. thread-keeper keeps this
+behind a thin helper in `elicitation.py`:
+
+- `supports_form_elicitation(ctx)` probes request metadata first
+  (`io.modelcontextprotocol/clientCapabilities`), then the SDK's
+  initialize-time session capabilities. If no form-mode elicitation capability
+  is present, the caller uses its existing fallback behavior.
+- `elicit_confirm_reject(ctx, message)` sends `elicitation/create` through
+  `Context.elicit()` only after that probe passes. Decline, cancel, invalid, and
+  transport-error paths are non-mutating.
+- Schemas stay **flat** and spec-valid: root object only, primitive fields only.
+  The shared `ConfirmRejectForm` has one string enum field,
+  `decision in {"confirm", "reject"}`; no nested objects, arrays of objects, or
+  sensitive data collection.
+
+The first wired flow is `dialectic_supersede`. On supported hosts, replacing a
+user-model claim prompts with a confirm/reject form before writing the new claim
+and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
+clients, older Claude clients), behavior is unchanged: the tool applies
+immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
 
 ## Tests
 
@@ -980,8 +1104,8 @@ in CI and as a golden baseline (the bundled `ground_truth.json` demo corpus
 scores 100% under a faithful retrieval; a regression in `search()`/
 `dialog_search()` drops it). An optional `--judge llm` grades answer
 *reasoning* (true temporal ordering, knowledge-update correctness) via the
-Anthropic Messages API over `urllib` — no SDK dependency — and is the intended
-optimization target for the lessons-decay (#27) and bi-temporal (#28) work.
+Anthropic Messages API over `urllib` — no SDK dependency — and is an
+optimization target for lesson-decay tuning (#27) and bi-temporal (#28) work.
 `--db snapshot.sqlite` evaluates a real production snapshot, copied to a temp
 file first so the original is never opened for writing. Backend (`fts` vs
 `semantic`) is auto-detected and reported. Smoke-tested in
@@ -1058,12 +1182,22 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
 | `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
 | `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) for inferred upstream updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_AUTO_REVIEW` | off | enable auto-review on close_thread |
 | `THREADKEEPER_MEMORY_NUDGE_INTERVAL` | 10 | events between memory_save nudges |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between skill_hint nudges |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after applying an update |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
@@ -1118,6 +1252,12 @@ agent in the right direction:
 Pattern for future nudges: short section, compact format, explicit
 "→ consider X" line. Fire only when the not-doing-it cost > the brief
 real-estate cost.
+
+For high-stakes writes, nudges are now complemented by MCP elicitation when the
+host advertises it. `dialectic_supersede` is the first protected flow: a
+supported host shows a structured confirm/reject dialog; unsupported hosts keep
+the old text/tool path so Codex, Claude Desktop, Antigravity, and generic MCP
+clients do not regress.
 
 ## What is NOT done
 

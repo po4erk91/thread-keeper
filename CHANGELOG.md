@@ -20,6 +20,88 @@ version bumps follow semver per the policy in
   `brief()` labels the dialectic section as `current as of <date>` once closed
   validity intervals exist.
 
+- **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
+  resolve the candidate PyPI release before running `pip`, require PyPI
+  Integrity API provenance from the expected GitHub Trusted Publisher
+  (`po4erk91/thread-keeper`, `publish.yml`, environment `pypi`), and verify the
+  attested filename/SHA-256 against PyPI metadata. Missing or mismatched
+  provenance records a refused `auto_update_pass` and keeps the current
+  known-good process running. New env knobs document the break-glass provenance
+  opt-out and the expected publisher identity.
+
+- **Shared GitHub API budget/cooldown ledger for roadmap automation (#38).**
+  Roadmap issue fetch/comment/PR-guard calls and privileged child `gh` wrapper
+  invocations now consult one SQLite `github_rate_budget` row per local GitHub
+  account before making requests. Included REST headers record
+  remaining/reset values, primary 403s cool down until reset, secondary
+  rate-limit / `Retry-After` responses use bounded exponential backoff, and
+  `agent_status` / `tk-agent-status` plus `evolve_apply_status()` expose the
+  current remaining count or cooldown window.
+
+### Fixed
+
+- **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
+  already-open same-repo applier PRs before taking fresh roadmap/report/evolve
+  work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
+  applier spawns a repair child that updates that existing branch and runs the
+  suite instead of starting a new task, then lands the repaired PR into `main`
+  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
+  the pass fails closed rather than moving on to new work.
+
+## v0.14.0 — 2026-06-25
+
+### Fixed
+
+- **Process-kill safety (#66).** Orphan cleanup now uses the shared
+  zombie-aware liveness helper, so a zombie parent no longer keeps its orphaned
+  `threadkeeper.server` child classified as live. Before `mp_cleanup`,
+  memory-guard hard-kill, or memory-guard idle-retire sends a signal, it
+  re-reads the current pid command and skips the signal if the pid no longer
+  resolves to a real `threadkeeper.server` process.
+
+### Added
+
+- **Twice-weekly skill updater daemon.** Foreground MCP parents now start a
+  `skill_update` loop by default (`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`,
+  0 disables). Each due pass is single-flight across live servers, imports the
+  newest local copy of an installed skill from any configured CLI skill root into
+  the primary `~/.claude/skills` root, mirrors successful updates back to every
+  known root, and records `skill_update_pass` telemetry for `agent_status`.
+  Source-tracked GitHub skills can also be updated from configured
+  `owner/repo@ref:path` roots; local edits after the last tracked upstream hash
+  are skipped instead of overwritten, and replaced skills are backed up under the
+  thread-keeper state dir.
+
+- **MCP elicitation confirmations (#26).** High-stakes memory writes can now use
+  host-native MCP form elicitation when the client advertises it. The shared
+  helper probes per-request / session capabilities, sends only flat primitive
+  schemas, and treats reject/decline/cancel/error as non-mutating outcomes. The
+  first protected flow is `dialectic_supersede`: supported hosts show a
+  confirm/reject dialog before replacing a user-model claim; unsupported hosts
+  keep the previous immediate tool behavior and text-nudge fallback.
+
+- **Per-spawn token/cost accounting and daily spend budgets (#25).** Spawned
+  children now write more than `return_code`: `_spawn_wrap.py` tees the child
+  output, parses JSON result lines and common CLI usage trailers, and stores
+  `tasks.tokens_in`, `tokens_out`, `tokens_total`, `cost_usd`, and `duration_s`
+  on completion. Optional disabled-by-default admission ceilings
+  `THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+  `THREADKEEPER_SPAWN_COST_BUDGET_USD` deny new background spawns once recorded
+  24h spend reaches the configured limit. `spawn_budget_status()` reports 24h
+  tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
+  spawns/tokens/spend/time next to mutation count, covering the cost dimension
+  of the #6 shadow-review production question.
+ 
+- **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
+  `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
+  `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
+  include a ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+  `access_frequency × exp(-days_since_access / tau)` over lessons with no
+  recent access and low pull-count. The decay list is advisory only and excludes
+  foreground/user, pinned, and validated lessons; `lesson_list` / `lesson_get`
+  are now annotated as non-destructive writes because the counters are
+  intentional state.
+
 - **Config typo warnings (#88).** Startup and hot-config reload now log a
   one-line warning for unknown `THREADKEEPER_*` keys present in the process
   environment, so mistyped safety-knob overrides such as
@@ -51,7 +133,7 @@ version bumps follow semver per the policy in
 - **Roadmap issue drain pagination (#81).** The evolve applier no longer asks
   GitHub for a single newest-first 50-issue window before applying its
   `roadmap`-label/FIFO sort. `_fetch_open_issues()` now uses paginated,
-  oldest-first REST reads (`gh api --paginate --slurp` with
+  oldest-first REST reads (`gh api --include --paginate` with
   `sort=created&direction=asc`), filters pull requests, and only then applies a
   generous local candidate window with an explicit warning if any open issues
   are left outside it. The evolve reviewer prompt now uses the same paginated
@@ -130,6 +212,15 @@ version bumps follow semver per the policy in
   Requires the MCP **2025-06-18** tool vocabulary (`mcp>=1.10.0`).
 
 ### Fixed
+
+- **Auto-update restart gate (#19).** A successful-looking self-update could
+  still schedule a process exit even when `pip install -e` or
+  `threadkeeper._setup` failed, because the daemon keyed restart only on
+  `result.startswith("updated ")`. Restarts now require install/setup success
+  plus a subprocess smoke import of `threadkeeper.server`; install/setup/import
+  failures append `restart=suppressed` to the recorded `auto_update_pass` event,
+  keeping the current known-working server process alive for manual recovery
+  (for packages: `pip install threadkeeper==<previous>`).
 
 - **vec0 index integrity: delete-sync + EMBED_DIM dimension guard (#85).** Two
   consistency gaps in the sqlite-vec (`notes_vec`) mirror are closed. **(1)
@@ -213,6 +304,20 @@ version bumps follow semver per the policy in
   the stale ARCHITECTURE bullet was removed. Docs-only; no code or behavior change.
 
 ### Security
+
+- **De-privilege and sanitize autonomous GitHub-writing daemons (#22).** The
+  evolve reviewer/applier paths no longer rely only on prompt text around their
+  public GitHub writes. `spawn()` now refuses
+  `permission_mode="bypassPermissions"` unless the call comes from the evolve
+  daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
+  `evolve_applier`/`evolve_apply`) or the operator sets
+  `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Stored evolve suggestions and
+  GitHub issue bodies are embedded in explicit data fences before a privileged
+  child sees them. Privileged evolve children also get a PATH-prepended `gh`
+  wrapper that redacts home-directory paths and common token shapes from
+  `gh issue create`, `gh issue comment`, and `gh pr create` bodies before the
+  real GitHub CLI receives them, refusing if unsafe content remains. The
+  parent-authored public claim/dead-letter comments use the same scrubber.
 
 - **Split the evolve reviewer's web research out of its privileged child (#79).**
   The reviewer was the only learning loop granted `WebSearch`/`WebFetch`, and it

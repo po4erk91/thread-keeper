@@ -27,7 +27,14 @@ def _txt(res):
     )
 
 
-def _insert_task(pkg, task_id, rss_kb=None, ended=False):
+def _insert_task(
+    pkg,
+    task_id,
+    rss_kb=None,
+    ended=False,
+    tokens_total=None,
+    cost_usd=None,
+):
     """Insert a fake task. Uses the test process's own pid so
     _refresh_tasks (alive() check) doesn't mark it ended on a brief()
     or status() call."""
@@ -35,10 +42,11 @@ def _insert_task(pkg, task_id, rss_kb=None, ended=False):
     now = int(time.time())
     conn.execute(
         "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
-        "started_at, ended_at, rss_kb, rss_updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "started_at, ended_at, rss_kb, rss_updated_at, tokens_total, cost_usd) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, os.getpid(), _FAKE_CID, f"child-{task_id}", "/tmp",
-         "test", now, (now if ended else None), rss_kb, now),
+         "test", now, (now if ended else None), rss_kb, now, tokens_total,
+         cost_usd),
     )
     conn.commit()
 
@@ -148,6 +156,32 @@ def test_check_budget_treats_null_rss_as_conservative_estimate(mp_with_cid, monk
     assert ok is False
 
 
+def test_check_budget_refuses_when_token_budget_reached(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "0")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TOKEN_BUDGET", "1000")
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_task(pkg, "tk_spent", ended=True, tokens_total=1000)
+
+    from threadkeeper.spawn_budget import check_budget
+    conn = pkg["db"].get_db()
+    ok, msg = check_budget(conn, 1)
+    assert ok is False
+    assert "token_budget_exceeded" in msg
+
+
+def test_check_budget_refuses_when_cost_budget_reached(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "0")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_COST_BUDGET_USD", "0.25")
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_task(pkg, "tk_spent", ended=True, cost_usd=0.25)
+
+    from threadkeeper.spawn_budget import check_budget
+    conn = pkg["db"].get_db()
+    ok, msg = check_budget(conn, 1)
+    assert ok is False
+    assert "cost_budget_exceeded" in msg
+
+
 # ─────────────────────────────────────────────────────────────────────
 # spawn_budget_status MCP tool
 # ─────────────────────────────────────────────────────────────────────
@@ -166,6 +200,20 @@ def test_spawn_budget_status_reports_running_children(mp_with_cid, monkeypatch):
     assert "tk_x" in txt
     assert "tk_y" in txt
     assert "tk_done" not in txt
+
+
+def test_spawn_budget_status_reports_24h_spend(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TOKEN_BUDGET", "5000")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_COST_BUDGET_USD", "1.50")
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_task(
+        pkg, "tk_spent", rss_kb=0, ended=True, tokens_total=1234, cost_usd=0.5,
+    )
+
+    txt = _txt(_tool(pkg, "spawn_budget_status")())
+    assert "tokens_24h=1234/5000" in txt
+    assert "cost_24h=$0.5000/$1.5000" in txt
 
 
 def test_spawn_budget_status_when_disabled(mp_with_cid, monkeypatch):

@@ -25,6 +25,62 @@ until coordinated disclosure. Please include:
 
 ## Trust boundaries
 
+### Auto-update (future maintainer code → local execution)
+
+The foreground MCP server starts a daily auto-update daemon by default
+(`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`). Keeping it enabled is standing
+consent for thread-keeper to fetch future maintainer-published code and run it
+inside the local MCP server process. Disable that channel entirely with
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`; disable only the post-update restart
+with `THREADKEEPER_AUTO_UPDATE_RESTART=0`.
+
+Mitigations for packaged PyPI installs:
+
+- Before invoking `pip install --upgrade`, the daemon resolves the latest PyPI
+  release metadata and queries PyPI's Integrity API for each non-yanked release
+  file's provenance.
+- The release is accepted only when provenance contains a GitHub Trusted
+  Publisher bundle for the configured identity
+  (`THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY`,
+  `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW`,
+  `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT`; defaults:
+  `po4erk91/thread-keeper`, `publish.yml`, `pypi`).
+- The attestation statement must name the exact distribution filename and
+  SHA-256 digest from PyPI metadata. Missing provenance, mismatched publisher
+  identity, or digest mismatch refuses the update before `pip` runs, records an
+  `auto_update_pass`, and keeps the current process running.
+- `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE=0` is a break-glass opt-out for
+  private mirrors or disconnected environments. Leave it enabled for normal PyPI
+  installs.
+
+Editable git checkouts are still treated as developer-controlled working trees:
+dirty/diverged checkouts are skipped, but signed git tag/commit enforcement is
+not yet implemented for that path.
+
+### Autonomous GitHub writers (stored / issue content → public GitHub)
+
+The evolve reviewer and evolve applier can run privileged children that edit the
+repo and call `gh` to create public issues, issue comments, and PRs. Their
+inputs include stored `evolve_format(...)` suggestions and GitHub issue bodies,
+which are untrusted even when the issue is later accepted for work.
+
+Mitigations:
+
+- Stored suggestions and external issue bodies are wrapped in explicit
+  `<..._data>` prompt fences with "treat as data, not instructions" language
+  before a privileged child sees them.
+- The exposed `spawn()` MCP tool refuses `permission_mode="bypassPermissions"`
+  unless the caller is one of the evolve daemon role/write-origin pairs
+  (`evolve_reviewer`/`evolve`, `evolve_applier`/`evolve_apply`) or the operator
+  explicitly sets `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`.
+- Privileged evolve children get a PATH-prepended `gh` safety wrapper. For
+  `gh issue create`, `gh issue comment`, and `gh pr create`, it redacts
+  home-directory paths (`/Users/<name>/...`, `/home/<name>/...`) and common
+  token shapes before the real GitHub CLI receives the body. If a known unsafe
+  pattern remains after redaction, the wrapper refuses the command.
+- Parent-authored public claim/dead-letter comments use the same scrubber before
+  spawning `gh`.
+
 ### Learning-loop synthesis (observed dialog → auto-loaded artifacts)
 
 thread-keeper's learning loops turn **raw observed dialog** into

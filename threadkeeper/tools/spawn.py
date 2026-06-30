@@ -38,6 +38,45 @@ from ..ingest import _parse_ts
 # file path (not `-m`) to avoid importing the package on every spawn.
 _WRAP = Path(__file__).resolve().parent.parent / "_spawn_wrap.py"
 
+_BYPASS_ALLOWED_PAIRS = {
+    ("evolve_reviewer", "evolve"),
+    ("evolve_applier", "evolve_apply"),
+}
+_BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
+
+
+def _permission_mode_is_bypass(permission_mode: str) -> bool:
+    return (permission_mode or "").strip().lower() == "bypasspermissions"
+
+
+def _bypass_permissions_allowed(role: str, write_origin: str) -> bool:
+    """Only evolve daemon roles may request bypassPermissions by default."""
+    if os.environ.get(_BYPASS_ENV_OVERRIDE, "").strip() in {"1", "true", "yes"}:
+        return True
+    return (
+        role.strip().lower(),
+        write_origin.strip().lower(),
+    ) in _BYPASS_ALLOWED_PAIRS
+
+
+def _install_gh_safety_wrapper(task_id: str) -> tuple[Optional[Path], str]:
+    """Create a PATH-prepended `gh` wrapper for privileged evolve children."""
+    real_gh = shutil.which("gh") or ""
+    wrapper_dir = TASK_LOG_DIR / f"gh-safe-{task_id}"
+    try:
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        script = wrapper_dir / "gh"
+        script.write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} -m "
+            "threadkeeper.github_safety \"$@\"\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o700)
+    except OSError as e:
+        return None, f"gh_safety_wrapper_failed={e}"
+    return wrapper_dir, real_gh
+
 
 def _claude_bin() -> Optional[str]:
     """Find claude CLI. Prefer CLAUDE_CODE_EXECPATH, then PATH, then known
@@ -410,6 +449,14 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     bin_ = _claude_bin()
     if not bin_:
         return "ERR claude_cli_not_found (set CLAUDE_CODE_EXECPATH or install claude)"
+    if _permission_mode_is_bypass(permission_mode) and not _bypass_permissions_allowed(
+        role, write_origin
+    ):
+        return (
+            "ERR bypassPermissions_refused "
+            "role/write_origin not allowlisted for privileged daemon spawn "
+            f"(set {_BYPASS_ENV_OVERRIDE}=1 to override)"
+        )
 
     # Admission control: refuse if running children + this one would
     # breach SPAWN_BUDGET_MB. Estimate based on slim vs full.
@@ -450,6 +497,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     # (no ppid-walk needed for spawned children).
     import uuid as _uuid
     child_cid = str(_uuid.uuid4())
+    task_id = "tk_" + secrets.token_hex(3)
     sys_extra = sys_extra_template.format(
         parent=parent_cid or "(unknown)",
         child=child_cid,
@@ -479,6 +527,24 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
         child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
+    inherited_wrapper_dir = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
+    child_env.pop("THREADKEEPER_REAL_GH", None)
+    if inherited_wrapper_dir:
+        wrapper_path = Path(inherited_wrapper_dir)
+        child_env["PATH"] = os.pathsep.join(
+            part for part in child_env.get("PATH", "").split(os.pathsep)
+            if part and Path(part) != wrapper_path
+        )
+    if _permission_mode_is_bypass(permission_mode):
+        wrapper_dir, real_gh = _install_gh_safety_wrapper(task_id)
+        if wrapper_dir is None:
+            return f"ERR {real_gh}"
+        child_env["THREADKEEPER_GH_WRAPPER_DIR"] = str(wrapper_dir)
+        if real_gh:
+            child_env["THREADKEEPER_REAL_GH"] = real_gh
+        child_env["PATH"] = (
+            str(wrapper_dir) + os.pathsep + child_env.get("PATH", "")
+        )
     # slim spawn → child loads NO embeddings (delegates semantic search to
     # the parent via search_via_parent). Override only if user didn't set
     # the env explicitly already (allow opt-out by setting =0 explicitly).
@@ -546,7 +612,6 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     # all of this. (When chosen_cli != "claude", `cmd` already
     # contains the full argv list ready for subprocess.Popen.)
     if chosen_cli != "claude":
-        task_id = "tk_" + secrets.token_hex(3)
         slim_cfg = None  # non-claude CLIs read MCP from their global config
     else:
         if permission_mode:
@@ -614,7 +679,6 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             cmd += ["--model", chosen_model]
         if effort:
             cmd += ["--effort", effort]
-        task_id = "tk_" + secrets.token_hex(3)
         slim_cfg = None
         # slim=True: load ONLY thread-keeper MCP server. Skips context7,
         # figma, stitch and every other MCP from ~/.claude.json —
@@ -669,6 +733,18 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)
                 )
+            if _permission_mode_is_bypass(permission_mode):
+                env_pairs.extend([
+                    (
+                        "THREADKEEPER_GH_WRAPPER_DIR",
+                        child_env.get("THREADKEEPER_GH_WRAPPER_DIR", ""),
+                    ),
+                    (
+                        "THREADKEEPER_REAL_GH",
+                        child_env.get("THREADKEEPER_REAL_GH", ""),
+                    ),
+                    ("PATH", child_env.get("PATH", "")),
+                ])
             if slim and "THREADKEEPER_NO_EMBEDDINGS" not in os.environ:
                 env_pairs.append(("THREADKEEPER_NO_EMBEDDINGS", "1"))
             env_lines = "\n".join(
@@ -999,7 +1075,13 @@ def spawn_budget_status() -> SpawnBudgetStatus:
     resolves past SPAWN_VISIBLE_TTL_S (#64).
 
     Returns structuredContent (SpawnBudgetStatus) plus the legacy text block."""
-    from ..config import SPAWN_BUDGET_MB, SPAWN_BUDGET_POLL_S
+    from ..config import (
+        SPAWN_BUDGET_MB,
+        SPAWN_BUDGET_POLL_S,
+        SPAWN_TOKEN_BUDGET,
+        SPAWN_COST_BUDGET_USD,
+    )
+    from ..spawn_budget import _daily_spawn_usage
     conn = get_db()
     _ensure_session(conn)
     _refresh_tasks(conn)
@@ -1014,16 +1096,31 @@ def spawn_budget_status() -> SpawnBudgetStatus:
     )
     enabled = SPAWN_BUDGET_MB > 0
     free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb) if enabled else None
+    tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
+    token_enabled = SPAWN_TOKEN_BUDGET > 0
+    cost_enabled = SPAWN_COST_BUDGET_USD > 0
+    tokens_free = (
+        max(0, SPAWN_TOKEN_BUDGET - tokens_24h) if token_enabled else None
+    )
+    cost_free = (
+        max(0.0, SPAWN_COST_BUDGET_USD - cost_24h) if cost_enabled else None
+    )
+    spend_suffix = (
+        f" tokens_24h={tokens_24h}"
+        + (f"/{SPAWN_TOKEN_BUDGET}" if token_enabled else "")
+        + f" cost_24h=${cost_24h:.4f}"
+        + (f"/${SPAWN_COST_BUDGET_USD:.4f}" if cost_enabled else "")
+    )
     if not enabled:
         header = (
             f"budget=disabled used={used_kb // 1024}MB "
-            f"running={len(rows)}"
+            f"running={len(rows)}{spend_suffix}"
         )
     else:
         header = (
             f"budget={SPAWN_BUDGET_MB}MB used={used_kb // 1024}MB "
             f"free={free_kb // 1024}MB running={len(rows)} "
-            f"poll={SPAWN_BUDGET_POLL_S}s"
+            f"poll={SPAWN_BUDGET_POLL_S}s{spend_suffix}"
         )
     tasks: list[SpawnTaskRss] = []
     lines = [header]
@@ -1050,6 +1147,14 @@ def spawn_budget_status() -> SpawnBudgetStatus:
         cap_mb=SPAWN_BUDGET_MB if enabled else None,
         used_mb=used_kb // 1024,
         free_mb=(free_kb // 1024) if free_kb is not None else None,
+        token_budget_enabled=token_enabled,
+        token_budget=SPAWN_TOKEN_BUDGET if token_enabled else None,
+        tokens_24h=tokens_24h,
+        tokens_free=tokens_free,
+        cost_budget_enabled=cost_enabled,
+        cost_budget_usd=SPAWN_COST_BUDGET_USD if cost_enabled else None,
+        cost_usd_24h=cost_24h,
+        cost_free_usd=cost_free,
         running=len(rows),
         poll_s=SPAWN_BUDGET_POLL_S if enabled else None,
         tasks=tasks,

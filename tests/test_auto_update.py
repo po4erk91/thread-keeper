@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import json
 import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 
 def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
@@ -12,6 +15,7 @@ def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
         "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": interval,
         "THREADKEEPER_AUTO_UPDATE_RESTART": "0",
+        "THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "0",
         "THREADKEEPER_DISABLE_BG_DAEMONS": disable_bg,
         "THREADKEEPER_INGEST_INTERVAL_S": "0",
         "THREADKEEPER_INGEST_CAP": "0",
@@ -41,6 +45,72 @@ def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
     return {"auto_update": auto_update, "db": db}
 
 
+def _release_metadata(version="0.9.3", filename="threadkeeper-0.9.3.tar.gz"):
+    return {
+        "info": {"version": version},
+        "releases": {
+            version: [
+                {
+                    "filename": filename,
+                    "digests": {"sha256": "a" * 64},
+                    "yanked": False,
+                }
+            ]
+        },
+    }
+
+
+def _provenance(
+    filename="threadkeeper-0.9.3.tar.gz",
+    sha256="a" * 64,
+    *,
+    repository="po4erk91/thread-keeper",
+    workflow="publish.yml",
+    environment="pypi",
+):
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": filename,
+                "digest": {"sha256": sha256},
+            }
+        ],
+        "predicateType": "https://docs.pypi.org/attestations/publish/v1",
+        "predicate": None,
+    }
+    encoded_statement = base64.b64encode(
+        json.dumps(statement).encode("utf-8")
+    ).decode("ascii")
+    return {
+        "version": 1,
+        "attestation_bundles": [
+            {
+                "publisher": {
+                    "kind": "GitHub",
+                    "repository": repository,
+                    "workflow": workflow,
+                    "environment": environment,
+                    "claims": None,
+                },
+                "attestations": [
+                    {
+                        "version": 1,
+                        "envelope": {
+                            "statement": encoded_statement,
+                            "signature": "sig",
+                        },
+                        "verification_material": {
+                            "certificate": "cert",
+                            "transparency_entries": [],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
 def test_disabled_without_force(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, interval="0")
 
@@ -67,6 +137,118 @@ def test_force_pass_records_event(tmp_path, monkeypatch):
     ).fetchone()
     assert row is not None
     assert row["summary"] == "no_update mode=test"
+
+
+def test_healthy_update_runs_smoke_and_schedules_restart(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, cwd=None, timeout=None):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=ok",
+    )
+    monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == "updated mode=test setup=ok smoke=ok"
+    assert scheduled["value"] is True
+    assert calls == [
+        [sys.executable, "-c", pkg["auto_update"].SMOKE_IMPORT_CODE],
+    ]
+
+
+def test_smoke_failure_suppresses_restart_and_records_failure(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=ok",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run",
+        lambda args, *, cwd=None, timeout=None: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="broken import",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == (
+        "updated mode=test setup=ok smoke=failed err=broken import "
+        "restart=suppressed"
+    )
+    assert scheduled["value"] is False
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
+
+
+def test_setup_failure_suppresses_restart_and_records_failure(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="86400")
+    scheduled = {"value": False}
+    smoke_called = {"value": False}
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_request_and_apply_update",
+        lambda: "updated mode=test setup=failed err=boom",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run_post_update_smoke_check",
+        lambda: smoke_called.__setitem__("value", True) or " smoke=ok",
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == "updated mode=test setup=failed err=boom restart=suppressed"
+    assert smoke_called["value"] is False
+    assert scheduled["value"] is False
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
 
 
 def test_recent_pass_makes_daemon_tick_not_due(tmp_path, monkeypatch):
@@ -119,6 +301,16 @@ def test_pip_update_runs_setup_when_version_changes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pkg["auto_update"], "_installed_version", lambda: next(versions))
     monkeypatch.setattr(pkg["auto_update"], "_package_spec", lambda: "threadkeeper")
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_pypi_project_metadata",
+        lambda: _release_metadata(),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_fetch_pypi_provenance",
+        lambda version, filename: _provenance(filename),
+    )
     monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
     monkeypatch.setattr(pkg["auto_update"], "_run_setup", lambda: " setup=ok")
 
@@ -128,6 +320,109 @@ def test_pip_update_runs_setup_when_version_changes(tmp_path, monkeypatch):
     assert calls == [
         [sys.executable, "-m", "pip", "install", "--upgrade", "threadkeeper"]
     ]
+
+
+def test_pip_update_refuses_missing_provenance_and_suppresses_restart(
+    tmp_path,
+    monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    scheduled = {"value": False}
+    pip_calls: list[list[str]] = []
+
+    def fake_run(args, *, cwd=None, timeout=None):
+        pip_calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def missing_provenance(version, filename):
+        raise HTTPError("https://pypi.org/provenance", 404, "Not Found", None, None)
+
+    monkeypatch.setattr(pkg["auto_update"], "_is_git_checkout", lambda repo: False)
+    monkeypatch.setattr(pkg["auto_update"], "_installed_version", lambda: "0.9.2")
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_pypi_project_metadata",
+        lambda: _release_metadata(),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_fetch_pypi_provenance",
+        missing_provenance,
+    )
+    monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == (
+        "refused mode=pip version=0.9.3 "
+        "reason=provenance_missing file=threadkeeper-0.9.3.tar.gz"
+    )
+    assert scheduled["value"] is False
+    assert pip_calls == []
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
+
+
+def test_pip_update_refuses_mismatched_provenance(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    scheduled = {"value": False}
+    pip_calls: list[list[str]] = []
+
+    monkeypatch.setattr(pkg["auto_update"], "_is_git_checkout", lambda repo: False)
+    monkeypatch.setattr(pkg["auto_update"], "_installed_version", lambda: "0.9.2")
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_pypi_project_metadata",
+        lambda: _release_metadata(),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_fetch_pypi_provenance",
+        lambda version, filename: _provenance(
+            filename,
+            repository="attacker/thread-keeper",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run",
+        lambda args, *, cwd=None, timeout=None: pip_calls.append(args),
+    )
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_schedule_restart",
+        lambda: scheduled.__setitem__("value", True),
+    )
+
+    out = pkg["auto_update"].run_auto_update_pass(
+        force=True,
+        restart_on_update=True,
+    )
+
+    assert out == (
+        "refused mode=pip version=0.9.3 "
+        "reason=publisher_mismatch file=threadkeeper-0.9.3.tar.gz"
+    )
+    assert scheduled["value"] is False
+    assert pip_calls == []
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='auto_update_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["summary"] == out
 
 
 def test_daemon_does_not_start_when_background_daemons_disabled(tmp_path, monkeypatch):
