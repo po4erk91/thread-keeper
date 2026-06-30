@@ -90,10 +90,14 @@ def mp_cleanup(dry_run: bool = True, force: bool = False) -> str:
     # Apply
     lines = [
         f"applied {'SIGKILL' if force else 'SIGTERM'}: "
-        f"killed={len(result['killed'])} failed={len(result['failed'])}"
+        f"killed={len(result['killed'])} "
+        f"skipped={len(result.get('skipped', []))} "
+        f"failed={len(result['failed'])}"
     ]
     for pid in result["killed"]:
         lines.append(f"  ok pid={pid}")
+    for s in result.get("skipped", []):
+        lines.append(f"  SKIP pid={s['pid']} {s['reason']}")
     for f in result["failed"]:
         lines.append(f"  ERR pid={f['pid']} {f['err']}")
     return "\n".join(lines)

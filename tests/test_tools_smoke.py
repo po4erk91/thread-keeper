@@ -7,6 +7,7 @@ Skipped: tools that block (ask/wait/respond) or open OS resources (spawn).
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 import pytest
@@ -64,6 +65,8 @@ def test_tool_smoke(fresh_mp, tool_name):
     kwargs = _build_kwargs(fn)
     try:
         out = fn(**kwargs)
+        if inspect.isawaitable(out):
+            out = asyncio.run(out)
     except Exception as e:
         pytest.fail(f"{tool_name}({kwargs}) raised {type(e).__name__}: {e}")
     assert out is not None or fn.__name__ in {"core_remove"}, \

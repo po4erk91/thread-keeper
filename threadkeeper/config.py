@@ -14,6 +14,7 @@ Nested spawn config uses double-underscore notation:
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 from pathlib import Path
 from typing import Annotated, Optional
@@ -22,6 +23,8 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .permissions import harden_storage_paths
+
+logger = logging.getLogger(__name__)
 
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
 _ENV_FILE: str = os.environ.get(
@@ -115,6 +118,26 @@ class Settings(BaseSettings):
     auto_update_interval_s: float = 86400.0
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
+    auto_update_verify_provenance: bool = True
+    auto_update_pypi_base_url: str = "https://pypi.org"
+    auto_update_expected_publisher_repository: str = "po4erk91/thread-keeper"
+    auto_update_expected_publisher_workflow: str = "publish.yml"
+    auto_update_expected_publisher_environment: str = "pypi"
+
+    # ── Skill update daemon ─────────────────────────────────────────────────
+    # Twice weekly by default. It syncs installed skills across known CLI roots
+    # and can update GitHub-backed skills from configured source roots.
+    skill_update_interval_s: float = 7 * 86400 / 2
+    skill_update_timeout_s: int = 300
+    # Comma-separated specs: owner/repo@ref:path/to/skills/root. The default
+    # covers Codex's curated skill installer source; exact source metadata in a
+    # skill directory is always honored even when this list is empty.
+    skill_update_sources: str = "openai/skills@main:skills/.curated"
+    skill_update_infer_sources: bool = True
+    # Safety default: an untracked local skill that merely shares an upstream
+    # name is adopted only when its tree already matches that upstream. Set this
+    # to 1 to let the daemon overwrite inferred, untracked older copies.
+    skill_update_allow_untracked_overwrite: bool = False
 
     # ── Hot-config reload (config_watcher daemon) ────────────────────────────
     # Poll interval for the watcher that re-reads ~/.claude/settings.json and
@@ -154,6 +177,12 @@ class Settings(BaseSettings):
     spawn_estimate_slim_mb: int = 500
     spawn_estimate_full_mb: int = 1500
     spawn_budget_poll_s: float = 10.0
+    # Optional spend guardrails for spawned children. 0 = disabled (default,
+    # preserving existing behavior). The admission path compares recorded
+    # spend/tokens over the last 24h against these ceilings before starting a
+    # new child.
+    spawn_token_budget: int = 0
+    spawn_cost_budget_usd: float = 0.0
     # Wall-clock backstop for visible (pid=0) children: a Terminal-launched
     # row whose process can't be resolved from its cid is marked ended once it
     # outlives this, so an unresolvable row can't pin budget capacity forever
@@ -381,9 +410,93 @@ class Settings(BaseSettings):
         return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
 
 
+_EXTRA_THREADKEEPER_ENV_KEYS = {
+    # Consumed before Settings instantiation or by hook/app helper code.
+    "THREADKEEPER_ACTIVE_CLI",
+    "THREADKEEPER_AGENT_STATUS_COMMAND",
+    "THREADKEEPER_EGRESS_CONSUMER",
+    "THREADKEEPER_ENV_FILE",
+    "THREADKEEPER_EXTRA_SKILLS_DIRS",
+    "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_GH_WRAPPER_DIR",
+    "THREADKEEPER_LESSONS",
+    "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
+    "THREADKEEPER_PYTHON",
+    "THREADKEEPER_REAL_GH",
+    "THREADKEEPER_REPO",
+    "THREADKEEPER_SEARCH_PROXY_POLL_S",
+    "THREADKEEPER_SKILL_WATCH_INTERVAL_S",
+    "THREADKEEPER_STATE_DIR",
+    "THREADKEEPER_TZ",
+    "THREADKEEPER_VISIBLE_STATUS",
+}
+
+_THREADKEEPER_NESTED_ENV_KEYS = {
+    "THREADKEEPER_SPAWN__DEFAULT",
+    "THREADKEEPER_SPAWN__LOOP",
+    "THREADKEEPER_SPAWN__MODEL",
+}
+_THREADKEEPER_NESTED_ENV_PREFIXES = (
+    "THREADKEEPER_SPAWN__LOOP__",
+    "THREADKEEPER_SPAWN__MODEL__",
+)
+
+
+def _alias_strings(validation_alias) -> list[str]:
+    if validation_alias is None:
+        return []
+    if isinstance(validation_alias, str):
+        return [validation_alias]
+    choices = getattr(validation_alias, "choices", None)
+    if choices is None:
+        return []
+    return [choice for choice in choices if isinstance(choice, str)]
+
+
+def _known_threadkeeper_env_keys() -> set[str]:
+    known = set(_EXTRA_THREADKEEPER_ENV_KEYS)
+    for name, field in Settings.model_fields.items():
+        known.add(f"THREADKEEPER_{name.upper()}")
+        for alias in _alias_strings(field.validation_alias):
+            if alias.upper().startswith("THREADKEEPER_"):
+                known.add(alias.upper())
+    known.update(_THREADKEEPER_NESTED_ENV_KEYS)
+    return known
+
+
+def unknown_threadkeeper_env_keys(environ: Optional[dict] = None) -> list[str]:
+    """Return THREADKEEPER_* process-env keys that Settings will not consume."""
+    env = os.environ if environ is None else environ
+    known = _known_threadkeeper_env_keys()
+    unknown = []
+    for key in env:
+        upper = key.upper()
+        if not upper.startswith("THREADKEEPER_"):
+            continue
+        if upper in known:
+            continue
+        if any(
+            upper.startswith(prefix)
+            for prefix in _THREADKEEPER_NESTED_ENV_PREFIXES
+        ):
+            continue
+        unknown.append(key)
+    return sorted(unknown, key=str.upper)
+
+
+def _warn_unknown_threadkeeper_env_keys() -> None:
+    keys = unknown_threadkeeper_env_keys()
+    if keys:
+        logger.warning(
+            "Ignoring unknown THREADKEEPER_* env key(s): %s",
+            ", ".join(keys),
+        )
+
+
 # ── Instantiate ──────────────────────────────────────────────────────────────
 
 settings = Settings()
+_warn_unknown_threadkeeper_env_keys()
 
 
 # ── Compat shim: re-export all prior module-level names ──────────────────────
@@ -423,6 +536,24 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
         "AUTO_UPDATE_RESTART": s.auto_update_restart,
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
+        "AUTO_UPDATE_VERIFY_PROVENANCE": s.auto_update_verify_provenance,
+        "AUTO_UPDATE_PYPI_BASE_URL": s.auto_update_pypi_base_url,
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY": (
+            s.auto_update_expected_publisher_repository
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW": (
+            s.auto_update_expected_publisher_workflow
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
+            s.auto_update_expected_publisher_environment
+        ),
+        "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
+        "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
+        "SKILL_UPDATE_SOURCES": s.skill_update_sources,
+        "SKILL_UPDATE_INFER_SOURCES": s.skill_update_infer_sources,
+        "SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE": (
+            s.skill_update_allow_untracked_overwrite
+        ),
         "CONFIG_WATCH_INTERVAL_S": s.config_watch_interval_s,
         "CONFIG_WATCH_PATH": s.config_watch_path,
         "CLAUDE_SKILLS_DIR": s.claude_skills_dir,
@@ -443,6 +574,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_ESTIMATE_SLIM_MB": s.spawn_estimate_slim_mb,
         "SPAWN_ESTIMATE_FULL_MB": s.spawn_estimate_full_mb,
         "SPAWN_BUDGET_POLL_S": s.spawn_budget_poll_s,
+        "SPAWN_TOKEN_BUDGET": s.spawn_token_budget,
+        "SPAWN_COST_BUDGET_USD": s.spawn_cost_budget_usd,
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
         "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
         "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
@@ -564,6 +697,7 @@ def reload_settings(env: Optional[dict] = None,
 
     old = _derive_constants(settings)
     settings = Settings()
+    _warn_unknown_threadkeeper_env_keys()
     new = _derive_constants(settings)
 
     globals().update(new)

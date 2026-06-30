@@ -36,8 +36,9 @@ remains a live question.
 - Hooks for Claude Code: SessionStart (`mp-brief.sh` — brief+context into
   system prompt), PostToolUse (`mp-status.sh` — markers of mutating
   calls), UserPromptSubmit (`inbox-check.sh`).
-- Process health: orphan detection via ppid+heartbeat, `mp_health`,
-  `mp_cleanup(dry_run, force)`.
+- Process health: orphan detection via ppid+heartbeat with zombie-aware parent
+  liveness, `mp_health`, and guarded `mp_cleanup(dry_run, force)` / memory
+  guard signal paths that re-check pid identity before killing.
 - sqlite-vec HNSW: `notes_vec` / `dialog_vec` virtual tables on vec0,
   ~10x faster than Python-side cosine, fallback when vec0 is absent.
 - FTS5 + semantic hybrid in `search` / `dialog_search`.
@@ -50,11 +51,28 @@ remains a live question.
   time behind a visible GitHub issue claim comment and PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
+- Auto-update self-restart safety gate (#19): restarts after a daily git/pip
+  self-update now require install/setup success plus a subprocess
+  `threadkeeper.server` import smoke check. Failures are recorded on
+  `auto_update_pass` with `restart=suppressed`, and the current process stays
+  alive on its already-loaded code.
 - Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
   paginated, oldest-first GitHub REST issue reads instead of a newest-first
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
+  consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
+  Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
+  reviewer/applier children honor the same per-account cooldown before making
+  requests. Included REST headers record remaining/reset values, primary 403s
+  cool down until reset (bounded), secondary-rate-limit/`Retry-After` responses
+  use bounded exponential backoff, and `agent_status` / `tk-agent-status` plus
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
+- Config typo visibility (#88): startup and hot-config reload now warn on
+  unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
+  `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
+  CLI / unused model-key warnings beside the fallback resolution table.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
@@ -175,7 +193,8 @@ mtime-cursor + JSON-parse guard.
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,
 `mp_health`) lacked: store sizes, per-loop fire counts (window vs 30d +
-last-fire age), and outcomes (skills materialized, tier promotions,
+last-fire age), 24h spend/tokens/mutation counts, and outcomes
+(skills materialized, tier promotions,
 candidate accept-vs-reject rate). Read-only, degrades gracefully on
 partial schemas. The first live run surfaced the "Shadow-review proof"
 item below (shadow fires ≫ skills materialized). Possible follow-up:
@@ -202,7 +221,8 @@ child's captured log tail), durable skill writes attributable to
 loop earning its Opus minutes or just emitting SKIPs?" is now a number, not a
 guess. Pure aggregator `shadow_telemetry()`; `snapshot_path` dumps a markdown
 table for human review; ephemeral/aged-out child logs count as `unknown` so the
-hit-rate denominator stays honest. The token/$ half of spawn cost remains #25.
+hit-rate denominator stays honest. The token/$ half of spawn cost is covered by
+the per-spawn accounting and daily budget in #25.
 
 **Shadow-review proof in production.** ✅ ANSWERED (~16d of live data,
 read via `mp_dashboard` + an evidence dive). Verdict: **complementary,
@@ -264,6 +284,13 @@ inventories (#35); and making the curator's `PRUNE_CONCEPT` /
 `CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
 tool exists today (#75). Scope: S–M each.
 
+Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
+`lesson_get` update `lesson_usage` counters, and curator dry runs include a
+ranked `STALE LESSONS` advisory section using
+`access_frequency × exp(-days_since_access / tau)`. The decay list excludes
+foreground/user, pinned, and validated lessons and is not an automatic deletion
+path.
+
 **Concepts store lifecycle.** ✅ DONE (#75). The `concepts` table was
 write-only / grow-only: no remove/consolidate/confidence tool, auto-registered
 entries piling up, and `last_evidence_at` frozen at registration so the
@@ -314,11 +341,15 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   `~/.threadkeeper` is `0700`; `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
   `.env`, and curator `REPORT-*.md` files are `0600`; headless spawn logs are
   created `0600`.
-- The autonomous GitHub-writing daemons run `bypassPermissions` with `gh`,
-  guarded only by a prompt line; untrusted stored/issue content is injected
-  into them and nothing mechanically redacts issue/PR bodies. De-privilege the
-  appliers, fence injected content as data, sanitize bodies for paths/secrets,
-  and role-gate the dangerous spawn mode. (#22) Scope: S–M.
+- ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
+  children, but the dangerous pieces are now bounded: `spawn()` refuses
+  `permission_mode="bypassPermissions"` outside the evolve role/write-origin
+  pairs unless an explicit env override is set; stored evolve suggestions and
+  external GitHub issue bodies are embedded inside data fences; and privileged
+  evolve children get a PATH-prepended `gh` wrapper that redacts home-directory
+  paths and common token shapes from public issue/comment/PR bodies before the
+  real GitHub CLI sees them, refusing if a known unsafe pattern remains.
+  Parent-authored claim/dead-letter comments use the same scrubber.
 - ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
   GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
   user-model artifacts with no injection fence and no provenance trust-tiering —
@@ -404,23 +435,31 @@ unbounded queue/inventory into the child prompt argv (the `E2BIG` class already
 fixed for `dialectic_validator`). Add curator single-flight + bound the
 prompts. (#24) Scope: S.
 
-**Spawn cost accounting.** The spawn budget caps child RSS only; there is no
-token/$ accounting, so "is this loop worth the Opus minutes?" (the recurring
-shadow-review-proof question, #6) can't be answered with a number. Capture
-token/cost in the `_spawn_wrap` recorder, add a daily cost/token ceiling in the
-admission path, surface per-loop spend in `mp_dashboard`. (#25, extends #6)
-Scope: M.
+**Spawn cost accounting.** ✅ DONE (#25, extends #6). The spawn budget now
+tracks more than child RSS: `_spawn_wrap.py` parses JSON or human-readable CLI
+usage trailers into `tasks.tokens_in`, `tokens_out`, `tokens_total`, and
+`cost_usd`, and records `duration_s` even when no usage data is available.
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` add disabled-by-default 24h admission
+ceilings, `spawn_budget_status()` shows recorded spend vs remaining budget, and
+`mp_dashboard()` shows each loop's 24h spawns/tokens/spend/time next to the
+mutation count.
 
 **Research-driven memory upgrades** (sourced):
-- MCP **elicitation** — now shipping in Claude Code v2.1.76 — for high-stakes
-  confirmations (supersede, curator apply, the under-used `review_candidates`
-  flow), replacing ignorable text nudges with a real confirm/choose dialog,
-  graceful fallback where unsupported. (#26)
+- ✅ DONE (#26). MCP **elicitation** first slice: high-stakes
+  `dialectic_supersede` now probes the host's form-mode elicitation capability
+  and, when supported, sends a flat confirm/reject form before replacing a
+  user-model claim. Unsupported hosts keep the old immediate tool behavior and
+  existing text-nudge fallback, so Codex / Claude Desktop / Antigravity /
+  generic MCP clients do not regress. Curator apply and `review_candidates`
+  remain natural follow-on flows if more coverage is needed.
 - **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
   "invalidate, don't delete") so a superseded preference records *when* it
   stopped being valid, enabling time-scoped user-model queries. (#28)
-- **Decay/eviction** scoring for the saturating ~1054-section lessons store
-  (the curator ages skills but not lessons; mem0 Ebbinghaus pattern). (#27)
+- **Decay/eviction** scoring for the saturating ~1054-section lessons store.
+  ✅ DONE — lesson reads now update `lesson_usage`, and the curator dry-run
+  inventory surfaces ranked stale lesson candidates using a recency/frequency
+  decay score while excluding pinned/validated/protected entries. (#27)
 - Note: MCP **sampling** (host-run completions, which would let daemons skip
   paid spawn children entirely) remains *unsupported* on Claude Code
   (anthropics/claude-code#1785) — tracked, not actionable yet. The slim-spawn
@@ -429,8 +468,7 @@ Scope: M.
 Scope: S–M each.
 
 Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
-(#18), auto-update self-restart with no smoke-check/rollback (#19), and
-Antigravity transcript ingest not yet implemented (#20).
+(#18), and Antigravity transcript ingest not yet implemented (#20).
 
 Follow-up gaps from the 2026-06-17 audit:
 - Semantic lesson dedup at write time (#34).
@@ -438,7 +476,6 @@ Follow-up gaps from the 2026-06-17 audit:
 - Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
-- Shared GitHub API budget/backoff across roadmap automation (#38).
 - Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
   the autonomous child now prunes/consolidates lessons + skills in place with no
   pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
@@ -456,13 +493,14 @@ Follow-up gaps from the 2026-06-17 audit:
   and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
   PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
   with unrelated working-tree WIP (#43).
-- Auto-update payload integrity/provenance: the on-by-default daily pip/git
-  self-update installs and runs new code with **no version pin, hash, or PyPI
-  attestation/signed-tag verification**, then restarts on it. A compromised
-  release auto-propagates to every install within ~24h. Distinct from #19
-  (reliability smoke-check/rollback — a malicious-but-importable release passes
-  that) and #22 (GitHub-writing daemons). Verify provenance before upgrade and
-  document auto-update as standing consent to run maintainer code (#44).
+- ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
+  self-updates now verify PyPI Integrity API provenance before invoking `pip`,
+  require the expected GitHub Trusted Publisher identity, check the attested
+  filename/SHA-256 against PyPI metadata, and refuse missing/mismatched
+  provenance without restart. Docs now state that auto-update is standing
+  consent to run future maintainer code and point to the opt-out. Signed
+  git tag/commit enforcement remains a later hardening slice for editable
+  checkouts.
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):
@@ -622,9 +660,10 @@ verified at the cited file:line, deduplicated against the issues above):
   Distinct from the lessons-only decay item (#27) (#75).
 
 Also folded into existing issues rather than filed anew: auto-update restarts
-even when `_run_setup` reports `setup=failed` (→ #19); `dialectic_claim` lacks
-the write-time dedup gate `lesson_append` has (→ #34); `agent_status` log-sample
-scraping resurfaces unredacted child `gh`/`git` output (→ #37).
+even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
+`dialectic_claim` lacks the write-time dedup gate `lesson_append` has (→ #34);
+`agent_status` log-sample scraping resurfaces unredacted child `gh`/`git` output
+(→ #37).
 
 Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
 read-only subsystem audits, each finding re-verified at the cited file:line and

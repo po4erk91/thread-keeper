@@ -59,8 +59,16 @@ make it more than a memory store:
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
 package; PyPI/pipx/venv installs run `pip install --upgrade` in the current
-interpreter environment. Dirty or diverged git checkouts are skipped rather
-than overwritten.
+interpreter environment only after the latest PyPI release files have matching
+Integrity API provenance from the expected GitHub Trusted Publisher. Dirty or
+diverged git checkouts are skipped rather than overwritten. Restarts are gated
+on install/setup success plus a subprocess import smoke check, so a broken or
+unverified update is recorded but the current server keeps running.
+
+They also run a twice-weekly installed-skill updater by default. It keeps all
+configured CLI skill roots in sync, adopts newer local copies installed into a
+non-primary root, and updates GitHub-backed skills when a tracked upstream
+source changes.
 
 ---
 
@@ -154,10 +162,10 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### MCP primitives (tools, resources, prompts)
+### MCP primitives (tools, resources, prompts, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
-read/act split:
+read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
@@ -177,9 +185,18 @@ so an automatic host pull is **side-effect-free**.
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
+**Elicitation** is a client feature, not a server primitive. When a host
+advertises form-mode elicitation, high-stakes mutations can pause for a
+structured user choice instead of relying on an ignorable text nudge. The first
+flow using it is `dialectic_supersede`: supported hosts get a flat
+confirm/reject form before a user-model claim is replaced; unsupported hosts keep
+the previous immediate tool behavior.
+
 Everything here is **additive and capability-gated**: a host that advertises the
-`resources` / `prompts` capabilities sees them; one that doesn't falls back to
-the SessionStart hook plus the `brief()` / `context()` tools — same content, no
+`resources` / `prompts` capabilities sees those primitives; one that advertises
+`elicitation.form` gets structured confirmations for covered high-stakes writes.
+Hosts without a capability fall back to the SessionStart hook plus the `brief()`
+/ `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
 
@@ -238,6 +255,14 @@ A daemon measures combined child RSS every 10 s; admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
+
+The spawn wrapper also records each completed child's `duration_s`,
+`tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
+CLI emits a recognizable usage trailer. Optional daily ceilings
+`THREADKEEPER_SPAWN_TOKEN_BUDGET` and
+`THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
+recorded 24h spend reaches the configured limit; both default to `0`
+(disabled), so existing installs behave the same until a budget is set.
 
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
@@ -313,14 +338,48 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
   editable package, and rerun `threadkeeper._setup`;
 - installed package: run `pip install --upgrade threadkeeper` or
   `threadkeeper[semantic]` in the current interpreter environment, preserving
-  semantic extras when they are already installed, then rerun setup when the
-  installed version changes.
+  semantic extras when they are already installed, but only after the candidate
+  PyPI release's non-yanked files have PyPI Integrity API provenance from the
+  expected GitHub Trusted Publisher (`po4erk91/thread-keeper`, `publish.yml`,
+  environment `pypi`), then rerun setup when the installed version changes.
 
-After a successful update, the daemon exits the current MCP process by default
-so the host can restart it on the new code. Disable that with
+Auto-update is standing consent for thread-keeper to fetch and run future
+maintainer code. A packaged update whose provenance is missing, whose publisher
+identity does not match policy, or whose attested subject digest does not match
+PyPI metadata is refused before `pip` runs and is recorded as
+`auto_update_pass` with `mode=pip` and `refused`. After a successful update, the
+daemon exits the current MCP process by default so the host can restart it on
+the new code. Before scheduling that exit, it imports `threadkeeper.server` in a
+subprocess; install/setup/import failures are recorded as `auto_update_pass`
+with `restart=suppressed`, and the current known-working process stays alive.
+Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
-`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. Each real check records an
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. The provenance gate is on by default;
+`THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE=0` is a break-glass opt-out for
+private mirrors or disconnected installs. If a packaged release needs manual
+rollback, pin the previous version explicitly, for example
+`pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
+
+### Skill Update
+
+The MCP server also starts a skill updater in foreground parent processes. By
+default it checks twice per week
+(`THREADKEEPER_SKILL_UPDATE_INTERVAL_S=302400`):
+
+- local root sync: scan every configured skill root, import the newest local
+  copy of a skill into the primary `~/.claude/skills` root, then mirror it back
+  to `~/.codex/skills`, Antigravity, `~/.agents/skills`, extra roots, and the
+  canonical `~/.threadkeeper/skills` fallback;
+- source-tracked updates: skills with `.threadkeeper-skill-source.json`, or
+  skills whose name can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`,
+  are compared with upstream GitHub directories and updated when the remote tree
+  changes.
+
+The pass is single-flight across live MCP servers and backs up replaced local
+skills under the thread-keeper state dir. If a source-tracked skill has local
+edits after the last applied upstream hash, the updater skips it instead of
+overwriting. Disable it with `THREADKEEPER_SKILL_UPDATE_INTERVAL_S=0`.
 
 Manual fallback from a source checkout:
 
@@ -362,7 +421,7 @@ shows agents focused on their primary task rarely do).
             │                  │                           │
             ▼                  ▼                           │
          brief()    SKILL.md + lessons.md ─► skill_usage   │
-            │              │                  │            │
+            │              │          └─────► lesson_usage │
             │              ▼                  ▼            │
             │         (every configured       │            │
             │          skills/ root)          │            │
@@ -389,6 +448,7 @@ shows agents focused on their primary task rarely do).
 | 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
+| 10 | skill_updater daemon | every 302400 s / twice weekly (env knob) | configured skill roots + tracked GitHub skill sources | mirrored SKILL.md directories + `skill_update_pass` telemetry |
 
 Learning loops write into the universal Skill format (`SKILL.md` under each
 known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
@@ -495,7 +555,7 @@ queue.
 
 Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
 = 7 days recommended) spawns a slim child that reviews the EXISTING
-`lessons.md` + `skill_usage` inventory and writes
+`lessons.md` + `lesson_usage` + `skill_usage` inventory and writes
 `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
 CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
@@ -521,6 +581,15 @@ still-current memory maintenance through `lesson_append` / `lesson_remove` /
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
 the same report.
+
+Lesson access is tracked the same way skill access is: `lesson_list` increments
+`lesson_usage.view_count` for displayed rows and `lesson_get` increments
+`lesson_usage.use_count` for the returned lesson. Curator dry runs include a
+ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+`access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
+lessons with no recent access and low pull-count. That decay list is advisory
+only; it never becomes an automatic `lesson_remove` path by itself, and pinned
+or validated lessons are excluded.
 
 The curator also audits the `concepts` store (abstract regularities triangulated
 across paraphrase runs). Concepts are no longer write-only: `register_concept`
@@ -573,10 +642,19 @@ shell/`bypassPermissions` to the same child:
 A full research → audit cycle therefore spans two due passes.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
-picks one open GitHub issue at a time (`roadmap` label first, then FIFO), skips
-issues with an active Evolve claim comment, posts its own claim comment before
-spawning, and advances to the next issue when an issue-local dispatch failure
-prevents startup. The child implements exactly that issue, runs the full suite,
+picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
+the automatic pass first scans already-open same-repo applier PRs for GitHub
+merge conflicts. A conflicted `roadmap/…` or `evolve/…` PR is repaired before
+any new issue/report/evolve work is started; if the PR sweep itself cannot read
+GitHub state, the pass fails closed instead of taking fresh work blind. The
+conflict-repair child checks out the existing PR branch, merges the current
+base branch, resolves conflicts, runs the full suite, and pushes back to the
+same branch. It then runs `gh pr merge --squash --auto --delete-branch`, so
+GitHub lands the repaired PR into `main` through branch protection and required
+checks rather than a raw local `git push origin main`. The roadmap issue child
+skips issues with an active Evolve claim comment, posts its own claim comment
+before spawning, and advances to the next issue when an issue-local dispatch
+failure prevents startup. It implements exactly that issue, runs the full suite,
 opens a PR whose body includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
 pushes to `main`, and it never marks an issue applied without a real PR URL. A
@@ -586,6 +664,14 @@ The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
+All roadmap-automation GitHub calls share a local `github_rate_budget` ledger:
+the applier's parent-side `gh` calls and the PATH-prepended child `gh` wrapper
+honor the same per-account cooldown. Included REST response headers update
+remaining/reset values; primary 403s cool down until reset (bounded), and
+secondary-rate-limit / `Retry-After` responses use bounded exponential backoff.
+`agent_status` / `tk-agent-status` and `evolve_apply_status()` show the current
+remaining count or cooldown window so operators can see when GitHub is
+throttling the roadmap loop.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
@@ -603,8 +689,22 @@ public claim comment also carries only an opaque per-host token (a 6-char hash
 of the hostname), never the raw hostname/PID/git-rev; the full host identity is
 recorded in the local event log for multi-host triage.
 
+**Privilege + public-body guard (#22).** Stored evolve suggestions and external
+GitHub issue bodies are wrapped in explicit data fences before a privileged
+child sees them. The exposed `spawn()` tool refuses
+`permission_mode="bypassPermissions"` unless the request comes from the evolve
+daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
+`evolve_applier`/`evolve_apply`) or the operator explicitly opts in with
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Privileged evolve children also
+get a PATH-prepended `gh` wrapper that scrubs `gh issue create`, `gh issue
+comment`, and `gh pr create` bodies before the real GitHub CLI sees them:
+home-directory paths and common token shapes are redacted, and a body is
+refused if a known unsafe pattern remains.
+
 Fallback/manual paths remain:
 
+- `evolve_apply_conflicted_pr(pr_number=0)` repairs the oldest conflicted
+  same-repo applier PR, or a specific conflicted PR when numbered.
 - `evolve_apply_curator_report(report_path="")` applies safe Curator memory
   maintenance when no roadmap issue is being drained.
 - `evolve_apply(evolve_id)` still implements legacy promoted
@@ -619,8 +719,9 @@ a time, enforced by a short dispatch file lock plus running-task detection)
 keeps code edits and memory maintenance from colliding.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
-Manual tools such as `evolve_apply_roadmap_issue()` dispatch immediately. If no
-roadmap issue is startable, the pass falls back to Curator reports and then
+Manual tools such as `evolve_apply_conflicted_pr()` and
+`evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
+or roadmap issue is startable, the pass falls back to Curator reports and then
 legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
@@ -703,8 +804,18 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after applying an update so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
+| `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
+| `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
+| `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) used to infer upstream skill updates |
+| `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer upstream source by skill name from configured source roots |
+| `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
@@ -719,6 +830,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
+| `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN` | "" (off) | explicit override that lets ordinary `spawn()` calls request `permission_mode="bypassPermissions"`; default off means only evolve daemon role/write-origin pairs can use the dangerous mode |
+| `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
+| `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
@@ -759,6 +873,9 @@ Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
 macOS, the menu-bar app's gear button can edit the same file visually, save up
 to three local presets, and request a ThreadKeeper restart after saving.
+At startup and hot-reload, unknown `THREADKEEPER_*` keys present in the process
+environment are logged as warnings so mistyped host env-block overrides do not
+fail silently.
 Hot-config reload for the watched `settings.json` env block is implemented
 (shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
 knobs in-process within ~2 s, with no Claude Code restart — toggle it via
@@ -799,7 +916,9 @@ variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
 `gemini`, `copilot`). `agy` is normalized to `antigravity`; `gemini` remains a
 legacy Gemini CLI adapter for old installs/enterprise paths. See `.env.example`
-for the full knob list.
+for the full knob list. `spawn_status()` includes warnings when a configured
+spawn CLI is unsupported or a model key does not match a supported CLI/startup
+role, while keeping the same fallback resolution.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
@@ -839,9 +958,10 @@ them with `dry_run=False` to apply:
   notes/dialog/distill/concepts counts, skills + claims by tier,
   extract-candidate and evolve queues, probe/task counts), **loops**
   (how many times each autonomous daemon fired in the window vs 30 days,
-  plus last-fire age — the loop list is derived from the same source as
-  `agent_status`, so it covers *every* daemon including the paid-spawn
-  `dialectic_validate` / `evolve_apply` and the `thread_janitor`), and
+  plus last-fire age and 24h spend/tokens/mutation counts — the loop list is
+  derived from the same source as `agent_status`, so it covers *every* daemon
+  including the paid-spawn `dialectic_validate` / `evolve_apply` and the
+  `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
   mutation counts: `lesson_append` / `lesson_remove`,
@@ -867,9 +987,10 @@ them with `dry_run=False` to apply:
   loop status, shaped for UI clients. Shows every loop's enabled/running/ready
   state, last pass, backlog, and active spawned-child RSS; running child agents
   are included as detail rows in the JSON. The JSON also includes
-  `recent_results` for useful completed loop tasks, which the macOS menu-bar app
-  uses for notifications. The `tk-agent-status` console command and macOS
-  menu-bar app use the same underlying snapshot.
+  `github_budget` (GitHub remaining/reset or active cooldown for roadmap
+  automation) and `recent_results` for useful completed loop tasks, which the
+  macOS menu-bar app uses for notifications. The `tk-agent-status` console
+  command and macOS menu-bar app use the same underlying snapshot.
 
 ---
 
@@ -1003,8 +1124,8 @@ and the original is never opened for writing. The default judge is **lexical**
 (deterministic, offline, no API key, no embeddings) so the command is
 reproducible and CI-safe; `--judge llm` grades answer *reasoning* (not just
 retrieval recall) with an Anthropic model when a key is set — the intended
-optimization target for the planned lessons-decay (#27) and bi-temporal
-claims (#28) work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
+optimization target for lesson-decay tuning (#27) and bi-temporal claims (#28)
+work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
 axes map onto thread-keeper's retrieval surface.
 
 ## Evaluating learning-loop decision quality
@@ -1104,14 +1225,21 @@ threadkeeper/
 `@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
 so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
 `readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
-`dialog_search`, `lesson_list`, the status tools, …) and `readOnlyHint=False`
-for mutations, with `destructiveHint=True` on the ten delete/overwrite/kill
-tools (`compost` is read-only — it only surfaces idle threads). A
-confirmation/elicitation host reads this to decide which calls warrant a
-prompt. The five status tools (`context`, `spawn_budget_status`,
+`dialog_search`, the status tools, …) and `readOnlyHint=False`
+for mutations. `lesson_list` / `lesson_get` are classified as non-destructive
+writes because they bump lesson access counters. The ten delete/overwrite/kill
+tools carry `destructiveHint=True` (`compost` is read-only — it only surfaces
+idle threads). A confirmation/elicitation host reads this to decide which calls
+warrant a prompt. The five status tools (`context`, `spawn_budget_status`,
 `spawn_status`, `mp_health`, `agent_status`) additionally advertise an
 `outputSchema` and return `structuredContent` alongside the legacy text
 block. The contract is enforced by `tests/test_tool_annotations.py`.
+
+**Elicitation contract (#26).** `threadkeeper/elicitation.py` contains the
+shared form-mode confirmation helper. It probes the host's elicitation
+capability before prompting, uses only a flat primitive schema, and leaves
+unsupported clients on the existing text/tool fallback path. The first protected
+write is `dialectic_supersede`.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

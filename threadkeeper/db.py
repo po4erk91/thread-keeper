@@ -333,6 +333,22 @@ CREATE TABLE IF NOT EXISTS skill_usage (
                       CHECK(state IN ('active','stale','archived'))
 );
 
+-- Lesson usage telemetry. One row per lessons.md slug so the curator can
+-- distinguish frequently-pulled lessons from never-consulted entries.
+-- pinned=1 and tier='validated' opt out of decay/compost recommendations.
+CREATE TABLE IF NOT EXISTS lesson_usage (
+    slug           TEXT PRIMARY KEY,
+    created_at     INTEGER NOT NULL,
+    source         TEXT,
+    last_used_at   INTEGER,
+    last_viewed_at INTEGER,
+    use_count      INTEGER NOT NULL DEFAULT 0,
+    view_count     INTEGER NOT NULL DEFAULT 0,
+    pinned         INTEGER NOT NULL DEFAULT 0,
+    tier           TEXT NOT NULL DEFAULT 'hypothesis'
+                   CHECK(tier IN ('hypothesis','observed','validated'))
+);
+
 -- Auto-extraction queue: heuristic candidates for note/concept/distill that
 -- a session can review in batch and accept/reject — saves manual scanning.
 CREATE TABLE IF NOT EXISTS extract_candidates (
@@ -386,7 +402,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     prompt        TEXT NOT NULL,
     started_at    INTEGER NOT NULL,
     ended_at      INTEGER,
-    return_code   INTEGER
+    return_code   INTEGER,
+    tokens_in     INTEGER,
+    tokens_out    INTEGER,
+    tokens_total  INTEGER,
+    cost_usd      REAL,
+    duration_s    INTEGER
 );
 
 -- Cross-process resource-control requests. The memory guard uses this as a
@@ -401,6 +422,20 @@ CREATE TABLE IF NOT EXISTS resource_controls (
     expires_at    INTEGER NOT NULL,
     handled_at    INTEGER,
     result        TEXT
+);
+
+-- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
+-- across foreground status processes, reviewer/applier daemons, and spawned
+-- gh-wrapper children so one account-level throttle stops all workers.
+CREATE TABLE IF NOT EXISTS github_rate_budget (
+    account          TEXT PRIMARY KEY,
+    remaining        INTEGER,
+    reset_at         INTEGER,
+    cooldown_until   INTEGER NOT NULL DEFAULT 0,
+    backoff_attempts INTEGER NOT NULL DEFAULT 0,
+    last_status      INTEGER,
+    last_reason      TEXT,
+    updated_at       INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
@@ -422,6 +457,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_github_rate_budget_cooldown
+    ON github_rate_budget(cooldown_until);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
 CREATE INDEX IF NOT EXISTS idx_probes_enabled     ON probes(enabled) WHERE enabled=1;
 CREATE INDEX IF NOT EXISTS idx_probe_results_cat  ON probe_results(category, created_at DESC);
@@ -444,6 +481,8 @@ CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status,
 CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
+CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
+CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     content, content='notes', content_rowid='id'
@@ -518,6 +557,11 @@ def get_db() -> sqlite3.Connection:
         "TEXT NOT NULL DEFAULT 'foreground'",
         "ALTER TABLE tasks ADD COLUMN rss_kb INTEGER",
         "ALTER TABLE tasks ADD COLUMN rss_updated_at INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_in INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_out INTEGER",
+        "ALTER TABLE tasks ADD COLUMN tokens_total INTEGER",
+        "ALTER TABLE tasks ADD COLUMN cost_usd REAL",
+        "ALTER TABLE tasks ADD COLUMN duration_s INTEGER",
         # Tier promotion machinery — discrete state machine over claims
         # and skills. Independent of the continuous confidence/state
         # columns; tier is what gates downstream behavior (brief framing,

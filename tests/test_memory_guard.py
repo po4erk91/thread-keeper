@@ -78,6 +78,9 @@ def test_check_apply_sends_sigterm(mp_with_cid, monkeypatch):
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 0)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 0)
     monkeypatch.setattr(process_health, "scan", lambda: [_proc(1004, 2500)])
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr("os.kill", lambda pid, sig: calls.append((pid, sig)))
     monkeypatch.setattr(memory_guard, "reclaim_memory", lambda reason="": {
@@ -88,6 +91,41 @@ def test_check_apply_sends_sigterm(mp_with_cid, monkeypatch):
     out = memory_guard.check_once(dry_run=False, notify=False)
     assert out["killed"] == [1004]
     assert calls == [(1004, _sig.SIGTERM)]
+
+
+def test_check_apply_skips_reused_pid(mp_with_cid, monkeypatch):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import memory_guard, process_health
+
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 1000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 2000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 0)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 0)
+    monkeypatch.setattr(process_health, "scan", lambda: [_proc(1006, 2500)])
+
+    class Result:
+        stdout = "python -m unrelated.worker\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-p", "1006", "-o", "command="]
+        return Result()
+
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(process_health.subprocess, "run", fake_run)
+    monkeypatch.setattr("os.kill", lambda pid, sig: calls.append((pid, sig)))
+
+    out = memory_guard.check_once(dry_run=False, notify=False)
+
+    assert out["killed"] == []
+    assert out["failed"] == []
+    assert out["skipped"] == [
+        {
+            "pid": 1006,
+            "action": "kill",
+            "reason": "pid_no_longer_threadkeeper_server",
+        }
+    ]
+    assert calls == []
 
 
 def test_memory_guard_status_tool_reports_thresholds(mp_with_cid, monkeypatch):
@@ -250,6 +288,9 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
         ]
 
     monkeypatch.setattr(process_health, "scan", scan)
+    monkeypatch.setattr(
+        process_health, "is_threadkeeper_server_pid", lambda pid: True
+    )
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(
         "os.kill",
@@ -260,6 +301,57 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
     stale_pid = os.getpid() + 1001
     assert out["retired"] == [stale_pid]
     assert calls == [(stale_pid, _sig.SIGTERM)]
+
+
+def test_check_apply_skips_reused_pid_on_retire(mp_with_cid, monkeypatch):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import memory_guard, process_health
+
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 5000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 6000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 2000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_KILL_MB", 3000)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_TARGET_SERVERS", 1)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_IDLE_S", 900)
+    monkeypatch.setattr(memory_guard, "MEMORY_GUARD_RETIRE_LIVE", False)
+    monkeypatch.setattr(memory_guard, "reclaim_memory", lambda reason="": {
+        "before_mb": 900, "after_mb": 800, "freed_mb": 100,
+        "pid": os.getpid(), "actions": ["fake"],
+    })
+    stale_pid = os.getpid() + 1001
+    monkeypatch.setattr(process_health, "scan", lambda: [
+        _proc(os.getpid(), 900),
+        _proc(stale_pid, 1200, ppid=1) | {
+            "heartbeat_age_s": None,
+            "parent_alive": False,
+            "is_orphaned": True,
+            "orphan_reason": "parent_gone + no_heartbeat",
+        },
+    ])
+
+    class Result:
+        stdout = "python -m unrelated.worker\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-p", str(stale_pid), "-o", "command="]
+        return Result()
+
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(process_health.subprocess, "run", fake_run)
+    monkeypatch.setattr("os.kill", lambda pid, sig: calls.append((pid, sig)))
+
+    out = memory_guard.check_once(dry_run=False, notify=False)
+
+    assert out["retired"] == []
+    assert out["failed"] == []
+    assert out["skipped"] == [
+        {
+            "pid": stale_pid,
+            "action": "retire",
+            "reason": "pid_no_longer_threadkeeper_server",
+        }
+    ]
+    assert calls == []
 
 
 def test_aggregate_retire_skips_live_parent_without_opt_in(mp_with_cid, monkeypatch):

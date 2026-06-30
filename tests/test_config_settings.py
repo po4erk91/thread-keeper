@@ -3,6 +3,7 @@
 Uses importlib.reload so each test can set/clear env before re-importing.
 """
 import importlib
+import logging
 import os
 import tempfile
 
@@ -31,14 +32,52 @@ def test_defaults_match(monkeypatch):
     assert c.SKILL_NUDGE_INTERVAL == 10
     assert c.BRIEF_LEAN is False
     assert c.SPAWN_BUDGET_MB == 3072
+    assert c.SPAWN_TOKEN_BUDGET == 0
+    assert c.SPAWN_COST_BUDGET_USD == 0.0
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
+    assert c.AUTO_UPDATE_VERIFY_PROVENANCE is True
+    assert c.AUTO_UPDATE_PYPI_BASE_URL == "https://pypi.org"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY == "po4erk91/thread-keeper"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW == "publish.yml"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT == "pypi"
+    assert c.SKILL_UPDATE_INTERVAL_S == 302400
+    assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
 
 
 def test_env_overrides_default(monkeypatch):
     c = _fresh_config(monkeypatch, env={"THREADKEEPER_MEMORY_NUDGE_INTERVAL": "3"})
     assert c.MEMORY_NUDGE_INTERVAL == 3
+
+
+def test_unknown_threadkeeper_env_key_warns(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config")
+    _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_CURATOR_DESCTRUCTIVE": "0"},
+    )
+    messages = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "threadkeeper.config"
+    ]
+    assert any("THREADKEEPER_CURATOR_DESCTRUCTIVE" in msg for msg in messages)
+    assert any("unknown THREADKEEPER_* env key" in msg for msg in messages)
+
+
+def test_known_threadkeeper_env_key_does_not_warn(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config")
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_CURATOR_DESTRUCTIVE": "0"},
+    )
+    assert c.CURATOR_DESTRUCTIVE is False
+    assert not [
+        rec for rec in caplog.records
+        if rec.name == "threadkeeper.config"
+        and "unknown THREADKEEPER_* env key" in rec.getMessage()
+    ]
 
 
 def test_dotenv_read_and_env_wins(monkeypatch):
@@ -73,8 +112,13 @@ def test_all_exported_names_present(monkeypatch):
     required = [
         "AUTO_REVIEW_ENABLED",
         "AUTO_UPDATE_INTERVAL_S",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW",
+        "AUTO_UPDATE_PYPI_BASE_URL",
         "AUTO_UPDATE_RESTART",
         "AUTO_UPDATE_TIMEOUT_S",
+        "AUTO_UPDATE_VERIFY_PROVENANCE",
         "BACKGROUND_DAEMONS_ALLOWED",
         "BRIEF_LEAN",
         "BRIEF_NO_THREAD_NUDGE",
@@ -131,11 +175,18 @@ def test_all_exported_names_present(monkeypatch):
         "SHADOW_REVIEW_INTERVAL_S",
         "SHADOW_REVIEW_MIN_CHARS",
         "SHADOW_REVIEW_WINDOW_S",
+        "SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE",
+        "SKILL_UPDATE_INFER_SOURCES",
+        "SKILL_UPDATE_INTERVAL_S",
+        "SKILL_UPDATE_SOURCES",
+        "SKILL_UPDATE_TIMEOUT_S",
         "SKILL_NUDGE_INTERVAL",
         "SPAWN_BUDGET_MB",
         "SPAWN_BUDGET_POLL_S",
+        "SPAWN_COST_BUDGET_USD",
         "SPAWN_ESTIMATE_FULL_MB",
         "SPAWN_ESTIMATE_SLIM_MB",
+        "SPAWN_TOKEN_BUDGET",
         "SPAWNED_CHILD",
         "TASK_LOG_DIR",
         "THREAD_IDLE_CLOSE_DAYS",

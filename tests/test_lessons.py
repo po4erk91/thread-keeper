@@ -32,9 +32,10 @@ def _bootstrap(tmp_path, monkeypatch):
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
         del sys.modules[name]
     import threadkeeper.server  # noqa: F401
-    from threadkeeper import lessons
+    from threadkeeper import db, lessons
     from threadkeeper._mcp import mcp
     return {
+        "db": db,
         "lessons": lessons,
         "path": Path(env["THREADKEEPER_LESSONS"]),
         "mcp": mcp,
@@ -176,6 +177,30 @@ def test_mcp_lesson_list_returns_summary(tmp_path, monkeypatch):
     assert "error-handling" in out
 
 
+def test_mcp_lesson_reads_bump_usage_counters(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    ll = _tool(pkg, "lesson_list")
+    lg = _tool(pkg, "lesson_get")
+    la(title="pagination", body="use cursor not offset", source="T1")
+    la(title="error-handling", body="wrap external calls", source="T2")
+
+    ll(k=2)
+    lg(slug="pagination")
+
+    conn = pkg["db"].get_db()
+    rows = {
+        r["slug"]: dict(r)
+        for r in conn.execute("SELECT * FROM lesson_usage").fetchall()
+    }
+    assert rows["pagination"]["view_count"] == 1
+    assert rows["pagination"]["use_count"] == 1
+    assert rows["pagination"]["last_viewed_at"] is not None
+    assert rows["pagination"]["last_used_at"] is not None
+    assert rows["error-handling"]["view_count"] == 1
+    assert rows["error-handling"]["use_count"] == 0
+
+
 def test_mcp_lesson_get_returns_body(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -184,6 +209,51 @@ def test_mcp_lesson_get_returns_body(tmp_path, monkeypatch):
     out = lg(slug="retry-strategy")
     assert "exponential backoff" in out
     assert lg(slug="does-not-exist").startswith("ERR not_found")
+
+
+def test_rank_stale_lessons_scores_and_skips_protected(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    now = 1_800_000_000
+    old = now - 90 * 86400
+    monkeypatch.setattr(pkg["lessons"].time, "time", lambda: old)
+    for title in [
+        "never pulled",
+        "one old pull",
+        "pinned lesson",
+        "validated lesson",
+    ]:
+        pkg["lessons"].append_lesson(title=title, body=f"{title} body",
+                                     source="shadow")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_used_at, use_count) "
+        "VALUES (?, ?, 'shadow', ?, 1)",
+        ("one-old-pull", old, now - 70 * 86400),
+    )
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_viewed_at, view_count, pinned) "
+        "VALUES (?, ?, 'shadow', ?, 1, 1)",
+        ("pinned-lesson", old, now - 80 * 86400),
+    )
+    conn.execute(
+        "INSERT INTO lesson_usage "
+        "(slug, created_at, source, last_viewed_at, view_count, tier) "
+        "VALUES (?, ?, 'shadow', ?, 1, 'validated')",
+        ("validated-lesson", old, now - 80 * 86400),
+    )
+    conn.commit()
+
+    ranked = pkg["lessons"].rank_stale_lessons(
+        conn, now=now, stale_after_days=30, low_pull_count=1,
+    )
+
+    assert [r["slug"] for r in ranked] == ["never-pulled", "one-old-pull"]
+    assert ranked[0]["decay_score"] < ranked[1]["decay_score"]
+    assert all(not r["protected"] for r in ranked)
 
 
 def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
@@ -198,6 +268,11 @@ def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
     assert out == "ok removed=stale-duplicate"
     assert lg(slug="stale-duplicate").startswith("ERR not_found")
     assert "stale-duplicate" not in pkg["path"].read_text()
+    conn = pkg["db"].get_db()
+    n_usage = conn.execute(
+        "SELECT COUNT(*) FROM lesson_usage WHERE slug='stale-duplicate'"
+    ).fetchone()[0]
+    assert n_usage == 0
 
 
 def test_mcp_lesson_remove_refuses_protected_without_force(

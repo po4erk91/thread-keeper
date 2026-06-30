@@ -14,6 +14,10 @@
     Implement one open GitHub issue, prioritized by roadmap label then FIFO.
     Opens a PR and marks the issue handed off only after the PR exists.
 
+  evolve_apply_conflicted_pr(pr_number=0)
+    Repair merge conflicts in an already-open evolve-applier PR before new work
+    is picked up.
+
   evolve_mark_applied(evolve_id, pr_url)
     Called BY the applier child after `gh pr create` succeeds. Sets applied=1
     so the suggestion stops resurfacing. Requires a non-empty pr_url (the gate).
@@ -33,10 +37,12 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
+from ..github_budget import format_github_budget, github_budget_state
 from ..helpers import fmt_age
 from ..identity import _ensure_session
 from ..config import EVOLVE_APPLY_INTERVAL_S
 from ..evolve_applier import (
+    apply_conflicted_pr,
     apply_curator_report,
     apply_evolve,
     apply_roadmap_issue,
@@ -44,6 +50,7 @@ from ..evolve_applier import (
     mark_applied,
     mark_roadmap_issue_applied,
     roadmap_attempt_ledger,
+    _conflicted_applier_prs,
     _open_roadmap_issues,
     _pending_curator_reports,
     _promoted_unapplied,
@@ -101,6 +108,21 @@ def evolve_apply_roadmap_issue(issue_number: int = 0) -> str:
     return apply_roadmap_issue(int(issue_number or 0))
 
 
+@write_tool()
+def evolve_apply_conflicted_pr(pr_number: int = 0) -> str:
+    """Repair an already-open applier PR that currently has merge conflicts.
+
+    With `pr_number=0`, picks the oldest open same-repo applier PR (`roadmap/…`
+    or `evolve/…` head branch) whose GitHub merge state is conflicted. With a
+    number, validates that specific PR is open, applier-owned, and conflicted.
+    The child resolves conflicts, runs the suite, and pushes the SAME PR branch;
+    it then lands that PR into main via GitHub's protected merge flow and does
+    not open a new PR or mark a roadmap issue applied."""
+    conn = get_db()
+    _ensure_session(conn)
+    return apply_conflicted_pr(int(pr_number or 0))
+
+
 @write_tool(idempotent=True)
 def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     """Mark a format-evolution suggestion as APPLIED — called by the
@@ -154,6 +176,7 @@ def evolve_apply_status() -> str:
     _ensure_session(conn)
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
+    conflicted_prs, pr_err = _conflicted_applier_prs()
     issues, issue_err = _open_roadmap_issues(conn)
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
@@ -164,17 +187,30 @@ def evolve_apply_status() -> str:
     age_s = (now - floor) if floor else None
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
+        f"conflicted_prs={len(conflicted_prs)} "
         f"roadmap_issues={len(issues)} "
         f"roadmap_backoff={len(backoff)} "
         f"roadmap_dead_letter={len(dead)} "
         f"curator_reports={len(reports)} "
         f"promoted_unapplied={len(pending)} "
         f"applier_running={len(running)}",
+        format_github_budget(github_budget_state(conn, now_t=now)),
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
     ]
     if issue_err:
         lines.append(f"roadmap_issue_fetch_error={issue_err}")
+    if pr_err:
+        lines.append(f"conflicted_pr_fetch_error={pr_err}")
+    if conflicted_prs:
+        lines.append("")
+        lines.append("conflicted PRs (next first):")
+        for pr in conflicted_prs[:10]:
+            title = str(pr.get("title") or "")[:90].replace("\n", " ")
+            lines.append(
+                f"  #{int(pr['number'])}  {pr.get('headRefName') or '?'}  "
+                f"{title}"
+            )
     if issues:
         lines.append("")
         lines.append("roadmap issues (next first):")

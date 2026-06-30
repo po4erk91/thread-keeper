@@ -30,10 +30,12 @@ import time
 from typing import Optional
 
 from .db import get_db
+from .helpers import alive
 
 
 # Seconds of presence-table silence before we consider a process orphaned.
 STALE_HEARTBEAT_S = 5 * 60
+SERVER_COMMAND_MARKER = "threadkeeper.server"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -53,12 +55,7 @@ def _list_threadkeeper_pids() -> list[dict]:
         return []
     out: list[dict] = []
     for line in (r.stdout or "").splitlines():
-        if "threadkeeper.server" not in line:
-            continue
-        # Skip the disclaimer shim: its command starts with the
-        # /Applications/Claude.app/Contents/Helpers/disclaimer path and
-        # holds RSS ≈0. We want only the real Python that took its place.
-        if "/Helpers/disclaimer" in line:
+        if not _is_threadkeeper_server_command(line):
             continue
         # Tokenize: pid ppid rss etime command...
         parts = line.split(None, 4)
@@ -84,24 +81,54 @@ def _list_threadkeeper_pids() -> list[dict]:
 
 def _pid_alive(pid: int) -> bool:
     """True if the given pid exists. pid=1 (init/launchd) and pid<=0 return
-    False — we treat init as 'no real parent'."""
+    False — we treat init as 'no real parent'. Zombies return False."""
     if pid is None or pid <= 1:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        # ProcessLookupError → not alive
-        # PermissionError → it exists but isn't ours — count as alive
-        return isinstance(_sentinel_for_perm_error(pid), bool)
-    except OSError:
+    return alive(pid)
+
+
+def _is_threadkeeper_server_command(command: str | None) -> bool:
+    """True when a ps command line belongs to the real server process."""
+    if not command:
         return False
+    if SERVER_COMMAND_MARKER not in command:
+        return False
+    # Skip the disclaimer shim: its command starts with the
+    # /Applications/Claude.app/Contents/Helpers/disclaimer path and holds
+    # RSS ≈0. We want only the real Python that took its place.
+    return "/Helpers/disclaimer" not in command
 
 
-def _sentinel_for_perm_error(pid: int) -> bool:
-    """PermissionError on os.kill(pid, 0) means the pid exists but is owned
-    by another user. We can't probe it, but it IS alive."""
-    return True
+def _current_command_for_pid(pid: int) -> str | None:
+    """Return the current command line for pid, or None if unavailable."""
+    if pid is None or pid <= 0:
+        return None
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    cmd = (r.stdout or "").strip()
+    return cmd or None
+
+
+def is_threadkeeper_server_pid(pid: int) -> bool:
+    """Re-read pid identity and confirm it is still a thread-keeper server."""
+    return _is_threadkeeper_server_command(_current_command_for_pid(pid))
+
+
+def signal_if_threadkeeper(pid: int, sig: int) -> tuple[bool, str | None]:
+    """Signal pid only after verifying it still belongs to thread-keeper.
+
+    Returns (sent, skip_reason). os.kill errors still propagate so callers can
+    report real races that happen after the identity check.
+    """
+    if not is_threadkeeper_server_pid(pid):
+        return False, "pid_no_longer_threadkeeper_server"
+    os.kill(pid, sig)
+    return True, None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -183,12 +210,16 @@ def cleanup(dry_run: bool = True, force: bool = False) -> dict:
     plan = [p for p in procs if p.get("is_orphaned")]
     killed: list[int] = []
     failed: list[dict] = []
+    skipped: list[dict] = []
     if not dry_run:
         sig = _sig.SIGKILL if force else _sig.SIGTERM
         for p in plan:
             try:
-                os.kill(p["pid"], sig)
-                killed.append(p["pid"])
+                sent, reason = signal_if_threadkeeper(p["pid"], sig)
+                if sent:
+                    killed.append(p["pid"])
+                else:
+                    skipped.append({"pid": p["pid"], "reason": reason})
             except (ProcessLookupError, PermissionError) as e:
                 failed.append({"pid": p["pid"], "err": str(e)})
             except OSError as e:
@@ -198,5 +229,6 @@ def cleanup(dry_run: bool = True, force: bool = False) -> dict:
         "orphans": plan,
         "killed": killed,
         "failed": failed,
+        "skipped": skipped,
         "dry_run": dry_run,
     }
