@@ -416,9 +416,11 @@ _EXTRA_THREADKEEPER_ENV_KEYS = {
     "THREADKEEPER_ENV_FILE",
     "THREADKEEPER_EXTRA_SKILLS_DIRS",
     "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_GH_WRAPPER_DIR",
     "THREADKEEPER_LESSONS",
     "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
     "THREADKEEPER_PYTHON",
+    "THREADKEEPER_REAL_GH",
     "THREADKEEPER_REPO",
     "THREADKEEPER_SEARCH_PROXY_POLL_S",
     "THREADKEEPER_SKILL_WATCH_INTERVAL_S",
@@ -532,8 +534,6 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
         "AUTO_UPDATE_RESTART": s.auto_update_restart,
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
-        "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
-        "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
         "AUTO_UPDATE_VERIFY_PROVENANCE": s.auto_update_verify_provenance,
         "AUTO_UPDATE_PYPI_BASE_URL": s.auto_update_pypi_base_url,
         "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY": (
@@ -545,6 +545,8 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
             s.auto_update_expected_publisher_environment
         ),
+        "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
+        "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
         "SKILL_UPDATE_SOURCES": s.skill_update_sources,
         "SKILL_UPDATE_INFER_SOURCES": s.skill_update_infer_sources,
         "SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE": (

@@ -642,10 +642,19 @@ shell/`bypassPermissions` to the same child:
 A full research → audit cycle therefore spans two due passes.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
-picks one open GitHub issue at a time (`roadmap` label first, then FIFO), skips
-issues with an active Evolve claim comment, posts its own claim comment before
-spawning, and advances to the next issue when an issue-local dispatch failure
-prevents startup. The child implements exactly that issue, runs the full suite,
+picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
+the automatic pass first scans already-open same-repo applier PRs for GitHub
+merge conflicts. A conflicted `roadmap/…` or `evolve/…` PR is repaired before
+any new issue/report/evolve work is started; if the PR sweep itself cannot read
+GitHub state, the pass fails closed instead of taking fresh work blind. The
+conflict-repair child checks out the existing PR branch, merges the current
+base branch, resolves conflicts, runs the full suite, and pushes back to the
+same branch. It then runs `gh pr merge --squash --auto --delete-branch`, so
+GitHub lands the repaired PR into `main` through branch protection and required
+checks rather than a raw local `git push origin main`. The roadmap issue child
+skips issues with an active Evolve claim comment, posts its own claim comment
+before spawning, and advances to the next issue when an issue-local dispatch
+failure prevents startup. It implements exactly that issue, runs the full suite,
 opens a PR whose body includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
 pushes to `main`, and it never marks an issue applied without a real PR URL. A
@@ -655,6 +664,14 @@ The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
+All roadmap-automation GitHub calls share a local `github_rate_budget` ledger:
+the applier's parent-side `gh` calls and the PATH-prepended child `gh` wrapper
+honor the same per-account cooldown. Included REST response headers update
+remaining/reset values; primary 403s cool down until reset (bounded), and
+secondary-rate-limit / `Retry-After` responses use bounded exponential backoff.
+`agent_status` / `tk-agent-status` and `evolve_apply_status()` show the current
+remaining count or cooldown window so operators can see when GitHub is
+throttling the roadmap loop.
 
 **Author-trust gate (this repo is public).** Any GitHub account can open an
 issue, and an open issue's body is injected into the permission-bypassing
@@ -686,6 +703,8 @@ refused if a known unsafe pattern remains.
 
 Fallback/manual paths remain:
 
+- `evolve_apply_conflicted_pr(pr_number=0)` repairs the oldest conflicted
+  same-repo applier PR, or a specific conflicted PR when numbered.
 - `evolve_apply_curator_report(report_path="")` applies safe Curator memory
   maintenance when no roadmap issue is being drained.
 - `evolve_apply(evolve_id)` still implements legacy promoted
@@ -700,8 +719,9 @@ a time, enforced by a short dispatch file lock plus running-task detection)
 keeps code edits and memory maintenance from colliding.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
-Manual tools such as `evolve_apply_roadmap_issue()` dispatch immediately. If no
-roadmap issue is startable, the pass falls back to Curator reports and then
+Manual tools such as `evolve_apply_conflicted_pr()` and
+`evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
+or roadmap issue is startable, the pass falls back to Curator reports and then
 legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
@@ -786,6 +806,11 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
 | `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
 | `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) used to infer upstream skill updates |
@@ -794,11 +819,6 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
-| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
-| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
-| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
-| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
-| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
@@ -967,9 +987,10 @@ them with `dry_run=False` to apply:
   loop status, shaped for UI clients. Shows every loop's enabled/running/ready
   state, last pass, backlog, and active spawned-child RSS; running child agents
   are included as detail rows in the JSON. The JSON also includes
-  `recent_results` for useful completed loop tasks, which the macOS menu-bar app
-  uses for notifications. The `tk-agent-status` console command and macOS
-  menu-bar app use the same underlying snapshot.
+  `github_budget` (GitHub remaining/reset or active cooldown for roadmap
+  automation) and `recent_results` for useful completed loop tasks, which the
+  macOS menu-bar app uses for notifications. The `tk-agent-status` console
+  command and macOS menu-bar app use the same underlying snapshot.
 
 ---
 

@@ -18,6 +18,25 @@ version bumps follow semver per the policy in
   known-good process running. New env knobs document the break-glass provenance
   opt-out and the expected publisher identity.
 
+- **Shared GitHub API budget/cooldown ledger for roadmap automation (#38).**
+  Roadmap issue fetch/comment/PR-guard calls and privileged child `gh` wrapper
+  invocations now consult one SQLite `github_rate_budget` row per local GitHub
+  account before making requests. Included REST headers record
+  remaining/reset values, primary 403s cool down until reset, secondary
+  rate-limit / `Retry-After` responses use bounded exponential backoff, and
+  `agent_status` / `tk-agent-status` plus `evolve_apply_status()` expose the
+  current remaining count or cooldown window.
+
+### Fixed
+
+- **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
+  already-open same-repo applier PRs before taking fresh roadmap/report/evolve
+  work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
+  applier spawns a repair child that updates that existing branch and runs the
+  suite instead of starting a new task, then lands the repaired PR into `main`
+  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
+  the pass fails closed rather than moving on to new work.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed
@@ -103,7 +122,7 @@ version bumps follow semver per the policy in
 - **Roadmap issue drain pagination (#81).** The evolve applier no longer asks
   GitHub for a single newest-first 50-issue window before applying its
   `roadmap`-label/FIFO sort. `_fetch_open_issues()` now uses paginated,
-  oldest-first REST reads (`gh api --paginate --slurp` with
+  oldest-first REST reads (`gh api --include --paginate` with
   `sort=created&direction=asc`), filters pull requests, and only then applies a
   generous local candidate window with an explicit warning if any open issues
   are left outside it. The evolve reviewer prompt now uses the same paginated

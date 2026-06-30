@@ -61,6 +61,14 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
+  consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
+  Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
+  reviewer/applier children honor the same per-account cooldown before making
+  requests. Included REST headers record remaining/reset values, primary 403s
+  cool down until reset (bounded), secondary-rate-limit/`Retry-After` responses
+  use bounded exponential backoff, and `agent_status` / `tk-agent-status` plus
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -468,7 +476,6 @@ Follow-up gaps from the 2026-06-17 audit:
 - Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
-- Shared GitHub API budget/backoff across roadmap automation (#38).
 - Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
   the autonomous child now prunes/consolidates lessons + skills in place with no
   pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
