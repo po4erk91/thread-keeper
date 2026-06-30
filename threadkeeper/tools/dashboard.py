@@ -187,6 +187,7 @@ _LOOP_TASK_PREFIXES: dict[str, str] = {
 #   lesson_append / lesson_remove   — curator + shadow lesson writes/prunes
 #   curator_report_applied          — evolve_applier applied a curator report
 #   roadmap_issue_applied           — evolve_applier opened a roadmap-issue PR
+#   roadmap_issue_skipped           — evolve_applier refused human-gated issue
 #   evolve_applied                  — evolve_applier marked a suggestion done
 #   dialectic_claim / _supersede    — user-model claim mutations
 _OUTCOME_KINDS = (
@@ -199,6 +200,7 @@ _OUTCOME_KINDS = (
     ("lesson_remove", "lesson_remove"),
     ("curator_report_applied", "curator_report_applied"),
     ("roadmap_issue_applied", "roadmap_issue_applied"),
+    ("roadmap_issue_skipped", "roadmap_issue_skipped"),
     ("evolve_applied", "evolve_applied"),
     ("dialectic_claim", "dialectic_claim"),
     ("dialectic_supersede", "dialectic_supersede"),

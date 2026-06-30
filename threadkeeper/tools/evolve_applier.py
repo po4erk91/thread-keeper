@@ -44,7 +44,8 @@ from ..evolve_applier import (
     mark_applied,
     mark_roadmap_issue_applied,
     roadmap_attempt_ledger,
-    _open_roadmap_issues,
+    _format_label_skip,
+    _open_roadmap_issue_candidates,
     _pending_curator_reports,
     _promoted_unapplied,
     _running_applier_children,
@@ -154,7 +155,7 @@ def evolve_apply_status() -> str:
     _ensure_session(conn)
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
-    issues, issue_err = _open_roadmap_issues(conn)
+    issues, issue_err, label_skipped = _open_roadmap_issue_candidates(conn)
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
     dead = [e for e in ledger if e["state"] == "dead_letter"]
@@ -165,6 +166,7 @@ def evolve_apply_status() -> str:
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
         f"roadmap_issues={len(issues)} "
+        f"roadmap_label_skipped={len(label_skipped)} "
         f"roadmap_backoff={len(backoff)} "
         f"roadmap_dead_letter={len(dead)} "
         f"curator_reports={len(reports)} "
@@ -175,6 +177,8 @@ def evolve_apply_status() -> str:
     ]
     if issue_err:
         lines.append(f"roadmap_issue_fetch_error={issue_err}")
+    if label_skipped:
+        lines.append(f"roadmap_issue_label_skips={_format_label_skip(label_skipped)}")
     if issues:
         lines.append("")
         lines.append("roadmap issues (next first):")
