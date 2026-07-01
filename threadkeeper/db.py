@@ -454,6 +454,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_unread ON signals(read_at) WHERE read_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_started  ON tasks(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_cid);
+CREATE INDEX IF NOT EXISTS idx_tasks_spawned  ON tasks(spawned_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
