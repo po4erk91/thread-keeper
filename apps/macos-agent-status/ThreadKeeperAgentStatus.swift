@@ -105,6 +105,16 @@ private let panelWidth: CGFloat = 380
 private let settingsWindowWidth: CGFloat = 760
 private let settingsWindowHeight: CGFloat = 720
 private let statusPollInterval: TimeInterval = 15.0
+private let disableBackgroundDaemonsKey = "THREADKEEPER_DISABLE_BG_DAEMONS"
+
+private func threadKeeperEnvFileURL() -> URL {
+    let env = ProcessInfo.processInfo.environment
+    let raw = env["THREADKEEPER_ENV_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let path = raw?.isEmpty == false
+        ? raw!
+        : "~/.threadkeeper/.env"
+    return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+}
 
 enum EnvSettingsTab: String, CaseIterable, Identifiable {
     case guided = "Guided"
@@ -203,7 +213,7 @@ private let roleModelChoices = (
 private let envSettingDefinitions: [EnvSettingDefinition] = [
     EnvSettingDefinition(
         group: "Core",
-        key: "THREADKEEPER_DISABLE_BG_DAEMONS",
+        key: disableBackgroundDaemonsKey,
         title: "Disable background daemons",
         detail: "Stops autonomous loops for one-shot or debug sessions.",
         defaultValue: "false",
@@ -499,6 +509,10 @@ final class EnvSettingsStore: ObservableObject {
         envFileURL.path
     }
 
+    var isThreadKeeperDisabled: Bool {
+        Self.boolValue(values[disableBackgroundDaemonsKey] ?? "") ?? false
+    }
+
     init(agentStore: AgentStatusStore?) {
         self.agentStore = agentStore
         self.envFileURL = Self.resolveEnvFileURL()
@@ -553,11 +567,12 @@ final class EnvSettingsStore: ObservableObject {
         statusMessage = "Updated the raw .env preview from the form."
     }
 
-    func save(restart: Bool) {
+    @discardableResult
+    func save(restart: Bool) -> Bool {
         validate()
         guard canSave else {
             statusMessage = "Fix the highlighted settings before saving."
-            return
+            return false
         }
 
         isSaving = true
@@ -579,18 +594,22 @@ final class EnvSettingsStore: ObservableObject {
                 try requestThreadKeeperRestart()
                 statusMessage = "Saved and requested ThreadKeeper restart."
             }
+            agentStore?.refreshThreadKeeperToggleState()
             agentStore?.refresh()
+            return true
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func saveRaw(restart: Bool) {
+    @discardableResult
+    func saveRaw(restart: Bool) -> Bool {
         values = Self.extractKnownValues(from: rawEnvText)
         validate()
         guard canSave else {
             statusMessage = "Fix the highlighted raw .env values before saving."
-            return
+            return false
         }
 
         isSaving = true
@@ -610,10 +629,22 @@ final class EnvSettingsStore: ObservableObject {
                 try requestThreadKeeperRestart()
                 statusMessage = "Saved and requested ThreadKeeper restart."
             }
+            agentStore?.refreshThreadKeeperToggleState()
             agentStore?.refresh()
+            return true
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"
+            return false
         }
+    }
+
+    @discardableResult
+    func setThreadKeeperDisabled(_ disabled: Bool, restart: Bool) -> Bool {
+        if !isLoaded {
+            loadEnv()
+        }
+        setValue(disabled ? "true" : "false", for: disableBackgroundDaemonsKey)
+        return save(restart: restart)
     }
 
     func renamePreset(slot: Int, name: String) {
@@ -766,12 +797,7 @@ final class EnvSettingsStore: ObservableObject {
     }
 
     private static func resolveEnvFileURL() -> URL {
-        let env = ProcessInfo.processInfo.environment
-        let raw = env["THREADKEEPER_ENV_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = raw?.isEmpty == false
-            ? raw!
-            : "~/.threadkeeper/.env"
-        return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        threadKeeperEnvFileURL()
     }
 
     private static func extractKnownValues(from text: String) -> [String: String] {
@@ -930,21 +956,31 @@ final class EnvSettingsStore: ObservableObject {
         return "\"\(escaped)\""
     }
 
+    private static func boolValue(_ value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "on":
+            return true
+        case "false", "0", "no", "off":
+            return false
+        default:
+            return nil
+        }
+    }
+
     private static func isBoolValue(_ value: String) -> Bool {
-        ["true", "false", "1", "0", "yes", "no", "on", "off"]
-            .contains(value.lowercased())
+        boolValue(value) != nil
     }
 
     private static func normalizedValue(_ value: String, for definition: EnvSettingDefinition) -> String {
         guard case .toggle = definition.kind else {
             return value
         }
-        switch value.lowercased() {
-        case "true", "1", "yes", "on":
+        switch boolValue(value) {
+        case .some(true):
             return "true"
-        case "false", "0", "no", "off":
+        case .some(false):
             return "false"
-        default:
+        case .none:
             return value
         }
     }
@@ -966,10 +1002,13 @@ final class AgentStatusStore: ObservableObject {
     @Published var lastError: String?
     @Published var isRefreshing = false
     @Published var isCleaningMemory = false
+    @Published var isThreadKeeperDisabled = false
+    @Published var isTogglingThreadKeeper = false
 
     private var timer: Timer?
     private var envSettingsWindowController: EnvSettingsWindowController?
     private var refreshInFlight = false
+    private var toggleStateRefreshInFlight = false
     private var didPrimeResults = false
     private var didRequestSelfRestart = false
     private var seenResultIds: Set<String> = Set(
@@ -981,6 +1020,7 @@ final class AgentStatusStore: ObservableObject {
             return
         }
         requestNotificationPermission()
+        refreshThreadKeeperToggleState()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: statusPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -1016,6 +1056,7 @@ final class AgentStatusStore: ObservableObject {
                     self.handleUsefulResults(newSnapshot.recentResults)
                     self.snapshot = newSnapshot
                     self.lastError = nil
+                    self.refreshThreadKeeperToggleState()
                     self.checkAppMemoryPressure(reason: "poll")
                 case .failure(let error):
                     self.lastError = error.localizedDescription
@@ -1050,6 +1091,54 @@ final class AgentStatusStore: ObservableObject {
                 case .failure(let error):
                     self.lastError = error.localizedDescription
                 }
+            }
+        }
+    }
+
+    func refreshThreadKeeperToggleState() {
+        guard !toggleStateRefreshInFlight else {
+            return
+        }
+        toggleStateRefreshInFlight = true
+        let envFileURL = threadKeeperEnvFileURL()
+
+        Task.detached(priority: .utility) {
+            let disabled = Self.readThreadKeeperDisabled(envFileURL: envFileURL)
+
+            await MainActor.run {
+                self.isThreadKeeperDisabled = disabled
+                self.toggleStateRefreshInFlight = false
+            }
+        }
+    }
+
+    func toggleThreadKeeper() {
+        guard !isTogglingThreadKeeper else {
+            return
+        }
+        isTogglingThreadKeeper = true
+        let targetDisabled = !isThreadKeeperDisabled
+        let envFileURL = threadKeeperEnvFileURL()
+
+        Task.detached(priority: .utility) {
+            let result = Result {
+                try Self.setThreadKeeperDisabled(
+                    targetDisabled,
+                    envFileURL: envFileURL
+                )
+            }
+
+            await MainActor.run {
+                self.isTogglingThreadKeeper = false
+                switch result {
+                case .success:
+                    self.isThreadKeeperDisabled = targetDisabled
+                    self.lastError = nil
+                case .failure(let error):
+                    self.lastError = error.localizedDescription
+                    self.refreshThreadKeeperToggleState()
+                }
+                self.refresh()
             }
         }
     }
@@ -1113,7 +1202,8 @@ final class AgentStatusStore: ObservableObject {
 
     nonisolated private static func runStatusCommand(
         command: (executable: String, arguments: [String]),
-        arguments: [String]
+        arguments: [String],
+        timeout: TimeInterval? = nil
     ) throws -> Data {
         let process = Process()
         let pipe = Pipe()
@@ -1130,7 +1220,28 @@ final class AgentStatusStore: ObservableObject {
         }
 
         try process.run()
-        process.waitUntilExit()
+        if let timeout {
+            let finished = waitForExit(process, timeout: timeout)
+            if !finished {
+                process.terminate()
+                _ = waitForExit(process, timeout: 2.0)
+                if process.isRunning {
+                    process.interrupt()
+                }
+                throw NSError(
+                    domain: "ThreadKeeperAgentStatus",
+                    code: 124,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: (
+                            "tk-agent-status timed out after "
+                            + "\(Int(timeout)) seconds"
+                        )
+                    ]
+                )
+            }
+        } else {
+            process.waitUntilExit()
+        }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         if process.terminationStatus == 0 {
@@ -1145,6 +1256,164 @@ final class AgentStatusStore: ObservableObject {
             code: Int(process.terminationStatus),
             userInfo: [NSLocalizedDescriptionKey: err.trimmingCharacters(in: .whitespacesAndNewlines)]
         )
+    }
+
+    nonisolated private static func waitForExit(_ process: Process, timeout: TimeInterval) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            semaphore.signal()
+        }
+        if !process.isRunning {
+            process.terminationHandler = nil
+            return true
+        }
+        let result = semaphore.wait(timeout: .now() + timeout)
+        process.terminationHandler = nil
+        return result == .success
+    }
+
+    nonisolated private static func readThreadKeeperDisabled(envFileURL: URL) -> Bool {
+        guard let text = try? String(contentsOf: envFileURL, encoding: .utf8) else {
+            return false
+        }
+        for line in text.components(separatedBy: .newlines) {
+            guard let parsed = parseEnvAssignment(line),
+                  !parsed.isCommented,
+                  parsed.key == disableBackgroundDaemonsKey else {
+                continue
+            }
+            return parseBool(parsed.value) ?? false
+        }
+        return false
+    }
+
+    nonisolated private static func setThreadKeeperDisabled(
+        _ disabled: Bool,
+        envFileURL: URL
+    ) throws {
+        let raw = (
+            try? String(contentsOf: envFileURL, encoding: .utf8)
+        ) ?? ""
+        let updated = mergeThreadKeeperDisabled(raw: raw, disabled: disabled)
+        try FileManager.default.createDirectory(
+            at: envFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try updated.write(to: envFileURL, atomically: true, encoding: .utf8)
+
+        try requestThreadKeeperRestart(timeout: 5.0)
+    }
+
+    nonisolated private static func requestThreadKeeperRestart(timeout: TimeInterval) throws {
+        let process = Process()
+        let errPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        process.arguments = ["-TERM", "-f", "threadkeeper.server"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errPipe
+        defer {
+            errPipe.fileHandleForReading.closeFile()
+        }
+
+        try process.run()
+        let finished = waitForExit(process, timeout: timeout)
+        if !finished {
+            process.terminate()
+            _ = waitForExit(process, timeout: 1.0)
+            throw NSError(
+                domain: "ThreadKeeperAgentStatus",
+                code: 124,
+                userInfo: [
+                    NSLocalizedDescriptionKey: (
+                        "ThreadKeeper restart request timed out after "
+                        + "\(Int(timeout)) seconds"
+                    )
+                ]
+            )
+        }
+        if process.terminationStatus == 0 || process.terminationStatus == 1 {
+            return
+        }
+
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? "pkill failed"
+        throw NSError(
+            domain: "ThreadKeeperAgentStatus",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: err.trimmingCharacters(in: .whitespacesAndNewlines)]
+        )
+    }
+
+    nonisolated private static func mergeThreadKeeperDisabled(raw: String, disabled: Bool) -> String {
+        let value = disabled ? "true" : "false"
+        var output: [String] = []
+        var seen = false
+
+        for line in raw.components(separatedBy: .newlines) {
+            guard let parsed = parseEnvAssignment(line),
+                  parsed.key == disableBackgroundDaemonsKey else {
+                output.append(line)
+                continue
+            }
+
+            if !seen {
+                output.append("\(disableBackgroundDaemonsKey)=\(value)")
+                seen = true
+            } else {
+                output.append(parsed.isCommented ? line : "# \(line)")
+            }
+        }
+
+        if !seen {
+            if !output.isEmpty && output.last != "" {
+                output.append("")
+            }
+            output.append("# Updated by ThreadKeeper widget")
+            output.append("\(disableBackgroundDaemonsKey)=\(value)")
+        }
+
+        while output.last == "" {
+            output.removeLast()
+        }
+        return output.isEmpty ? "" : output.joined(separator: "\n") + "\n"
+    }
+
+    nonisolated private static func parseEnvAssignment(
+        _ line: String
+    ) -> (key: String, value: String, isCommented: Bool)? {
+        var trimmed = line.trimmingCharacters(in: .whitespaces)
+        var isCommented = false
+        if trimmed.hasPrefix("#") {
+            isCommented = true
+            trimmed = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        guard let equalsIndex = trimmed.firstIndex(of: "=") else {
+            return nil
+        }
+        let key = String(trimmed[..<equalsIndex]).trimmingCharacters(in: .whitespaces)
+        guard key == disableBackgroundDaemonsKey else {
+            return nil
+        }
+        let valueStart = trimmed.index(after: equalsIndex)
+        let value = String(trimmed[valueStart...])
+            .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return (key, value, isCommented)
+    }
+
+    nonisolated private static func parseBool(_ value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "on":
+            return true
+        case "false", "0", "no", "off":
+            return false
+        default:
+            return nil
+        }
     }
 
     private func statusCommand() -> (executable: String, arguments: [String]) {
@@ -1357,6 +1626,47 @@ struct ErrorState: View {
         .padding(10)
         .frame(width: panelWidth - 24, alignment: .leading)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ThreadKeeperToggleBar: View {
+    @EnvironmentObject var store: AgentStatusStore
+
+    private var isOff: Bool {
+        store.isThreadKeeperDisabled
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isOff ? "pause.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isOff ? .orange : .green)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isOff ? "ThreadKeeper background is off" : "ThreadKeeper background is on")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Text(isOff ? "Autonomous loops are paused." : "Autonomous loops can run.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button {
+                store.toggleThreadKeeper()
+            } label: {
+                Label(store.isThreadKeeperDisabled ? "Turn On" : "Turn Off", systemImage: "power")
+                    .labelStyle(.titleAndIcon)
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderedProminent)
+            .tint(isOff ? .green : .red)
+            .disabled(store.isTogglingThreadKeeper)
+            .help(isOff ? "Enable ThreadKeeper" : "Disable ThreadKeeper")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(width: panelWidth - 24, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1721,9 +2031,9 @@ struct AgentStatusMenu: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("\(store.snapshot.runningLoopCount)/\(store.snapshot.enabledLoopCount)")
+                Text(store.isThreadKeeperDisabled ? "Off" : "\(store.snapshot.runningLoopCount)/\(store.snapshot.enabledLoopCount)")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(store.isThreadKeeperDisabled ? .secondary : .primary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
@@ -1739,6 +2049,12 @@ struct AgentStatusMenu: View {
             .padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 10)
+
+            Divider()
+
+            ThreadKeeperToggleBar()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
 
             Divider()
 
@@ -1881,6 +2197,15 @@ final class StatusItemController: NSObject {
             return
         }
 
+        if store.isThreadKeeperDisabled {
+            frameIndex = 0
+            button.image = idleImage
+            button.title = ""
+            button.toolTip = "ThreadKeeper off: background daemons paused"
+            button.setAccessibilityLabel("ThreadKeeper off: background daemons paused")
+            return
+        }
+
         let summary = statusSummary
         if store.snapshot.runningLoopCount > 0 {
             button.image = gearFrames[frameIndex % gearFrames.count]
@@ -1898,6 +2223,9 @@ final class StatusItemController: NSObject {
     }
 
     private var statusSummary: String {
+        if store.isThreadKeeperDisabled {
+            return "background daemons off"
+        }
         if store.snapshot.runningLoopCount == 0 {
             return "\(store.snapshot.enabledLoopCount) loops enabled"
         }

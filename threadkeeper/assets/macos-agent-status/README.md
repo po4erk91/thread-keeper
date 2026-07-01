@@ -18,6 +18,8 @@ It polls `tk-agent-status --json` every 15 seconds and shows:
 - last pass summary,
 - backlog count,
 - active spawned-child RSS when a loop has a worker running,
+- a power button that toggles `THREADKEEPER_DISABLE_BG_DAEMONS` in
+  `~/.threadkeeper/.env` and requests a ThreadKeeper restart,
 - a Clean memory button that runs `tk-agent-status --cleanup-memory`,
 - a Settings gear that opens a separate `~/.threadkeeper/.env` editor with
   guided controls, exact dropdowns for spawn CLI/model choices, raw text

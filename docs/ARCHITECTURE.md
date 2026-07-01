@@ -88,6 +88,9 @@ sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
 backlog as due objective probes only, updates the idle chip / running gears
 directly on the status button, keeps loop counts in the popover/tooltip, and
 posts macOS notifications for newly observed useful `recent_results`. The
+popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
+to the same `.env` file and requests a ThreadKeeper restart, giving the widget
+a one-click pause/resume path for autonomous loops. The
 popover header gear opens a separate AppKit window
 for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`): SwiftUI guided
 controls cover common daemon, memory, and spawn-routing knobs, an advanced tab

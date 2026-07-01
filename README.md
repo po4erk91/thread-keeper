@@ -300,7 +300,10 @@ does not need a git checkout for the widget to build. Active loops are sorted
 first (`running`, then `ready`), so background work stays at the top of the
 panel. `tk-agent-status --cleanup-memory` runs the safe cleanup path used by the
 widget: request server cache trims, apply the RSS guard, and remove orphan MCP
-server processes without killing active spawned child agents. The menu-bar
+server processes without killing active spawned child agents. The popover also
+has a power button that flips `THREADKEEPER_DISABLE_BG_DAEMONS` in
+`~/.threadkeeper/.env` and requests a ThreadKeeper restart, so autonomous loops
+can be paused or re-enabled without opening Settings. The menu-bar
 status item is backed by AppKit `NSStatusItem`: it shows the black `memorychip`
 icon while idle, then swaps fixed-center, synchronized gear frames whenever
 `running_loop_count` reports at least one active autonomous loop. The status item is
