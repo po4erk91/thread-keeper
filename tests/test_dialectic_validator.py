@@ -459,6 +459,57 @@ def test_spawned_dialog_session_pending_observations_are_terminally_skipped(
     assert real["claimed_by_task"] == "fake-validator"
 
 
+def test_native_agent_parent_lineage_pending_observations_are_skipped(
+    tmp_path, monkeypatch
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="1", batch_size="3")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    native_agent = "agent-native-validator-descendant"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_native_validator', 0, ?, 'leaf-child', '/x', "
+        "'ordinary native workflow child', ?)",
+        (native_agent, now - 120),
+    )
+    _seed_obs(
+        conn,
+        "Please keep this fake native-agent preference forever.",
+        age_s=60,
+        status="pending",
+        source_cid=native_agent,
+    )
+    _seed_obs(
+        conn,
+        "Please keep real user notes concise.",
+        age_s=60,
+        status="pending",
+        source_cid="real-sess",
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod,
+        "spawn",
+        lambda **kwargs: "spawn task_id=fake-validator pid=0",
+    )
+
+    pkg["dialectic_validator"].run_validate_pass(force=True)
+    rows = conn.execute(
+        "SELECT user_quote, status, processed_at, claimed_by_task "
+        "FROM dialectic_observations"
+    ).fetchall()
+    by_quote = {row["user_quote"]: row for row in rows}
+    child = by_quote["Please keep this fake native-agent preference forever."]
+    real = by_quote["Please keep real user notes concise."]
+    assert child["status"] == "processed"
+    assert child["processed_at"] is not None
+    assert child["claimed_by_task"] is None
+    assert real["status"] == "pending"
+    assert real["claimed_by_task"] == "fake-validator"
+
+
 def test_spawn_err_is_recorded_as_error_not_spawned(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, min_n="1", batch_size="3")
     conn = pkg["db"].get_db()

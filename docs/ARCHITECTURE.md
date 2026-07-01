@@ -25,6 +25,7 @@ threadkeeper/
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
+├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -101,18 +102,32 @@ Foreground parent MCP sessions also start `auto_update.py` when
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
-`pip install --upgrade` in the current interpreter environment. Successful
-updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code, but only after setup and a
-subprocess import smoke check both pass. Install/setup/import failures are
-recorded on the `auto_update_pass` event with `restart=suppressed`, and the
-already-running process stays alive on its current in-memory code.
+`pip install --upgrade` in the current interpreter environment only after the
+latest PyPI release's non-yanked files pass the provenance gate. That gate
+queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
+bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
+and checks the attested subject filename/SHA-256 against PyPI metadata before
+`pip` is invoked. Missing provenance, mismatched publisher identity, or digest
+mismatch returns `refused mode=pip ...` and records an `auto_update_pass` without
+restarting. Successful updates optionally exit the current MCP process
+(`THREADKEEPER_AUTO_UPDATE_RESTART` default true) so the host reconnects to the
+new code, but only after setup and a subprocess import smoke check both pass.
+Install/setup/import failures are recorded on the `auto_update_pass` event with
+`restart=suppressed`, and the already-running process stays alive on its current
+in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt out of the
+standing-consent update channel entirely; the provenance gate itself is
+controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
+mirrors.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
 ## Storage layers
 
-The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
+The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config
+startup and `get_db()` best-effort harden the default store:
+`~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
+sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
+`0600`. Logically six levels:
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
@@ -155,7 +170,9 @@ In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
 `started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
 `tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
-trailers), `shadow_review_pass` (as event.kind).
+trailers), `github_rate_budget` (per-account GitHub API remaining/reset and
+cooldown state shared by roadmap automation), `shadow_review_pass` (as
+event.kind).
 
 ## Identity and self-cid
 
@@ -243,6 +260,15 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   queue is machine-wide single-flight: running-task detection plus
   `candidate-reviewer.lock` prevents multiple foreground MCP servers from
   spawning duplicate reviewers for the same pending candidates.
+- **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
+  existing lessons / skills / concepts inventory through one slim child. Before
+  spawning, it hashes the stable inventory state and compares it to the last
+  recorded complete/endorsed pass; unchanged snapshots record an
+  `unchanged_inventory` no-op event instead of re-deriving the same report.
+  Wake-ups also coalesce behind a non-blocking `curator.lock` plus the running
+  curator-task check, so multiple foreground servers do not re-read and spawn
+  against the same snapshot. `curator_review_status()` exposes the last
+  endorsed `inventory_sha256` and the current inventory hash.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
   for security/privacy risks, memory leaks, runaway daemons, cost waste,
@@ -266,16 +292,38 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
+  `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest
+  same-repo applier PR whose merge state is conflicted (`DIRTY` /
+  `CONFLICTING`). This sweep is a hard preflight before new work: if PR state
+  cannot be read, the pass records `conflicted_pr_fetch_error` and does not
+  pick a fresh roadmap issue, Curator report, or promoted evolve suggestion.
+  Only same-repository `roadmap/…` and `evolve/…` head branches are eligible;
+  fork PRs are never fed to the privileged repair child. The repair child checks
+  out the existing PR branch, merges the current base branch, resolves
+  conflicts, runs the full suite, and pushes back to the same branch. It then
+  runs `gh pr merge --squash --auto --delete-branch`, so GitHub lands the PR
+  into `main` through branch protection/required checks instead of a raw local
+  `git push origin main`.
+  When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
-  response are filtered out). The fetch is explicit `--paginate --slurp`,
+  response are filtered out). The fetch is explicit `--include --paginate`,
   `sort=created&direction=asc`, so the subsequent local priority
   (`roadmap`-labeled issues first, then FIFO by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
   of open issues outside the window. The applier then spawns one
   `evolve_applier` child to implement exactly one issue.
+  **Shared GitHub budget (#38):** parent `gh` calls and the privileged child
+  PATH `gh` wrapper consult `github_rate_budget` before every request. Included
+  REST headers update `X-RateLimit-Remaining` / `X-RateLimit-Reset`; primary
+  403s cool down until reset (bounded to one hour), and secondary-limit or
+  `Retry-After` responses create a bounded exponential cooldown. While the
+  cooldown is active, foreground status commands, reviewer/applier daemons, and
+  spawned shell `gh` calls fail fast instead of independently retrying the same
+  account quota. `agent_status` / `tk-agent-status` and
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in
@@ -541,7 +589,8 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 1. _last_shadow_rowid(): ingest-order high-water mark from
    events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
 2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
-   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own.
+   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own — then
+   apply the shared harvest lineage exclusion from `threadkeeper.harvest`.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
@@ -564,11 +613,22 @@ whose `created_at` lands below the cursor — still gets a fresh rowid above it
 and is reviewed exactly once (a `created_at` cursor silently stepped over it).
 Idempotent: the monotonic rowid advance means a repeated tick will not
 re-evaluate (or re-spawn on) what it has already seen.
+
+Harvest boundary (#36): raw transcript ingest keeps autonomous child rows for
+diagnostics, but dialog-derived memory loops must not learn from their own
+exhaust. `threadkeeper.harvest` builds a recursive excluded-session set from
+known internal prompt openers, spawn preambles, direct `tasks.spawned_cid`
+children, native `agent-*` parent cids, and descendants reached through
+`tasks.parent_cid -> tasks.spawned_cid`. `shadow_review`, `extract_recent`,
+`dialectic_miner`, dialectic-validator pending cleanup, and passive skill-use
+foreground promotion all consult this same boundary.
 SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
-a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
-or oversized writes are rejected so the child patches existing memory instead
-of growing the flat lessons list.
+a hard body cap, a cheap slug-similarity duplicate gate, and a semantic body
+duplicate gate. Strong semantic matches patch/append evidence to the incumbent
+lesson, while borderline or protected matches are rejected with the incumbent
+slug so the child/curator patches existing memory instead of growing the flat
+lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`. Beyond the last few passes, the status tool carries a
@@ -613,8 +673,10 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
   from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
   the curator gets real numbers without the agent being required to call
-  `skill_record` manually. The `skill_watcher` daemon catches external edits
-  to `SKILL.md` (Edit/Write directly, not through skill_manage).
+  `skill_record` manually. `foreground_use_count` is gated by the same harvest
+  lineage exclusion, so autonomous child self-use cannot promote a skill tier.
+  The `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
+  directly, not through skill_manage).
 
 - **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
   `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
@@ -914,7 +976,7 @@ below).
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
-| evolve_applier | 7 | evolve_apply, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
+| evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
@@ -1157,6 +1219,11 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
