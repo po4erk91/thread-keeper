@@ -61,6 +61,14 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
+  consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
+  Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
+  reviewer/applier children honor the same per-account cooldown before making
+  requests. Included REST headers record remaining/reset values, primary 403s
+  cool down until reset (bounded), secondary-rate-limit/`Retry-After` responses
+  use bounded exponential backoff, and `agent_status` / `tk-agent-status` plus
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -338,11 +346,15 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   curator reports are created with default perms while the DB holds full
   transcripts + `verbatim` + the dialectic user model — any local account can
   read it. chmod 0600/0700 on creation. (#21)
-- The autonomous GitHub-writing daemons run `bypassPermissions` with `gh`,
-  guarded only by a prompt line; untrusted stored/issue content is injected
-  into them and nothing mechanically redacts issue/PR bodies. De-privilege the
-  appliers, fence injected content as data, sanitize bodies for paths/secrets,
-  and role-gate the dangerous spawn mode. (#22) Scope: S–M.
+- ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
+  children, but the dangerous pieces are now bounded: `spawn()` refuses
+  `permission_mode="bypassPermissions"` outside the evolve role/write-origin
+  pairs unless an explicit env override is set; stored evolve suggestions and
+  external GitHub issue bodies are embedded inside data fences; and privileged
+  evolve children get a PATH-prepended `gh` wrapper that redacts home-directory
+  paths and common token shapes from public issue/comment/PR bodies before the
+  real GitHub CLI sees them, refusing if a known unsafe pattern remains.
+  Parent-authored claim/dead-letter comments use the same scrubber.
 - ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
   GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
   user-model artifacts with no injection fence and no provenance trust-tiering —
@@ -469,7 +481,6 @@ Follow-up gaps from the 2026-06-17 audit:
 - Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
-- Shared GitHub API budget/backoff across roadmap automation (#38).
 - Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
   the autonomous child now prunes/consolidates lessons + skills in place with no
   pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
@@ -487,14 +498,14 @@ Follow-up gaps from the 2026-06-17 audit:
   and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
   PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
   with unrelated working-tree WIP (#43).
-- Auto-update payload integrity/provenance: the on-by-default daily pip/git
-  self-update installs and runs new code with **no version pin, hash, or PyPI
-  attestation/signed-tag verification**, then restarts on it. A compromised
-  release auto-propagates to every install within ~24h. Distinct from #19
-  (closed reliability smoke-check gate — a malicious-but-importable release
-  passes that) and #22 (GitHub-writing daemons). Verify provenance before
-  upgrade and document auto-update as standing consent to run maintainer code
-  (#44).
+- ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
+  self-updates now verify PyPI Integrity API provenance before invoking `pip`,
+  require the expected GitHub Trusted Publisher identity, check the attested
+  filename/SHA-256 against PyPI metadata, and refuse missing/mismatched
+  provenance without restart. Docs now state that auto-update is standing
+  consent to run future maintainer code and point to the opt-out. Signed
+  git tag/commit enforcement remains a later hardening slice for editable
+  checkouts.
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):

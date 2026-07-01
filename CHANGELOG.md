@@ -7,6 +7,26 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
+  resolve the candidate PyPI release before running `pip`, require PyPI
+  Integrity API provenance from the expected GitHub Trusted Publisher
+  (`po4erk91/thread-keeper`, `publish.yml`, environment `pypi`), and verify the
+  attested filename/SHA-256 against PyPI metadata. Missing or mismatched
+  provenance records a refused `auto_update_pass` and keeps the current
+  known-good process running. New env knobs document the break-glass provenance
+  opt-out and the expected publisher identity.
+
+- **Shared GitHub API budget/cooldown ledger for roadmap automation (#38).**
+  Roadmap issue fetch/comment/PR-guard calls and privileged child `gh` wrapper
+  invocations now consult one SQLite `github_rate_budget` row per local GitHub
+  account before making requests. Included REST headers record
+  remaining/reset values, primary 403s cool down until reset, secondary
+  rate-limit / `Retry-After` responses use bounded exponential backoff, and
+  `agent_status` / `tk-agent-status` plus `evolve_apply_status()` expose the
+  current remaining count or cooldown window.
+
 ### Fixed
 
 - **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
@@ -17,6 +37,14 @@ version bumps follow semver per the policy in
   coalesce behind the existing `curator.lock` plus running-child guard, and
   `curator_review_status()` now shows the last endorsed and current inventory
   hashes so operators can see when the store is quiescent.
+
+- **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
+  already-open same-repo applier PRs before taking fresh roadmap/report/evolve
+  work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
+  applier spawns a repair child that updates that existing branch and runs the
+  suite instead of starting a new task, then lands the repaired PR into `main`
+  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
+  the pass fails closed rather than moving on to new work.
 
 ## v0.14.0 — 2026-06-25
 
@@ -103,7 +131,7 @@ version bumps follow semver per the policy in
 - **Roadmap issue drain pagination (#81).** The evolve applier no longer asks
   GitHub for a single newest-first 50-issue window before applying its
   `roadmap`-label/FIFO sort. `_fetch_open_issues()` now uses paginated,
-  oldest-first REST reads (`gh api --paginate --slurp` with
+  oldest-first REST reads (`gh api --include --paginate` with
   `sort=created&direction=asc`), filters pull requests, and only then applies a
   generous local candidate window with an explicit warning if any open issues
   are left outside it. The evolve reviewer prompt now uses the same paginated
@@ -274,6 +302,20 @@ version bumps follow semver per the policy in
   the stale ARCHITECTURE bullet was removed. Docs-only; no code or behavior change.
 
 ### Security
+
+- **De-privilege and sanitize autonomous GitHub-writing daemons (#22).** The
+  evolve reviewer/applier paths no longer rely only on prompt text around their
+  public GitHub writes. `spawn()` now refuses
+  `permission_mode="bypassPermissions"` unless the call comes from the evolve
+  daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
+  `evolve_applier`/`evolve_apply`) or the operator sets
+  `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Stored evolve suggestions and
+  GitHub issue bodies are embedded in explicit data fences before a privileged
+  child sees them. Privileged evolve children also get a PATH-prepended `gh`
+  wrapper that redacts home-directory paths and common token shapes from
+  `gh issue create`, `gh issue comment`, and `gh pr create` bodies before the
+  real GitHub CLI receives them, refusing if unsafe content remains. The
+  parent-authored public claim/dead-letter comments use the same scrubber.
 
 - **Split the evolve reviewer's web research out of its privileged child (#79).**
   The reviewer was the only learning loop granted `WebSearch`/`WebFetch`, and it

@@ -25,6 +25,7 @@ threadkeeper/
 ├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
+├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -101,12 +102,22 @@ Foreground parent MCP sessions also start `auto_update.py` when
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
-`pip install --upgrade` in the current interpreter environment. Successful
-updates optionally exit the current MCP process (`THREADKEEPER_AUTO_UPDATE_RESTART`
-default true) so the host reconnects to the new code, but only after setup and a
-subprocess import smoke check both pass. Install/setup/import failures are
-recorded on the `auto_update_pass` event with `restart=suppressed`, and the
-already-running process stays alive on its current in-memory code.
+`pip install --upgrade` in the current interpreter environment only after the
+latest PyPI release's non-yanked files pass the provenance gate. That gate
+queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
+bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
+and checks the attested subject filename/SHA-256 against PyPI metadata before
+`pip` is invoked. Missing provenance, mismatched publisher identity, or digest
+mismatch returns `refused mode=pip ...` and records an `auto_update_pass` without
+restarting. Successful updates optionally exit the current MCP process
+(`THREADKEEPER_AUTO_UPDATE_RESTART` default true) so the host reconnects to the
+new code, but only after setup and a subprocess import smoke check both pass.
+Install/setup/import failures are recorded on the `auto_update_pass` event with
+`restart=suppressed`, and the already-running process stays alive on its current
+in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt out of the
+standing-consent update channel entirely; the provenance gate itself is
+controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
+mirrors.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 
@@ -155,7 +166,9 @@ In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
 `started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
 `tokens_in`/`tokens_out`/`tokens_total`/`cost_usd` captured from CLI usage
-trailers), `shadow_review_pass` (as event.kind).
+trailers), `github_rate_budget` (per-account GitHub API remaining/reset and
+cooldown state shared by roadmap automation), `shadow_review_pass` (as
+event.kind).
 
 ## Identity and self-cid
 
@@ -275,16 +288,38 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
-  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) fetches open GitHub issues via the
+  `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
+  `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest
+  same-repo applier PR whose merge state is conflicted (`DIRTY` /
+  `CONFLICTING`). This sweep is a hard preflight before new work: if PR state
+  cannot be read, the pass records `conflicted_pr_fetch_error` and does not
+  pick a fresh roadmap issue, Curator report, or promoted evolve suggestion.
+  Only same-repository `roadmap/…` and `evolve/…` head branches are eligible;
+  fork PRs are never fed to the privileged repair child. The repair child checks
+  out the existing PR branch, merges the current base branch, resolves
+  conflicts, runs the full suite, and pushes back to the same branch. It then
+  runs `gh pr merge --squash --auto --delete-branch`, so GitHub lands the PR
+  into `main` through branch protection/required checks instead of a raw local
+  `git push origin main`.
+  When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
-  response are filtered out). The fetch is explicit `--paginate --slurp`,
+  response are filtered out). The fetch is explicit `--include --paginate`,
   `sort=created&direction=asc`, so the subsequent local priority
   (`roadmap`-labeled issues first, then FIFO by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
   of open issues outside the window. The applier then spawns one
   `evolve_applier` child to implement exactly one issue.
+  **Shared GitHub budget (#38):** parent `gh` calls and the privileged child
+  PATH `gh` wrapper consult `github_rate_budget` before every request. Included
+  REST headers update `X-RateLimit-Remaining` / `X-RateLimit-Reset`; primary
+  403s cool down until reset (bounded to one hour), and secondary-limit or
+  `Retry-After` responses create a bounded exponential cooldown. While the
+  cooldown is active, foreground status commands, reviewer/applier daemons, and
+  spawned shell `gh` calls fail fast instead of independently retrying the same
+  account quota. `agent_status` / `tk-agent-status` and
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in
@@ -329,7 +364,14 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   failure instead of switching tasks. The PR body must include `Closes #N`;
   after `gh pr create` prints a real URL, the child calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)` so the daemon does
-  not pick it again while human review/merge is pending. If no issue is pending,
+  not pick it again while human review/merge is pending. **Issue/body safety
+  (#22):** the issue body and legacy evolve suggestions are embedded only inside
+  explicit data fences, and privileged evolve children get a PATH-prepended
+  `gh` wrapper. For `gh issue create`, `gh issue comment`, and `gh pr create`,
+  the wrapper redacts `/Users/<name>/...` and `/home/<name>/...` paths plus
+  common token shapes before the real GitHub CLI receives the body, refusing if
+  a known unsafe pattern remains. Parent-authored claim/dead-letter comments use
+  the same scrubber before spawning `gh`. If no issue is pending,
   it falls back to the latest complete Curator `REPORT-*.md`, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
   uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
@@ -397,7 +439,12 @@ For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
 `--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
-for branch/commit/PR creation. Web tools (`WebSearch`/`WebFetch`) are never
+for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
+`bypassPermissions` unless the request comes from the evolve daemon
+role/write-origin pairs (`evolve_reviewer`/`evolve`,
+`evolve_applier`/`evolve_apply`), or the operator explicitly sets
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Web tools
+(`WebSearch`/`WebFetch`) are never
 granted to a `bypassPermissions` child: the evolve reviewer's web research runs
 in a separate read-only `permission_mode="auto"` child with no shell, so the
 untrusted web content and the exfiltration-capable context are never the same
@@ -900,7 +947,7 @@ below).
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
-| evolve_applier | 7 | evolve_apply, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
+| evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
@@ -1143,6 +1190,11 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW` | `publish.yml` | expected GitHub Actions workflow filename in PyPI provenance |
+| `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT` | `pypi` | expected GitHub Actions environment in PyPI provenance |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap; 0 disables |
 | `THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB` | 500 | initial slim child RSS guess |
 | `THREADKEEPER_SPAWN_ESTIMATE_FULL_MB` | 1500 | initial full child RSS guess |
