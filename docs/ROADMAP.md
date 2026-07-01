@@ -793,6 +793,17 @@ GitHub issues:
   surfaced correctly so the curator can trust the disuse/prune signal instead of
   operating on a dead or undercounted metric (#168).
 
+**2026-06-26 reviewer additions (issue-backed).**
+A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
+path:
+
+- **Curator merge-verdict memory.** Persist rejected merge candidates and
+  surface cross-link adjacency in the curator inventory so later passes stop
+  re-litigating the same layered pairs (#189).
+- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
+  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
+  cross-links or consolidate while the lesson is being materialized (#190).
+
 ---
 
 ## Principle
