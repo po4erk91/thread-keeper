@@ -53,6 +53,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     # exercise the unstubbed gh/REST paths can restore them.
     orig = {
         "_fetch_open_issues": evolve_applier._fetch_open_issues,
+        "_fetch_open_prs": evolve_applier._fetch_open_prs,
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
     }
     monkeypatch.setattr(
@@ -62,6 +63,10 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     monkeypatch.setattr(
         evolve_applier, "_fetch_issue_comments",
         lambda issue_number, repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        evolve_applier, "_fetch_open_prs",
+        lambda repo_root=None: ([], ""),
     )
     monkeypatch.setattr(
         evolve_applier, "_comment_issue_claim",
@@ -173,6 +178,24 @@ def _rest_issue(number, title=None, labels=("roadmap",),
             "url": f"https://api.github.com/repos/o/r/pulls/{number}"
         }
     return item
+
+
+def _pr(number, title=None, head=None, merge_state="DIRTY",
+        mergeable="CONFLICTING", cross_repo=False, draft=False):
+    return {
+        "number": number,
+        "title": title or f"PR {number}",
+        "url": f"https://github.com/o/r/pull/{number}",
+        "headRefName": head or f"roadmap/issue-{number}-thing-abcdef",
+        "baseRefName": "main",
+        "isDraft": draft,
+        "mergeStateStatus": merge_state,
+        "mergeable": mergeable,
+        "isCrossRepository": cross_repo,
+        "headRepository": {"nameWithOwner": "o/r"},
+        "headRepositoryOwner": {"login": "o"},
+        "author": {"login": "po4erk91"},
+    }
 
 
 def _claim_comment(created_at="2026-06-14T12:00:00Z"):
@@ -548,8 +571,9 @@ def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
     assert only["authorAssociation"] == "OWNER"
     assert only["authorLogin"] == "po4erk91"
     assert pkg["ea"]._issue_labels(only) == ["roadmap"]
+    assert "--include" in calls[0]
     assert "--paginate" in calls[0]
-    assert "--slurp" in calls[0]
+    assert "--slurp" not in calls[0]
     endpoint = calls[0][-1]
     assert "sort=created" in endpoint
     assert "direction=asc" in endpoint
@@ -612,6 +636,94 @@ def test_fetch_open_issues_warns_when_candidate_window_truncates(
         and "5 newest issue(s) not considered" in msg
         for msg in messages
     )
+
+
+def test_conflicted_applier_prs_filters_to_same_repo_applier_branches(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [
+                _pr(10, "roadmap dirty", head="roadmap/issue-10-x-aaaaaa"),
+                _pr(11, "clean", head="roadmap/issue-11-y-bbbbbb",
+                    merge_state="CLEAN", mergeable="MERGEABLE"),
+                _pr(12, "legacy evolve dirty", head="evolve/apply-12-brief"),
+                _pr(13, "human branch dirty", head="feature/manual-fix"),
+                _pr(14, "fork dirty", head="roadmap/issue-14-z-cccccc",
+                    cross_repo=True),
+            ],
+            "",
+        ),
+    )
+
+    prs, err = pkg["ea"]._conflicted_applier_prs()
+
+    assert err == ""
+    assert [int(pr["number"]) for pr in prs] == [10, 12]
+
+
+def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps([
+            _pr(22, "Conflicted PR", head="roadmap/issue-22-conflict-aaaaaa")
+        ])
+        stderr = ""
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(pkg["ea"].subprocess, "run", _run)
+
+    prs, err = pkg["orig"]["_fetch_open_prs"]()
+
+    assert err == ""
+    assert [int(pr["number"]) for pr in prs] == [22]
+    joined = " ".join(calls[0])
+    assert "mergeStateStatus" in joined
+    assert "mergeable" in joined
+    assert "isCrossRepository" in joined
+    assert "--limit 1000" in joined
+
+
+def test_apply_conflicted_pr_builds_repair_spawn(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_pr(44, "Resolve roadmap branch", head="roadmap/issue-44-fix")],
+            "",
+        ),
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_conflicted_pr()
+
+    assert out.startswith("spawned conflicted_pr=#44"), out
+    assert calls["role"] == "evolve_applier"
+    assert calls["write_origin"] == "evolve_apply"
+    assert calls["permission_mode"] == "bypassPermissions"
+    tools = calls["extra_allowed_tools"]
+    assert "Bash" in tools and "Edit" in tools and "Write" in tools
+    prompt = calls["prompt"]
+    assert "PULL REQUEST #44" in prompt
+    assert "repair merge conflicts" in prompt
+    assert "git checkout -B roadmap/issue-44-fix origin/roadmap/issue-44-fix" in prompt
+    assert "git merge --no-edit origin/main" in prompt
+    assert "git push origin roadmap/issue-44-fix" in prompt
+    assert "gh pr merge 44 --squash --auto --delete-branch" in prompt
+    assert "gh pr create" not in prompt
+    assert "Never run `git push origin main` directly" in prompt
+    assert "evolve_mark_roadmap_issue_applied" not in tools
+    assert "evolve_mark_applied" not in tools
+    assert "Do NOT call" in prompt
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
@@ -1319,6 +1431,74 @@ def test_run_apply_pass_picks_roadmap_issue_before_curator_and_evolve(
     assert "Curator REPORT" not in calls["prompt"]
 
 
+def test_run_apply_pass_repairs_conflicted_pr_before_new_work(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "older promoted code change", status="promoted",
+                created_at=1000)
+    _write_report(pkg)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_pr(44, "Conflicted roadmap PR",
+                 head="roadmap/issue-44-conflict-aaaaaa")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned conflicted_pr=#44"), out
+    assert "PULL REQUEST #44" in calls["prompt"]
+    assert "ISSUE #2: Hot config" not in calls["prompt"]
+    assert "Curator REPORT" not in calls["prompt"]
+    ev = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_apply_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert "conflicted_pr spawned conflicted_pr=#44" in ev["summary"]
+
+
+def test_run_apply_pass_blocks_new_work_when_pr_sweep_fails(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "older promoted code change", status="promoted",
+                created_at=1000)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: ([], "gh_pr_list_failed: rate limited"),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+
+    def _boom(**kw):
+        raise AssertionError("must not take new work when PR sweep fails")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out == "conflicted_pr_fetch_error: gh_pr_list_failed: rate limited"
+    ev = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_apply_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert ev["summary"] == out
+
+
 def test_run_apply_pass_skips_unstartable_issue_and_spawns_next(
     tmp_path, monkeypatch,
 ):
@@ -1770,3 +1950,21 @@ def test_evolve_apply_status_surfaces_attempt_ledger(tmp_path, monkeypatch):
     assert "roadmap attempt ledger" in out
     assert "#82  attempts=" in out and "dead_letter" in out
     assert "#50  attempts=" in out and "backoff" in out
+
+
+def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_pr(44, "Conflicted roadmap PR",
+                 head="roadmap/issue-44-conflict-aaaaaa")],
+            "",
+        ),
+    )
+
+    out = _tool(pkg, "evolve_apply_status")()
+
+    assert "conflicted_prs=1" in out
+    assert "conflicted PRs (next first):" in out
+    assert "#44  roadmap/issue-44-conflict-aaaaaa" in out

@@ -26,11 +26,6 @@ _ingest_interval_s = INGEST_INTERVAL_S
 _ingest_recent_window_s = INGEST_RECENT_WINDOW_S
 _last_ingest_event_at = 0
 _INGEST_EVENT_IDLE_THROTTLE_S = 60
-_SPAWNED_SESSION_MARKER = (
-    "You were spawned in the background by parent conversation"
-)
-
-
 def _record_ingest_pass(
     conn: sqlite3.Connection,
     *,
@@ -169,29 +164,18 @@ def _scan_message_for_skill_use(msg: dict) -> list[str]:
 
 def _is_spawned_child_session(conn: sqlite3.Connection,
                              session_id: Optional[str]) -> bool:
-    """True when `session_id` belongs to a child we spawned (its cid is a
-    tasks.spawned_cid). Skill use inside review-fork children must NOT count
-    toward tier promotion — the system observing its own behavior can't
-    promote a skill, mirroring the dialectic evidence discount.
+    """True when `session_id` belongs to autonomous child lineage.
 
-    Best-effort: spawned_cid is linked lazily, so a just-started child may
+    Skill use inside review-fork/native child descendants must NOT count toward
+    tier promotion — the system observing its own behavior can't promote a
+    skill, mirroring the dialectic evidence discount.
+
+    Best-effort: task lineage is linked lazily, so a just-started child may
     briefly read as foreground. Acceptable — the backfill pass corrects it
     once the link resolves."""
-    if not session_id:
-        return False
-    try:
-        if conn.execute(
-            "SELECT 1 FROM tasks WHERE spawned_cid=? LIMIT 1", (session_id,)
-        ).fetchone() is not None:
-            return True
-        return conn.execute(
-            "SELECT 1 FROM dialog_messages "
-            "WHERE session_id=? AND role='user' AND instr(content, ?) > 0 "
-            "LIMIT 1",
-            (session_id, _SPAWNED_SESSION_MARKER),
-        ).fetchone() is not None
-    except sqlite3.OperationalError:
-        return False
+    from .harvest import is_harvest_excluded_session
+
+    return is_harvest_excluded_session(conn, session_id)
 
 
 def _normalize_codex_spawned_session_ids(conn: sqlite3.Connection) -> int:

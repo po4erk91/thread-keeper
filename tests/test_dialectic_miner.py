@@ -325,3 +325,40 @@ def test_captures_english_foreground_and_excludes_codex_spawned_session(
     assert [(r["source_cid"], r["user_quote"]) for r in rows] == [
         ("real-sess", "Please implement a detailed plan for this repository.")
     ]
+
+
+def test_excludes_native_agent_parent_lineage(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    native_agent = "agent-native-dialectic-descendant"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_native_dialectic', 0, ?, 'leaf-child', '/x', "
+        "'ordinary native workflow child', ?)",
+        (native_agent, now - 120),
+    )
+    _seed(
+        conn,
+        "user",
+        "I want you to keep this fake native-agent preference forever.",
+        now - 90,
+        session_id=native_agent,
+    )
+    _seed(
+        conn,
+        "user",
+        "I prefer compact final summaries with no filler.",
+        now - 60,
+        session_id="real-sess",
+    )
+    conn.commit()
+
+    out = pkg["dialectic_miner"].run_mine_pass(force=True)
+    assert "captured=1" in out
+    rows = conn.execute(
+        "SELECT source_cid, user_quote FROM dialectic_observations"
+    ).fetchall()
+    assert [(r["source_cid"], r["user_quote"]) for r in rows] == [
+        ("real-sess", "I prefer compact final summaries with no filler.")
+    ]

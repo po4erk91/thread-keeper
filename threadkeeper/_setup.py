@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .permissions import chmod_private_dir
+
 # ----------------------------------------------------------------------
 # Paths
 # ----------------------------------------------------------------------
@@ -295,9 +297,12 @@ def install_tk_dir(dry_run: bool) -> str:
     """Ensure ~/.threadkeeper/ exists. DB lives here; hooks subdir is
     handled separately by install_hooks."""
     if TK_DIR.exists():
+        if not dry_run:
+            chmod_private_dir(TK_DIR)
         return f"~/.threadkeeper: already exists"
     if not dry_run:
         TK_DIR.mkdir(parents=True, exist_ok=True)
+        chmod_private_dir(TK_DIR)
     return f"~/.threadkeeper: {'would create' if dry_run else 'created'}"
 
 
