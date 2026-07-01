@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from .config import DB_PATH, EMBED_DIM
+from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
+from .permissions import harden_storage_paths
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +424,20 @@ CREATE TABLE IF NOT EXISTS resource_controls (
     result        TEXT
 );
 
+-- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
+-- across foreground status processes, reviewer/applier daemons, and spawned
+-- gh-wrapper children so one account-level throttle stops all workers.
+CREATE TABLE IF NOT EXISTS github_rate_budget (
+    account          TEXT PRIMARY KEY,
+    remaining        INTEGER,
+    reset_at         INTEGER,
+    cooldown_until   INTEGER NOT NULL DEFAULT 0,
+    backoff_attempts INTEGER NOT NULL DEFAULT 0,
+    last_status      INTEGER,
+    last_reason      TEXT,
+    updated_at       INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -443,6 +458,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_spawned  ON tasks(spawned_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_github_rate_budget_cooldown
+    ON github_rate_budget(cooldown_until);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
 CREATE INDEX IF NOT EXISTS idx_probes_enabled     ON probes(enabled) WHERE enabled=1;
 CREATE INDEX IF NOT EXISTS idx_probe_results_cat  ON probe_results(category, created_at DESC);
@@ -481,12 +498,23 @@ END;
 
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+        create_db=True,
+    )
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     # WAL = concurrent readers + one writer without blocking. Required for
     # running Desktop + CLI + VS Code against the same DB simultaneously.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
     # Load sqlite-vec extension if available. Must happen BEFORE schema
     # so the vec0 virtual tables can be created in this connection.
     vec_loaded = _try_load_vec(conn)
@@ -600,5 +628,10 @@ def get_db() -> sqlite3.Connection:
             conn.execute(idx)
         except sqlite3.OperationalError:
             pass
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
     conn.row_factory = sqlite3.Row
     return conn
