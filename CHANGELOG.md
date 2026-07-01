@@ -66,9 +66,10 @@ version bumps follow semver per the policy in
   already-open same-repo applier PRs before taking fresh roadmap/report/evolve
   work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
   applier spawns a repair child that updates that existing branch and runs the
-  suite instead of starting a new task, then lands the repaired PR into `main`
-  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
-  the pass fails closed rather than moving on to new work.
+  suite instead of starting a new task, then waits for GitHub checks and lands
+  the repaired PR into `main` via `gh pr merge --squash --delete-branch`. If
+  the PR sweep cannot read GitHub state, the pass fails closed rather than
+  moving on to new work.
 
 ## v0.14.0 — 2026-06-25
 

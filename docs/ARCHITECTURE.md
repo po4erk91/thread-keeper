@@ -302,9 +302,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   fork PRs are never fed to the privileged repair child. The repair child checks
   out the existing PR branch, merges the current base branch, resolves
   conflicts, runs the full suite, and pushes back to the same branch. It then
-  runs `gh pr merge --squash --auto --delete-branch`, so GitHub lands the PR
-  into `main` through branch protection/required checks instead of a raw local
-  `git push origin main`.
+  waits for GitHub checks on the pushed PR head and runs
+  `gh pr merge --squash --delete-branch`, so GitHub lands the PR into `main`
+  through branch protection instead of a raw local `git push origin main`.
   When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the

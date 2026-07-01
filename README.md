@@ -673,9 +673,10 @@ any new issue/report/evolve work is started; if the PR sweep itself cannot read
 GitHub state, the pass fails closed instead of taking fresh work blind. The
 conflict-repair child checks out the existing PR branch, merges the current
 base branch, resolves conflicts, runs the full suite, and pushes back to the
-same branch. It then runs `gh pr merge --squash --auto --delete-branch`, so
-GitHub lands the repaired PR into `main` through branch protection and required
-checks rather than a raw local `git push origin main`. The roadmap issue child
+same branch. It then waits for GitHub checks on the pushed PR head and runs
+`gh pr merge --squash --delete-branch`, so GitHub lands the repaired PR into
+`main` through branch protection rather than a raw local `git push origin main`.
+The roadmap issue child
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
 failure prevents startup. It implements exactly that issue, runs the full suite,
