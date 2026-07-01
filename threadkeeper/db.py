@@ -281,6 +281,8 @@ CREATE TABLE IF NOT EXISTS user_dialectic (
     superseded_by     TEXT REFERENCES user_dialectic(id),
     created_by_cid    TEXT,
     created_at        INTEGER NOT NULL,
+    valid_from        INTEGER,
+    valid_to          INTEGER,
     last_evidence_at  INTEGER
 );
 
@@ -570,6 +572,8 @@ def get_db() -> sqlite3.Connection:
         "ALTER TABLE user_dialectic ADD COLUMN tier "
         "TEXT NOT NULL DEFAULT 'hypothesis'",
         "ALTER TABLE user_dialectic ADD COLUMN tier_changed_at INTEGER",
+        "ALTER TABLE user_dialectic ADD COLUMN valid_from INTEGER",
+        "ALTER TABLE user_dialectic ADD COLUMN valid_to INTEGER",
         "ALTER TABLE skill_usage ADD COLUMN tier "
         "TEXT NOT NULL DEFAULT 'hypothesis'",
         "ALTER TABLE skill_usage ADD COLUMN tier_changed_at INTEGER",
@@ -615,10 +619,35 @@ def get_db() -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
 
+    try:
+        conn.execute(
+            "UPDATE user_dialectic SET valid_from=created_at "
+            "WHERE valid_from IS NULL"
+        )
+        conn.execute(
+            "UPDATE user_dialectic "
+            "SET valid_to=("
+            "  SELECT COALESCE(new.valid_from, new.created_at) "
+            "  FROM user_dialectic AS new "
+            "  WHERE new.id=user_dialectic.superseded_by"
+            ") "
+            "WHERE state='superseded' "
+            "  AND superseded_by IS NOT NULL "
+            "  AND valid_to IS NULL "
+            "  AND EXISTS ("
+            "    SELECT 1 FROM user_dialectic AS new "
+            "    WHERE new.id=user_dialectic.superseded_by"
+            "  )"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     # Indexes for tier-aware queries. Safe to repeat (IF NOT EXISTS).
     for idx in (
         "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
         "ON user_dialectic(tier)",
+        "CREATE INDEX IF NOT EXISTS idx_dialectic_validity "
+        "ON user_dialectic(valid_from, valid_to)",
         "CREATE INDEX IF NOT EXISTS idx_dialectic_obs_claimed "
         "ON dialectic_observations(status, claimed_at)",
         "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
@@ -628,6 +657,10 @@ def get_db() -> sqlite3.Connection:
             conn.execute(idx)
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     harden_storage_paths(
         DB_PATH,
         env_file=_ENV_FILE,

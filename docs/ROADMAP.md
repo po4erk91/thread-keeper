@@ -464,9 +464,12 @@ mutation count.
   existing text-nudge fallback, so Codex / Claude Desktop / Antigravity /
   generic MCP clients do not regress. Curator apply and `review_candidates`
   remain natural follow-on flows if more coverage is needed.
-- **Bi-temporal** dialectic claims (`valid_from`/`valid_to`, Zep/Graphiti
-  "invalidate, don't delete") so a superseded preference records *when* it
-  stopped being valid, enabling time-scoped user-model queries. (#28)
+- ✅ DONE (#28). **Bi-temporal** dialectic claims (`valid_from`/`valid_to`,
+  Zep/Graphiti "invalidate, don't delete") so a superseded preference records
+  *when* it stopped being valid. `dialectic_supersede` now closes the old valid
+  interval at the new claim's start; `dialectic_review(as_of=...)` and
+  `dialectic_synthesis(include_history=True)` expose time-scoped user-model
+  queries.
 - **Decay/eviction** scoring for the saturating ~1054-section lessons store.
   ✅ DONE — lesson reads now update `lesson_usage`, and the curator dry-run
   inventory surfaces ranked stale lesson candidates using a recency/frequency

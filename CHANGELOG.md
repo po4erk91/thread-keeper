@@ -9,29 +9,22 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Bi-temporal dialectic claims (#28).** `user_dialectic` now carries
+  `valid_from` / `valid_to` valid-time bounds alongside `created_at` ingestion
+  time. New claims start at `valid_from=created_at`, and
+  `dialectic_supersede` now preserves the old row while closing its interval at
+  the new claim's `valid_from`. Existing rows are backfilled on migration
+  (`valid_from=created_at`, superseded rows closed at their successor start).
+  `dialectic_review(as_of=...)` supports time-scoped queries,
+  `dialectic_synthesis(include_history=True)` can render validity history, and
+  `brief()` labels the dialectic section as `current as of <date>` once closed
+  validity intervals exist.
+
 - **Semantic lesson dedup at write time (#34).** Loop-authored
   `lesson_append` calls now embed candidate lesson bodies and compare them
   against existing lessons. Strong semantic matches patch/append evidence to
   the incumbent lesson, while borderline or protected matches return a
   duplicate signal instead of creating a sibling slug.
-### Fixed
-
-- **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
-  dialectic mining, dialectic-validator pending cleanup, and passive skill-use
-  foreground promotion now share `threadkeeper.harvest`: a recursive
-  provenance boundary that excludes internal prompt sessions, spawn preambles,
-  direct `tasks.spawned_cid` children, native `agent-*` parent cids, and
-  descendants reached through `tasks.parent_cid -> tasks.spawned_cid`. Raw
-  dialog ingest still persists those rows for diagnostics, but the learning
-  loops no longer treat native autonomous descendants as user-facing signal.
-- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
-  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
-  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
-  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
-  spawn stdout logs are created `0600`; chmod failures are debug-only and never
-  block startup on platforms without POSIX mode bits.
-
-### Added
 
 - **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
   resolve the candidate PyPI release before running `pip`, require PyPI
@@ -52,6 +45,22 @@ version bumps follow semver per the policy in
   current remaining count or cooldown window.
 
 ### Fixed
+
+- **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
+  dialectic mining, dialectic-validator pending cleanup, and passive skill-use
+  foreground promotion now share `threadkeeper.harvest`: a recursive
+  provenance boundary that excludes internal prompt sessions, spawn preambles,
+  direct `tasks.spawned_cid` children, native `agent-*` parent cids, and
+  descendants reached through `tasks.parent_cid -> tasks.spawned_cid`. Raw
+  dialog ingest still persists those rows for diagnostics, but the learning
+  loops no longer treat native autonomous descendants as user-facing signal.
+
+- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
+  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
+  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
+  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
+  spawn stdout logs are created `0600`; chmod failures are debug-only and never
+  block startup on platforms without POSIX mode bits.
 
 - **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
   a stable `inventory_sha256` over lessons, lesson usage, active/stale skills,

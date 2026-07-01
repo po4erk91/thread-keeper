@@ -780,6 +780,14 @@ A model of you, accumulated as you use the agent. `dialectic_claim`,
 → low / medium / high / disputed confidence.
 Grouped by domain (style, values, workflow, ...) in `brief()`.
 
+Claims are bi-temporal: `created_at` records ingestion time, while
+`valid_from` / `valid_to` record when a preference or belief applies. New
+claims start at `valid_from=created_at`; `dialectic_supersede` preserves the old
+claim and its evidence but closes the old valid-time interval at the new claim's
+`valid_from`. Normal `brief()` / synthesis output remains the current active
+slice; `dialectic_review(as_of=...)` and
+`dialectic_synthesis(include_history=True)` expose past validity intervals.
+
 **Source-based evidence discount.** Each evidence row's effective weight
 is `base_weight × discount(WRITE_ORIGIN)`. Foreground (direct user / human
 signal) = 1.0. shadow_review / background_review / candidate_review /
