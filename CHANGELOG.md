@@ -38,6 +38,15 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
+  a stable `inventory_sha256` over lessons, lesson usage, active/stale skills,
+  and concepts before spawning. If the snapshot matches the last complete or
+  endorsed pass, the scheduler records an `unchanged_inventory` no-op event
+  instead of launching another full curator child. Concurrent wake-ups still
+  coalesce behind the existing `curator.lock` plus running-child guard, and
+  `curator_review_status()` now shows the last endorsed and current inventory
+  hashes so operators can see when the store is quiescent.
+
 - **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
   already-open same-repo applier PRs before taking fresh roadmap/report/evolve
   work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
