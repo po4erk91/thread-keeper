@@ -336,11 +336,11 @@ learning-loop reliability, and current MCP/memory research) surfaced the
 following concrete gaps. Each is tracked as a GitHub issue; the evolve
 applier drains them. Listed here so the roadmap reflects the live backlog.
 
-**Security & privilege hardening.** Two real gaps:
-- The local store is world-readable. `~/.threadkeeper/db.sqlite`, `.env`, and
-  curator reports are created with default perms while the DB holds full
-  transcripts + `verbatim` + the dialectic user model — any local account can
-  read it. chmod 0600/0700 on creation. (#21)
+**Security & privilege hardening.** Tracked gaps:
+- ✅ DONE (#21). The default local store is hardened on POSIX startup/DB open:
+  `~/.threadkeeper` is `0700`; `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
+  `.env`, and curator `REPORT-*.md` files are `0600`; headless spawn logs are
+  created `0600`.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
   `permission_mode="bypassPermissions"` outside the evolve role/write-origin

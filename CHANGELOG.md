@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
+  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
+  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
+  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
+  spawn stdout logs are created `0600`; chmod failures are debug-only and never
+  block startup on platforms without POSIX mode bits.
+
 ### Added
 
 - **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
@@ -80,7 +89,7 @@ version bumps follow semver per the policy in
   tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
   spawns/tokens/spend/time next to mutation count, covering the cost dimension
   of the #6 shadow-review production question.
- 
+
 - **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
   `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
   `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now

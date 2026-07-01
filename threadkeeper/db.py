@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from .config import DB_PATH, EMBED_DIM
+from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
+from .permissions import harden_storage_paths
 
 logger = logging.getLogger(__name__)
 
@@ -496,12 +497,23 @@ END;
 
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+        create_db=True,
+    )
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     # WAL = concurrent readers + one writer without blocking. Required for
     # running Desktop + CLI + VS Code against the same DB simultaneously.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
     # Load sqlite-vec extension if available. Must happen BEFORE schema
     # so the vec0 virtual tables can be created in this connection.
     vec_loaded = _try_load_vec(conn)
@@ -615,5 +627,10 @@ def get_db() -> sqlite3.Connection:
             conn.execute(idx)
         except sqlite3.OperationalError:
             pass
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
     conn.row_factory = sqlite3.Row
     return conn
