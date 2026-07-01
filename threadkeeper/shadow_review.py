@@ -43,6 +43,11 @@ from .helpers import (
     dialog_rowid_at_or_before,
     resolve_ingest_watermark,
 )
+from .harvest import (
+    INTERNAL_PROMPT_PREFIXES as _INTERNAL_PROMPT_PREFIXES,
+    SPAWNED_SESSION_MARKERS as _SPAWNED_SESSION_MARKERS,
+    harvest_exclusion_cte,
+)
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -215,31 +220,6 @@ def _running_shadow_children(conn: sqlite3.Connection) -> list[str]:
 # session, so we exclude every message of that session (not just the
 # prompt itself — slim children's broadcasts, tool_results, and SKIP
 # verdicts also pollute the window).
-_INTERNAL_PROMPT_PREFIXES: tuple[str, ...] = (
-    "You are a SHADOW LEARNING OBSERVER",
-    "You are reviewing closed thread",
-    "You are a PROBE RUNNER",
-    "You are an EVOLVE REVIEWER",
-    "You are an EVOLVE APPLIER",
-    # curator + candidate-reviewer are DAEMONS (not spawn() children), so
-    # their sessions link into tasks.spawned_cid unreliably — the
-    # spawned_cid exclusion in extract_recent misses them. Their prompt
-    # openers are fixed, so match those directly. These two were the
-    # biggest extract self-pollution class in the live ledger (curator
-    # alone = 54 of 126 rejects).
-    "You are an autonomous CURATOR",
-    "You are a CANDIDATE REVIEWER",
-)
-
-# Codex spawned children do not reliably use THREADKEEPER_FORCE_CID as the
-# transcript session_id, so tasks.spawned_cid is not enough. The spawn tool
-# injects this exact preamble into every child; if it appears anywhere in a
-# user turn, the whole session is agent work, not foreground user dialog.
-_SPAWNED_SESSION_MARKERS: tuple[str, ...] = (
-    "You were spawned in the background by parent conversation",
-)
-
-
 # Lines starting with these markers carry no semantic signal for
 # class-level learning — they're verbose adapter-side renderings of
 # tool_use / tool_result blocks (file dumps, shell output, search
@@ -310,38 +290,19 @@ def _collect_window(conn: sqlite3.Connection,
         # No cursor yet: bound the initial window to dialog ingested within
         # the lookback so a long-running install doesn't dump everything.
         floor_rowid = dialog_rowid_at_or_before(conn, now - max(1, window_s))
-    # Per-prefix `substr(content,1,N) = ?` is friendlier to SQLite's
-    # planner than chained `LIKE 'X%' OR LIKE 'Y%'` (no LIKE_PATTERN
-    # compile, exact prefix bytewise). N = max prefix length.
-    prefix_clauses = " OR ".join(
-        ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
-    )
-    prefix_params: list = []
-    for p in _INTERNAL_PROMPT_PREFIXES:
-        prefix_params.extend([len(p), p])
-    spawned_marker_clauses = " OR ".join(
-        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
-    )
-    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
+    exclusion_cte, exclusion_params = harvest_exclusion_cte()
     rows = conn.execute(
+        exclusion_cte +
         "SELECT rowid, role, content, created_at, session_id "
         "FROM dialog_messages "
         "WHERE rowid > ? "
         "  AND coalesce(project, '') != 'subagents' "
         "  AND session_id NOT IN ("
-        "    SELECT DISTINCT session_id FROM dialog_messages "
-        f"    WHERE session_id IS NOT NULL AND role = 'user' AND ({prefix_clauses})"
-        "  ) "
-        "  AND session_id NOT IN ("
-        "    SELECT DISTINCT session_id FROM dialog_messages "
-        f"    WHERE session_id IS NOT NULL AND role = 'user' AND ({spawned_marker_clauses})"
-        "  ) "
-        "  AND session_id NOT IN ("
-        "    SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
+        "    SELECT session_id FROM harvest_excluded_sessions"
         "  ) "
         "ORDER BY rowid ASC "
         "LIMIT ?",
-        (floor_rowid, *prefix_params, *spawned_marker_params, _COLLECT_ROW_CAP),
+        (*exclusion_params, floor_rowid, _COLLECT_ROW_CAP),
     ).fetchall()
     if not rows:
         return ("", floor_rowid, 0)

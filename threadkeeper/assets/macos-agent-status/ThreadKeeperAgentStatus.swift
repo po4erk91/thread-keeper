@@ -249,6 +249,14 @@ private let envSettingDefinitions: [EnvSettingDefinition] = [
         defaultValue: "true",
         kind: .toggle
     ),
+    EnvSettingDefinition(
+        group: "Core",
+        key: "THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE",
+        title: "Verify PyPI provenance",
+        detail: "Requires trusted PyPI attestations before packaged self-updates.",
+        defaultValue: "true",
+        kind: .toggle
+    ),
 
     EnvSettingDefinition(
         group: "Learning Loops",

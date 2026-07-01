@@ -139,26 +139,10 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     _ensure_session(conn)
     now = int(time.time())
     cutoff = now - max(1, int(window_min)) * 60
-    # Exclude our own internal-prompted child sessions (shadow_review
-    # observer + close_thread auto-reviewer + curator) — otherwise their
-    # promp text becomes extract candidates, the same self-pollution
-    # we fixed in shadow_review._collect_window.
-    from ..shadow_review import (
-        _INTERNAL_PROMPT_PREFIXES,
-        _SPAWNED_SESSION_MARKERS,
-    )
-    # Session-level filter — drop entire sessions started by our own
-    # spawn prompts.
-    sess_prefix_clauses = " OR ".join(
-        ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
-    )
-    sess_prefix_params: list = []
-    for p in _INTERNAL_PROMPT_PREFIXES:
-        sess_prefix_params.extend([len(p), p])
-    spawned_marker_clauses = " OR ".join(
-        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
-    )
-    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
+    # Exclude autonomous review/audit lineage before applying heuristics.
+    from ..harvest import harvest_exclusion_cte
+
+    exclusion_cte, exclusion_params = harvest_exclusion_cte()
     # Message-level filter — drop individual noise messages (compaction
     # summaries, SKILL injections, subagent prompts) inside otherwise
     # valid sessions. SQL LIKE with '%' suffix on user-controlled prefix
@@ -167,15 +151,8 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         [f"content NOT LIKE ?"] * len(_NOISE_CONTENT_PREFIXES)
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
-    # Session-level filter #2 — drop sessions that ARE one of our spawned
-    # children (their cid appears as tasks.spawned_cid). The prompt-prefix
-    # list above only catches children whose opening line is a known
-    # marker; spawned agents open with arbitrary task framing ("You are
-    # auditing…", "You are analyzing whether…", "Use the Write tool to…"),
-    # so 66/107 historical rejects were spawned-child noise that slipped
-    # past the prefix list. The tasks.spawned_cid link identifies them
-    # regardless of wording. Mirrors ingest._is_spawned_child_session.
     rows = conn.execute(
+        exclusion_cte +
         "SELECT uuid, role, content, session_id, created_at, embedding "
         "FROM dialog_messages WHERE created_at >= ? "
         "AND coalesce(project, '') != 'subagents' "
@@ -184,19 +161,10 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         f"AND {msg_noise_clauses} "
         "AND length(content) >= 30 "
         "AND session_id NOT IN ("
-        "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE session_id IS NOT NULL AND role = 'user' AND ({sess_prefix_clauses})"
-        ") "
-        "AND session_id NOT IN ("
-        "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE session_id IS NOT NULL AND role = 'user' AND ({spawned_marker_clauses})"
-        ") "
-        "AND session_id NOT IN ("
-        "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
+        "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
         "ORDER BY created_at ASC LIMIT ?",
-        (cutoff, *msg_noise_params, *sess_prefix_params,
-         *spawned_marker_params,
+        (*exclusion_params, cutoff, *msg_noise_params,
          max(10, int(max_messages))),
     ).fetchall()
     if not rows:

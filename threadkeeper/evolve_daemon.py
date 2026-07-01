@@ -127,7 +127,7 @@ Run from the repo root:
   - Inspect all open issues before filing duplicates, oldest-first and without
     the old 50-item window. Use a paginated REST read, for example:
     `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)` then
-    `gh api --paginate --slurp "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
+    `gh api --include --paginate "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
     filter out entries with `pull_request`.
   - Review pending legacy evolve suggestions below. For each clear suggestion,
     create or link a GitHub issue; then call evolve_decide(promote|dismiss) only

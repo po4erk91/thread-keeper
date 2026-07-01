@@ -61,6 +61,14 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
+  consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
+  Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
+  reviewer/applier children honor the same per-account cooldown before making
+  requests. Included REST headers record remaining/reset values, primary 403s
+  cool down until reset (bounded), secondary-rate-limit/`Retry-After` responses
+  use bounded exponential backoff, and `agent_status` / `tk-agent-status` plus
+  `evolve_apply_status()` expose the current remaining count or cooldown window.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -271,10 +279,15 @@ before autonomous prune (#40, #41, #52); a write lock for the unlocked
 `lessons.md` read-modify-write now that the curator and shadow_review both
 mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
 full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
-landed but the argv bound has not (#24); debouncing passes on unchanged
-inventories (#35); and making the curator's `PRUNE_CONCEPT` /
-`CONSOLIDATE_CONCEPT` rubric actually appliable, since no concept-mutation
-tool exists today (#75). Scope: S–M each.
+landed but the argv bound has not (#24). Scope: S–M each.
+
+✅ DONE (#35): curator wake-ups now hash the stable lessons / lesson_usage /
+skills / concepts inventory before spawning. If the hash matches the last
+complete/endorsed pass, the scheduler records an `unchanged_inventory` no-op
+instead of asking another curator child to re-grade the same snapshot. The same
+dispatch lock and running-child guard coalesce concurrent foreground wake-ups
+before they re-read the inventory, and `curator_review_status()` surfaces the
+last endorsed `inventory_sha256` plus the current hash for quiescence checks.
 
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a
@@ -311,13 +324,18 @@ framing ("You are auditing…", "You are analyzing whether…", "Use the
 Write tool to…") slipped through. Fix: extract_recent now also excludes
 any session whose cid is a `tasks.spawned_cid` (reusing the
 `ingest._is_spawned_child_session` provenance link) — kills the whole
-class regardless of wording. Remaining open: even with self-noise gone,
-the surviving heuristics (H2 long_insight on assistant summaries, H3
-example_regularity on bulleted reports) still over-fire on work
-artifacts; a precision re-measurement after a few real sessions decides
-whether they need tightening or a similarity-scorer (the ML-extraction
-item above). Auto-flow-to-notes is explicitly NOT pursued — at the
-observed precision it would inject garbage. Scope of remainder: S.
+class regardless of wording. ✅ DONE (#36) extends that boundary into a
+shared recursive lineage filter for shadow-review, extract, dialectic mining,
+dialectic-validator cleanup, and passive skill-use foreground promotion:
+native Agent/Workflow `agent-*` parent cids and descendants reached through
+`tasks.parent_cid -> tasks.spawned_cid` are excluded even when their prompt has
+no daemon spawn marker. Remaining open: even with self-noise gone, the
+surviving heuristics (H2 long_insight on assistant summaries, H3
+example_regularity on bulleted reports) still over-fire on work artifacts; a
+precision re-measurement after a few real sessions decides whether they need
+tightening or a similarity-scorer (the ML-extraction item above).
+Auto-flow-to-notes is explicitly NOT pursued — at the observed precision it
+would inject garbage. Scope of remainder: S.
 
 ---
 
@@ -328,11 +346,11 @@ learning-loop reliability, and current MCP/memory research) surfaced the
 following concrete gaps. Each is tracked as a GitHub issue; the evolve
 applier drains them. Listed here so the roadmap reflects the live backlog.
 
-**Security & privilege hardening.** Two real gaps:
-- The local store is world-readable. `~/.threadkeeper/db.sqlite`, `.env`, and
-  curator reports are created with default perms while the DB holds full
-  transcripts + `verbatim` + the dialectic user model — any local account can
-  read it. chmod 0600/0700 on creation. (#21)
+**Security & privilege hardening.** Tracked gaps:
+- ✅ DONE (#21). The default local store is hardened on POSIX startup/DB open:
+  `~/.threadkeeper` is `0700`; `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
+  `.env`, and curator `REPORT-*.md` files are `0600`; headless spawn logs are
+  created `0600`.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
   `permission_mode="bypassPermissions"` outside the evolve role/write-origin
@@ -468,10 +486,10 @@ Follow-up gaps from the 2026-06-17 audit:
   patch the closest incumbent on strong matches, and surface borderline or
   protected matches instead of writing a sibling slug.
 - Curator pass debounce / unchanged-inventory coalescing (#35).
-- Full-lineage harvest exclusion for native Agent/Workflow descendants (#36).
+- ✅ DONE (#36). Full-lineage harvest exclusion for native Agent/Workflow
+  descendants.
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
-- Shared GitHub API budget/backoff across roadmap automation (#38).
 - Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
   the autonomous child now prunes/consolidates lessons + skills in place with no
   pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
@@ -489,14 +507,14 @@ Follow-up gaps from the 2026-06-17 audit:
   and reviewer/applier mutual exclusion or `git worktree` isolation so concurrent
   PR-producing children don't race on `.git/index.lock` or contaminate PR diffs
   with unrelated working-tree WIP (#43).
-- Auto-update payload integrity/provenance: the on-by-default daily pip/git
-  self-update installs and runs new code with **no version pin, hash, or PyPI
-  attestation/signed-tag verification**, then restarts on it. A compromised
-  release auto-propagates to every install within ~24h. Distinct from #19
-  (closed reliability smoke-check gate — a malicious-but-importable release
-  passes that) and #22 (GitHub-writing daemons). Verify provenance before
-  upgrade and document auto-update as standing consent to run maintainer code
-  (#44).
+- ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
+  self-updates now verify PyPI Integrity API provenance before invoking `pip`,
+  require the expected GitHub Trusted Publisher identity, check the attested
+  filename/SHA-256 against PyPI metadata, and refuse missing/mismatched
+  provenance without restart. Docs now state that auto-update is standing
+  consent to run future maintainer code and point to the opt-out. Signed
+  git tag/commit enforcement remains a later hardening slice for editable
+  checkouts.
 
 Deep code-audit pass (2026-06-17, evolve_reviewer second pass; each finding
 verified at the cited file:line, deduplicated against the issues above):
@@ -777,6 +795,17 @@ GitHub issues:
 - **Skill telemetry sanity.** Skill view/use counters need to be verified and
   surfaced correctly so the curator can trust the disuse/prune signal instead of
   operating on a dead or undercounted metric (#168).
+
+**2026-06-26 reviewer additions (issue-backed).**
+A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
+path:
+
+- **Curator merge-verdict memory.** Persist rejected merge candidates and
+  surface cross-link adjacency in the curator inventory so later passes stop
+  re-litigating the same layered pairs (#189).
+- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
+  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
+  cross-links or consolidate while the lesson is being materialized (#190).
 
 ---
 

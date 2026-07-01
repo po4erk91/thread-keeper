@@ -14,6 +14,61 @@ version bumps follow semver per the policy in
   against existing lessons. Strong semantic matches patch/append evidence to
   the incumbent lesson, while borderline or protected matches return a
   duplicate signal instead of creating a sibling slug.
+### Fixed
+
+- **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
+  dialectic mining, dialectic-validator pending cleanup, and passive skill-use
+  foreground promotion now share `threadkeeper.harvest`: a recursive
+  provenance boundary that excludes internal prompt sessions, spawn preambles,
+  direct `tasks.spawned_cid` children, native `agent-*` parent cids, and
+  descendants reached through `tasks.parent_cid -> tasks.spawned_cid`. Raw
+  dialog ingest still persists those rows for diagnostics, but the learning
+  loops no longer treat native autonomous descendants as user-facing signal.
+- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
+  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
+  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
+  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
+  spawn stdout logs are created `0600`; chmod failures are debug-only and never
+  block startup on platforms without POSIX mode bits.
+
+### Added
+
+- **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
+  resolve the candidate PyPI release before running `pip`, require PyPI
+  Integrity API provenance from the expected GitHub Trusted Publisher
+  (`po4erk91/thread-keeper`, `publish.yml`, environment `pypi`), and verify the
+  attested filename/SHA-256 against PyPI metadata. Missing or mismatched
+  provenance records a refused `auto_update_pass` and keeps the current
+  known-good process running. New env knobs document the break-glass provenance
+  opt-out and the expected publisher identity.
+
+- **Shared GitHub API budget/cooldown ledger for roadmap automation (#38).**
+  Roadmap issue fetch/comment/PR-guard calls and privileged child `gh` wrapper
+  invocations now consult one SQLite `github_rate_budget` row per local GitHub
+  account before making requests. Included REST headers record
+  remaining/reset values, primary 403s cool down until reset, secondary
+  rate-limit / `Retry-After` responses use bounded exponential backoff, and
+  `agent_status` / `tk-agent-status` plus `evolve_apply_status()` expose the
+  current remaining count or cooldown window.
+
+### Fixed
+
+- **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
+  a stable `inventory_sha256` over lessons, lesson usage, active/stale skills,
+  and concepts before spawning. If the snapshot matches the last complete or
+  endorsed pass, the scheduler records an `unchanged_inventory` no-op event
+  instead of launching another full curator child. Concurrent wake-ups still
+  coalesce behind the existing `curator.lock` plus running-child guard, and
+  `curator_review_status()` now shows the last endorsed and current inventory
+  hashes so operators can see when the store is quiescent.
+
+- **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
+  already-open same-repo applier PRs before taking fresh roadmap/report/evolve
+  work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
+  applier spawns a repair child that updates that existing branch and runs the
+  suite instead of starting a new task, then lands the repaired PR into `main`
+  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
+  the pass fails closed rather than moving on to new work.
 
 ## v0.14.0 — 2026-06-25
 
@@ -58,7 +113,7 @@ version bumps follow semver per the policy in
   tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
   spawns/tokens/spend/time next to mutation count, covering the cost dimension
   of the #6 shadow-review production question.
- 
+
 - **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
   `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
   `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
@@ -100,7 +155,7 @@ version bumps follow semver per the policy in
 - **Roadmap issue drain pagination (#81).** The evolve applier no longer asks
   GitHub for a single newest-first 50-issue window before applying its
   `roadmap`-label/FIFO sort. `_fetch_open_issues()` now uses paginated,
-  oldest-first REST reads (`gh api --paginate --slurp` with
+  oldest-first REST reads (`gh api --include --paginate` with
   `sort=created&direction=asc`), filters pull requests, and only then applies a
   generous local candidate window with an explicit warning if any open issues
   are left outside it. The evolve reviewer prompt now uses the same paginated
