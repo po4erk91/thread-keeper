@@ -624,9 +624,11 @@ children, native `agent-*` parent cids, and descendants reached through
 foreground promotion all consult this same boundary.
 SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
-a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
-or oversized writes are rejected so the child patches existing memory instead
-of growing the flat lessons list.
+a hard body cap, a cheap slug-similarity duplicate gate, and a semantic body
+duplicate gate. Strong semantic matches patch/append evidence to the incumbent
+lesson, while borderline or protected matches are rejected with the incumbent
+slug so the child/curator patches existing memory instead of growing the flat
+lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`. Beyond the last few passes, the status tool carries a
