@@ -417,12 +417,16 @@ DO, strictly in order:
      git commit -m "fix: resolve PR #{pr_number} merge conflicts"   # if needed
      git push origin {head_ref}
 
-6. Land the repaired PR to main through GitHub, not by a raw local push:
-     gh pr merge {pr_number} --squash --auto --delete-branch
-   If GitHub can merge immediately, it will update `main`. If required checks
-   are still running, auto-merge will push to `main` as soon as they pass. If
-   GitHub refuses auto-merge, leave a normal PR comment with the blocker/status
-   and stop.
+6. Wait for GitHub checks on the pushed PR head, then land through GitHub:
+     gh pr checks {pr_number} --watch --fail-fast
+     gh pr view {pr_number} --json mergeStateStatus,mergeable,statusCheckRollup
+     gh pr merge {pr_number} --squash --delete-branch
+   Do NOT treat a thin/partial check list as green. Before merging, confirm the
+   expected pytest matrix checks are present (`pytest (py3.11)`,
+   `pytest (py3.12)`, `pytest (py3.13)`), none of the statusCheckRollup entries
+   are pending/in progress/failing, and the PR is mergeable. If GitHub refuses
+   the merge because checks/reviews/protection are still blocking, leave a
+   normal PR comment with the blocker/status and stop.
 
    Do NOT create a new PR. Do NOT call evolve_mark_roadmap_issue_applied or
    evolve_mark_applied; this PR already exists and the merge is the completion

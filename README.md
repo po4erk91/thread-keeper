@@ -458,6 +458,14 @@ optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 CLI-agnostic fallback for clients without a native skills loader (Gemini
 legacy, Copilot, bare MCP).
 
+**Harvest boundary (issue #36).** The dialog-reading loops share
+`threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
+still persisted for diagnostics, but shadow-review, extract, dialectic mining,
+dialectic validation cleanup, and passive skill-use foreground promotion all
+exclude autonomous child lineage: known internal prompt openers, spawn
+preambles, direct `tasks.spawned_cid` rows, native `agent-*` parent cids, and
+descendants reached through `tasks.parent_cid → tasks.spawned_cid`.
+
 **Injection fence + provenance (issue #76).** The synthesis input is *raw
 observed dialog* — which routinely echoes content the agent read from
 untrusted web pages, files, issues, or pasted text (and, under multi-user
@@ -496,7 +504,7 @@ into every configured skills root. Opt in with
 Every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` seconds (default off,
 900 = 15 min recommended) scans the diff of `dialog_messages` since
 the last cursor **across all CLIs at once**. The window filters
-internal review-child sessions (no self-pollution) and strips adapter
+autonomous child lineage (no self-pollution) and strips adapter
 `[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
 ≥500 chars of meaningful signal remain, spawns a slim observer child
 that decides on class-level learning. It is single-flight across the shared
@@ -508,7 +516,9 @@ daemon even if a CLI drops the no-embeddings env. Idempotent through
 
 Before writing memory, the observer now checks existing lessons/skills and
 prefers patching broad skills. Shadow-origin `lesson_append` is a compact
-fallback only: oversized bodies and near-duplicate slugs are rejected.
+fallback only: oversized bodies are rejected, near-duplicate slugs are blocked,
+and semantic body matches are routed to the incumbent lesson or surfaced for
+curation instead of minting a sibling lesson.
 
 #### 3. Extract daemon
 
@@ -518,8 +528,8 @@ matchers: locale-aware "I want / next time / always" patterns,
 headers + insight markers, bullet regularities, and paraphrase
 clusters via cosine ≥ 0.80. Each match enqueues a row in
 `extract_candidates.status='pending'`. Same self-pollution filter as
-shadow_review (internal review-child sessions excluded) plus
-message-level noise filter (compaction summaries, SKILL.md
+shadow_review (autonomous child lineage excluded) plus message-level noise
+filter (compaction summaries, SKILL.md
 injections, subagent role prompts, test-runner log dumps).
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests
@@ -566,13 +576,27 @@ multiple MCP server instances can't run overlapping (now destructive) passes
 against the same store. A manual `curator_run(force=True)` bypasses the
 interval but still respects the lock.
 
+Before spawning, the scheduler hashes the stable inventory state (lessons,
+lesson usage, active/stale skills, and concepts). If the hash matches the last
+recorded complete/endorsed curator pass, the wake-up records an
+`unchanged_inventory` no-op event and endorses the last report instead of
+asking another child to re-grade the same snapshot. `curator_review_status()`
+shows both the last endorsed `inventory_sha256` and the current inventory hash
+so operators can tell whether the store is quiescent.
+
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
 can actually prune and consolidate duplicate lessons). Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
 `[PROTECTED]` / foreground / user / pinned / validated entries, and
 `lesson_remove` is always called without `force` (so user/foreground lessons are
-refused by design). The existing Evolve applier is
+refused by design). Before `lesson_remove` or `skill_manage(action='delete')`
+removes anything, it writes a recovery artifact under
+`<db dir>/curator/trash/`: lessons store the exact sentinel section plus usage
+row, and skills store the full skill directory plus usage row. Restore with
+`lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+Trash retention is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (30 days by
+default) and swept on new trash writes. The existing Evolve applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
 been marked applied, then spawns an `evolve_applier` child to apply only safe,
@@ -649,9 +673,10 @@ any new issue/report/evolve work is started; if the PR sweep itself cannot read
 GitHub state, the pass fails closed instead of taking fresh work blind. The
 conflict-repair child checks out the existing PR branch, merges the current
 base branch, resolves conflicts, runs the full suite, and pushes back to the
-same branch. It then runs `gh pr merge --squash --auto --delete-branch`, so
-GitHub lands the repaired PR into `main` through branch protection and required
-checks rather than a raw local `git push origin main`. The roadmap issue child
+same branch. It then waits for GitHub checks on the pushed PR head and runs
+`gh pr merge --squash --delete-branch`, so GitHub lands the repaired PR into
+`main` through branch protection rather than a raw local `git push origin main`.
+The roadmap issue child
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
 failure prevents startup. It implements exactly that issue, runs the full suite,
@@ -835,6 +860,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
+| `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
@@ -1008,6 +1034,11 @@ them with `dry_run=False` to apply:
 mode for multi-writer concurrency. Optional `notes_vec` / `dialog_vec`
 HNSW indexes through `sqlite-vec` for sub-linear semantic search;
 fallback to Python-side cosine when the extension is missing.
+
+On POSIX systems, startup and `get_db()` harden the default local store
+best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
+`-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
+files, and headless spawn logs are owner-only (`0600`).
 
 One file. Backup = `cp`. Wipe memory = `rm`.
 

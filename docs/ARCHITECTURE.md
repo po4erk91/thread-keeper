@@ -58,7 +58,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status
-    ├── lessons.py     lesson_append/list/get
+    ├── lessons.py     lesson_append/list/get/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -123,7 +123,11 @@ runtime is fully on the package.
 
 ## Storage layers
 
-The database is `~/.threadkeeper/db.sqlite`. Logically six levels:
+The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config
+startup and `get_db()` best-effort harden the default store:
+`~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
+sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
+`0600`. Logically six levels:
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
@@ -256,6 +260,15 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   queue is machine-wide single-flight: running-task detection plus
   `candidate-reviewer.lock` prevents multiple foreground MCP servers from
   spawning duplicate reviewers for the same pending candidates.
+- **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
+  existing lessons / skills / concepts inventory through one slim child. Before
+  spawning, it hashes the stable inventory state and compares it to the last
+  recorded complete/endorsed pass; unchanged snapshots record an
+  `unchanged_inventory` no-op event instead of re-deriving the same report.
+  Wake-ups also coalesce behind a non-blocking `curator.lock` plus the running
+  curator-task check, so multiple foreground servers do not re-read and spawn
+  against the same snapshot. `curator_review_status()` exposes the last
+  endorsed `inventory_sha256` and the current inventory hash.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
   for security/privacy risks, memory leaks, runaway daemons, cost waste,
@@ -289,9 +302,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   fork PRs are never fed to the privileged repair child. The repair child checks
   out the existing PR branch, merges the current base branch, resolves
   conflicts, runs the full suite, and pushes back to the same branch. It then
-  runs `gh pr merge --squash --auto --delete-branch`, so GitHub lands the PR
-  into `main` through branch protection/required checks instead of a raw local
-  `git push origin main`.
+  waits for GitHub checks on the pushed PR head and runs
+  `gh pr merge --squash --delete-branch`, so GitHub lands the PR into `main`
+  through branch protection instead of a raw local `git push origin main`.
   When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
@@ -576,7 +589,8 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 1. _last_shadow_rowid(): ingest-order high-water mark from
    events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
 2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
-   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own.
+   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own — then
+   apply the shared harvest lineage exclusion from `threadkeeper.harvest`.
 3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
@@ -599,11 +613,22 @@ whose `created_at` lands below the cursor — still gets a fresh rowid above it
 and is reviewed exactly once (a `created_at` cursor silently stepped over it).
 Idempotent: the monotonic rowid advance means a repeated tick will not
 re-evaluate (or re-spawn on) what it has already seen.
+
+Harvest boundary (#36): raw transcript ingest keeps autonomous child rows for
+diagnostics, but dialog-derived memory loops must not learn from their own
+exhaust. `threadkeeper.harvest` builds a recursive excluded-session set from
+known internal prompt openers, spawn preambles, direct `tasks.spawned_cid`
+children, native `agent-*` parent cids, and descendants reached through
+`tasks.parent_cid -> tasks.spawned_cid`. `shadow_review`, `extract_recent`,
+`dialectic_miner`, dialectic-validator pending cleanup, and passive skill-use
+foreground promotion all consult this same boundary.
 SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
-a hard body cap and a cheap slug-similarity duplicate gate; near-duplicate
-or oversized writes are rejected so the child patches existing memory instead
-of growing the flat lessons list.
+a hard body cap, a cheap slug-similarity duplicate gate, and a semantic body
+duplicate gate. Strong semantic matches patch/append evidence to the incumbent
+lesson, while borderline or protected matches are rejected with the incumbent
+slug so the child/curator patches existing memory instead of growing the flat
+lessons list.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`. Beyond the last few passes, the status tool carries a
@@ -624,7 +649,7 @@ skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
-  `create | edit | patch | write_file | remove_file | delete`.
+  `create | edit | patch | write_file | remove_file | delete | restore`.
   Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
   `description` ≤1024 chars, total ≤100k chars. Generated frontmatter writes
   `name` and `description` as quoted YAML scalars so colon-containing
@@ -648,8 +673,10 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
   from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
   the curator gets real numbers without the agent being required to call
-  `skill_record` manually. The `skill_watcher` daemon catches external edits
-  to `SKILL.md` (Edit/Write directly, not through skill_manage).
+  `skill_record` manually. `foreground_use_count` is gated by the same harvest
+  lineage exclusion, so autonomous child self-use cannot promote a skill tier.
+  The `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
+  directly, not through skill_manage).
 
 - **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
   `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
@@ -659,6 +686,17 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   with no recent access and low pull-count. The section is advisory only; it is
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
+
+- **Curator trash recovery** — destructive knowledge-store deletes persist a
+  full pre-image before mutating. `lesson_remove` writes the exact
+  `LESSON:BEGIN/END` section plus its `lesson_usage` row under
+  `<db dir>/curator/trash/`; `skill_manage(action='delete')` writes the whole
+  skill directory plus its `skill_usage` row there. Restore through
+  `lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+  Trash is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30);
+  expired artifacts are swept on new trash writes. Protected refusal behavior
+  is unchanged: user/foreground lessons still require `force`, and pinned
+  skills still refuse deletion.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
@@ -924,7 +962,7 @@ backend in `embed_backend` (NULL = legacy). The two backends are not
 numerically identical, so after a switch run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (107 total)
+## MCP tools (108 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -946,7 +984,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 4 | lesson_append, lesson_list, lesson_get, lesson_remove |
+| lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 2 | curator_review, curator_review_status |
@@ -1221,6 +1259,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick; 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only |
+| `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |

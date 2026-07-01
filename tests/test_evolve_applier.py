@@ -718,7 +718,9 @@ def test_apply_conflicted_pr_builds_repair_spawn(tmp_path, monkeypatch):
     assert "git checkout -B roadmap/issue-44-fix origin/roadmap/issue-44-fix" in prompt
     assert "git merge --no-edit origin/main" in prompt
     assert "git push origin roadmap/issue-44-fix" in prompt
-    assert "gh pr merge 44 --squash --auto --delete-branch" in prompt
+    assert "gh pr checks 44 --watch --fail-fast" in prompt
+    assert "gh pr merge 44 --squash --delete-branch" in prompt
+    assert "--auto" not in prompt
     assert "gh pr create" not in prompt
     assert "Never run `git push origin main` directly" in prompt
     assert "evolve_mark_roadmap_issue_applied" not in tools

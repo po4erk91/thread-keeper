@@ -20,6 +20,12 @@ version bumps follow semver per the policy in
   `brief()` labels the dialectic section as `current as of <date>` once closed
   validity intervals exist.
 
+- **Semantic lesson dedup at write time (#34).** Loop-authored
+  `lesson_append` calls now embed candidate lesson bodies and compare them
+  against existing lessons. Strong semantic matches patch/append evidence to
+  the incumbent lesson, while borderline or protected matches return a
+  duplicate signal instead of creating a sibling slug.
+
 - **PyPI provenance gate for auto-update (#44).** Packaged self-updates now
   resolve the candidate PyPI release before running `pip`, require PyPI
   Integrity API provenance from the expected GitHub Trusted Publisher
@@ -40,13 +46,39 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
+  dialectic mining, dialectic-validator pending cleanup, and passive skill-use
+  foreground promotion now share `threadkeeper.harvest`: a recursive
+  provenance boundary that excludes internal prompt sessions, spawn preambles,
+  direct `tasks.spawned_cid` children, native `agent-*` parent cids, and
+  descendants reached through `tasks.parent_cid -> tasks.spawned_cid`. Raw
+  dialog ingest still persists those rows for diagnostics, but the learning
+  loops no longer treat native autonomous descendants as user-facing signal.
+
+- **Private local-store permissions (#21).** POSIX startup and `get_db()` now
+  best-effort harden the default memory store: `~/.threadkeeper` is `0700`, and
+  `db.sqlite`, SQLite `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, and curator
+  `REPORT-*.md` files are `0600` for both new and existing installs. Headless
+  spawn stdout logs are created `0600`; chmod failures are debug-only and never
+  block startup on platforms without POSIX mode bits.
+
+- **Curator unchanged-inventory debounce (#35).** Curator wake-ups now compute
+  a stable `inventory_sha256` over lessons, lesson usage, active/stale skills,
+  and concepts before spawning. If the snapshot matches the last complete or
+  endorsed pass, the scheduler records an `unchanged_inventory` no-op event
+  instead of launching another full curator child. Concurrent wake-ups still
+  coalesce behind the existing `curator.lock` plus running-child guard, and
+  `curator_review_status()` now shows the last endorsed and current inventory
+  hashes so operators can see when the store is quiescent.
+
 - **Evolve applier PR-conflict preflight.** Automatic apply passes now scan
   already-open same-repo applier PRs before taking fresh roadmap/report/evolve
   work. If GitHub reports a `roadmap/…` or `evolve/…` PR as conflicted, the
   applier spawns a repair child that updates that existing branch and runs the
-  suite instead of starting a new task, then lands the repaired PR into `main`
-  via `gh pr merge --squash --auto`. If the PR sweep cannot read GitHub state,
-  the pass fails closed rather than moving on to new work.
+  suite instead of starting a new task, then waits for GitHub checks and lands
+  the repaired PR into `main` via `gh pr merge --squash --delete-branch`. If
+  the PR sweep cannot read GitHub state, the pass fails closed rather than
+  moving on to new work.
 
 ## v0.14.0 — 2026-06-25
 
@@ -91,7 +123,7 @@ version bumps follow semver per the policy in
   tokens/cost alongside RSS, and `mp_dashboard()` adds each loop's 24h
   spawns/tokens/spend/time next to mutation count, covering the cost dimension
   of the #6 shadow-review production question.
- 
+
 - **Lesson decay scoring (#27).** Added `lesson_usage` telemetry for
   `lessons.md` slugs: `lesson_list` bumps `view_count` for displayed rows and
   `lesson_get` bumps `use_count` for returned bodies. Curator dry runs now
@@ -609,6 +641,14 @@ version bumps follow semver per the policy in
   applied). `[PROTECTED]` (foreground/user/pinned/validated) entries are never
   mutated, and `lesson_remove` is always called without `force`, so it refuses
   user/foreground-authored lessons by design.
+- **Destructive curator deletes now have a recovery path (#41).**
+  `lesson_remove` captures the exact removed lesson section plus its usage row
+  under `<db dir>/curator/trash/` before rewriting `lessons.md`, and
+  `skill_manage(action='delete')` captures the full skill directory plus its
+  usage row before removing the primary and mirrored skill copies. Restore with
+  `lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+  Recovery artifacts are bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS`
+  (default 30 days) and expired trash is swept on new trash writes.
 
 ### Fixed
 

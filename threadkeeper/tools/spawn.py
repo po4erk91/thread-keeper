@@ -22,6 +22,7 @@ from typing import Optional
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
+from ..permissions import open_private_binary_write
 from ..tool_schemas import (
     SpawnBudgetStatus,
     SpawnTaskRss,
@@ -824,7 +825,7 @@ exit $rc
             if stdin_path is not None:
                 stdin_f = stdin_path.open("rb")
             if log_path is not None:
-                log_f = log_path.open("wb")
+                log_f = open_private_binary_write(log_path)
                 proc = subprocess.Popen(
                     launch_cmd,
                     cwd=cwd,
