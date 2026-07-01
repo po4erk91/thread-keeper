@@ -631,6 +631,14 @@ version bumps follow semver per the policy in
   applied). `[PROTECTED]` (foreground/user/pinned/validated) entries are never
   mutated, and `lesson_remove` is always called without `force`, so it refuses
   user/foreground-authored lessons by design.
+- **Destructive curator deletes now have a recovery path (#41).**
+  `lesson_remove` captures the exact removed lesson section plus its usage row
+  under `<db dir>/curator/trash/` before rewriting `lessons.md`, and
+  `skill_manage(action='delete')` captures the full skill directory plus its
+  usage row before removing the primary and mirrored skill copies. Restore with
+  `lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+  Recovery artifacts are bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS`
+  (default 30 days) and expired trash is swept on new trash writes.
 
 ### Fixed
 

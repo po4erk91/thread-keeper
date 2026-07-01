@@ -15,6 +15,9 @@
     Remove one lesson section by slug. Refuses foreground/user lessons unless
     force=True, so autonomous cleanup cannot delete protected memory.
 
+  lesson_restore(slug)
+    Restore the latest trashed section for a removed lesson slug.
+
 The learning loop (review_thread + shadow_review) writes here instead
 of (or in addition to) ~/.claude/skills/*/SKILL.md so non-Claude CLIs
 share the procedural-knowledge surface. Each CLI's per-user
@@ -24,6 +27,7 @@ block written by `_setup.py`.
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import re
 import sqlite3
 from typing import Optional
@@ -39,10 +43,17 @@ from ..lessons import (
     append_lesson,
     ensure_lesson_usage,
     iter_lessons,
+    lesson_section,
     count_lessons,
     get_path,
     record_lesson_access,
     remove_lesson,
+    restore_lesson_section,
+)
+from ..trash import (
+    capture_removed_lesson,
+    latest_lesson_artifact,
+    read_lesson_artifact,
 )
 
 
@@ -56,6 +67,32 @@ _LESSON_SLUG_STOPWORDS = {
     "a", "an", "and", "as", "before", "for", "in", "is", "not", "of",
     "on", "or", "the", "to", "via", "with",
 }
+
+
+def _row_to_dict(row) -> dict | None:
+    if row is None:
+        return None
+    return {k: row[k] for k in row.keys()}
+
+
+def _restore_lesson_usage_row(conn: sqlite3.Connection, row: dict | None) -> None:
+    if not row:
+        return
+    columns = [
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(lesson_usage)").fetchall()
+    ]
+    values = {k: row[k] for k in columns if k in row}
+    if "slug" not in values:
+        return
+    names = list(values)
+    placeholders = ", ".join("?" for _ in names)
+    quoted = ", ".join(names)
+    conn.execute(
+        f"INSERT OR REPLACE INTO lesson_usage ({quoted}) "
+        f"VALUES ({placeholders})",
+        [values[n] for n in names],
+    )
 
 
 def _lesson_slug_tokens(slug: str) -> set[str]:
@@ -425,13 +462,92 @@ def lesson_remove(slug: str, force: bool = False) -> str:
     source = (found.get("source") or "").strip().lower()
     if source in {"foreground", "user"} and not force:
         return f"ERR protected_lesson slug={slug} source={source}"
+    snapshot = lesson_section(slug)
+    if not snapshot:
+        return f"ERR remove_failed slug={slug}"
+    post_remove = (
+        snapshot["file_body"][:snapshot["start"]]
+        + snapshot["file_body"][snapshot["end"]:]
+    )
+    usage_row = _row_to_dict(
+        conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
+    )
+    try:
+        artifact = capture_removed_lesson(
+            slug=slug,
+            section=snapshot["section"],
+            source=source,
+            lessons_path=get_path(),
+            char_start=int(snapshot["start"]),
+            char_end=int(snapshot["end"]),
+            post_remove_sha256=hashlib.sha256(
+                post_remove.encode("utf-8")
+            ).hexdigest(),
+            usage_row=usage_row,
+        )
+    except Exception as e:
+        return f"ERR trash_failed slug={slug}: {e}"
     if not remove_lesson(slug):
         return f"ERR remove_failed slug={slug}"
     conn.execute("DELETE FROM lesson_usage WHERE slug=?", (slug,))
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
         "VALUES (?, 'lesson_remove', ?, ?, strftime('%s','now'))",
-        (identity._session_id or "", slug, f"source={source or '?'}"),
+        (
+            identity._session_id or "",
+            slug,
+            f"source={source or '?'} trash={artifact.name}",
+        ),
     )
     conn.commit()
     return f"ok removed={slug}"
+
+
+@write_tool()
+def lesson_restore(slug: str) -> str:
+    """Restore the latest trashed lesson section for `slug`.
+
+    Refuses to overwrite an existing lesson with the same slug.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    slug = _slugify(slug.strip())
+    if not slug:
+        return "ERR empty_slug"
+    if any(it["slug"] == slug for it in iter_lessons()):
+        return f"ERR lesson_exists slug={slug}"
+    artifact = latest_lesson_artifact(slug)
+    if artifact is None:
+        return f"ERR no_trash slug={slug}"
+    try:
+        section, meta = read_lesson_artifact(artifact)
+    except Exception as e:
+        return f"ERR trash_read_failed slug={slug}: {e}"
+    char_start = None
+    expected_post_remove = meta.get("post_remove_sha256") or ""
+    if expected_post_remove:
+        current_hash = hashlib.sha256(get_path().read_bytes()).hexdigest()
+        if current_hash == expected_post_remove:
+            char_start = meta.get("char_start")
+    ok = restore_lesson_section(
+        slug,
+        section,
+        char_start=char_start,
+    )
+    if not ok:
+        return f"ERR restore_failed slug={slug}"
+    restored = None
+    for item in iter_lessons():
+        if item["slug"] == slug:
+            restored = item
+            break
+    _restore_lesson_usage_row(conn, meta.get("usage_row"))
+    if restored is not None and meta.get("usage_row") is None:
+        ensure_lesson_usage(conn, restored)
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'lesson_restore', ?, ?, strftime('%s','now'))",
+        (identity._session_id or "", slug, f"trash={artifact.name}"),
+    )
+    conn.commit()
+    return f"ok restored={slug} path={get_path()} trash={artifact}"

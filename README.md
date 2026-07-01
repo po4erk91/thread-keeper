@@ -590,7 +590,13 @@ can actually prune and consolidate duplicate lessons). Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
 `[PROTECTED]` / foreground / user / pinned / validated entries, and
 `lesson_remove` is always called without `force` (so user/foreground lessons are
-refused by design). The existing Evolve applier is
+refused by design). Before `lesson_remove` or `skill_manage(action='delete')`
+removes anything, it writes a recovery artifact under
+`<db dir>/curator/trash/`: lessons store the exact sentinel section plus usage
+row, and skills store the full skill directory plus usage row. Restore with
+`lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
+Trash retention is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (30 days by
+default) and swept on new trash writes. The existing Evolve applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
 been marked applied, then spawns an `evolve_applier` child to apply only safe,
@@ -845,6 +851,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
+| `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |

@@ -274,8 +274,9 @@ mutated, and the pass is single-flight across processes (a non-blocking
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Open follow-ups (issue-backed): restorable deletion / pre-mutation snapshot
-before autonomous prune (#40, #41, #52); a write lock for the unlocked
+Open follow-ups (issue-backed): structured prune/consolidate telemetry and any
+extra pre-pass snapshot UX beyond the trash recovery path (#40, #52); a write
+lock for the unlocked
 `lessons.md` read-modify-write now that the curator and shadow_review both
 mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
 full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
@@ -491,11 +492,10 @@ Follow-up gaps from the 2026-06-17 audit:
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
 - Curator went **destructive-by-default** (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`):
-  the autonomous child now prunes/consolidates lessons + skills in place with no
-  pre-mutation snapshot, no restorable tombstone of pruned bodies (`lesson_remove`
-  records the slug only; `lessons.md` is not version-controlled), and no
-  destructive-action telemetry in `mp_dashboard`. Add a snapshot/restore safety
-  net + structured prune/consolidate counts (#40).
+  the autonomous child now prunes/consolidates lessons + skills in place. A
+  restorable trash tier for `lesson_remove` and `skill_manage(delete)` landed
+  in #41; remaining follow-up is structured prune/consolidate counts in
+  `mp_dashboard` and any extra pre-pass snapshot UX (#40).
 - Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool files — every
   spawn leaves a permanent `tasks` row (full `prompt`) plus
   `.log`/`.stdin.txt`/`.command` files that nothing prunes; `tasks.prompt`
@@ -757,12 +757,13 @@ Reconcile applied-markers against PR merge state (re-queue closed-unmerged PRs
 with a bounded retry). Distinct from the shipped claim-leak / duplicate-PR
 guards (#23). (#51) Scope: S.
 
-**Lesson removal is irreversible as the curator goes destructive-by-default.**
-`lesson_remove` physically rewrites `lessons.md`; the audit event stores only
-slug + source, not the body. With `curator_destructive` now defaulting on, an
-autonomously-pruned lesson is unrecoverable (unlike threads, which reopen on a
-note). Add soft-delete / tombstone + restore with a retention window.
-Complements decay scoring (#27) and write-time dedup (#34). (#52) Scope: S–M.
+**Destructive curator deletion recovery.** ✅ DONE (#41) —
+`lesson_remove` captures the exact removed lesson section plus usage row under
+`<db dir>/curator/trash/`, `skill_manage(action='delete')` captures the full
+skill directory plus usage row, and both can be restored via
+`lesson_restore(slug=...)` / `skill_manage(action='restore', name=...)`.
+Trash retention is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS`.
+Complements decay scoring (#27) and write-time dedup (#34). Scope: S–M.
 
 **2026-06-20 reviewer additions (issue-backed).**
 A follow-up audit surfaced a handful of concrete gaps that are now tracked as

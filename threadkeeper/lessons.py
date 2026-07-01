@@ -150,21 +150,71 @@ def append_lesson(
 
 def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:
     """Remove one lesson section by exact slug. Returns True when removed."""
+    found = lesson_section(slug, path=path)
+    if not found:
+        return False
+    fp = path or _LESSONS_PATH
+    body_existing = found["file_body"]
+    new_body = body_existing[:found["start"]] + body_existing[found["end"]:]
+    fp.write_text(new_body)
+    return True
+
+
+def lesson_section(slug: str, path: Optional[Path] = None) -> Optional[dict]:
+    """Return the exact sentinel section and character offsets for one lesson.
+
+    The returned ``section`` includes the BEGIN/END markers and any immediate
+    trailing newlines. This is the recovery pre-image used by destructive
+    removal and restore.
+    """
     fp = path or _LESSONS_PATH
     if not fp.exists():
-        return False
+        return None
     body_existing = fp.read_text()
     target_begin = f"<!-- LESSON:BEGIN slug={slug} "
     target_end = f"<!-- LESSON:END slug={slug} -->"
-    if target_begin not in body_existing or target_end not in body_existing:
-        return False
-    head, _, rest = body_existing.partition(target_begin)
-    end_idx = rest.find(target_end)
+    start = body_existing.find(target_begin)
+    if start < 0:
+        return None
+    end_idx = body_existing.find(target_end, start)
     if end_idx < 0:
+        return None
+    marker_end = end_idx + len(target_end)
+    end = marker_end
+    while end < len(body_existing) and body_existing[end] == "\n":
+        end += 1
+    begin_line = body_existing[start:marker_end].split("\n", 1)[0]
+    ts_match = re.search(r"ts=(\d+)", begin_line)
+    source_match = re.search(r"source=([^\s>]+)", begin_line)
+    return {
+        "slug": slug,
+        "section": body_existing[start:end],
+        "start": start,
+        "end": end,
+        "ts": int(ts_match.group(1)) if ts_match else 0,
+        "source": source_match.group(1) if source_match else "",
+        "file_body": body_existing,
+    }
+
+
+def restore_lesson_section(
+    slug: str,
+    section: str,
+    *,
+    char_start: Optional[int] = None,
+    path: Optional[Path] = None,
+) -> bool:
+    """Restore an exact lesson section. Refuses to overwrite an existing slug."""
+    fp = path or _LESSONS_PATH
+    _ensure_file(fp)
+    if lesson_section(slug, path=fp):
         return False
-    tail = rest[end_idx + len(target_end):]
-    new_body = head.rstrip() + "\n\n" + tail.lstrip("\n")
-    fp.write_text(new_body.rstrip() + "\n")
+    body_existing = fp.read_text()
+    insert_at = len(body_existing)
+    if char_start is not None and 0 <= char_start <= len(body_existing):
+        insert_at = char_start
+    new_body = body_existing[:insert_at] + section + body_existing[insert_at:]
+    fp.write_text(new_body)
     return True
 
 
