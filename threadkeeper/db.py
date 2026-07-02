@@ -13,6 +13,7 @@ from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
+from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -588,6 +589,8 @@ CREATE TABLE IF NOT EXISTS sync_state (
     node_id      TEXT NOT NULL,
     hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
     hlc_counter  INTEGER NOT NULL DEFAULT 0,
+    -- 1 while applying remote changes: suppresses capture triggers.
+    applying     INTEGER NOT NULL DEFAULT 0,
     -- Gate for the opt-in re-id migration. 0 = not migrated; the sync feature
     -- (capture triggers, TEXT-PK vec keying) stays dormant until sync/migrate.py
     -- sets this to SYNC_SCHEMA_VERSION. Deliberately NOT PRAGMA user_version,
@@ -991,17 +994,58 @@ def _open_connection(*, autocommit: bool = False,
     return conn, vec_loaded
 
 
+def _sync_migrated(conn: sqlite3.Connection) -> bool:
+    """True once the opt-in re-id migration (threadkeeper/sync/migrate.py) has run.
+
+    Gated on sync_state.sync_schema_version — deliberately NOT PRAGMA
+    user_version, which main owns as its schema-migration counter
+    (CURRENT_SCHEMA_VERSION). An absent table/row means not migrated.
+    """
+    from .sync import SYNC_SCHEMA_VERSION
+
+    try:
+        row = conn.execute(
+            "SELECT sync_schema_version FROM sync_state WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row) and int(row[0] or 0) >= SYNC_SCHEMA_VERSION
+
+
 def _ensure_vec_tables(conn: sqlite3.Connection, *, vec_loaded: bool) -> None:
     """Create sqlite-vec mirrors during bootstrap, never on read calls."""
     if not vec_loaded:
         return
+    migrated = _sync_migrated(conn)
     try:
-        conn.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
-            f"  id INTEGER PRIMARY KEY,"
-            f"  embedding FLOAT[{EMBED_DIM}]"
-            f")"
-        )
+        if migrated:
+            # Post-migration notes.id is a global TEXT id, so notes_vec is keyed
+            # by a sidecar rowid map (mirrors dialog_vec/dialog_vec_map). Self-heal
+            # a legacy id-keyed notes_vec left by a pre-migration bootstrap: drop
+            # it once so it is recreated with the rowid schema (the backfill
+            # repopulates it via notes_vec_map).
+            _nv = conn.execute("PRAGMA table_info(notes_vec)").fetchall()
+            if _nv and any(c[1] == "id" for c in _nv):
+                conn.execute("DROP TABLE notes_vec")
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                f"  rowid INTEGER PRIMARY KEY,"
+                f"  embedding FLOAT[{EMBED_DIM}]"
+                f")"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS notes_vec_map ("
+                "  rowid INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  gid   TEXT NOT NULL UNIQUE"
+                ")"
+            )
+        else:
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                f"  id INTEGER PRIMARY KEY,"
+                f"  embedding FLOAT[{EMBED_DIM}]"
+                f")"
+            )
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS dialog_vec USING vec0("
             f"  rowid INTEGER PRIMARY KEY,"
@@ -1018,6 +1062,28 @@ def _ensure_vec_tables(conn: sqlite3.Connection, *, vec_loaded: bool) -> None:
         )
     except sqlite3.OperationalError as exc:
         logger.debug("vec0 table creation skipped: %s", exc)
+
+
+def _ensure_sync_capture(conn: sqlite3.Connection) -> None:
+    """Install capture triggers once, only on a migrated DB.
+
+    Off the per-connection hot path — runs during bootstrap after the vec
+    mirrors. A sentinel trigger-existence check keeps re-bootstraps cheap.
+    Dormant until threadkeeper/sync/migrate.py sets the gate.
+    """
+    if not _sync_migrated(conn):
+        return
+    from .sync import capture, identity as sync_identity
+
+    try:
+        sync_identity.get_node_id(conn)
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+            "AND name='notes__sync_ai'"
+        ).fetchone():
+            capture.install_triggers(conn)
+    except sqlite3.OperationalError:
+        pass
 
 
 def bootstrap_db() -> None:
@@ -1047,6 +1113,7 @@ def bootstrap_db() -> None:
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
+            _ensure_sync_capture(conn)
             conn.commit()
             _BOOTSTRAPPED = True
         finally:

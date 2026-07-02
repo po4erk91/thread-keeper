@@ -317,13 +317,24 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     """
     want = max(1, int(k))
     fetch_k = max(want * 8, 40) if embed_backend else want * 2 + 8
-    sql = (
-        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
-        "       v.distance "
-        "FROM notes_vec v "
-        "JOIN notes n ON n.id = v.id "
-        "WHERE v.embedding MATCH ? AND k = ?"
-    )
+    if _notes_mapped(conn):
+        # Post-migration: notes.id is TEXT, joined via the notes_vec_map bridge.
+        sql = (
+            "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+            "       v.distance "
+            "FROM notes_vec v "
+            "JOIN notes_vec_map m ON m.rowid = v.rowid "
+            "JOIN notes n ON n.id = m.gid "
+            "WHERE v.embedding MATCH ? AND k = ?"
+        )
+    else:
+        sql = (
+            "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+            "       v.distance "
+            "FROM notes_vec v "
+            "JOIN notes n ON n.id = v.id "
+            "WHERE v.embedding MATCH ? AND k = ?"
+        )
     params: list = [qv_blob, fetch_k]
     if embed_backend:
         sql += " AND n.embed_backend = ?"
@@ -377,18 +388,43 @@ def _dialog_cosine_search(conn, query: str, k: int,
     return [{"score": s, **dict(r)} for s, r in scored[:k]]
 
 
-def _vec_upsert_note(conn: sqlite3.Connection, note_id: int,
+def _notes_mapped(conn: sqlite3.Connection) -> bool:
+    """True on a migrated DB where notes.id is TEXT and notes_vec is keyed via
+    the notes_vec_map sidecar (mirrors dialog_vec_map)."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_vec_map'"
+    ).fetchone() is not None
+
+
+def _vec_upsert_note(conn: sqlite3.Connection, note_id,
                      emb_blob: Optional[bytes]) -> None:
-    """Mirror a note's embedding into notes_vec. No-op when vec0 isn't
-    loaded or the blob is None. Safe to call multiple times — uses
-    INSERT OR REPLACE keyed by integer id."""
+    """Mirror a note's embedding into notes_vec. No-op when vec0 isn't loaded
+    or the blob is None. Pre-migration: keyed by integer notes.id. Post: keyed
+    by the notes_vec_map rowid resolved from the note's global TEXT id."""
     if not _vec_on() or emb_blob is None or not _vec_dim_ok(emb_blob):
         return
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO notes_vec(id, embedding) VALUES (?, ?)",
-            (note_id, emb_blob),
-        )
+        if _notes_mapped(conn):
+            gid = str(note_id)
+            row = conn.execute(
+                "SELECT rowid FROM notes_vec_map WHERE gid=?", (gid,)
+            ).fetchone()
+            if row is None:
+                cur = conn.execute(
+                    "INSERT INTO notes_vec_map(gid) VALUES (?)", (gid,)
+                )
+                vec_rowid = cur.lastrowid
+            else:
+                vec_rowid = row[0] if not hasattr(row, "keys") else row["rowid"]
+            conn.execute(
+                "INSERT OR REPLACE INTO notes_vec(rowid, embedding) VALUES (?, ?)",
+                (vec_rowid, emb_blob),
+            )
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO notes_vec(id, embedding) VALUES (?, ?)",
+                (note_id, emb_blob),
+            )
     except sqlite3.OperationalError:
         pass  # vec0 table missing on this connection — silent fall-through
 
@@ -404,7 +440,17 @@ def _vec_delete_note(conn: sqlite3.Connection, note_id: int) -> None:
     if not _vec_on():
         return
     try:
-        conn.execute("DELETE FROM notes_vec WHERE id=?", (note_id,))
+        if _notes_mapped(conn):
+            gid = str(note_id)
+            row = conn.execute(
+                "SELECT rowid FROM notes_vec_map WHERE gid=?", (gid,)
+            ).fetchone()
+            if row is not None:
+                vec_rowid = row[0] if not hasattr(row, "keys") else row["rowid"]
+                conn.execute("DELETE FROM notes_vec WHERE rowid=?", (vec_rowid,))
+                conn.execute("DELETE FROM notes_vec_map WHERE gid=?", (gid,))
+        else:
+            conn.execute("DELETE FROM notes_vec WHERE id=?", (note_id,))
     except sqlite3.OperationalError:
         pass  # vec0 table missing on this connection — silent fall-through
 
