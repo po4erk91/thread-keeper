@@ -99,7 +99,7 @@ def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
     prompt = pkg["ed"].EVOLVE_AUDIT_PROMPT
 
     assert "gh issue list --state open --limit 50" not in prompt
-    assert "gh api --paginate --slurp" in prompt
+    assert "gh api --include --paginate" in prompt
     assert "sort=created" in prompt
     assert "direction=asc" in prompt
     assert "pull_request" in prompt

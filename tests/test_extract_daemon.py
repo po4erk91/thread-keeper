@@ -516,6 +516,48 @@ def test_extract_filters_codex_spawned_marker_without_task_link(
     assert not any(r["source_cid"] == codex_rollout for r in rows)
 
 
+def test_extract_filters_native_agent_parent_lineage(tmp_path, monkeypatch):
+    """A native Agent/Workflow-like session can be visible only as a
+    tasks.parent_cid. It has no spawn preamble and is not itself a
+    tasks.spawned_cid, so the lineage filter must exclude it."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    native_agent = "agent-native-extract-descendant"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_native_extract', 0, ?, 'leaf-child', '/x', "
+        "'ordinary native workflow child', ?)",
+        (native_agent, now - 120),
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "I want you to record this fake native-agent rule forever.",
+        now - 90,
+        session_id=native_agent,
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "I want you to record real foreground decisions automatically "
+        "when I state them as standing rules.",
+        now - 60,
+        session_id="real-sess",
+    )
+    conn.commit()
+
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out
+    rows = conn.execute(
+        "SELECT source_cid, content FROM extract_candidates "
+        "WHERE status='pending'"
+    ).fetchall()
+    assert any(r["source_cid"] == "real-sess" for r in rows)
+    assert not any(r["source_cid"] == native_agent for r in rows)
+    assert not any("fake native-agent rule" in r["content"] for r in rows)
+
+
 def test_extract_h4_rejected_cluster_not_reharvested(tmp_path, monkeypatch):
     """H4 paraphrase-cluster path must share the rejected-counting dedup of
     H1/H2/H3. A cluster keyed by its deterministic cluster_key, once

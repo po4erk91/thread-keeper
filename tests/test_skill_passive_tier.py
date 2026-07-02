@@ -101,6 +101,37 @@ def test_spawned_child_use_does_not_promote(pkg):
     assert row["tier"] == "hypothesis"
 
 
+def test_native_agent_parent_lineage_use_does_not_promote(pkg):
+    """Native Agent/Workflow sessions can show up only as parent_cid values.
+    Their observed Skill calls are agent evidence, not foreground use."""
+    ingest, db = pkg["ingest"], pkg["db"]
+    conn = db.get_db()
+    now = int(time.time())
+    native_agent = "agent-native-skill-descendant"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_native_skill', 0, ?, 'leaf-child', '/x', "
+        "'ordinary native workflow child', ?)",
+        (native_agent, now - 120),
+    )
+    conn.commit()
+    for i in range(3):
+        ingest._record_skill_use(
+            conn,
+            "superpowers:test-driven-development",
+            now + i,
+            native_agent,
+        )
+    conn.commit()
+    row = conn.execute(
+        "SELECT use_count, foreground_use_count, tier FROM skill_usage "
+        "WHERE name=?", ("superpowers:test-driven-development",),
+    ).fetchone()
+    assert row["use_count"] == 3
+    assert row["foreground_use_count"] == 0
+    assert row["tier"] == "hypothesis"
+
+
 def test_is_spawned_child_session(pkg):
     ingest, db = pkg["ingest"], pkg["db"]
     conn = db.get_db()

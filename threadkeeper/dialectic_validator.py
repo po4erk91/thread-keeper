@@ -234,23 +234,6 @@ def _resolve_duplicate_pending(conn: sqlite3.Connection,
     return len(skip_ids)
 
 
-def _spawned_session_marker_predicate() -> tuple[str, list]:
-    from .shadow_review import (
-        _INTERNAL_PROMPT_PREFIXES,
-        _SPAWNED_SESSION_MARKERS,
-    )
-
-    clauses: list[str] = []
-    params: list = []
-    for prefix in _INTERNAL_PROMPT_PREFIXES:
-        clauses.append("substr(content, 1, ?) = ?")
-        params.extend([len(prefix), prefix])
-    for marker in _SPAWNED_SESSION_MARKERS:
-        clauses.append("instr(content, ?) > 0")
-        params.append(marker)
-    return " OR ".join(clauses), params
-
-
 def _resolve_spawned_pending(conn: sqlite3.Connection) -> int:
     """Terminally skip observations from spawned child sessions.
 
@@ -261,25 +244,25 @@ def _resolve_spawned_pending(conn: sqlite3.Connection) -> int:
     never be shown to the dialectic LLM.
     """
     try:
-        marker_sql, marker_params = _spawned_session_marker_predicate()
+        from .harvest import harvest_exclusion_cte
+
+        exclusion_cte, exclusion_params = harvest_exclusion_cte()
         rows = conn.execute(
-            "WITH spawned_sessions(session_id) AS ("
-            "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL "
-            "  UNION "
-            "  SELECT DISTINCT session_id FROM dialog_messages "
-            "  WHERE session_id IS NOT NULL AND role='user' "
-            f"  AND ({marker_sql})"
-            ") "
+            exclusion_cte +
             "SELECT o.id "
             "FROM dialectic_observations o "
             "LEFT JOIN dialog_messages d ON d.uuid = o.dialog_uuid "
             "WHERE o.status='pending' AND o.claimed_at IS NULL "
             "AND ("
             "  coalesce(d.project, '') = 'subagents' "
-            "  OR o.source_cid IN (SELECT session_id FROM spawned_sessions) "
-            "  OR d.session_id IN (SELECT session_id FROM spawned_sessions)"
+            "  OR o.source_cid IN ("
+            "    SELECT session_id FROM harvest_excluded_sessions"
+            "  ) "
+            "  OR d.session_id IN ("
+            "    SELECT session_id FROM harvest_excluded_sessions"
+            "  )"
             ")",
-            marker_params,
+            exclusion_params,
         ).fetchall()
     except sqlite3.OperationalError:
         return 0

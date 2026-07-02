@@ -180,6 +180,32 @@ def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
     assert mode == 0o700, f"expected 0700, got {oct(mode)}"
 
 
+def test_headless_task_log_is_owner_only(mp_with_cid, monkeypatch):
+    """Headless child stdout logs can contain private task context and must
+    not be group/other readable."""
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/usr/bin/true")
+    monkeypatch.setattr(pkg["identity"], "_active_cli", "claude")
+
+    class _FakePopen:
+        def __init__(self, *a, **k):
+            self.pid = 4321
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
+
+    spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
+    out = spawn_fn(prompt="do a thing", visible=False, capture_output=True)
+    assert out.startswith("ok task="), out
+
+    logs = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
+    assert len(logs) == 1, logs
+    mode = logs[0].stat().st_mode & 0o777
+    assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+
 def test_spawn_slim_falls_back_to_full_config_when_unable(tmp_path, monkeypatch):
     """If _build_slim_mcp_config returns None (e.g. write error), spawn()
     must NOT crash — it just runs without slim flags."""

@@ -67,6 +67,15 @@ def test_menubar_status_item_uses_idle_chip_and_running_gears():
     assert "store.openEnvSettings()" in swift
     assert '.help("Settings")' in swift
     assert '.help("Refresh")' not in swift
+    assert "ThreadKeeperToggleBar" in swift
+    assert "store.toggleThreadKeeper()" in swift
+    assert "refreshThreadKeeperToggleState()" in swift
+    assert "try Self.setThreadKeeperDisabled(" in swift
+    assert "Task.detached(priority: .utility)" in swift
+    assert "requestThreadKeeperRestart(timeout: 5.0)" in swift
+    assert "waitForExit(_ process: Process, timeout: TimeInterval)" in swift
+    assert 'Label(store.isThreadKeeperDisabled ? "Turn On" : "Turn Off", systemImage: "power")' in swift
+    assert "ThreadKeeper off: background daemons paused" in swift
     assert 'THREADKEEPER_MENUBAR_RESTART_RSS_MB' in swift
     assert 'runStatusCommand(arguments: ["--cleanup-memory"])' in swift
     assert '.help("Clean memory")' in swift
@@ -116,6 +125,7 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "THREADKEEPER_SPAWN__MODEL__CODEX" in swift
     assert "THREADKEEPER_SPAWN__MODEL__GEMINI" in swift
     assert "THREADKEEPER_DISABLE_BG_DAEMONS" in swift
+    assert "setThreadKeeperDisabled(_ disabled: Bool, restart: Bool)" in swift
     assert "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S" in swift
     assert "THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER" in swift
     assert 'Label("Save & Restart", systemImage: "arrow.clockwise.circle")' in swift
@@ -242,7 +252,8 @@ def test_ensure_menubar_restarts_stale_running_app(fresh_mp, tmp_path, monkeypat
     monkeypatch.setattr(menubar_app, "_attempted", False)
     monkeypatch.setattr(menubar_app.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(menubar_app, "MENUBAR_AUTO_LAUNCH", True)
-    monkeypatch.setattr(menubar_app, "BACKGROUND_DAEMONS_ALLOWED", True)
+    monkeypatch.setattr(menubar_app, "SPAWNED_CHILD", False)
+    monkeypatch.setattr(menubar_app, "WRITE_ORIGIN", "foreground")
     monkeypatch.setattr(menubar_app, "TASK_LOG_DIR", task_logs)
     monkeypatch.setattr(menubar_app, "_source_dir", lambda: src)
     monkeypatch.setattr(menubar_app, "_installed_app", lambda: app)
