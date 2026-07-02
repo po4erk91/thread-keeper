@@ -487,6 +487,30 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_ori
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
+-- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
+-- Node identity + Hybrid Logical Clock singleton.
+CREATE TABLE IF NOT EXISTS sync_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    node_id      TEXT NOT NULL,
+    hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
+    hlc_counter  INTEGER NOT NULL DEFAULT 0
+);
+-- Change-capture index: one row per mutation of a replicated row (op='put'|'del').
+CREATE TABLE IF NOT EXISTS sync_oplog (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tbl          TEXT NOT NULL,
+    gid          TEXT NOT NULL,
+    op           TEXT NOT NULL,
+    hlc          TEXT NOT NULL,
+    origin_node  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc ON sync_oplog(hlc);
+-- Version vector: highest HLC this node has durably applied per origin node.
+CREATE TABLE IF NOT EXISTS sync_peer_vv (
+    origin_node  TEXT PRIMARY KEY,
+    max_hlc      TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     content, content='notes', content_rowid='id'
 );
@@ -497,6 +521,19 @@ CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
     INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 """
+
+# Memory tables replicated by cross-machine sync (threadkeeper/sync/). Each
+# gets additive hlc/origin_node/deleted columns below. Node-local tables
+# (sessions, presence, cursors, ingest_state, resource_controls, events,
+# signals, tasks, extract_candidates) and derived indexes (*_fts, *_vec) are
+# deliberately excluded — they never sync. See docs/sync.md.
+_SYNC_REPLICATED_TABLES = (
+    "threads", "notes", "verbatim", "dialog_messages", "core_memory",
+    "concepts", "distill", "distill_votes", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "edges", "skill_usage",
+    "reliability", "probes", "probe_results", "evolve", "style",
+)
+
 
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
@@ -618,6 +655,23 @@ def get_db() -> sqlite3.Connection:
             conn.execute(ddl)
         except sqlite3.OperationalError:
             pass
+
+    # ── Cross-machine sync columns (additive, safe on any DB) ────────────────
+    # hlc/origin_node carry a replicated row's global write timestamp + author
+    # for last-writer-wins merges; `deleted` is a tombstone (a delete
+    # propagates as deleted=1 rather than a hard DELETE once sync is live).
+    # Added to every replicated table now (harmless pre-migration). The
+    # destructive INTEGER->TEXT PK re-id is a separate opt-in step (sync.migrate).
+    for _t in _SYNC_REPLICATED_TABLES:
+        for _coldef in (
+            "ADD COLUMN hlc TEXT",
+            "ADD COLUMN origin_node TEXT",
+            "ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE {_t} {_coldef}")
+            except sqlite3.OperationalError:
+                pass
 
     try:
         conn.execute(
