@@ -412,6 +412,16 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   checkout is never auto-cloned into and reports `ERR repo_root_not_git`.
   Provisioning is serialized by `evolve-repo-provision.lock`. Curator report
   apply needs no git tree and runs regardless.
+
+  Before the privileged reviewer audit or any code/PR applier child is spawned,
+  the parent enforces local git safety on that checkout: `git status
+  --porcelain --untracked-files=no` must be empty (`skipped_dirty_worktree
+  mode=git` is recorded on `events.kind='evolve_git_safety'` when tracked WIP is
+  present), and no other PR-producing evolve reviewer/applier task may already
+  be running. The guard intentionally ignores untracked scratch files, matching
+  `auto_update`'s dirty-check semantics. Child prompts then branch from a fetched
+  base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
+  of arbitrary current `HEAD`.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   report-first, but when a skill or lesson exposes a concrete improvement for
   thread-keeper itself it may call `evolve_format(...)` and record an
