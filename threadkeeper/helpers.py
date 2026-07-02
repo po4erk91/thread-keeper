@@ -79,24 +79,66 @@ def _gen_short_id(conn: sqlite3.Connection, prefix: str, table: str,
     return prefix + secrets.token_hex(3)[:5]
 
 
+def _global_ids_on(conn: sqlite3.Connection) -> bool:
+    """After the sync re-id migration, generated ids must be globally unique
+    (ULID) instead of the local 3-hex short ids. Gated on PRAGMA user_version."""
+    from .sync import SYNC_SCHEMA_VERSION
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0]) >= SYNC_SCHEMA_VERSION
+    except sqlite3.Error:
+        return False
+
+
 def gen_thread_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "T", "threads")
+    return gen_global_id("T") if _global_ids_on(conn) else _gen_short_id(conn, "T", "threads")
 
 
 def gen_probe_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "P", "probes")
+    return gen_global_id("P") if _global_ids_on(conn) else _gen_short_id(conn, "P", "probes")
 
 
 def gen_concept_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "C", "concepts")
+    return gen_global_id("C") if _global_ids_on(conn) else _gen_short_id(conn, "C", "concepts")
 
 
 def gen_distill_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "D", "distill")
+    return gen_global_id("D") if _global_ids_on(conn) else _gen_short_id(conn, "D", "distill")
 
 
 def gen_dialectic_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "UC", "user_dialectic")
+    return gen_global_id("UC") if _global_ids_on(conn) else _gen_short_id(conn, "UC", "user_dialectic")
+
+
+# ── Global IDs (cross-machine sync) ────────────────────────────────────────
+# ULID: 48-bit millisecond timestamp + 80 bits of randomness, Crockford
+# base32 (26 chars, lexicographically sortable by creation time). Unlike
+# `_gen_short_id` (prefix + 3 hex, 4096 space, LOCAL-only uniqueness check),
+# a ULID is globally unique WITHOUT peer coordination — required so two
+# machines minting rows offline never collide when their DBs merge. Keeps an
+# optional single-char type prefix for human-readable/debuggable ids (e.g.
+# "T"+ULID for threads). See docs/sync.md.
+_ULID_B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford (no I,L,O,U)
+
+
+def _ulid() -> str:
+    ts = int(time.time() * 1000) & ((1 << 48) - 1)
+    rnd = int.from_bytes(secrets.token_bytes(10), "big")  # 80 bits
+    out = [""] * 26
+    for i in range(9, -1, -1):
+        out[i] = _ULID_B32[ts & 31]
+        ts >>= 5
+    for i in range(25, 9, -1):
+        out[i] = _ULID_B32[rnd & 31]
+        rnd >>= 5
+    return "".join(out)
+
+
+def gen_global_id(prefix: str = "") -> str:
+    """Globally-unique, time-sortable id (optional type prefix + ULID).
+
+    Collision-safe across machines with no coordination (80 random bits),
+    so it is the id scheme for sync-replicated rows. No DB lookup needed."""
+    return prefix + _ulid() if prefix else _ulid()
 
 
 def alive(pid: int) -> bool:

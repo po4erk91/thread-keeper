@@ -7,6 +7,7 @@ import sqlite3
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
+from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +488,31 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_ori
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
+-- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
+-- Node identity + Hybrid Logical Clock singleton.
+CREATE TABLE IF NOT EXISTS sync_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    node_id      TEXT NOT NULL,
+    hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
+    hlc_counter  INTEGER NOT NULL DEFAULT 0,
+    applying     INTEGER NOT NULL DEFAULT 0   -- 1 while applying remote changes: suppresses capture triggers
+);
+-- Change-capture index: one row per mutation of a replicated row (op='put'|'del').
+CREATE TABLE IF NOT EXISTS sync_oplog (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tbl          TEXT NOT NULL,
+    gid          TEXT NOT NULL,
+    op           TEXT NOT NULL,
+    hlc          TEXT NOT NULL,
+    origin_node  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc ON sync_oplog(hlc);
+-- Version vector: highest HLC this node has durably applied per origin node.
+CREATE TABLE IF NOT EXISTS sync_peer_vv (
+    origin_node  TEXT PRIMARY KEY,
+    max_hlc      TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     content, content='notes', content_rowid='id'
 );
@@ -497,6 +523,19 @@ CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
     INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 """
+
+# Memory tables replicated by cross-machine sync (threadkeeper/sync/). Each
+# gets additive hlc/origin_node/deleted columns below. Node-local tables
+# (sessions, presence, cursors, ingest_state, resource_controls, events,
+# signals, tasks, extract_candidates) and derived indexes (*_fts, *_vec) are
+# deliberately excluded — they never sync. See docs/sync.md.
+_SYNC_REPLICATED_TABLES = (
+    "threads", "notes", "verbatim", "dialog_messages", "core_memory",
+    "concepts", "distill", "distill_votes", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "edges", "skill_usage",
+    "reliability", "probes", "probe_results", "evolve", "style",
+)
+
 
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
@@ -512,6 +551,12 @@ def get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    # Sync becomes active only after the opt-in re-id migration bumped
+    # user_version. Gates the TEXT-PK vec keying + capture triggers so a
+    # pre-migration install behaves exactly as before.
+    _migrated = int(
+        conn.execute("PRAGMA user_version").fetchone()[0]
+    ) >= SYNC_SCHEMA_VERSION
     harden_storage_paths(
         DB_PATH,
         env_file=_ENV_FILE,
@@ -528,12 +573,34 @@ def get_db() -> sqlite3.Connection:
         # ones. Existing data in notes.embedding / dialog_messages.embedding
         # is migrated lazily by a backfill job (see ingest.py).
         try:
-            conn.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
-                f"  id INTEGER PRIMARY KEY,"
-                f"  embedding FLOAT[{EMBED_DIM}]"
-                f")"
-            )
+            if _migrated:
+                # Post-migration notes.id is a global TEXT id, so notes_vec is
+                # keyed by a sidecar rowid map (mirrors dialog_vec/dialog_vec_map).
+                # Self-heal a legacy id-keyed notes_vec left by a pre-migration
+                # connection: drop it once so it is recreated with the rowid
+                # schema (the backfill repopulates it via notes_vec_map).
+                _nv = conn.execute("PRAGMA table_info(notes_vec)").fetchall()
+                if _nv and any(c[1] == "id" for c in _nv):
+                    conn.execute("DROP TABLE notes_vec")
+                conn.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                    f"  rowid INTEGER PRIMARY KEY,"
+                    f"  embedding FLOAT[{EMBED_DIM}]"
+                    f")"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS notes_vec_map ("
+                    "  rowid INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "  gid   TEXT NOT NULL UNIQUE"
+                    ")"
+                )
+            else:
+                conn.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                    f"  id INTEGER PRIMARY KEY,"
+                    f"  embedding FLOAT[{EMBED_DIM}]"
+                    f")"
+                )
             conn.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS dialog_vec USING vec0("
                 f"  rowid INTEGER PRIMARY KEY,"
@@ -619,6 +686,23 @@ def get_db() -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
 
+    # ── Cross-machine sync columns (additive, safe on any DB) ────────────────
+    # hlc/origin_node carry a replicated row's global write timestamp + author
+    # for last-writer-wins merges; `deleted` is a tombstone (a delete
+    # propagates as deleted=1 rather than a hard DELETE once sync is live).
+    # Added to every replicated table now (harmless pre-migration). The
+    # destructive INTEGER->TEXT PK re-id is a separate opt-in step (sync.migrate).
+    for _t in _SYNC_REPLICATED_TABLES:
+        for _coldef in (
+            "ADD COLUMN hlc TEXT",
+            "ADD COLUMN origin_node TEXT",
+            "ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE {_t} {_coldef}")
+            except sqlite3.OperationalError:
+                pass
+
     try:
         conn.execute(
             "UPDATE user_dialectic SET valid_from=created_at "
@@ -666,5 +750,20 @@ def get_db() -> sqlite3.Connection:
         env_file=_ENV_FILE,
         curator_reports_dir=CURATOR_REPORTS_DIR,
     )
+    # Capture triggers (hlc/origin stamping + oplog) — only on a migrated DB.
+    # Ensure the sync_state singleton exists, then install triggers once (a
+    # sentinel check keeps this off the per-connection hot path).
+    if _migrated:
+        from .sync import capture, identity as sync_identity
+        try:
+            sync_identity.get_node_id(conn)
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                "AND name='notes__sync_ai'"
+            ).fetchone():
+                capture.install_triggers(conn)
+        except sqlite3.OperationalError:
+            pass
+
     conn.row_factory = sqlite3.Row
     return conn

@@ -211,6 +211,15 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            # Cross-machine sync: server (peers pull/push) + client reconcile
+            # loop. Both no-op unless the DB is migrated and peers/token/listen
+            # are configured. See threadkeeper/sync/.
+            from .sync import server as sync_server, daemon as sync_daemon
+            sync_server.start_server()
+            sync_daemon.start_sync_daemon()
+        except Exception:
+            pass
+        try:
             # One-shot self-heal: claims seeded before the tier machinery
             # never got their tier recomputed (see recompute_all_tiers). Cheap
             # (a handful of active claims); idempotent on every startup.

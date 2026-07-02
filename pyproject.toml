@@ -74,6 +74,9 @@ thread-keeper-setup = "threadkeeper._setup:main"
 # Recompute stored embeddings with the active backend (e.g. after switching to
 # the ONNX default). Equivalent to `python -m threadkeeper.migrate_embeddings`.
 tk-migrate-embeddings = "threadkeeper.migrate_embeddings:main"
+# One-time re-id migration that enables cross-machine sync (opt-in, destructive;
+# back up db.sqlite first). Equivalent to `python -m threadkeeper.sync.migrate`.
+tk-sync-migrate = "threadkeeper.sync.migrate:main"
 # JSON/text status feed for menu-bar widgets and terminal monitors.
 tk-agent-status = "threadkeeper.agent_status:main"
 

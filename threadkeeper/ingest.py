@@ -624,18 +624,29 @@ def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[in
     from .db import vec_available
     if not SEMANTIC_AVAILABLE or not vec_available():
         return (0, 0)
-    from .embeddings import _vec_upsert_note, _vec_upsert_dialog
+    from .embeddings import _vec_upsert_note, _vec_upsert_dialog, _notes_mapped
     n_notes = 0
     n_dialog = 0
     try:
-        # Notes that have embedding but aren't yet in notes_vec.
-        rows = conn.execute(
-            "SELECT n.id, n.embedding FROM notes n "
-            "LEFT JOIN notes_vec v ON v.id = n.id "
-            "WHERE n.embedding IS NOT NULL AND v.id IS NULL "
-            "LIMIT ?",
-            (batch,),
-        ).fetchall()
+        # Notes that have embedding but aren't yet mirrored into notes_vec.
+        # Post-migration the presence check goes through notes_vec_map (notes_vec
+        # is keyed by rowid, not the note's TEXT id); pre-migration it is direct.
+        if _notes_mapped(conn):
+            rows = conn.execute(
+                "SELECT n.id, n.embedding FROM notes n "
+                "LEFT JOIN notes_vec_map m ON m.gid = n.id "
+                "WHERE n.embedding IS NOT NULL AND m.gid IS NULL "
+                "LIMIT ?",
+                (batch,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT n.id, n.embedding FROM notes n "
+                "LEFT JOIN notes_vec v ON v.id = n.id "
+                "WHERE n.embedding IS NOT NULL AND v.id IS NULL "
+                "LIMIT ?",
+                (batch,),
+            ).fetchall()
         for r in rows:
             _vec_upsert_note(conn, r["id"], r["embedding"])
             n_notes += 1
