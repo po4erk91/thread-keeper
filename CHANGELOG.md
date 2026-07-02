@@ -9,6 +9,15 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Dialog transcript secret redaction (#37).** Live ingest now masks common
+  credential-shaped values before transcript text is written to
+  `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The scrubber
+  covers authorization headers, bearer/OAuth tokens, AWS access-key IDs, common
+  API-token prefixes, `.npmrc` / `.netrc` credentials, and sensitive
+  assignments such as `*_TOKEN=` / `*_SECRET=`. It is default-on and can be
+  disabled with `THREADKEEPER_REDACT_DIALOG_SECRETS=0` for rare local debugging
+  sessions that intentionally need raw transcript fidelity.
+
 - **Bi-temporal dialectic claims (#28).** `user_dialectic` now carries
   `valid_from` / `valid_to` valid-time bounds alongside `created_at` ingestion
   time. New claims start at `valid_from=created_at`, and

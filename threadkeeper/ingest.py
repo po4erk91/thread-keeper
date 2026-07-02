@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ from .config import (
     INGEST_CAP_PER_CALL,
     INGEST_INTERVAL_S,
     INGEST_RECENT_WINDOW_S,
+    REDACT_DIALOG_SECRETS,
     SEMANTIC_AVAILABLE,
 )
 from .db import get_db
@@ -26,6 +28,79 @@ _ingest_interval_s = INGEST_INTERVAL_S
 _ingest_recent_window_s = INGEST_RECENT_WINDOW_S
 _last_ingest_event_at = 0
 _INGEST_EVENT_IDLE_THROTTLE_S = 60
+
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\b(?:Authorization|Proxy-Authorization)\s*:\s*"
+    r"(?:Bearer|Token|Basic|OAuth)\s+)"
+    r"([A-Za-z0-9._~+/=-]{8,})"
+)
+_BEARER_RE = re.compile(
+    r"(?i)\b((?:Bearer|OAuth)\s+)([A-Za-z0-9._~+/=-]{16,})"
+)
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
+_OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9][A-Za-z0-9_-]{18,}\b")
+_ANTHROPIC_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{18,}\b")
+_SLACK_TOKEN_RE = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{18,}\b")
+_NPM_TOKEN_RE = re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b")
+_SENSITIVE_KEY = (
+    r"[A-Za-z0-9_.-]*(?:TOKEN|SECRET|API[_-]?KEY|ACCESS[_-]?KEY|"
+    r"PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)"
+    r"[A-Za-z0-9_.-]*"
+)
+_SECRET_ASSIGN_QUOTED_RE = re.compile(
+    rf"(?i)(\b{_SENSITIVE_KEY}\s*[:=]\s*)(?P<quote>[\"'])"
+    rf"(?P<value>[^\"'\n]{{4,}})(?P=quote)"
+)
+_SECRET_ASSIGN_RE = re.compile(
+    rf"(?i)(\b{_SENSITIVE_KEY}\s*[:=]\s*)([^\s`'\"<>\[]{{4,}})"
+)
+_NPMRC_CREDENTIAL_RE = re.compile(
+    r"(?im)(^|[\s])"
+    r"((?://[^\s:=]+(?::\d+)?/?:)?"
+    r"(?:_authToken|_auth|password|username)\s*=\s*)"
+    r"([^\s`'\"<>]{4,})"
+)
+_NETRC_LOGIN_PASSWORD_RE = re.compile(
+    r"(?i)(\bmachine\s+\S+\s+login\s+)(\S+)(\s+password\s+)(\S+)"
+)
+
+
+def _scrub_dialog_secrets(text: str) -> str:
+    """Mask credential-shaped values before dialog text reaches durable stores."""
+    if not REDACT_DIALOG_SECRETS:
+        return text
+    scrubbed = str(text or "")
+    scrubbed = _AUTH_HEADER_RE.sub(
+        r"\1[REDACTED:AUTHORIZATION]", scrubbed
+    )
+    scrubbed = _BEARER_RE.sub(r"\1[REDACTED:BEARER_TOKEN]", scrubbed)
+    scrubbed = _NETRC_LOGIN_PASSWORD_RE.sub(
+        r"\1[REDACTED:NETRC_LOGIN]\3[REDACTED:NETRC_PASSWORD]",
+        scrubbed,
+    )
+    scrubbed = _NPMRC_CREDENTIAL_RE.sub(
+        r"\1\2[REDACTED:NPMRC_CREDENTIAL]", scrubbed
+    )
+    scrubbed = _SECRET_ASSIGN_QUOTED_RE.sub(
+        r"\1\g<quote>[REDACTED:SECRET]\g<quote>", scrubbed
+    )
+    scrubbed = _SECRET_ASSIGN_RE.sub(
+        r"\1[REDACTED:SECRET]", scrubbed
+    )
+    scrubbed = _ANTHROPIC_KEY_RE.sub("[REDACTED:ANTHROPIC_API_KEY]", scrubbed)
+    scrubbed = _OPENAI_KEY_RE.sub("[REDACTED:OPENAI_API_KEY]", scrubbed)
+    scrubbed = _GITHUB_TOKEN_RE.sub("[REDACTED:GITHUB_TOKEN]", scrubbed)
+    scrubbed = _SLACK_TOKEN_RE.sub("[REDACTED:SLACK_TOKEN]", scrubbed)
+    scrubbed = _NPM_TOKEN_RE.sub("[REDACTED:NPM_TOKEN]", scrubbed)
+    scrubbed = _AWS_ACCESS_KEY_RE.sub(
+        "[REDACTED:AWS_ACCESS_KEY_ID]", scrubbed
+    )
+    return scrubbed
+
+
 def _record_ingest_pass(
     conn: sqlite3.Connection,
     *,
@@ -98,7 +173,7 @@ def _backfill_dialog_fts_if_empty(conn: sqlite3.Connection) -> None:
     batch: list[tuple[str, str]] = []
     added = 0
     for r in missing:
-        batch.append((r["uuid"], r["content"]))
+        batch.append((r["uuid"], _scrub_dialog_secrets(r["content"])))
         if len(batch) >= 5000:
             conn.executemany(
                 "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
@@ -344,7 +419,7 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                     _record_skill_use(
                         conn, skill_name, nm.created_at, nm.session_id
                     )
-            text = nm.content
+            text = _scrub_dialog_secrets(nm.content)
             if not text or len(text) < 10:
                 continue
             emb = _embed(text[:2000]) if SEMANTIC_AVAILABLE else None

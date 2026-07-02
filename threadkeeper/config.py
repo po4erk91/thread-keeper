@@ -162,6 +162,7 @@ class Settings(BaseSettings):
             "THREADKEEPER_INGEST_WINDOW_S", "ingest_window_s"
         ),
     )
+    redact_dialog_secrets: bool = True
 
     # ── Identity / session ───────────────────────────────────────────────────
     self_cid_ttl_s: float = 5.0
@@ -567,6 +568,7 @@ def _derive_constants(s: "Settings") -> dict:
         "INGEST_CAP_PER_CALL": s.ingest_cap,
         "INGEST_INTERVAL_S": s.ingest_interval_s,
         "INGEST_RECENT_WINDOW_S": s.ingest_window_s,
+        "REDACT_DIALOG_SECRETS": s.redact_dialog_secrets,
         "SELF_CID_TTL_S": s.self_cid_ttl_s,
         "MEMORY_NUDGE_INTERVAL": s.memory_nudge_interval,
         "SKILL_NUDGE_INTERVAL": s.skill_nudge_interval,
