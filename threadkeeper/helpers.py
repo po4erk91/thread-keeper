@@ -140,6 +140,38 @@ def gen_dialectic_id(conn: sqlite3.Connection) -> str:
     return _gen_short_id(conn, "UC", "user_dialectic")
 
 
+# ── Global IDs (cross-machine sync) ────────────────────────────────────────
+# ULID: 48-bit millisecond timestamp + 80 bits of randomness, Crockford
+# base32 (26 chars, lexicographically sortable by creation time). Unlike
+# `_gen_short_id` (prefix + 3 hex, 4096 space, LOCAL-only uniqueness check),
+# a ULID is globally unique WITHOUT peer coordination — required so two
+# machines minting rows offline never collide when their DBs merge. Keeps an
+# optional single-char type prefix for human-readable/debuggable ids (e.g.
+# "T"+ULID for threads). See docs/sync.md.
+_ULID_B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford (no I,L,O,U)
+
+
+def _ulid() -> str:
+    ts = int(time.time() * 1000) & ((1 << 48) - 1)
+    rnd = int.from_bytes(secrets.token_bytes(10), "big")  # 80 bits
+    out = [""] * 26
+    for i in range(9, -1, -1):
+        out[i] = _ULID_B32[ts & 31]
+        ts >>= 5
+    for i in range(25, 9, -1):
+        out[i] = _ULID_B32[rnd & 31]
+        rnd >>= 5
+    return "".join(out)
+
+
+def gen_global_id(prefix: str = "") -> str:
+    """Globally-unique, time-sortable id (optional type prefix + ULID).
+
+    Collision-safe across machines with no coordination (80 random bits),
+    so it is the id scheme for sync-replicated rows. No DB lookup needed."""
+    return prefix + _ulid() if prefix else _ulid()
+
+
 def alive(pid: int) -> bool:
     """True if pid corresponds to a running (non-zombie) process. Reaps
     zombies opportunistically when pid is our own child. pid<=0 sentinel
