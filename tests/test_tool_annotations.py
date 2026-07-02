@@ -33,7 +33,8 @@ READ_TOOLS = {
     "memory_guard_status", "mp_dashboard", "mp_health", "neighbors", "peers",
     "pending_distillates", "pickup_candidates", "reliability_for",
     "review_candidates", "run_probe", "search", "shadow_review_status",
-    "skill_list", "spawn_budget_status", "spawn_status", "task_logs",
+    "skill_list", "spawn_budget_status", "spawn_status", "sync_peers",
+    "sync_status", "task_logs",
     "task_thread", "tasks", "weak_spots", "whoami",
 }
 
@@ -62,7 +63,7 @@ WRITE_TOOLS = {
     "register_concept", "register_probe", "reject_candidate", "release_pickup",
     "respond", "review_thread", "search_via_parent", "session_end",
     "shadow_review_run", "skill_record", "spawn", "spawn_budget_set",
-    "style_set", "tag_signal", "tournament", "validate_threads",
+    "style_set", "sync_now", "tag_signal", "tournament", "validate_threads",
     "verbatim_user", "vote_distill", "wait", "whisper",
 }
 

@@ -79,24 +79,34 @@ def _gen_short_id(conn: sqlite3.Connection, prefix: str, table: str,
     return prefix + secrets.token_hex(3)[:5]
 
 
+def _global_ids_on(conn: sqlite3.Connection) -> bool:
+    """After the sync re-id migration, generated ids must be globally unique
+    (ULID) instead of the local 3-hex short ids. Gated on PRAGMA user_version."""
+    from .sync import SYNC_SCHEMA_VERSION
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0]) >= SYNC_SCHEMA_VERSION
+    except sqlite3.Error:
+        return False
+
+
 def gen_thread_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "T", "threads")
+    return gen_global_id("T") if _global_ids_on(conn) else _gen_short_id(conn, "T", "threads")
 
 
 def gen_probe_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "P", "probes")
+    return gen_global_id("P") if _global_ids_on(conn) else _gen_short_id(conn, "P", "probes")
 
 
 def gen_concept_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "C", "concepts")
+    return gen_global_id("C") if _global_ids_on(conn) else _gen_short_id(conn, "C", "concepts")
 
 
 def gen_distill_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "D", "distill")
+    return gen_global_id("D") if _global_ids_on(conn) else _gen_short_id(conn, "D", "distill")
 
 
 def gen_dialectic_id(conn: sqlite3.Connection) -> str:
-    return _gen_short_id(conn, "UC", "user_dialectic")
+    return gen_global_id("UC") if _global_ids_on(conn) else _gen_short_id(conn, "UC", "user_dialectic")
 
 
 # ── Global IDs (cross-machine sync) ────────────────────────────────────────

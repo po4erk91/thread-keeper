@@ -109,9 +109,12 @@ def _rebuild_int_table(conn: sqlite3.Connection, table: str) -> None:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ).fetchone()[0]
     # Only the rowid-alias PK carries AUTOINCREMENT, so this targets the id col.
+    # The DEFAULT lets post-migration INSERTs that omit id still get a global
+    # id (128-bit random hex, collision-safe across machines) with zero
+    # write-site churn; existing rows are remapped to ULIDs just below.
     new_sql = re.sub(
         r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT",
-        "TEXT PRIMARY KEY",
+        "TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16))))",
         sql,
         count=1,
         flags=re.IGNORECASE,
@@ -179,19 +182,21 @@ def _stamp_baseline_hlc(conn: sqlite3.Connection) -> None:
 
 
 def _rebuild_derived(conn: sqlite3.Connection) -> None:
-    """Derived indexes are keyed off the (now-changed) ids — rebuild locally."""
+    """Derived indexes are keyed off the (now-changed) ids — rebuild locally.
+    Runs on a migrated get_db() connection, so notes_vec is already the
+    rowid+map schema (get_db self-heals the legacy id-keyed table)."""
     try:
         conn.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
     except sqlite3.OperationalError:
         pass
-    # Drop stale vec rows keyed by the old integer notes.id; the ingest
-    # backfill (_backfill_vec_tables) repopulates notes_vec from notes.embedding
-    # via the new notes_vec_map on next daemon tick / get_db.
-    for stmt in ("DELETE FROM notes_vec", "DELETE FROM notes_vec_map"):
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError:
+    # Repopulate notes_vec/dialog_vec from the stored embedding BLOBs via the
+    # new maps (idempotent; also runs on every background tick).
+    try:
+        from ..ingest import _backfill_vec_tables
+        while _backfill_vec_tables(conn)[0]:
             pass
+    except Exception:
+        pass
 
 
 def apply(db_path: Path, do_apply: bool) -> int:
@@ -241,6 +246,9 @@ def apply(db_path: Path, do_apply: bool) -> int:
             _remap_ids(conn, table, maps[table])
         _fix_refs(conn, maps, children)
         conn.execute("COMMIT")
+        # Enable the feature BEFORE reopening via get_db so that connection
+        # materializes the migrated schema (rowid notes_vec + map + triggers).
+        conn.execute(f"PRAGMA user_version={SYNC_SCHEMA_VERSION}")
     except Exception:
         conn.rollback()
         conn.close()
@@ -249,14 +257,16 @@ def apply(db_path: Path, do_apply: bool) -> int:
         raise
     conn.close()
 
-    # Reassert declared indexes/triggers on the rebuilt tables, rebuild derived
-    # indexes, stamp baseline HLC, then bump user_version.
+    # Reopen through get_db (reasserts declared indexes/triggers on the rebuilt
+    # tables + installs sync). Rebuild derived indexes and stamp a baseline HLC
+    # under applying_guard so capture triggers don't clobber the explicit stamp.
     from ..db import get_db
+    from . import capture
     conn = get_db()
     try:
-        _rebuild_derived(conn)
-        _stamp_baseline_hlc(conn)
-        conn.execute(f"PRAGMA user_version={SYNC_SCHEMA_VERSION}")
+        with capture.applying_guard(conn):
+            _rebuild_derived(conn)
+            _stamp_baseline_hlc(conn)
         conn.commit()
     finally:
         conn.close()
