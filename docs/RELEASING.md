@@ -8,7 +8,9 @@ the version in `pyproject.toml` and dispatches
 matching `v*` still trigger `publish.yml` directly.
 
 PyPI upload uses Trusted Publisher OIDC — no PyPI API token is stored in
-the repository.
+the repository. The publish job explicitly uploads PyPI digital attestations
+(`attestations: true`), which is what the packaged auto-updater verifies before
+running future `pip install --upgrade` self-updates.
 
 ## One-time setup
 

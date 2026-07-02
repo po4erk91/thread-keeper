@@ -216,6 +216,52 @@ def test_collect_window_excludes_codex_spawned_marker_sessions(
     assert n_chars > 0
 
 
+def test_collect_window_excludes_native_agent_parent_lineage(
+    tmp_path, monkeypatch,
+):
+    """Native Agent/Workflow descendants can surface as agent-* parent_cid
+    values instead of direct tasks.spawned_cid rows. Their dialog has no
+    threadkeeper spawn preamble, but it is still autonomous agent output."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    native_agent = "agent-native-shadow-descendant"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at) VALUES ('tk_native_child', 0, ?, 'leaf-child', '/x', "
+        "'ordinary native workflow child', ?)",
+        (native_agent, now - 120),
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "I want this fake native-agent preference to be saved.",
+        now - 80,
+        session_id=native_agent,
+    )
+    _seed_dialog(
+        conn,
+        "assistant",
+        "Native agent analysis that should not reach shadow review.",
+        now - 70,
+        session_id=native_agent,
+    )
+    _seed_dialog(
+        conn,
+        "user",
+        "real foreground English prompt about the current task",
+        now - 20,
+        session_id="real-sess",
+    )
+    conn.commit()
+
+    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    assert "foreground English prompt" in dump
+    assert "fake native-agent preference" not in dump
+    assert "Native agent analysis" not in dump
+    assert n_chars > 0
+
+
 def test_collect_window_strips_tool_results_keeps_thinking(
     tmp_path, monkeypatch,
 ):
