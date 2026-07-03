@@ -22,11 +22,13 @@ silently shrinking the lessons store is visible at a glance.
 
 from __future__ import annotations
 
+from pathlib import Path
 import sqlite3
 import time
 
 from .._mcp import read_tool, write_tool
 from ..agent_status import _LOOP_DEFS
+from ..config import DB_PATH
 from ..db import get_db
 from ..helpers import fmt_age
 from ..identity import _ensure_session
@@ -67,6 +69,33 @@ def _fmt_group(d: dict[str, int], order: tuple[str, ...]) -> str:
         if k not in order:
             parts.append(f"{k}={d[k]}")
     return " ".join(parts) if parts else "0"
+
+
+def _fmt_bytes(n: int) -> str:
+    n = max(0, int(n or 0))
+    units = ("B", "KiB", "MiB", "GiB")
+    value = float(n)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)}B"
+            return f"{value:.1f}{unit}"
+        value /= 1024
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _db_sizes() -> tuple[int, int, int, int]:
+    db = Path(DB_PATH)
+    main = _file_size(db)
+    wal = _file_size(Path(str(db) + "-wal"))
+    shm = _file_size(Path(str(db) + "-shm"))
+    return main, wal, shm, main + wal + shm
 
 
 def _task_spend_24h(
@@ -237,6 +266,12 @@ def mp_dashboard(window_days: int = 7) -> str:
     evolve = _group_counts(conn, "evolve", "COALESCE(status,'pending')")
     out.append("")
     out.append("stores")
+    db_main, db_wal, db_shm, db_total = _db_sizes()
+    out.append(
+        f"  db_size={_fmt_bytes(db_total)} "
+        f"main={_fmt_bytes(db_main)} wal={_fmt_bytes(db_wal)} "
+        f"shm={_fmt_bytes(db_shm)}"
+    )
     out.append(
         f"  threads: {_fmt_group(threads, ('active','idle','closed'))} "
         f"(total {sum(threads.values())})"
@@ -268,6 +303,17 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"{_scalar(conn, 'SELECT COUNT(*) FROM tasks WHERE ended_at IS NULL')} "
         f"tasks_total={_scalar(conn, 'SELECT COUNT(*) FROM tasks')} "
         f"tasks_timed_out={timed_out}"
+    )
+    out.append(
+        "  high_volume: "
+        f"dialog_messages={_scalar(conn, 'SELECT COUNT(*) FROM dialog_messages')} "
+        f"dialog_fts={_scalar(conn, 'SELECT COUNT(*) FROM dialog_fts')} "
+        f"dialog_vec={_scalar(conn, 'SELECT COUNT(*) FROM dialog_vec')} "
+        f"dialog_vec_map={_scalar(conn, 'SELECT COUNT(*) FROM dialog_vec_map')} "
+        f"events={_scalar(conn, 'SELECT COUNT(*) FROM events')} "
+        f"signals={_scalar(conn, 'SELECT COUNT(*) FROM signals')} "
+        f"tasks={_scalar(conn, 'SELECT COUNT(*) FROM tasks')} "
+        f"probe_results={_scalar(conn, 'SELECT COUNT(*) FROM probe_results')}"
     )
 
     # ── loops ─────────────────────────────────────────────────────────

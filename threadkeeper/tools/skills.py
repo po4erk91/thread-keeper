@@ -45,6 +45,11 @@ from ..review_prompts import (
     MEMORY_REVIEW_PROMPT, SKILL_REVIEW_PROMPT, COMBINED_REVIEW_PROMPT,
     DATA_FENCE, fence_observed, screen_injection_markers,
 )
+from ..trash import (
+    capture_removed_skill,
+    latest_skill_artifact,
+    read_skill_artifact,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -156,6 +161,12 @@ def _skill_md_path(name: str) -> Path:
 
 def _archive_dir() -> Path:
     return CLAUDE_SKILLS_DIR / ".archive"
+
+
+def _row_to_dict(row) -> dict | None:
+    if row is None:
+        return None
+    return {k: row[k] for k in row.keys()}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -601,6 +612,7 @@ def skill_manage(action: str,
                     Requires `name`, `sub_path`.
       delete      — remove a skill entirely. Pinned skills (in skill_usage)
                     are refused.
+      restore     — restore the latest trashed copy for `name`.
     """
     action = action.strip()
     name = name.strip()
@@ -620,9 +632,11 @@ def skill_manage(action: str,
         if err := _validate_name(name):
             return f"ERR {err}"
         return _action_delete(name)
+    if action == "restore":
+        return _action_restore(name)
     return (
         f"ERR unknown_action={action} "
-        "(create|edit|patch|write_file|remove_file|delete)"
+        "(create|edit|patch|write_file|remove_file|delete|restore)"
     )
 
 
@@ -769,7 +783,7 @@ def _action_delete(name: str) -> str:
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
-        "SELECT pinned FROM skill_usage WHERE name=?", (name,)
+        "SELECT * FROM skill_usage WHERE name=?", (name,)
     ).fetchone()
     if row and row["pinned"]:
         return (
@@ -779,12 +793,72 @@ def _action_delete(name: str) -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
+    try:
+        artifact = capture_removed_skill(
+            name=name,
+            skill_dir=sdir,
+            usage_row=_row_to_dict(row),
+        )
+    except Exception as e:
+        return f"ERR trash_failed skill={name}: {e}"
     shutil.rmtree(sdir)
     _unmirror_skill(name)
     conn.execute("DELETE FROM skill_usage WHERE name=?", (name,))
-    _emit(conn, "skill_delete", target=name)
+    _emit(conn, "skill_delete", target=name, summary=f"trash={artifact.name}")
     conn.commit()
     return "ok"
+
+
+def _restore_skill_usage_row(
+    conn: sqlite3.Connection,
+    name: str,
+    row: dict | None,
+) -> None:
+    if not row:
+        _record_event(name, "create")
+        return
+    columns = [
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(skill_usage)").fetchall()
+    ]
+    values = {k: row[k] for k in columns if k in row}
+    values["name"] = name
+    names = list(values)
+    placeholders = ", ".join("?" for _ in names)
+    quoted = ", ".join(names)
+    conn.execute(
+        f"INSERT OR REPLACE INTO skill_usage ({quoted}) "
+        f"VALUES ({placeholders})",
+        [values[n] for n in names],
+    )
+
+
+def _action_restore(name: str) -> str:
+    sdir = _skill_dir(name)
+    if sdir.exists():
+        return f"ERR skill_exists={name}"
+    artifact = latest_skill_artifact(name)
+    if artifact is None:
+        return f"ERR no_trash skill={name}"
+    try:
+        src, meta = read_skill_artifact(artifact)
+    except Exception as e:
+        return f"ERR trash_read_failed skill={name}: {e}"
+    md = src / "SKILL.md"
+    if not md.exists():
+        return f"ERR invalid_trash skill={name}: missing SKILL.md"
+    content = md.read_text(encoding="utf-8")
+    if err := _validate_skill_md(content, name):
+        return f"ERR validate_failed_from_trash: {err}"
+    sdir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, sdir, copy_function=shutil.copy2)
+    conn = get_db()
+    _ensure_session(conn)
+    _restore_skill_usage_row(conn, name, meta.get("usage_row"))
+    _emit(conn, "skill_restore", target=name, summary=f"trash={artifact.name}")
+    conn.commit()
+    _mirror_skill_dir(name)
+    return f"ok path={sdir}"
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -23,7 +23,48 @@ until coordinated disclosure. Please include:
 - Expected vs. actual behavior
 - Any mitigation you've already tried
 
+## Local storage permissions
+
+On POSIX systems, thread-keeper treats the default local store as private
+user data. Startup and `get_db()` best-effort set `~/.threadkeeper` to
+`0700` and set `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
+`~/.threadkeeper/.env`, and curator `REPORT-*.md` files to `0600`.
+Headless spawn stdout logs are also created `0600`. Permission hardening
+is skipped on platforms without POSIX mode bits and never blocks startup.
+
 ## Trust boundaries
+
+### Auto-update (future maintainer code → local execution)
+
+The foreground MCP server starts a daily auto-update daemon by default
+(`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`). Keeping it enabled is standing
+consent for thread-keeper to fetch future maintainer-published code and run it
+inside the local MCP server process. Disable that channel entirely with
+`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`; disable only the post-update restart
+with `THREADKEEPER_AUTO_UPDATE_RESTART=0`.
+
+Mitigations for packaged PyPI installs:
+
+- Before invoking `pip install --upgrade`, the daemon resolves the latest PyPI
+  release metadata and queries PyPI's Integrity API for each non-yanked release
+  file's provenance.
+- The release is accepted only when provenance contains a GitHub Trusted
+  Publisher bundle for the configured identity
+  (`THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY`,
+  `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW`,
+  `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT`; defaults:
+  `po4erk91/thread-keeper`, `publish.yml`, `pypi`).
+- The attestation statement must name the exact distribution filename and
+  SHA-256 digest from PyPI metadata. Missing provenance, mismatched publisher
+  identity, or digest mismatch refuses the update before `pip` runs, records an
+  `auto_update_pass`, and keeps the current process running.
+- `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE=0` is a break-glass opt-out for
+  private mirrors or disconnected environments. Leave it enabled for normal PyPI
+  installs.
+
+Editable git checkouts are still treated as developer-controlled working trees:
+dirty/diverged checkouts are skipped, but signed git tag/commit enforcement is
+not yet implemented for that path.
 
 ### Autonomous GitHub writers (stored / issue content → public GitHub)
 
@@ -97,6 +138,32 @@ principle to the always-on, auto-loaded-output loops):
   (`ignore previous instructions`, `you must always run`, `curl … | sh`, …)
   and refused — the inbound analogue of the secret scrubber. Foreground
   (human) writes are never screened.
+
+### Transcript ingest (observed dialog → durable local search)
+
+Live ingest and manual/backfill ingest read local CLI transcripts and persist
+searchable text into `dialog_messages`, `dialog_fts`, and optional embedding
+stores. Raw chat text is untrusted and may accidentally contain credentials
+pasted by the user, echoed by a tool, or copied from a config file.
+
+Mitigations:
+
+- **Default-on redaction.** Before transcript content is persisted, mirrored
+  into FTS, embedded, or inserted by FTS backfill, thread-keeper masks common
+  credential-shaped values. Covered shapes include `Authorization:` /
+  `Proxy-Authorization:` headers, bearer/OAuth tokens, AWS access-key IDs,
+  common API-token prefixes, `.npmrc` auth lines, `.netrc` login/password pairs,
+  and sensitive assignments such as `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=`, and
+  `*_PASSWORD=`.
+- **Searchable markers, not reversible secrets.** The scrubber preserves the
+  surrounding key/header name and replaces the value with typed markers such as
+  `[REDACTED:AUTHORIZATION]` or `[REDACTED:SECRET]`, so troubleshooting can
+  still find the kind of credential involved without exposing the original
+  value.
+- **Local opt-out only.** Set `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for a
+  deliberate local debugging session where exact raw transcript fidelity is
+  required. With the knob disabled, thread-keeper may persist credential-shaped
+  strings into durable local search.
 
 ## Scope
 

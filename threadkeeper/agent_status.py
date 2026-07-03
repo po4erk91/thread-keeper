@@ -50,8 +50,9 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
         "about preferences, constraints, and working style."
     ),
     "evolve_applier": (
-        "Implements one open roadmap issue at a time, then falls back to "
-        "Curator memory-maintenance reports and promoted evolve suggestions."
+        "Repairs conflicted applier PRs first, then implements one roadmap "
+        "issue at a time, then falls back to Curator memory-maintenance reports "
+        "and promoted evolve suggestions."
     ),
     "evolve_reviewer": (
         "Audits thread-keeper for safety, leaks, optimization, and new ideas; "
@@ -90,6 +91,17 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
             "into thread-keeper's dialog store."
         ),
         "work": "Reads CLI transcripts into dialog memory",
+    },
+    {
+        "id": "retention",
+        "name": "Retention",
+        "event": "retention_pass",
+        "interval": "RETENTION_INTERVAL_S",
+        "description": (
+            "Prunes opted-in high-volume SQLite tables and runs checkpoint/"
+            "VACUUM maintenance for the local store."
+        ),
+        "work": "Prunes aged DB rows and compacts SQLite storage",
     },
     {
         "id": "shadow_review",
@@ -246,6 +258,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
 _ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
+_CONFLICTED_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
 
 
 def _detect_role(prompt: str) -> str:
@@ -394,11 +407,27 @@ def _roadmap_issue_apply_count(conn, now: int) -> int:
     return len(issues)
 
 
+def _conflicted_pr_apply_count(now: int) -> int:
+    if now - _CONFLICTED_PR_CACHE["at"] < 300:
+        return _CONFLICTED_PR_CACHE["count"]
+    try:
+        from .evolve_applier import _conflicted_applier_prs
+
+        prs, err = _conflicted_applier_prs()
+    except Exception:
+        return _CONFLICTED_PR_CACHE["count"]
+    if err:
+        return _CONFLICTED_PR_CACHE["count"]
+    _CONFLICTED_PR_CACHE["at"] = int(now)
+    _CONFLICTED_PR_CACHE["count"] = len(prs)
+    return len(prs)
+
+
 def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
     if loop.get("backlog_metric") == "evolve_apply":
-        return _scalar(
+        return _conflicted_pr_apply_count(now) + _scalar(
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",

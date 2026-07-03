@@ -76,6 +76,14 @@ def _tool(pkg, name):
     return pkg["mcp"]._tool_manager._tools[name].fn
 
 
+def _file_tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Validator + create
 # ──────────────────────────────────────────────────────────────────────
@@ -223,6 +231,40 @@ def test_delete_removes_skill_dir_and_usage_row(skills_pkg):
     assert conn.execute(
         "SELECT 1 FROM skill_usage WHERE name='goner'"
     ).fetchone() is None
+    trash_root = skills_pkg["tmp"] / "curator" / "trash"
+    artifacts = list(trash_root.glob("*-skill-goner"))
+    assert len(artifacts) == 1
+    assert (artifacts[0] / "skill" / "SKILL.md").exists()
+
+
+def test_delete_restore_recreates_skill_tree_and_usage_row(skills_pkg):
+    sm = _tool(skills_pkg, "skill_manage")
+    rec = _tool(skills_pkg, "skill_record")
+    _seed_skill(skills_pkg, name="recover-me")
+    assert sm(
+        action="write_file",
+        name="recover-me",
+        sub_path="references/detail.md",
+        content="# Detail\n\nKeep this byte-for-byte.\n",
+    ).startswith("ok")
+    rec(name="recover-me", kind="use")
+    sdir = skills_pkg["skills_root"] / "recover-me"
+    before_files = _file_tree_bytes(sdir)
+    conn = skills_pkg["db"].get_db()
+    before_row = dict(conn.execute(
+        "SELECT use_count, patch_count, state FROM skill_usage WHERE name=?",
+        ("recover-me",),
+    ).fetchone())
+
+    assert sm(action="delete", name="recover-me") == "ok"
+    assert sm(action="restore", name="recover-me").startswith("ok path=")
+
+    assert _file_tree_bytes(sdir) == before_files
+    after_row = dict(conn.execute(
+        "SELECT use_count, patch_count, state FROM skill_usage WHERE name=?",
+        ("recover-me",),
+    ).fetchone())
+    assert after_row == before_row
 
 
 def test_delete_refuses_pinned(skills_pkg):
@@ -235,6 +277,7 @@ def test_delete_refuses_pinned(skills_pkg):
     sm = _tool(skills_pkg, "skill_manage")
     result = sm(action="delete", name="pinned-one")
     assert result.startswith("ERR pinned=")
+    assert not (skills_pkg["tmp"] / "curator" / "trash").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

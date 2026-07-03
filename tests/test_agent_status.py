@@ -145,9 +145,24 @@ def test_agent_status_orders_active_loops_first(mp_with_cid):
     }.get)
 
 
-def test_agent_status_evolve_applier_ready_when_promoted_queue_exists(mp_with_cid):
+def test_agent_status_evolve_applier_ready_when_promoted_queue_exists(
+    mp_with_cid, monkeypatch,
+):
     pkg = mp_with_cid(_FAKE_CID)
     pkg["config"].EVOLVE_APPLY_INTERVAL_S = 604800
+    import threadkeeper.agent_status as status_mod
+    import threadkeeper.evolve_applier as applier_mod
+
+    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+    monkeypatch.setattr(
+        applier_mod, "_conflicted_applier_prs",
+        lambda repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_fetch_open_issues",
+        lambda repo_root=None: ([], ""),
+    )
     conn = pkg["db"].get_db()
     conn.execute(
         "INSERT INTO evolve (suggestion, rationale, applied, created_at, status) "
@@ -167,10 +182,23 @@ def test_agent_status_evolve_applier_ready_when_promoted_queue_exists(mp_with_ci
 
 
 def test_agent_status_evolve_applier_ready_when_curator_report_exists(
-    mp_with_cid,
+    mp_with_cid, monkeypatch,
 ):
     pkg = mp_with_cid(_FAKE_CID)
     pkg["config"].EVOLVE_APPLY_INTERVAL_S = 604800
+    import threadkeeper.agent_status as status_mod
+    import threadkeeper.evolve_applier as applier_mod
+
+    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+    monkeypatch.setattr(
+        applier_mod, "_conflicted_applier_prs",
+        lambda repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_fetch_open_issues",
+        lambda repo_root=None: ([], ""),
+    )
     reports_dir = pkg["tmp"] / "curator"
     reports_dir.mkdir()
     pkg["config"].CURATOR_REPORTS_DIR = reports_dir
@@ -197,6 +225,11 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
     import threadkeeper.evolve_applier as applier_mod
 
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    monkeypatch.setattr(
+        applier_mod, "_conflicted_applier_prs",
+        lambda repo_root=None: ([], ""),
+    )
     monkeypatch.setattr(
         applier_mod, "_fetch_open_issues",
         lambda repo_root=None: (
@@ -221,6 +254,43 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
     snap = agent_status_snapshot(refresh=False)
     loop = {l["id"]: l for l in snap["loops"]}["evolve_apply"]
     assert loop["backlog_count"] == 1
+    assert loop["status"] == "ready"
+
+
+def test_agent_status_evolve_applier_ready_when_conflicted_pr_exists(
+    mp_with_cid, monkeypatch,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    pkg["config"].EVOLVE_APPLY_INTERVAL_S = 604800
+    import threadkeeper.agent_status as status_mod
+    import threadkeeper.evolve_applier as applier_mod
+
+    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+    monkeypatch.setattr(
+        applier_mod, "_conflicted_applier_prs",
+        lambda repo_root=None: (
+            [{
+                "number": 44,
+                "title": "Conflicted PR",
+                "headRefName": "roadmap/issue-44-conflict-aaaaaa",
+                "mergeStateStatus": "DIRTY",
+                "mergeable": "CONFLICTING",
+            }],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_fetch_open_issues",
+        lambda repo_root=None: ([], ""),
+    )
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snap = agent_status_snapshot(refresh=False)
+    loop = {l["id"]: l for l in snap["loops"]}["evolve_apply"]
+    assert loop["backlog_count"] == 1
+    assert loop["backlog_label"] == "apply work items"
     assert loop["status"] == "ready"
 
 
