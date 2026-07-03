@@ -1,8 +1,11 @@
 """SQLite retention and compaction hygiene.
 
-All destructive windows default to 0 (disabled) so upgrades keep existing
-data until a user opts in. When enabled, this module prunes high-volume
-operational tables and can checkpoint/VACUUM the single-file SQLite store.
+The daemon defaults off, and most destructive windows default to 0 (disabled)
+so upgrades keep existing data until a user opts in. Completed task-row
+retention shares the spawn-task cleanup knob, which defaults to 30 days, and
+only runs here when the retention pass itself is enabled or forced. When
+enabled, this module prunes high-volume operational tables and can
+checkpoint/VACUUM the single-file SQLite store.
 """
 from __future__ import annotations
 

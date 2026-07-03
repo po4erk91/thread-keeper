@@ -366,8 +366,17 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   itself an endorsement). Untrusted issues are skipped until promoted; naming
   the exact number (`evolve_apply_roadmap_issue(issue_number=N)`) bypasses the
   gate as explicit human promotion. This removes the untrusted input at the
-  boundary and complements the in-prompt data-fencing of #22/#76. Before
-  spawning, the parent runs five multi-host conflict guards in order: (1) skip
+  boundary and complements the in-prompt data-fencing of #22/#76.
+  **Skip-label gate (#50):** before claim/spawn work, `_open_roadmap_issues()`
+  also excludes issues whose labels match `EVOLVE_APPLY_SKIP_LABELS` (default
+  `blocked,needs-design,wontfix,question,discussion,help wanted`). These are
+  human-gated backlog items: blocked, discussion/design, rejected, or reserved
+  for contributors rather than an unsupervised `bypassPermissions` child. Queue
+  mode records `roadmap_issue_skipped` telemetry and continues with clean
+  candidates; exact mode returns `skipped: label X` for the named issue instead
+  of switching tasks. The skip count/reasons show in `evolve_apply_status()`;
+  `mp_dashboard()` counts the skip outcome.
+  Before spawning, the parent runs five multi-host conflict guards in order: (1) skip
   if an active `<!-- thread-keeper:evolve-applier-claim -->` comment already
   exists; (2) skip if `gh pr list --search "in:body Closes #N"` shows an open
   PR already closing the issue; (3) post the parent's own claim comment (body
@@ -393,7 +402,8 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   signals. A successful child writes `roadmap_issue_applied` (checked first
   everywhere), so only genuinely-failing issues accrue attempts. An exact
   `evolve_apply_roadmap_issue(issue_number=N)` override bypasses the cooldown
-  and the cap so a human can force a retry; per-issue attempt counts/states
+  and the cap, but the default skip-label gate still refuses the `blocked`
+  label until it is removed or reconfigured; per-issue attempt counts/states
   surface in `evolve_apply_status()` and stuck/dead-letter counts in
   `mp_dashboard()`. In queue mode, issue-local dispatch
   failures advance to the next issue; exact
@@ -1274,7 +1284,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
-| `THREADKEEPER_TASK_RETENTION_DAYS` | 0 | prune completed `tasks` older than this many days; 0 keeps forever |
+| `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` older than this many days; 0 keeps forever |
 | `THREADKEEPER_SIGNAL_RETENTION_DAYS` | 0 | prune handled old `signals` and aged search proxy messages; 0 keeps forever |
 | `THREADKEEPER_EVENTS_RETENTION_DAYS` | 0 | prune old `events` during retention passes; 0 keeps forever |
 | `THREADKEEPER_PROBE_RESULT_RETENTION_DAYS` | 0 | prune old `probe_results` and refresh reliability aggregates; 0 keeps forever |

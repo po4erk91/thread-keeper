@@ -114,6 +114,25 @@ def _outcome_all(out: str, label: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def test_dashboard_counts_roadmap_issue_skips(fresh_mp):
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    before = dash(window_days=7)
+    skip0 = _outcome_all(before, "roadmap_issue_skipped")
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s', 'roadmap_issue_skipped', '50', "
+        "'skipped: label blocked', ?)",
+        (now,),
+    )
+    conn.commit()
+
+    after = dash(window_days=7)
+
+    assert _outcome_all(after, "roadmap_issue_skipped") - skip0 == 1, after
+
+
 def _net_field(out: str, field: str) -> int:
     m = re.search(rf"curator_net_change [^\n]*\b{field}=(\d+)", out)
     return int(m.group(1)) if m else 0

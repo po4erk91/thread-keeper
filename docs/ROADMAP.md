@@ -75,6 +75,11 @@ remains a live question.
   cool down until reset (bounded), secondary-rate-limit/`Retry-After` responses
   use bounded exponential backoff, and `agent_status` / `tk-agent-status` plus
   `evolve_apply_status()` expose the current remaining count or cooldown window.
+- Evolve applier skip-label gate (#50): autonomous roadmap issue pickup now
+  refuses labels in `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` (default
+  `blocked,needs-design,wontfix,question,discussion,help wanted`), reports
+  exact-mode skips as `skipped: label X`, and surfaces skip telemetry in
+  `evolve_apply_status()` / `mp_dashboard()`.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -763,13 +768,13 @@ A reviewer pass over the autonomous roadmap-automation surface (evolve
 reviewer/applier, curator) surfaced three concrete gaps not covered by the
 existing backlog. Each is tracked as a GitHub issue.
 
-**Evolve applier never refuses inappropriate issues.** `_open_roadmap_issues()`
-treats every open issue as backlog (`roadmap` label first, then FIFO) and only
-skips already-applied / actively-claimed ones — there is no opt-out. The child
-runs `bypassPermissions` + `Bash/Edit/Write`, so it can auto-attempt human-gated
-work (design/discussion questions, the XL multi-user item, the security
-hardening issues #21/#22, `good-first-issue`s). Add a configurable skip-label
-denylist (and optional opt-in posture). (#50) Scope: S.
+**Evolve applier skip-label gate (done, #50).** `_open_roadmap_issues()` now
+refuses issues carrying labels in `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS`
+(default `blocked,needs-design,wontfix,question,discussion,help wanted`) before
+candidate claim/spawn. Exact `evolve_apply_roadmap_issue(issue_number=N)` calls
+return `skipped: label X` for a denylisted issue rather than switching to
+another issue. Skip telemetry is recorded as `roadmap_issue_skipped` and
+surfaced in `evolve_apply_status()` / `mp_dashboard()`. Scope was S.
 
 **Closed-unmerged applier PR strands its issue.** The child records a permanent
 `roadmap_issue_applied` marker once it opens a PR; if a human closes that PR

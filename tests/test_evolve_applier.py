@@ -549,6 +549,54 @@ def test_open_roadmap_issues_exact_mode_bypasses_author_gate(
     assert [int(i["number"]) for i in promoted] == [7]
 
 
+def test_open_roadmap_issues_skips_denylisted_labels(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(1, "human discussion", labels=("roadmap", "discussion")),
+                _issue(2, "blocked work", labels=("roadmap", "blocked")),
+                _issue(3, "ready work", labels=("enhancement",)),
+                _issue(4, "human reserved", labels=("Help Wanted",)),
+            ],
+            "",
+        ),
+    )
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [3]
+
+
+def test_apply_roadmap_issue_exact_reports_denylisted_label(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: (
+            [
+                _issue(1, "human discussion", labels=("roadmap", "discussion")),
+                _issue(2, "ready work"),
+            ],
+            "",
+        ),
+    )
+
+    def _boom(**kw):
+        raise AssertionError("denylisted exact issue must not spawn")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=1)
+
+    assert out == "ERR roadmap_issue_skipped=1: skipped: label discussion"
+
+
 def test_fetch_open_issues_maps_rest_payload_and_filters_prs(
     tmp_path, monkeypatch,
 ):

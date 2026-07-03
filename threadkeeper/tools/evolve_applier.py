@@ -51,7 +51,8 @@ from ..evolve_applier import (
     mark_roadmap_issue_applied,
     roadmap_attempt_ledger,
     _conflicted_applier_prs,
-    _open_roadmap_issues,
+    _format_label_skip,
+    _open_roadmap_issue_candidates,
     _pending_curator_reports,
     _promoted_unapplied,
     _running_applier_children,
@@ -177,7 +178,7 @@ def evolve_apply_status() -> str:
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
     conflicted_prs, pr_err = _conflicted_applier_prs()
-    issues, issue_err = _open_roadmap_issues(conn)
+    issues, issue_err, label_skipped = _open_roadmap_issue_candidates(conn)
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
     dead = [e for e in ledger if e["state"] == "dead_letter"]
@@ -189,6 +190,7 @@ def evolve_apply_status() -> str:
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
         f"conflicted_prs={len(conflicted_prs)} "
         f"roadmap_issues={len(issues)} "
+        f"roadmap_label_skipped={len(label_skipped)} "
         f"roadmap_backoff={len(backoff)} "
         f"roadmap_dead_letter={len(dead)} "
         f"curator_reports={len(reports)} "
@@ -211,6 +213,8 @@ def evolve_apply_status() -> str:
                 f"  #{int(pr['number'])}  {pr.get('headRefName') or '?'}  "
                 f"{title}"
             )
+    if label_skipped:
+        lines.append(f"roadmap_issue_label_skips={_format_label_skip(label_skipped)}")
     if issues:
         lines.append("")
         lines.append("roadmap issues (next first):")

@@ -40,7 +40,7 @@ def test_defaults_match(monkeypatch):
     assert c.AUTO_UPDATE_RESTART is True
     assert c.RETENTION_INTERVAL_S == 0.0
     assert c.DIALOG_RETENTION_DAYS == 0.0
-    assert c.TASK_RETENTION_DAYS == 0.0
+    assert c.TASK_RETENTION_DAYS == 30
     assert c.SIGNAL_RETENTION_DAYS == 0.0
     assert c.EVENTS_RETENTION_DAYS == 0.0
     assert c.PROBE_RESULT_RETENTION_DAYS == 0.0
