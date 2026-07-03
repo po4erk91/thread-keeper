@@ -37,6 +37,7 @@ from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
 from ..config import WRITE_ORIGIN
+from ..curator_snapshots import record_curator_action
 from ..review_prompts import screen_injection_markers
 from ..lessons import (
     _slugify,
@@ -370,7 +371,13 @@ def lesson_append(
     # Was this an in-place patch of an existing slug, or a brand-new lesson?
     # Determined BEFORE the write so the dashboard's curator-net-change line
     # can split added vs patched.
-    existed = any(it["slug"] == _slugify(title) for it in iter_lessons())
+    slug_guess = _slugify(title)
+    existing_item = None
+    for it in iter_lessons():
+        if it["slug"] == slug_guess:
+            existing_item = it
+            break
+    existed = existing_item is not None
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
@@ -384,7 +391,18 @@ def lesson_append(
     # the lesson the caller just materialized.
     op = "replace" if existed else "create"
     try:
-        _record_lesson_append_event(conn, slug, op=op, source=source)
+        extra = ""
+        if WRITE_ORIGIN == "curator":
+            tombstone = record_curator_action(
+                conn,
+                action="lesson_patched" if existed else "lesson_consolidated",
+                artifact="lesson",
+                key=slug,
+                body=(existing_item or {}).get("body", "") if existed else "",
+            )
+            if tombstone:
+                extra = f"tombstone={tombstone}"
+        _record_lesson_append_event(conn, slug, op=op, source=source, extra=extra)
         conn.commit()
     except sqlite3.OperationalError:
         conn.commit()
@@ -489,6 +507,15 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         return f"ERR trash_failed slug={slug}: {e}"
     if not remove_lesson(slug):
         return f"ERR remove_failed slug={slug}"
+    tombstone = ""
+    if WRITE_ORIGIN == "curator":
+        tombstone = record_curator_action(
+            conn,
+            action="lesson_pruned",
+            artifact="lesson",
+            key=slug,
+            body=found.get("body", ""),
+        )
     conn.execute("DELETE FROM lesson_usage WHERE slug=?", (slug,))
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
@@ -496,7 +523,8 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         (
             identity._session_id or "",
             slug,
-            f"source={source or '?'} trash={artifact.name}",
+            f"source={source or '?'} trash={artifact.name}"
+            + (f" tombstone={tombstone}" if tombstone else ""),
         ),
     )
     conn.commit()

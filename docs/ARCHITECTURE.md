@@ -57,7 +57,8 @@ threadkeeper/
     ├── distill.py     distill/vote/pending/export
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
-    ├── curator.py     curator_review/status
+    ├── curator.py     curator_review/status/restore
+    ├── lessons.py     lesson_append/list/get
     ├── lessons.py     lesson_append/list/get/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
@@ -171,7 +172,15 @@ sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
    `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
    recommendations.
 
-7. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
+7. **curator snapshots** — file archives under
+   `<curator_reports_dir>/snapshots/<pass-id>/` written before a destructive
+   curator child is spawned. Each snapshot contains `lessons.md`, copied
+   in-scope skill dirs, `manifest.json`, and tombstones emitted by curator
+   prune/delete tool calls. `curator_restore` restores a lesson or skill from
+   that archive. Retention is bounded by
+   `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION`.
+
+8. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
    confidence; brief() renders medium+high grouped by domain.
    `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
@@ -430,7 +439,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
   of arbitrary current `HEAD`.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
-  report-first, but when a skill or lesson exposes a concrete improvement for
+  snapshot-first and report-first: destructive mode writes a recoverable
+  snapshot before spawning the child, then the child writes its REPORT before
+  mutating. When a skill or lesson exposes a concrete improvement for
   thread-keeper itself it may call `evolve_format(...)` and record an
   `EVOLVE_CANDIDATE:` line in the report. That candidate is input for
   `evolve_reviewer`, not something the Curator implements directly.
@@ -713,16 +724,23 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
-- **Curator trash recovery** — destructive knowledge-store deletes persist a
-  full pre-image before mutating. `lesson_remove` writes the exact
-  `LESSON:BEGIN/END` section plus its `lesson_usage` row under
-  `<db dir>/curator/trash/`; `skill_manage(action='delete')` writes the whole
-  skill directory plus its `skill_usage` row there. Restore through
-  `lesson_restore(slug=...)` or `skill_manage(action='restore', name=...)`.
-  Trash is bounded by `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30);
-  expired artifacts are swept on new trash writes. Protected refusal behavior
-  is unchanged: user/foreground lessons still require `force`, and pinned
-  skills still refuse deletion.
+- **Curator recovery and destructive telemetry** — destructive curator passes
+  receive a pass id and pre-mutation snapshot dir in their environment. When the
+  normal `lesson_append`, `lesson_remove`, or `skill_manage` tools run under
+  that pass, they emit `events.kind='curator_destructive_action'` rows such as
+  `lesson_pruned`, `lesson_patched`, `lesson_consolidated`, and
+  `skill_deleted`, with a tombstone path when a deleted body is captured.
+  Separately, delete-class tools persist a full pre-image before mutating:
+  `lesson_remove` writes the exact `LESSON:BEGIN/END` section plus its
+  `lesson_usage` row under `<db dir>/curator/trash/`, and
+  `skill_manage(action='delete')` writes the whole skill directory plus its
+  `skill_usage` row there. Restore snapshots with `curator_restore(...)`, and
+  restore trash artifacts with `lesson_restore(slug=...)` or
+  `skill_manage(action='restore', name=...)`. Trash is bounded by
+  `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30); expired artifacts are
+  swept on new trash writes. Protected refusal behavior is unchanged:
+  user/foreground lessons still require `force`, and pinned skills still refuse
+  deletion. `mp_dashboard()` renders destructive action counts by window.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to
@@ -1013,7 +1031,7 @@ below).
 | lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 2 | curator_review, curator_review_status |
+| curator | 3 | curator_review, curator_review_status, curator_restore |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
@@ -1041,11 +1059,12 @@ every tool:
   `search`, `dialog_search`, the status tools, `compost`, …).
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
   mutations. `lesson_list` and `lesson_get` are non-destructive writes because
-  they update lesson access counters. The ten delete/overwrite/kill tools carry
+  they update lesson access counters. The eleven delete/overwrite/kill tools carry
   `destructiveHint=True`:
   `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
-  `curator_run`, `lesson_remove`, `memory_guard_check`, `mp_cleanup`,
-  `skill_manage`, `unlink`. `idempotentHint=True` marks no-op-on-repeat tools
+  `curator_restore`, `curator_run`, `lesson_remove`, `memory_guard_check`,
+  `mp_cleanup`, `skill_manage`, `unlink`. `idempotentHint=True` marks
+  no-op-on-repeat tools
   (`close_thread`, `mark_skill_materialized`, `core_set`, deletes-by-key, …).
 
 This is the static metadata a confirmation/elicitation host reads to decide

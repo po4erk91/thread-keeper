@@ -51,6 +51,7 @@ def test_defaults_match(monkeypatch):
     assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT == "pypi"
     assert c.SKILL_UPDATE_INTERVAL_S == 302400
     assert c.SKILL_UPDATE_INFER_SOURCES is True
+    assert c.CURATOR_SNAPSHOT_RETENTION == 10
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
 
 
@@ -160,6 +161,7 @@ def test_all_exported_names_present(monkeypatch):
         "CURATOR_INTERVAL_S",
         "CURATOR_MIN_LESSONS",
         "CURATOR_REPORTS_DIR",
+        "CURATOR_SNAPSHOT_RETENTION",
         "DB_PATH",
         "DIALECTIC_MAX_NEW_CLAIMS",
         "DIALECTIC_MINE_INTERVAL_S",

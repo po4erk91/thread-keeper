@@ -563,6 +563,8 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             "THREADKEEPER_TZ",
             "THREADKEEPER_WRITE_ORIGIN",
             "THREADKEEPER_NO_EMBEDDINGS",
+            "THREADKEEPER_CURATOR_PASS_ID",
+            "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
         )
         if k in child_env
     }
@@ -733,6 +735,16 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
             if write_origin:
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)
+                )
+            if "THREADKEEPER_CURATOR_PASS_ID" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_PASS_ID",
+                     child_env["THREADKEEPER_CURATOR_PASS_ID"])
+                )
+            if "THREADKEEPER_CURATOR_SNAPSHOT_DIR" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+                     child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"])
                 )
             if _permission_mode_is_bypass(permission_mode):
                 env_pairs.extend([
