@@ -79,6 +79,11 @@ remains a live question.
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
   CLI / unused model-key warnings beside the fallback resolution table.
+- DB retention/compaction (#45): a default-off retention daemon now prunes
+  opted-in aged `dialog_messages` with `dialog_fts`/`dialog_vec` mirrors,
+  completed `tasks`, handled/ephemeral `signals`, old `events`, and old
+  `probe_results`; optional WAL checkpoint and VACUUM maintenance are wired,
+  and `mp_dashboard()` reports DB size plus high-volume row counts.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

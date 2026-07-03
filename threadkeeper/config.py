@@ -164,6 +164,18 @@ class Settings(BaseSettings):
     )
     redact_dialog_secrets: bool = True
 
+    # ── SQLite retention / compaction ────────────────────────────────────────
+    # Destructive retention defaults OFF: 0 means keep forever. Operators can
+    # enable individual windows without surprising data loss on upgrade.
+    retention_interval_s: float = 0.0
+    dialog_retention_days: float = 0.0
+    task_retention_days: float = 0.0
+    signal_retention_days: float = 0.0
+    events_retention_days: float = 0.0
+    probe_result_retention_days: float = 0.0
+    retention_wal_checkpoint: bool = False
+    retention_vacuum_after_rows: int = 0
+
     # ── Identity / session ───────────────────────────────────────────────────
     self_cid_ttl_s: float = 5.0
 
@@ -568,6 +580,14 @@ def _derive_constants(s: "Settings") -> dict:
         "INGEST_CAP_PER_CALL": s.ingest_cap,
         "INGEST_INTERVAL_S": s.ingest_interval_s,
         "INGEST_RECENT_WINDOW_S": s.ingest_window_s,
+        "RETENTION_INTERVAL_S": s.retention_interval_s,
+        "DIALOG_RETENTION_DAYS": s.dialog_retention_days,
+        "TASK_RETENTION_DAYS": s.task_retention_days,
+        "SIGNAL_RETENTION_DAYS": s.signal_retention_days,
+        "EVENTS_RETENTION_DAYS": s.events_retention_days,
+        "PROBE_RESULT_RETENTION_DAYS": s.probe_result_retention_days,
+        "RETENTION_WAL_CHECKPOINT": s.retention_wal_checkpoint,
+        "RETENTION_VACUUM_AFTER_ROWS": s.retention_vacuum_after_rows,
         "REDACT_DIALOG_SECRETS": s.redact_dialog_secrets,
         "SELF_CID_TTL_S": s.self_cid_ttl_s,
         "MEMORY_NUDGE_INTERVAL": s.memory_nudge_interval,

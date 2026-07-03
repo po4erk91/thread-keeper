@@ -126,6 +126,11 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         except Exception:
             pass
         try:
+            from . import retention
+            retention.start_retention_daemon()
+        except Exception:
+            pass
+        try:
             from . import search_proxy
             search_proxy.start_search_proxy()
         except Exception:
