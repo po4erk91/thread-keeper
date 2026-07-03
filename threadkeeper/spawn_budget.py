@@ -47,6 +47,9 @@ from .config import (
     SPAWN_VISIBLE_TTL_S,
     SPAWN_MAX_RUNTIME_S,
     SPAWN_KILL_GRACE_S,
+    SPAWN_TIMEOUT_RETRY_LIMIT,
+    SPAWN_TIMEOUT_RETRY_DELAY_S,
+    TASK_LOG_DIR,
 )
 from .helpers import daemon_sleep
 from .db import get_db
@@ -61,6 +64,15 @@ _started = False
 # timeout marker rather than a normal exit (0-255) or a signal-kill (negative).
 # Surfaced by agent_status / mp_dashboard so a runtime kill is observable.
 SPAWN_TIMEOUT_RETURN_CODE = 124
+
+
+def _row_get(row, key: str, default=None):
+    """Read a sqlite Row field that may not exist in pre-migration tests."""
+    try:
+        val = row[key]
+    except (KeyError, IndexError):
+        return default
+    return default if val is None else val
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -383,6 +395,162 @@ def _reap_timed_out(conn, row, now: int) -> bool:
     return closed
 
 
+def _retry_chain_root(conn, row) -> str:
+    root = str(_row_get(row, "retry_root", "") or "")
+    if root:
+        return root
+    prev = str(_row_get(row, "retry_of", "") or "")
+    return prev or str(row["id"])
+
+
+def _root_prompt(conn, root_id: str, fallback: str) -> str:
+    try:
+        r = conn.execute(
+            "SELECT prompt FROM tasks WHERE id=?", (root_id,)
+        ).fetchone()
+    except Exception:
+        return fallback
+    if not r:
+        return fallback
+    return str(r["prompt"] or fallback)
+
+
+def _as_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _continuation_prompt(conn, row, age: int, attempt: int, root_id: str) -> str:
+    original_prompt = _root_prompt(conn, root_id, str(row["prompt"] or ""))
+    prev_id = str(row["id"])
+    prev_cid = str(_row_get(row, "spawned_cid", "") or "")
+    log_path = TASK_LOG_DIR / f"{prev_id}.log"
+    log_hint = str(log_path) if log_path.exists() else "(no captured log file)"
+    return (
+        "You are an immediate ThreadKeeper watchdog restart for a task that "
+        "timed out.\n\n"
+        "Previous run:\n"
+        f"- previous_task_id: {prev_id}\n"
+        f"- previous_child_cid: {prev_cid or '(unknown)'}\n"
+        f"- elapsed_before_timeout_s: {age}\n"
+        f"- retry_attempt: {attempt} of {SPAWN_TIMEOUT_RETRY_LIMIT}\n"
+        f"- cwd: {row['cwd']}\n"
+        f"- previous_log: {log_hint}\n\n"
+        "Continue the same assignment from the last safe state. Do not restart "
+        "blindly. First inspect the current workspace state and, when present, "
+        "the previous log/transcript. Preserve useful work already completed, "
+        "repair partial work if needed, then finish the original assignment. "
+        "If the prior run already completed the substantive work but was killed "
+        "before reporting, verify that and report the final status instead of "
+        "duplicating side effects.\n\n"
+        "Original assignment:\n"
+        f"{original_prompt}"
+    )
+
+
+def _parse_spawned_task_id(result: str) -> Optional[str]:
+    for part in str(result or "").split():
+        if part.startswith("task=tk_"):
+            return part.split("=", 1)[1]
+    return None
+
+
+def _respawn_timed_out(conn, row, age: int) -> None:
+    """Immediately re-launch a watchdog-killed task with continuation context.
+
+    This is retry, not an exact token-stream restore: the restarted agent gets
+    the original assignment plus pointers to the previous task/cid/log and must
+    continue from the workspace state it finds. A hard retry cap prevents an
+    infinite kill/restart loop on pathological prompts.
+    """
+    if SPAWN_TIMEOUT_RETRY_LIMIT <= 0:
+        try:
+            from .identity import _emit
+            _emit(conn, "spawn_timeout_retry_skipped", target=row["id"],
+                  summary="disabled limit=0")
+            conn.commit()
+        except Exception:
+            pass
+        return
+
+    current_attempt = int(_row_get(row, "retry_attempt", 0) or 0)
+    next_attempt = current_attempt + 1
+    if next_attempt > SPAWN_TIMEOUT_RETRY_LIMIT:
+        try:
+            from .identity import _emit
+            _emit(
+                conn,
+                "spawn_timeout_retry_skipped",
+                target=row["id"],
+                summary=(
+                    f"attempts_exhausted attempt={current_attempt} "
+                    f"limit={SPAWN_TIMEOUT_RETRY_LIMIT}"
+                ),
+            )
+            conn.commit()
+        except Exception:
+            pass
+        return
+
+    if SPAWN_TIMEOUT_RETRY_DELAY_S > 0:
+        time.sleep(float(SPAWN_TIMEOUT_RETRY_DELAY_S))
+
+    root_id = _retry_chain_root(conn, row)
+    prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
+    try:
+        from .tools.spawn import _spawn_impl
+        result = _spawn_impl(
+            prompt=prompt,
+            cwd=str(row["cwd"] or os.getcwd()),
+            append_system=str(_row_get(row, "append_system", "") or ""),
+            model=str(_row_get(row, "model", "") or ""),
+            effort=str(_row_get(row, "effort", "") or ""),
+            permission_mode=str(_row_get(row, "permission_mode", "auto") or "auto"),
+            extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
+            capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
+            visible=_as_bool(_row_get(row, "visible", 0), False),
+            role=str(_row_get(row, "role", "") or ""),
+            write_origin=str(_row_get(row, "write_origin", "") or ""),
+            slim=_as_bool(_row_get(row, "slim", 1), True),
+            retry_of=str(row["id"]),
+            retry_root=root_id,
+            retry_attempt=next_attempt,
+            parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
+            cli=str(_row_get(row, "chosen_cli", "") or ""),
+        )
+    except Exception as e:
+        logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)
+        result = f"ERR exception={type(e).__name__}: {e}"
+
+    retry_id = _parse_spawned_task_id(result)
+    try:
+        from .identity import _emit
+        if retry_id:
+            conn.execute(
+                "UPDATE tasks SET timeout_respawned_as=? WHERE id=?",
+                (retry_id, row["id"]),
+            )
+            _emit(
+                conn,
+                "spawn_timeout_retry",
+                target=row["id"],
+                summary=f"respawned_as={retry_id} attempt={next_attempt}",
+            )
+        else:
+            _emit(
+                conn,
+                "spawn_timeout_retry_failed",
+                target=row["id"],
+                summary=str(result)[:240],
+            )
+        conn.commit()
+    except Exception:
+        pass
+
+
 def _refresh_all_running(conn) -> int:
     """Sweep running tasks, update rss_kb with real measurement.
 
@@ -392,12 +560,13 @@ def _refresh_all_running(conn) -> int:
     process carries the cid (#64). Returns the number of rows whose rss_kb was
     refreshed."""
     rows = conn.execute(
-        "SELECT id, pid, spawned_cid, started_at FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 100"
     ).fetchall()
     now = int(time.time())
     updated = 0
     changed = False
+    timed_out: list[tuple[object, int]] = []
     for r in rows:
         pid = r["pid"]
         if not pid or pid <= 0:
@@ -420,6 +589,7 @@ def _refresh_all_running(conn) -> int:
             # row so the loop's single-flight releases (#80).
             if _reap_timed_out(conn, r, now):
                 changed = True
+                timed_out.append((r, now - (r["started_at"] or now)))
             continue
         rss = measure_tree_rss_kb(pid)
         if rss is None:
@@ -435,6 +605,8 @@ def _refresh_all_running(conn) -> int:
             conn.commit()
         except Exception:
             pass
+    for row, age in timed_out:
+        _respawn_timed_out(conn, row, age)
     return updated
 
 

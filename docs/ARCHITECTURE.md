@@ -234,7 +234,10 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   pid>0 child whose row outlives `SPAWN_MAX_RUNTIME_S` (1 h default; 0
   disables) is `SIGTERM`'d, then `SIGKILL`'d after `SPAWN_KILL_GRACE_S`, and
   its row is closed with `return_code` 124 so the spawning loop's single-flight
-  (`_running_*_children`) releases. (When the RSS budget is disabled but the
+  (`_running_*_children`) releases. It then immediately starts a capped
+  continuation retry with the original assignment plus the previous
+  task/cid/log pointers so the new child can inspect workspace state and resume
+  instead of restarting blindly. (When the RSS budget is disabled but the
   watchdog is on, the daemon still runs.)
 - **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
   all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
@@ -582,8 +585,14 @@ optional 24h spawned-child token and dollar ceilings when
   closed with `return_code` `SPAWN_TIMEOUT_RETURN_CODE` (124, the `timeout(1)`
   convention). This frees the spawning loop's single-flight slot and the pinned
   budget share that a hung-but-alive child would otherwise hold forever. The
-  kill is idempotent (the `ended_at IS NULL` guard) and observable:
-  `mp_dashboard` reports `tasks_timed_out` and `agent_status` reports
+  kill is idempotent (the `ended_at IS NULL` guard). After the row is closed,
+  the watchdog immediately launches a continuation retry unless
+  `SPAWN_TIMEOUT_RETRY_LIMIT` is exhausted or disabled; retry rows keep
+  `retry_of`, `retry_root`, and `retry_attempt`, while the killed row records
+  `timeout_respawned_as` when spawn succeeds. The retry prompt points at the
+  previous task/cid/log and tells the new child to inspect current state,
+  preserve completed work, repair partial work, and continue. The kill is
+  observable: `mp_dashboard` reports `tasks_timed_out` and `agent_status` reports
   `timed_out`. Complementary to #64 (visible/pid=0 RSS) and #66 (kill-path
   liveness correctness).
 
@@ -1296,6 +1305,8 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SPAWN_VISIBLE_TTL_S` | 3600 | reap a visible (pid=0) row whose cid never resolves to a live process; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
+| `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` | 3 | immediate continuation retries after a watchdog kill; 0 disables |
+| `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` | 0 | delay before a watchdog continuation retry |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch agent-status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick; 0 disables |

@@ -385,16 +385,20 @@ def _build_slim_mcp_config(
     return slim_path
 
 
-@write_tool()
-def spawn(prompt: str, cwd: str = "", append_system: str = "",
-          model: str = "", effort: str = "",
-          permission_mode: str = "auto",
-          extra_allowed_tools: str = "",
-          capture_output: bool = True,
-          visible: bool = True,
-          role: str = "",
-          write_origin: str = "",
-          slim: bool = True) -> str:
+def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
+                model: str = "", effort: str = "",
+                permission_mode: str = "auto",
+                extra_allowed_tools: str = "",
+                capture_output: bool = True,
+                visible: bool = True,
+                role: str = "",
+                write_origin: str = "",
+                slim: bool = True,
+                retry_of: str = "",
+                retry_root: str = "",
+                retry_attempt: int = 0,
+                parent_cid_override: str = "",
+                cli: str = "") -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -469,7 +473,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     if not _ok:
         return f"ERR {_reason}"
 
-    parent_cid = _detect_self_cid()
+    parent_cid = parent_cid_override.strip() or _detect_self_cid()
     # child_cid is generated below; we craft sys_extra after that so it can
     # reference the exact ids. Build without it here, append after.
     sys_extra_template = (
@@ -574,7 +578,10 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
     # codex/antigravity/gemini/copilot we take a simpler path via the adapter's
     # spawn_argv that builds basic argv only.
     from .. import spawn_config as _sc, identity as _id
-    chosen_cli = _sc.resolve_agent(role or "", _id.active_cli())
+    cli_clean = _sc.CLI_ALIASES.get(cli.strip().lower(), cli.strip().lower())
+    if cli.strip() and cli_clean not in _sc.SUPPORTED_CLIS:
+        return f"ERR spawn_unsupported cli={cli}"
+    chosen_cli = cli_clean or _sc.resolve_agent(role or "", _id.active_cli())
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
     # Cross-provider egress (issue #74): tell the child which LLM vendor will
     # consume its brief() so render_brief gates personal-class memory
@@ -868,10 +875,19 @@ exit $rc
     _ensure_session(conn)
     conn.execute(
         "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
-        "started_at, rss_kb, rss_updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (task_id, proc_pid, parent_cid, child_cid, cwd, prompt, now_t,
-         _new_kb, now_t),
+        "started_at, rss_kb, rss_updated_at, role, write_origin, "
+        "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
+        "model, effort, append_system, chosen_cli, retry_of, retry_root, "
+        "retry_attempt) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            task_id, proc_pid, parent_cid, child_cid, cwd, prompt, now_t,
+            _new_kb, now_t, role_clean, write_origin, permission_mode,
+            extra_allowed_tools, 1 if capture_output else 0,
+            1 if visible else 0, 1 if slim else 0, chosen_model, effort,
+            append_system, chosen_cli, retry_of or None, retry_root or None,
+            int(retry_attempt or 0),
+        ),
     )
     _emit(conn, "spawn", target=task_id, summary=prompt[:140])
     conn.commit()
@@ -881,6 +897,38 @@ exit $rc
         f"ok task={task_id} pid={proc_pid} child_cid={child_cid[:8]} "
         f"parent_cid={(parent_cid or '-')[:8]} "
         f"perm={permission_mode or '-'} mode={mode} log={log_disp}"
+    )
+
+
+@write_tool()
+def spawn(prompt: str, cwd: str = "", append_system: str = "",
+          model: str = "", effort: str = "",
+          permission_mode: str = "auto",
+          extra_allowed_tools: str = "",
+          capture_output: bool = True,
+          visible: bool = True,
+          role: str = "",
+          write_origin: str = "",
+          slim: bool = True) -> str:
+    """Launch a new child session in parallel.
+
+    This is the public MCP surface. Watchdog continuation retries use the
+    private `_spawn_impl` so retry lineage/config fields do not leak into the
+    normal tool contract.
+    """
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode=permission_mode,
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role=role,
+        write_origin=write_origin,
+        slim=slim,
     )
 
 

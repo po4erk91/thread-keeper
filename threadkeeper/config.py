@@ -213,6 +213,12 @@ class Settings(BaseSettings):
     spawn_max_runtime_s: float = 3600.0
     # Grace between the SIGTERM and the SIGKILL of a timed-out child (#80).
     spawn_kill_grace_s: float = 10.0
+    # Immediate recovery for watchdog-killed children. A positive limit means
+    # each timeout chain is re-spawned up to this many times with a continuation
+    # prompt. 0 disables retry; keep a cap so a pathological task cannot loop
+    # forever and burn CPU/tokens.
+    spawn_timeout_retry_limit: int = 3
+    spawn_timeout_retry_delay_s: float = 0.0
 
     # ── Memory guard ─────────────────────────────────────────────────────────
     memory_guard_poll_s: float = 30.0
@@ -611,6 +617,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
         "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
         "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
+        "SPAWN_TIMEOUT_RETRY_LIMIT": s.spawn_timeout_retry_limit,
+        "SPAWN_TIMEOUT_RETRY_DELAY_S": s.spawn_timeout_retry_delay_s,
         "MEMORY_GUARD_POLL_S": s.memory_guard_poll_s,
         "MEMORY_GUARD_WARN_MB": s.memory_guard_warn_mb,
         "MEMORY_GUARD_KILL_MB": s.memory_guard_kill_mb,

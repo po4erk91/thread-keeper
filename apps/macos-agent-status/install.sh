@@ -25,7 +25,22 @@ if ! command -v tk-agent-status >/dev/null 2>&1; then
     cat > "$wrapper" <<SH
 #!/usr/bin/env bash
 cd "$repo_root"
-exec "$python_bin" -m threadkeeper.agent_status "\$@"
+args=("\$@")
+has_json=0
+has_no_refresh=0
+has_cleanup=0
+for arg in "\${args[@]}"; do
+  case "\$arg" in
+    --json) has_json=1 ;;
+    --no-refresh) has_no_refresh=1 ;;
+    --cleanup-memory) has_cleanup=1 ;;
+  esac
+done
+if [[ "\$has_json" == "1" && "\$has_no_refresh" == "0" && "\$has_cleanup" == "0" ]]; then
+  args+=(--no-refresh)
+fi
+export THREADKEEPER_NO_EMBEDDINGS="\${THREADKEEPER_NO_EMBEDDINGS:-1}"
+exec "$python_bin" -m threadkeeper.agent_status "\${args[@]}"
 SH
     chmod +x "$wrapper"
   fi

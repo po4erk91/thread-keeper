@@ -27,6 +27,13 @@ import pytest
 _FAKE_CID = "33334444-5555-6666-7777-888899990000"
 
 
+@pytest.fixture(autouse=True)
+def _disable_timeout_retry_by_default(monkeypatch):
+    # Most watchdog tests assert the kill/row-closing path only. Keep them from
+    # launching a real child after timeout; retry-specific tests opt back in.
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "0")
+
+
 def _tool(pkg, name):
     return pkg["mcp"]._tool_manager._tools[name].fn
 
@@ -156,6 +163,124 @@ def test_watchdog_releases_applier_single_flight(mp_with_cid, monkeypatch):
     assert row["ended_at"] is not None
     assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
     assert "tk_appl" not in _running_applier_children(conn)
+
+
+def test_watchdog_immediately_respawns_with_continuation_prompt(
+    mp_with_cid, monkeypatch
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "2")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    killed: list[int] = []
+    calls: list[dict] = []
+    monkeypatch.setattr(sb, "_terminate_tree",
+                        lambda pid, grace: killed.append(pid))
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        return (
+            "ok task=tk_retry pid=123 child_cid=abcd1234 "
+            "parent_cid=33334444 perm=auto mode=headless log=/tmp/x"
+        )
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
+
+    old = int(time.time()) - 200
+    conn = _insert_running(
+        pkg, "tk_hung_retry", os.getpid(), old,
+        prompt="Original assignment: repair the branch",
+    )
+    pkg["identity"]._ensure_session(conn)
+    conn.execute(
+        "UPDATE tasks SET role=?, write_origin=?, permission_mode=?, "
+        "extra_allowed_tools=?, capture_output=?, visible=?, slim=?, "
+        "model=?, effort=?, append_system=?, chosen_cli=?, retry_attempt=? "
+        "WHERE id=?",
+        (
+            "evolve_applier", "evolve_apply", "bypassPermissions",
+            "Bash(git *)", 1, 0, 1, "sonnet", "high", "extra sys", "codex", 0,
+            "tk_hung_retry",
+        ),
+    )
+    conn.commit()
+
+    sb._refresh_all_running(conn)
+
+    assert killed == [os.getpid()]
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["retry_of"] == "tk_hung_retry"
+    assert call["retry_root"] == "tk_hung_retry"
+    assert call["retry_attempt"] == 1
+    assert call["parent_cid_override"] == _FAKE_CID
+    assert call["role"] == "evolve_applier"
+    assert call["write_origin"] == "evolve_apply"
+    assert call["permission_mode"] == "bypassPermissions"
+    assert call["extra_allowed_tools"] == "Bash(git *)"
+    assert call["capture_output"] is True
+    assert call["visible"] is False
+    assert call["slim"] is True
+    assert call["model"] == "sonnet"
+    assert call["effort"] == "high"
+    assert call["append_system"] == "extra sys"
+    assert call["cli"] == "codex"
+    assert "Continue the same assignment" in call["prompt"]
+    assert "Original assignment: repair the branch" in call["prompt"]
+
+    row = conn.execute(
+        "SELECT ended_at, return_code, timeout_respawned_as "
+        "FROM tasks WHERE id='tk_hung_retry'"
+    ).fetchone()
+    assert row["ended_at"] is not None
+    assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
+    assert row["timeout_respawned_as"] == "tk_retry"
+    ev = conn.execute(
+        "SELECT summary FROM events WHERE kind='spawn_timeout_retry' "
+        "AND target='tk_hung_retry'"
+    ).fetchone()
+    assert ev is not None
+    assert "respawned_as=tk_retry" in ev["summary"]
+
+
+def test_watchdog_retry_limit_stops_infinite_restart(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "1")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    killed: list[int] = []
+    calls: list[dict] = []
+    monkeypatch.setattr(sb, "_terminate_tree",
+                        lambda pid, grace: killed.append(pid))
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
+                        lambda **kwargs: calls.append(kwargs) or "ok task=tk_x")
+
+    old = int(time.time()) - 200
+    conn = _insert_running(pkg, "tk_retry_done", os.getpid(), old)
+    pkg["identity"]._ensure_session(conn)
+    conn.execute(
+        "UPDATE tasks SET retry_root=?, retry_attempt=? WHERE id=?",
+        ("tk_root", 1, "tk_retry_done"),
+    )
+    conn.commit()
+
+    sb._refresh_all_running(conn)
+
+    assert killed == [os.getpid()]
+    assert calls == []
+    ev = conn.execute(
+        "SELECT summary FROM events WHERE kind='spawn_timeout_retry_skipped' "
+        "AND target='tk_retry_done'"
+    ).fetchone()
+    assert ev is not None
+    assert "attempts_exhausted" in ev["summary"]
 
 
 def test_watchdog_is_idempotent(mp_with_cid, monkeypatch):

@@ -46,7 +46,7 @@ def test_menubar_status_item_uses_idle_chip_and_running_gears():
     assert 'button.title = ""' in swift
     assert 'button.title = " TK' not in swift
     assert 'return "TK ' not in swift
-    assert "statusPollInterval: TimeInterval = 15.0" in swift
+    assert "statusPollInterval: TimeInterval = 120.0" in swift
     assert "Timer.scheduledTimer(withTimeInterval: statusPollInterval" in swift
     assert "Timer(timeInterval: gearSpinInterval" in swift
     assert "gearFrameStepDegrees = 17.0" in swift

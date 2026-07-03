@@ -279,8 +279,14 @@ single-flight slot and burn tokens forever. Any child whose row outlives
 `THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is `SIGTERM`'d,
 then `SIGKILL`'d after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row
 is closed with the timeout `return_code` 124 so the loop's single-flight
-releases and the next tick can retry. Timed-out children are surfaced as
-`tasks_timed_out` in `mp_dashboard` and `timed_out` in `agent_status`.
+releases. The watchdog then immediately starts a capped continuation retry:
+the new child receives the original assignment plus the previous task/cid/log
+and is instructed to inspect current workspace state, preserve completed work,
+repair partial work, and continue rather than restart blindly.
+`THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` (default 3; 0 disables) bounds the
+retry chain, with `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` available for a
+non-zero delay. Timed-out children are surfaced as `tasks_timed_out` in
+`mp_dashboard` and `timed_out` in `agent_status`.
 
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
@@ -902,6 +908,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |
 | `THREADKEEPER_SPAWN_KILL_GRACE_S` | 10 | grace between SIGTERM and SIGKILL when the watchdog kills a timed-out child |
+| `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` | 3 | immediate continuation retries after a watchdog kill; 0 disables |
+| `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` | 0 | delay before a watchdog continuation retry |
 | `THREADKEEPER_MENUBAR_AUTO_LAUNCH` | true | macOS: auto install/launch status menu-bar app on MCP startup |
 | `THREADKEEPER_MENUBAR_RESTART_RSS_MB` | 1024 | macOS widget self-restart RSS threshold; 0 disables |
 | `THREADKEEPER_MEMORY_GUARD_POLL_S` | 30 | server RSS guard tick (s); 0 disables |

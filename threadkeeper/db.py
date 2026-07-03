@@ -409,7 +409,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     tokens_out    INTEGER,
     tokens_total  INTEGER,
     cost_usd      REAL,
-    duration_s    INTEGER
+    duration_s    INTEGER,
+    role          TEXT,
+    write_origin  TEXT,
+    permission_mode TEXT,
+    extra_allowed_tools TEXT,
+    capture_output INTEGER,
+    visible       INTEGER,
+    slim          INTEGER,
+    model         TEXT,
+    effort        TEXT,
+    append_system TEXT,
+    chosen_cli    TEXT,
+    retry_of      TEXT,
+    retry_root    TEXT,
+    retry_attempt INTEGER NOT NULL DEFAULT 0,
+    timeout_respawned_as TEXT
 );
 
 -- Cross-process resource-control requests. The memory guard uses this as a
@@ -565,6 +580,21 @@ def get_db() -> sqlite3.Connection:
         "ALTER TABLE tasks ADD COLUMN tokens_total INTEGER",
         "ALTER TABLE tasks ADD COLUMN cost_usd REAL",
         "ALTER TABLE tasks ADD COLUMN duration_s INTEGER",
+        "ALTER TABLE tasks ADD COLUMN role TEXT",
+        "ALTER TABLE tasks ADD COLUMN write_origin TEXT",
+        "ALTER TABLE tasks ADD COLUMN permission_mode TEXT",
+        "ALTER TABLE tasks ADD COLUMN extra_allowed_tools TEXT",
+        "ALTER TABLE tasks ADD COLUMN capture_output INTEGER",
+        "ALTER TABLE tasks ADD COLUMN visible INTEGER",
+        "ALTER TABLE tasks ADD COLUMN slim INTEGER",
+        "ALTER TABLE tasks ADD COLUMN model TEXT",
+        "ALTER TABLE tasks ADD COLUMN effort TEXT",
+        "ALTER TABLE tasks ADD COLUMN append_system TEXT",
+        "ALTER TABLE tasks ADD COLUMN chosen_cli TEXT",
+        "ALTER TABLE tasks ADD COLUMN retry_of TEXT",
+        "ALTER TABLE tasks ADD COLUMN retry_root TEXT",
+        "ALTER TABLE tasks ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN timeout_respawned_as TEXT",
         # Tier promotion machinery — discrete state machine over claims
         # and skills. Independent of the continuous confidence/state
         # columns; tier is what gates downstream behavior (brief framing,
@@ -652,6 +682,10 @@ def get_db() -> sqlite3.Connection:
         "ON dialectic_observations(status, claimed_at)",
         "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
         "ON skill_usage(tier)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_retry_root "
+        "ON tasks(retry_root)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_retry_of "
+        "ON tasks(retry_of)",
     ):
         try:
             conn.execute(idx)

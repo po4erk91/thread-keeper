@@ -104,7 +104,7 @@ struct UsefulResult: Decodable, Identifiable {
 private let panelWidth: CGFloat = 380
 private let settingsWindowWidth: CGFloat = 760
 private let settingsWindowHeight: CGFloat = 720
-private let statusPollInterval: TimeInterval = 15.0
+private let statusPollInterval: TimeInterval = 120.0
 private let disableBackgroundDaemonsKey = "THREADKEEPER_DISABLE_BG_DAEMONS"
 
 private func threadKeeperEnvFileURL() -> URL {

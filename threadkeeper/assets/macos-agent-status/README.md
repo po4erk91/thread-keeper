@@ -5,7 +5,7 @@ The status-bar item itself is AppKit `NSStatusItem`; the popover content is
 SwiftUI. That lets the app update the menu-bar image directly instead of relying
 on SwiftUI `MenuBarExtra` label animation.
 
-It polls `tk-agent-status --json` every 15 seconds and shows:
+It polls `tk-agent-status --json` every 120 seconds and shows:
 
 - an icon-only menu-bar status item, with loop counts in the popover and
   tooltip,

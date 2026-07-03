@@ -34,6 +34,8 @@ def test_defaults_match(monkeypatch):
     assert c.SPAWN_BUDGET_MB == 3072
     assert c.SPAWN_TOKEN_BUDGET == 0
     assert c.SPAWN_COST_BUDGET_USD == 0.0
+    assert c.SPAWN_TIMEOUT_RETRY_LIMIT == 3
+    assert c.SPAWN_TIMEOUT_RETRY_DELAY_S == 0.0
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
     assert c.RETENTION_INTERVAL_S == 0.0
@@ -226,6 +228,8 @@ def test_all_exported_names_present(monkeypatch):
         "SPAWN_ESTIMATE_FULL_MB",
         "SPAWN_ESTIMATE_SLIM_MB",
         "SPAWN_TOKEN_BUDGET",
+        "SPAWN_TIMEOUT_RETRY_DELAY_S",
+        "SPAWN_TIMEOUT_RETRY_LIMIT",
         "SPAWNED_CHILD",
         "TASK_LOG_DIR",
         "THREAD_IDLE_CLOSE_DAYS",

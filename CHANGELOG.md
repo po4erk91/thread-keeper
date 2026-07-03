@@ -73,6 +73,15 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Watchdog timeout continuation retry.** A spawned child killed by the
+  wall-clock watchdog no longer leaves its assignment merely interrupted. After
+  `return_code` 124 is stamped and the old row releases single-flight, the
+  watchdog immediately starts a capped continuation retry with the original
+  prompt, previous task/cid/log pointers, and preserved launch settings
+  (role/write-origin/permission/model/slim/etc.). New
+  `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` (default 3; 0 disables) and
+  `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` control the retry chain.
+
 - **Lineage-based harvest exclusion (#36).** Shadow-review, extract,
   dialectic mining, dialectic-validator pending cleanup, and passive skill-use
   foreground promotion now share `threadkeeper.harvest`: a recursive
@@ -187,11 +196,12 @@ version bumps follow semver per the policy in
   there are no surprise kills on upgrade) is `SIGTERM`'d, then `SIGKILL`'d on its
   process group after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row is
   closed with `return_code` 124 (the `timeout(1)` convention) so the loop's
-  single-flight releases and the next tick can retry. The daemon now also runs
-  when the RSS budget is disabled but the watchdog is on. Timed-out children are
-  surfaced as `tasks_timed_out` in `mp_dashboard` and `timed_out` in
-  `agent_status`. Complements #25 (aggregate cost, no kill), #66 (kill-path
-  liveness correctness), and #64 (visible/pid=0 RSS measurement).
+  single-flight releases and the watchdog can immediately start a capped
+  continuation retry. The daemon now also runs when the RSS budget is disabled
+  but the watchdog is on. Timed-out children are surfaced as `tasks_timed_out`
+  in `mp_dashboard` and `timed_out` in `agent_status`. Complements #25
+  (aggregate cost, no kill), #66 (kill-path liveness correctness), and #64
+  (visible/pid=0 RSS measurement).
 
 ### Changed
 
