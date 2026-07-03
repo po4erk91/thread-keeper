@@ -35,7 +35,12 @@ from typing import Optional
 
 from .config import DB_PATH, EVOLVE_REVIEW_INTERVAL_S, EVOLVE_REVIEW_MIN
 from .db import get_db
-from .evolve_applier import _ensure_repo_ready
+from .evolve_applier import (
+    _base_branch_name,
+    _base_ref,
+    _ensure_repo_ready,
+    _git_worktree_precondition,
+)
 from .helpers import daemon_sleep
 from . import identity
 
@@ -127,7 +132,7 @@ Run from the repo root:
   - Inspect all open issues before filing duplicates, oldest-first and without
     the old 50-item window. Use a paginated REST read, for example:
     `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)` then
-    `gh api --paginate --slurp "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
+    `gh api --include --paginate "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
     filter out entries with `pull_request`.
   - Review pending legacy evolve suggestions below. For each clear suggestion,
     create or link a GitHub issue; then call evolve_decide(promote|dismiss) only
@@ -148,8 +153,11 @@ OUTPUTS
    not bypass it with an absolute gh path.
 
 2. If docs/ROADMAP.md is stale, update it on a branch and open a PR. Do not
-   commit to main. Do not implement product/code fixes in reviewer; only roadmap
-   documentation changes are allowed.
+   commit to main. Start the branch from an up-to-date mainline:
+     git fetch origin {base_branch}
+     git checkout -b <branch> {base_ref}
+   Do not implement product/code fixes in reviewer; only roadmap documentation
+   changes are allowed.
 
 3. If no new issue/doc change is warranted, say so and explain the audit signal
    briefly.
@@ -391,6 +399,8 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
         if pending else "(none)"
     )
     prompt = EVOLVE_AUDIT_PROMPT.format(
+        base_branch=_base_branch_name(),
+        base_ref=_base_ref(),
         fence=EVOLVE_RESEARCH_FENCE,
         research=_fence_research(research_text),
         queue=_fence_untrusted_data(EVOLVE_LEGACY_QUEUE_TAG, queue),
@@ -454,6 +464,12 @@ def run_evolve_pass(force: bool = False) -> str:
     do_audit = _last_spawn_phase(conn) == "research"
     try:
         if do_audit:
+            guard = _git_worktree_precondition(
+                conn, repo_root, "evolve_reviewer_audit"
+            )
+            if guard:
+                _record_evolve_pass(conn, now_t, guard)
+                return guard
             _, research_text = _latest_research(now_t)
             out = _spawn_audit(repo_root, pending, research_text)
         else:

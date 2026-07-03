@@ -355,40 +355,22 @@ def run_mine_pass(force: bool = False) -> str:
     now = int(time.time())
     cursor = _last_mine_rowid(conn)
 
-    from .shadow_review import (
-        _INTERNAL_PROMPT_PREFIXES,
-        _SPAWNED_SESSION_MARKERS,
-    )
-    sess_prefix_clauses = " OR ".join(
-        ["substr(content, 1, ?) = ?"] * len(_INTERNAL_PROMPT_PREFIXES)
-    )
-    sess_prefix_params: list = []
-    for p in _INTERNAL_PROMPT_PREFIXES:
-        sess_prefix_params.extend([len(p), p])
-    spawned_marker_clauses = " OR ".join(
-        ["instr(content, ?) > 0"] * len(_SPAWNED_SESSION_MARKERS)
-    )
-    spawned_marker_params = list(_SPAWNED_SESSION_MARKERS)
+    from .harvest import harvest_exclusion_cte
+
+    exclusion_cte, exclusion_params = harvest_exclusion_cte()
 
     rows = conn.execute(
+        exclusion_cte +
         "SELECT rowid, uuid, session_id, content, created_at FROM dialog_messages "
         "WHERE role='user' AND rowid > ? "
         "AND coalesce(project, '') != 'subagents' "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
         "AND length(content) >= 1 "
         "AND session_id NOT IN ("
-        "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE session_id IS NOT NULL AND role='user' AND ({sess_prefix_clauses})"
-        ") "
-        "AND session_id NOT IN ("
-        "  SELECT DISTINCT session_id FROM dialog_messages "
-        f"  WHERE session_id IS NOT NULL AND role='user' AND ({spawned_marker_clauses})"
-        ") "
-        "AND session_id NOT IN ("
-        "  SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
+        "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
         "ORDER BY rowid ASC",
-        (cursor, *sess_prefix_params, *spawned_marker_params),
+        (*exclusion_params, cursor),
     ).fetchall()
 
     if not rows:

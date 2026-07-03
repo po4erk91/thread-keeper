@@ -4,14 +4,19 @@ Where shadow_review LOOKS FOR NEW class-level learning every few
 minutes, the Curator REVIEWS THE STORE every few days:
 
   1. Daemon thread wakes every CURATOR_INTERVAL_S seconds (0 = off).
-  2. Collects inventory: every lesson slug + every recently-touched
+  2. Fingerprints the stable inventory snapshot: lessons, lesson_usage,
+     skills, and concepts.
+  3. If that fingerprint matches the last recorded complete/endorsed pass,
+     records an unchanged/no-op event instead of spawning another child.
+  4. Collects inventory: every lesson slug + every recently-touched
      skill + usage telemetry + advisory lesson decay ranking.
-  3. Spawns slim child with CURATOR_PROMPT + inventory dump.
-  4. Child grades each entry, suggests KEEP / PATCH / CONSOLIDATE /
+  5. Spawns slim child with CURATOR_PROMPT + inventory dump.
+  6. Child grades each entry, suggests KEEP / PATCH / CONSOLIDATE /
      PRUNE, and writes REPORT-<isodate>.md under CURATOR_REPORTS_DIR.
-  5. In destructive mode, parent writes a pre-mutation snapshot before
+  7. In destructive mode, parent writes a pre-mutation snapshot before
      spawning the child; child tool calls add tombstones/action telemetry.
-  6. Parent records `curator_pass` event with high-water timestamp.
+  8. Parent records `curator_pass` event with high-water timestamp and
+     inventory fingerprint.
 
 Design choices:
 
@@ -42,8 +47,11 @@ duplicate, or stale content.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -69,6 +77,11 @@ from .curator_snapshots import (
 logger = logging.getLogger(__name__)
 
 _started = False
+
+INVENTORY_FINGERPRINT_KEY = "inventory_sha256"
+_INVENTORY_FINGERPRINT_RE = re.compile(
+    rf"\b{INVENTORY_FINGERPRINT_KEY}=([0-9a-f]{{64}})\b"
+)
 
 
 CURATOR_PROMPT = """\
@@ -238,6 +251,148 @@ def _record_curator_pass(conn: sqlite3.Connection,
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("curator: failed to record pass", exc_info=True)
+
+
+def _stable_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _curator_inventory_snapshot(conn: sqlite3.Connection) -> dict:
+    """Canonical, time-stable inventory state for debounce fingerprinting.
+
+    Human prompt text includes relative ages and decay scores, so hashing the
+    rendered dump would change as the wall clock moves. This snapshot hashes
+    only stored lesson/skill/concept state that can change the curator's
+    decisions.
+    """
+    snapshot: dict[str, list[dict]] = {
+        "lessons": [],
+        "skills": [],
+        "concepts": [],
+    }
+
+    try:
+        usage = lessons.lesson_usage_map(conn)
+        for item in lessons.iter_lessons():
+            u = usage.get(item["slug"], {})
+            snapshot["lessons"].append({
+                "slug": item.get("slug") or "",
+                "body": item.get("body") or "",
+                "ts": _stable_int(item.get("ts")),
+                "source": item.get("source") or "",
+                "usage": {
+                    "created_at": _stable_int(u.get("created_at")),
+                    "source": u.get("source") or "",
+                    "last_used_at": _stable_int(u.get("last_used_at")),
+                    "last_viewed_at": _stable_int(u.get("last_viewed_at")),
+                    "use_count": _stable_int(u.get("use_count")) or 0,
+                    "view_count": _stable_int(u.get("view_count")) or 0,
+                    "pinned": _stable_int(u.get("pinned")) or 0,
+                    "tier": u.get("tier") or "hypothesis",
+                },
+            })
+    except Exception:
+        logger.debug("curator: inventory lesson snapshot failed",
+                     exc_info=True)
+
+    try:
+        rows = conn.execute(
+            "SELECT name, created_at, created_by_origin, last_used_at, "
+            "last_viewed_at, last_patched_at, use_count, view_count, "
+            "patch_count, pinned, state "
+            "FROM skill_usage "
+            "WHERE state IN ('active', 'stale') "
+            "ORDER BY name"
+        ).fetchall()
+        for r in rows:
+            snapshot["skills"].append({
+                "name": r["name"] or "",
+                "created_at": _stable_int(r["created_at"]),
+                "created_by_origin": r["created_by_origin"] or "",
+                "last_used_at": _stable_int(r["last_used_at"]),
+                "last_viewed_at": _stable_int(r["last_viewed_at"]),
+                "last_patched_at": _stable_int(r["last_patched_at"]),
+                "use_count": _stable_int(r["use_count"]) or 0,
+                "view_count": _stable_int(r["view_count"]) or 0,
+                "patch_count": _stable_int(r["patch_count"]) or 0,
+                "pinned": _stable_int(r["pinned"]) or 0,
+                "state": r["state"] or "",
+            })
+    except sqlite3.OperationalError:
+        logger.debug("curator: inventory skill snapshot failed",
+                     exc_info=True)
+
+    try:
+        rows = conn.execute(
+            "SELECT id, description, confidence, registered_at, "
+            "last_evidence_at FROM concepts ORDER BY id"
+        ).fetchall()
+        for r in rows:
+            snapshot["concepts"].append({
+                "id": r["id"] or "",
+                "description": r["description"] or "",
+                "confidence": r["confidence"] or "",
+                "registered_at": _stable_int(r["registered_at"]),
+                "last_evidence_at": _stable_int(r["last_evidence_at"]),
+            })
+    except sqlite3.OperationalError:
+        pass
+
+    snapshot["lessons"].sort(key=lambda row: row["slug"])
+    return snapshot
+
+
+def _inventory_fingerprint(snapshot: dict) -> str:
+    payload = json.dumps(
+        {"version": 1, "inventory": snapshot},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _current_inventory_fingerprint(
+    conn: sqlite3.Connection,
+) -> tuple[str, int, int, int]:
+    snapshot = _curator_inventory_snapshot(conn)
+    return (
+        _inventory_fingerprint(snapshot),
+        len(snapshot["lessons"]),
+        len(snapshot["skills"]),
+        len(snapshot["concepts"]),
+    )
+
+
+def _last_inventory_fingerprint(
+    conn: sqlite3.Connection,
+) -> tuple[str | None, int | None]:
+    """Latest completed/endorsed curator inventory fingerprint.
+
+    Stored in the existing `curator_pass` summary so no schema migration is
+    required. Rows without the key are from older versions or non-inventory
+    outcomes such as below-threshold / spawn-error.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT target, summary, created_at FROM events "
+            "WHERE kind='curator_pass' ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None, None
+    for r in rows:
+        summary = r["summary"] or ""
+        match = _INVENTORY_FINGERPRINT_RE.search(summary)
+        if not match:
+            continue
+        ts = _stable_int(r["target"]) or _stable_int(r["created_at"])
+        return match.group(1), ts
+    return None, None
 
 
 def _format_lesson(item: dict, usage: dict | None = None) -> str:
@@ -496,6 +651,7 @@ def run_curator_pass(force: bool = False) -> str:
       - 'disabled'        — env knob off and not forced
       - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
+      - 'unchanged_inventory' — latest complete inventory already reviewed
       - 'spawned task_id=…' — curator child launched
       - 'spawn_error: …'  — spawn() rejected
     """
@@ -518,7 +674,9 @@ def run_curator_pass(force: bool = False) -> str:
             _record_curator_pass(conn, now, out)
             return out
 
-        inventory, n_lessons, n_skills = _collect_inventory(conn)
+        fingerprint, n_lessons, n_skills, n_concepts = (
+            _current_inventory_fingerprint(conn)
+        )
         if n_lessons < CURATOR_MIN_LESSONS:
             _record_curator_pass(
                 conn, now,
@@ -526,10 +684,31 @@ def run_curator_pass(force: bool = False) -> str:
             )
             return f"below_threshold lessons={n_lessons}"
 
+        last_fingerprint, last_fingerprint_ts = _last_inventory_fingerprint(
+            conn
+        )
+        if last_fingerprint == fingerprint:
+            ts_part = (
+                f" endorsed_ts={last_fingerprint_ts}"
+                if last_fingerprint_ts else ""
+            )
+            outcome = (
+                f"unchanged_inventory {INVENTORY_FINGERPRINT_KEY}="
+                f"{fingerprint}{ts_part} lessons={n_lessons} "
+                f"skills={n_skills} concepts={n_concepts}"
+            )
+            _record_curator_pass(conn, now, outcome)
+            return (
+                "unchanged_inventory "
+                f"fingerprint={fingerprint[:12]}{ts_part}"
+            )
+
+        inventory, _n_lessons, _n_skills = _collect_inventory(conn)
+
         # Concepts enrich the review but do NOT lower the lesson threshold —
         # a curator pass is only worth a child spawn when there's a real
         # lesson/skill inventory to audit; concepts ride along.
-        concepts_text, n_concepts = _collect_concepts(conn)
+        concepts_text, _n_concepts = _collect_concepts(conn)
         if concepts_text:
             inventory = inventory + "\n\n" + concepts_text
 
@@ -655,8 +834,10 @@ def run_curator_pass(force: bool = False) -> str:
 
         _record_curator_pass(
             conn, now,
-            f"spawned lessons={n_lessons} skills={n_skills} "
-            f"concepts={n_concepts} snapshot={pass_id if snapshot_dir else '-'} "
+            f"spawned {INVENTORY_FINGERPRINT_KEY}={fingerprint} "
+            f"lessons={n_lessons} skills={n_skills} "
+            f"concepts={n_concepts} "
+            f"snapshot={pass_id if snapshot_dir else '-'} "
             f":: {str(result)[:140]}",
         )
         return str(result)

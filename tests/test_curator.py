@@ -320,6 +320,92 @@ def test_curator_restore_recovers_pruned_lesson_body(tmp_path, monkeypatch):
     assert "recover this durable body" in get(slug="restore-target-lesson")
 
 
+def test_run_curator_pass_skips_unchanged_inventory(
+    tmp_path, monkeypatch,
+):
+    """A second wake-up over the same stable inventory endorses the last
+    pass instead of spawning another full curator child."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson two", body="body two", source="shadow"
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return f"spawn task_id=fake-curator-{len(captured)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    first = pkg["curator"].run_curator_pass(force=True)
+    second = pkg["curator"].run_curator_pass(force=True)
+
+    assert "fake-curator-1" in first
+    assert second.startswith("unchanged_inventory")
+    assert len(captured) == 1
+
+    conn = pkg["db"].get_db()
+    rows = conn.execute(
+        "SELECT summary FROM events WHERE kind='curator_pass' "
+        "ORDER BY id ASC"
+    ).fetchall()
+    assert "spawned inventory_sha256=" in rows[-2]["summary"]
+    assert "unchanged_inventory inventory_sha256=" in rows[-1]["summary"]
+
+    pkg["lessons"].append_lesson(
+        title="lesson three", body="body three", source="shadow"
+    )
+    third = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-2" in third
+    assert len(captured) == 2
+
+
+def test_curator_wakeup_coalesces_before_rereading_inflight_snapshot(
+    tmp_path, monkeypatch,
+):
+    """When a curator child is already running, another wake-up coalesces
+    behind it and does not re-read the same inventory snapshot."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, pid, parent_cid, spawned_cid, cwd, prompt, started_at) "
+        "VALUES ('tk_running_curator', ?, 'p', 'c', '/x', ?, ?)",
+        (
+            os.getpid(),
+            "You are an autonomous CURATOR for thread-keeper's lessons + "
+            "skills library.",
+            int(time.time()) - 30,
+        ),
+    )
+    conn.commit()
+
+    def fail_fingerprint(_conn):  # pragma: no cover - should not be called
+        raise AssertionError("in-flight wake-up should not re-read inventory")
+
+    monkeypatch.setattr(
+        pkg["curator"], "_current_inventory_fingerprint", fail_fingerprint,
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_spawn(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("spawn should not run while a curator is active")
+
+    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out == "curator_running n=1 (single-flight)"
+
+
 def test_daemon_does_not_start_in_slim_child(tmp_path, monkeypatch):
     """Slim children (NO_EMBEDDINGS=1 → SEMANTIC_AVAILABLE=False) must
     NOT start the curator daemon. Otherwise every spawn would cascade
@@ -366,13 +452,16 @@ def test_mcp_curator_review_dry_run_shows_inventory(tmp_path, monkeypatch):
 def test_mcp_curator_review_status_reports(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     pkg["curator"]._record_curator_pass(
-        pkg["db"].get_db(), 12345, "below_threshold lessons=1"
+        pkg["db"].get_db(), 12345,
+        "spawned inventory_sha256=" + ("a" * 64) + " lessons=2",
     )
     from threadkeeper._mcp import mcp
     tool = mcp._tool_manager._tools["curator_review_status"].fn
     out = tool()
     assert "interval_s=0" in out
-    assert "below_threshold" in out
+    assert "spawned inventory_sha256=" in out
+    assert "inventory_sha256=" + ("a" * 64) in out
+    assert "current_inventory_sha256=" in out
     assert "latest_report=(none yet)" in out
     # Default mode is now destructive (CURATOR_DESTRUCTIVE defaults to 1)
     assert "mode=destructive" in out

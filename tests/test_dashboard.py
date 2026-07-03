@@ -50,6 +50,10 @@ def test_dashboard_empty_db_no_crash(fresh_mp):
     out = _tool(fresh_mp, "mp_dashboard")()
     for section in ("dashboard", "stores", "loops", "outcomes", "reliability"):
         assert section in out, (section, out)
+    assert "db_size=" in out, out
+    assert "high_volume:" in out, out
+    for key in ("dialog_messages", "dialog_fts", "events", "signals", "tasks"):
+        assert f"{key}=" in out, out
 
 
 def test_dashboard_counts_stores_delta(fresh_mp):

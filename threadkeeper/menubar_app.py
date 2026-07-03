@@ -17,9 +17,10 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import (
-    BACKGROUND_DAEMONS_ALLOWED,
     MENUBAR_AUTO_LAUNCH,
+    SPAWNED_CHILD,
     TASK_LOG_DIR,
+    WRITE_ORIGIN,
 )
 
 
@@ -321,7 +322,7 @@ def ensure_menubar_app() -> None:
 
     if platform.system() != "Darwin":
         return
-    if not MENUBAR_AUTO_LAUNCH or not BACKGROUND_DAEMONS_ALLOWED:
+    if not MENUBAR_AUTO_LAUNCH or SPAWNED_CHILD or WRITE_ORIGIN != "foreground":
         return
 
     src = _source_dir()

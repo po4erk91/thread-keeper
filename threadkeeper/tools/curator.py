@@ -11,7 +11,7 @@ audit pass:
 
   curator_review_status()
     Diagnostic: env config, last cursor, last 5 passes, latest REPORT
-    path, latest destructive snapshot path.
+    path, inventory fingerprints, and latest destructive snapshot path.
 
   curator_restore(pass_id, lesson_slug="", skill_name="")
     Restore one lesson or skill from a destructive pass snapshot.
@@ -27,6 +27,8 @@ from ..identity import _ensure_session
 from ..curator import (
     CURATOR_PROMPT,
     _collect_inventory,
+    _current_inventory_fingerprint,
+    _last_inventory_fingerprint,
     _last_curator_ts,
     run_curator_pass,
 )
@@ -71,7 +73,7 @@ def curator_review(force: bool = False, dry_run: bool = False) -> str:
 
 @read_tool()
 def curator_review_status() -> str:
-    """Show curator configuration + last 5 passes + latest REPORT path.
+    """Show curator config + inventory fingerprints + latest REPORT path.
 
     Sanity-check for whether the daemon is alive, advancing the cursor,
     and producing REPORTs the user can read."""
@@ -80,6 +82,8 @@ def curator_review_status() -> str:
     floor = _last_curator_ts(conn)
     now = int(time.time())
     age_s = (now - floor) if floor else None
+    last_fingerprint, fingerprint_ts = _last_inventory_fingerprint(conn)
+    fingerprint_age_s = (now - fingerprint_ts) if fingerprint_ts else None
     mode = "destructive" if CURATOR_DESTRUCTIVE else "advisory"
     lines = [
         f"interval_s={CURATOR_INTERVAL_S:.0f} "
@@ -88,9 +92,25 @@ def curator_review_status() -> str:
         f"reports_dir={CURATOR_REPORTS_DIR}",
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
-        "",
-        "recent passes (newest first):",
     ]
+    if last_fingerprint:
+        lines.append(
+            f"inventory_sha256={last_fingerprint} "
+            f"(age={fingerprint_age_s}s)"
+        )
+    else:
+        lines.append("inventory_sha256=(none)")
+    try:
+        current_fp, n_lessons, n_skills, n_concepts = (
+            _current_inventory_fingerprint(conn)
+        )
+        lines.append(
+            f"current_inventory_sha256={current_fp} lessons={n_lessons} "
+            f"skills={n_skills} concepts={n_concepts}"
+        )
+    except Exception:
+        lines.append("current_inventory_sha256=(unavailable)")
+    lines.extend(["", "recent passes (newest first):"])
     try:
         rows = conn.execute(
             "SELECT created_at, summary FROM events "
