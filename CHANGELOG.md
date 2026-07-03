@@ -122,6 +122,15 @@ version bumps follow semver per the policy in
   `origin/main` / configured base ref, and refuse to overlap reviewer/applier
   git writers in the shared checkout.
 
+- **Task retention and spool GC (#42).** `consolidate()` now reports and
+  applies retention for ended `tasks` rows using
+  `THREADKEEPER_TASK_RETENTION_DAYS` (30d default) and
+  `THREADKEEPER_TASK_RETENTION_COUNT` (1000 default), never prunes live
+  `ended_at IS NULL` rows, and garbage-collects orphan task spool files
+  (`.log`, `.stdin.txt`, `.command`) from `THREADKEEPER_TASK_LOG_DIR`.
+  Headless spawn `.log` files are created owner-only (`0600`) to match stdin
+  prompt spools.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

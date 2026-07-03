@@ -1009,7 +1009,13 @@ them with `dry_run=False` to apply:
 
 - **`consolidate()`** — dedup near-identical notes (intra-thread cosine
   ≥ 0.95), deduplicate verbatim quotes, demote untouched-active threads
-  to `idle` after 30 days, release orphaned thread claims.
+  to `idle` after 30 days, release orphaned thread claims, prune ended
+  `tasks` rows outside the configured retention window, and remove orphaned
+  task spool files (`.log`, `.stdin.txt`, `.command`) from
+  `TASK_LOG_DIR`. Live tasks (`ended_at IS NULL`) are never pruned.
+  `THREADKEEPER_TASK_RETENTION_DAYS` defaults to `30` and
+  `THREADKEEPER_TASK_RETENTION_COUNT` defaults to `1000`; a row is kept if it
+  is protected by either bound. Set either knob to `0` to disable that bound.
 - **`validate_threads()`** — heuristic triage of active threads with
   four categories (first match wins per thread):
   - `no_notes_old` — active with zero notes ≥ 7 days → close as abandoned.
@@ -1102,6 +1108,11 @@ the high-volume tables (`dialog_messages`, `dialog_fts`, `dialog_vec`,
 becomes a problem.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
+
+Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
+`/tmp/thread-keeper-tasks`). `spawn()` creates captured headless `.log` files
+with mode `0600`, matching stdin prompt spools. `consolidate()` garbage-collects
+task spool files once their task row is no longer retained.
 
 ---
 

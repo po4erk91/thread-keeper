@@ -180,9 +180,9 @@ def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
     assert mode == 0o700, f"expected 0700, got {oct(mode)}"
 
 
-def test_headless_task_log_is_owner_only(mp_with_cid, monkeypatch):
-    """Headless child stdout logs can contain private task context and must
-    not be group/other readable."""
+def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
+    """Captured stdout/stderr can include prompt-derived paths/output, so the
+    headless `.log` spool file must be 0600 from creation time."""
     pkg = mp_with_cid(_FAKE_CID)
 
     import threadkeeper.tools.spawn as spawn_mod
@@ -200,9 +200,9 @@ def test_headless_task_log_is_owner_only(mp_with_cid, monkeypatch):
     out = spawn_fn(prompt="do a thing", visible=False, capture_output=True)
     assert out.startswith("ok task="), out
 
-    logs = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
-    assert len(logs) == 1, logs
-    mode = logs[0].stat().st_mode & 0o777
+    log_files = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
+    assert len(log_files) == 1, log_files
+    mode = log_files[0].stat().st_mode & 0o777
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
 
 

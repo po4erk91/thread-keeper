@@ -522,12 +522,12 @@ Follow-up gaps from the 2026-06-17 audit:
   `lesson_remove` / `skill_manage(delete)`. `mp_dashboard` surfaces per-window
   `curator_destructive_actions` counts for snapshot, lesson
   prune/patch/consolidate, and skill delete/patch actions.
-- Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool files — every
-  spawn leaves a permanent `tasks` row (full `prompt`) plus
-  `.log`/`.stdin.txt`/`.command` files that nothing prunes; `tasks.prompt`
-  holds curator/issue/audit content indefinitely and the default
-  `/tmp/thread-keeper-tasks` spool sits outside the `~/.threadkeeper`
-  perimeter that #21 hardens (#42).
+- ✅ DONE (#42). Retention/GC for the `tasks` table and `TASK_LOG_DIR` spool
+  files — `consolidate()` now prunes ended `tasks` rows outside
+  `THREADKEEPER_TASK_RETENTION_DAYS` / `THREADKEEPER_TASK_RETENTION_COUNT`
+  while preserving live rows, removes orphan `.log`/`.stdin.txt`/`.command`
+  spools, and creates captured headless `.log` files with owner-only
+  permissions.
 - ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
   self-updates now verify PyPI Integrity API provenance before invoking `pip`,
   require the expected GitHub Trusted Publisher identity, check the attested

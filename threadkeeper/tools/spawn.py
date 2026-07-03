@@ -550,6 +550,14 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         child_env["PATH"] = (
             str(wrapper_dir) + os.pathsep + child_env.get("PATH", "")
         )
+    else:
+        inherited_wrapper = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
+        child_env.pop("THREADKEEPER_REAL_GH", None)
+        if inherited_wrapper:
+            child_env["PATH"] = os.pathsep.join(
+                p for p in child_env.get("PATH", "").split(os.pathsep)
+                if p != inherited_wrapper
+            )
     # slim spawn → child loads NO embeddings (delegates semantic search to
     # the parent via search_via_parent). Override only if user didn't set
     # the env explicitly already (allow opt-out by setting =0 explicitly).

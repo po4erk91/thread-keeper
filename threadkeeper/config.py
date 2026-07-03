@@ -201,6 +201,13 @@ class Settings(BaseSettings):
     # outlives this, so an unresolvable row can't pin budget capacity forever
     # (#64). 0 disables the reaper.
     spawn_visible_ttl_s: float = 3600.0
+    # Retention for completed spawn task rows. `consolidate()` prunes ended
+    # rows outside BOTH protections: newer than this age and among the newest
+    # N ended rows. Live rows (ended_at IS NULL) are never pruned. Set either
+    # knob to 0 to disable that protection; set both to 0 to disable row
+    # pruning while still allowing orphan spool-file cleanup.
+    task_retention_days: int = 30
+    task_retention_count: int = 1000
     # Wall-clock lifetime cap for any spawned child (#80). A child that hangs
     # while still alive — a wedged WebFetch/gh/git, an agent loop that never
     # converges, a prompt that never arrives — would otherwise stall its loop's
@@ -615,6 +622,8 @@ def _derive_constants(s: "Settings") -> dict:
         "SPAWN_TOKEN_BUDGET": s.spawn_token_budget,
         "SPAWN_COST_BUDGET_USD": s.spawn_cost_budget_usd,
         "SPAWN_VISIBLE_TTL_S": s.spawn_visible_ttl_s,
+        "TASK_RETENTION_DAYS": s.task_retention_days,
+        "TASK_RETENTION_COUNT": s.task_retention_count,
         "SPAWN_MAX_RUNTIME_S": s.spawn_max_runtime_s,
         "SPAWN_KILL_GRACE_S": s.spawn_kill_grace_s,
         "SPAWN_TIMEOUT_RETRY_LIMIT": s.spawn_timeout_retry_limit,

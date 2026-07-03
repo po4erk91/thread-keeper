@@ -232,6 +232,8 @@ def test_all_exported_names_present(monkeypatch):
         "SPAWN_TIMEOUT_RETRY_LIMIT",
         "SPAWNED_CHILD",
         "TASK_LOG_DIR",
+        "TASK_RETENTION_COUNT",
+        "TASK_RETENTION_DAYS",
         "THREAD_IDLE_CLOSE_DAYS",
         "THREAD_JANITOR_INTERVAL_S",
         "WRITE_ORIGIN",
