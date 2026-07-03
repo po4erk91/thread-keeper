@@ -834,6 +834,15 @@ path:
   surface nearest-neighbor lesson slugs so shadow/candidate authors can add
   cross-links or consolidate while the lesson is being materialized (#190).
 
+**2026-07-03 reviewer additions (issue-backed).**
+A follow-up audit surfaced one more concrete gap in the lesson/skill graph
+path:
+
+- **Dangling wikilink health check.** Scan lesson and skill bodies for
+  unresolved `[[slug]]` references and surface the dead targets in a
+  read-only health view so manual body reads are not the only way to spot
+  broken cross-links (#202).
+
 ---
 
 ## Principle
