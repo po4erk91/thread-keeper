@@ -90,6 +90,7 @@ _THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
     "lesson_get",
     "lesson_append",
     "lesson_remove",
+    "lesson_restore",
     "skill_list",
     "skill_manage",
     "evolve_review",

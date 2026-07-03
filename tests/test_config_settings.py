@@ -44,6 +44,11 @@ def test_defaults_match(monkeypatch):
     assert c.PROBE_RESULT_RETENTION_DAYS == 0.0
     assert c.RETENTION_WAL_CHECKPOINT is False
     assert c.RETENTION_VACUUM_AFTER_ROWS == 0
+    assert c.AUTO_UPDATE_VERIFY_PROVENANCE is True
+    assert c.AUTO_UPDATE_PYPI_BASE_URL == "https://pypi.org"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY == "po4erk91/thread-keeper"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW == "publish.yml"
+    assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT == "pypi"
     assert c.SKILL_UPDATE_INTERVAL_S == 302400
     assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
@@ -136,8 +141,13 @@ def test_all_exported_names_present(monkeypatch):
     required = [
         "AUTO_REVIEW_ENABLED",
         "AUTO_UPDATE_INTERVAL_S",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY",
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW",
+        "AUTO_UPDATE_PYPI_BASE_URL",
         "AUTO_UPDATE_RESTART",
         "AUTO_UPDATE_TIMEOUT_S",
+        "AUTO_UPDATE_VERIFY_PROVENANCE",
         "BACKGROUND_DAEMONS_ALLOWED",
         "BRIEF_LEAN",
         "BRIEF_NO_THREAD_NUDGE",

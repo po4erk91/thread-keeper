@@ -23,6 +23,7 @@ def _bootstrap(tmp_path, monkeypatch):
         "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+        "THREADKEEPER_WRITE_ORIGIN": "foreground",
         "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
     }
@@ -129,6 +130,10 @@ def test_shadow_lesson_append_rejects_near_duplicate_slug(
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "encode_many", lambda texts: None)
+
     first = la(
         title="better auth jwks poisoning recovery",
         body="Delete poisoned JWKS via the stage shell.",
@@ -162,6 +167,108 @@ def test_foreground_lesson_append_allows_near_duplicate_slug(
     assert out.startswith(
         "ok slug=better-auth-jwks-poisoning-diagnosis-and-recovery"
     )
+
+
+def test_shadow_lesson_append_semantic_duplicate_patches_incumbent(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "encode_many",
+        lambda texts: [[1.0, 0.0], [0.86, 0.0]],
+    )
+
+    first = la(
+        title="android emulator boot lock recovery",
+        body=(
+            "When multiple Android emulators boot on one runner, serialize "
+            "boot and guard lock files before WDA startup."
+        ),
+        source="shadow",
+    )
+    assert first.startswith("ok")
+
+    second = la(
+        title="ci device startup coordination",
+        body=(
+            "For CI device pools, serialize AVD boot lock acquisition before "
+            "starting WDA to prevent runner deadlocks."
+        ),
+        source="shadow",
+    )
+
+    assert second.startswith("ok slug=android-emulator-boot-lock-recovery")
+    assert "dedup=semantic" in second
+    assert pkg["lessons"].count_lessons() == 1
+    body = pkg["path"].read_text()
+    assert "ci-device-startup-coordination" not in body
+    assert "Additional evidence:" in body
+    assert "serialize AVD boot lock acquisition" in body
+
+
+def test_shadow_lesson_append_semantic_borderline_surfaces_duplicate(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "encode_many",
+        lambda texts: [[1.0, 0.0], [0.80, 0.0]],
+    )
+
+    la(
+        title="ios permission prompt setup",
+        body="Pre-deny camera permission before launching iOS E2E tests.",
+        source="shadow",
+    )
+    out = la(
+        title="mobile camera modal preparation",
+        body="Prepare camera modal tests by setting iOS permissions first.",
+        source="shadow",
+    )
+
+    assert out.startswith("ERR possible_duplicate_lesson")
+    assert "ios-permission-prompt-setup" in out
+    assert pkg["lessons"].count_lessons() == 1
+    assert "mobile-camera-modal-preparation" not in pkg["path"].read_text()
+
+
+def test_shadow_lesson_append_semantic_distinct_creates_new_lesson(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "encode_many",
+        lambda texts: [[1.0, 0.0], [0.20, 0.0]],
+    )
+
+    la(
+        title="ios permission prompt setup",
+        body="Pre-deny camera permission before launching iOS E2E tests.",
+        source="shadow",
+    )
+    out = la(
+        title="github issue claim race",
+        body="After posting an issue claim, re-fetch comments before spawning.",
+        source="shadow",
+    )
+
+    assert out.startswith("ok slug=github-issue-claim-race")
+    assert pkg["lessons"].count_lessons() == 2
 
 
 def test_mcp_lesson_list_returns_summary(tmp_path, monkeypatch):
@@ -273,6 +380,40 @@ def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
         "SELECT COUNT(*) FROM lesson_usage WHERE slug='stale-duplicate'"
     ).fetchone()[0]
     assert n_usage == 0
+    trash_root = tmp_path / "curator" / "trash"
+    artifacts = list(trash_root.glob("*-lesson-stale-duplicate"))
+    assert len(artifacts) == 1
+    assert (artifacts[0] / "section.md").read_text().startswith(
+        "<!-- LESSON:BEGIN slug=stale-duplicate "
+    )
+
+
+def test_mcp_lesson_restore_recreates_original_bytes(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    restore = _tool(pkg, "lesson_restore")
+    la(title="first lesson", body="first body", source="shadow")
+    la(title="stale duplicate", body="old duplicate rule", source="shadow")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE lesson_usage SET use_count=3, view_count=4 "
+        "WHERE slug='stale-duplicate'"
+    )
+    conn.commit()
+    before = pkg["path"].read_bytes()
+
+    assert lr(slug="stale-duplicate") == "ok removed=stale-duplicate"
+    assert restore(slug="stale-duplicate").startswith(
+        "ok restored=stale-duplicate"
+    )
+
+    assert pkg["path"].read_bytes() == before
+    row = conn.execute(
+        "SELECT use_count, view_count FROM lesson_usage "
+        "WHERE slug='stale-duplicate'"
+    ).fetchone()
+    assert dict(row) == {"use_count": 3, "view_count": 4}
 
 
 def test_mcp_lesson_remove_refuses_protected_without_force(
@@ -287,4 +428,21 @@ def test_mcp_lesson_remove_refuses_protected_without_force(
 
     assert out.startswith("ERR protected_lesson")
     assert "human-policy" in pkg["path"].read_text()
+    assert not (tmp_path / "curator" / "trash").exists()
     assert lr(slug="human-policy", force=True) == "ok removed=human-policy"
+
+
+def test_curator_trash_sweep_removes_expired_artifacts(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    from threadkeeper import trash
+
+    monkeypatch.setattr(trash, "CURATOR_TRASH_TTL_DAYS", 1)
+    artifact = tmp_path / "curator" / "trash" / "old-lesson"
+    artifact.mkdir(parents=True)
+    (artifact / "meta.json").write_text(
+        '{"kind":"lesson","slug":"old","created_at":100}\n',
+        encoding="utf-8",
+    )
+
+    assert trash.sweep_expired_trash(now=100 + 2 * 86400) == 1
+    assert not artifact.exists()

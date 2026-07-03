@@ -722,7 +722,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     try:
         syn_rows = conn.execute(
             "SELECT id, claim, domain, confidence, tier, "
-            "  support_count, contradict_count "
+            "  support_count, contradict_count, valid_from, valid_to "
             "FROM user_dialectic "
             "WHERE state='active' AND tier IN ('observed','validated') "
             "ORDER BY "
@@ -734,9 +734,20 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     except sqlite3.OperationalError:
         syn_rows = []
     if syn_rows and full and allow_personal:
+        try:
+            validity_history_exists = conn.execute(
+                "SELECT 1 FROM user_dialectic "
+                "WHERE valid_to IS NOT NULL LIMIT 1"
+            ).fetchone() is not None
+        except sqlite3.OperationalError:
+            validity_history_exists = False
         # Group by domain inline (keep total ≤ 10 lines incl. headers).
         out.append("")
-        out.append("user_model (dialectic)")
+        if validity_history_exists:
+            as_of = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+            out.append(f"user_model (dialectic, current as of {as_of})")
+        else:
+            out.append("user_model (dialectic)")
         grouped: dict[str, list] = {}
         order: list[str] = []
         for r in syn_rows:

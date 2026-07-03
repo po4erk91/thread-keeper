@@ -20,6 +20,12 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+from .github_budget import (
+    GITHUB_RATE_COOLDOWN_EXIT,
+    github_budget_preflight,
+    record_gh_result,
+)
+
 
 class GithubBodySafetyError(ValueError):
     """Raised when a public GitHub body still contains unsafe content."""
@@ -177,13 +183,31 @@ def run_wrapped_gh(args: Sequence[str], real_gh: str | None = None) -> int:
     if not gh_bin:
         print("thread-keeper gh safety: real gh binary not found", file=sys.stderr)
         return 127
+    blocked = github_budget_preflight()
+    if blocked:
+        print(blocked, file=sys.stderr)
+        return GITHUB_RATE_COOLDOWN_EXIT
     try:
         safe_args, cleanup = sanitize_gh_body_args(args)
     except (GithubBodySafetyError, OSError) as e:
         print(f"thread-keeper gh safety refused body: {e}", file=sys.stderr)
         return 2
     try:
-        proc = subprocess.run([gh_bin, *safe_args], check=False)
+        proc = subprocess.run(
+            [gh_bin, *safe_args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.stdout:
+            sys.stdout.write(proc.stdout)
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        record_gh_result(
+            returncode=int(proc.returncode),
+            stdout=proc.stdout or "",
+            stderr=proc.stderr or "",
+        )
         return int(proc.returncode)
     finally:
         for p in cleanup:

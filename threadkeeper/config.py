@@ -22,6 +22,8 @@ from typing import Annotated, Optional
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .permissions import harden_storage_paths
+
 logger = logging.getLogger(__name__)
 
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
@@ -116,6 +118,11 @@ class Settings(BaseSettings):
     auto_update_interval_s: float = 86400.0
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
+    auto_update_verify_provenance: bool = True
+    auto_update_pypi_base_url: str = "https://pypi.org"
+    auto_update_expected_publisher_repository: str = "po4erk91/thread-keeper"
+    auto_update_expected_publisher_workflow: str = "publish.yml"
+    auto_update_expected_publisher_environment: str = "pypi"
 
     # ── Skill update daemon ─────────────────────────────────────────────────
     # Twice weekly by default. It syncs installed skills across known CLI roots
@@ -155,6 +162,7 @@ class Settings(BaseSettings):
             "THREADKEEPER_INGEST_WINDOW_S", "ingest_window_s"
         ),
     )
+    redact_dialog_secrets: bool = True
 
     # ── SQLite retention / compaction ────────────────────────────────────────
     # Destructive retention defaults OFF: 0 means keep forever. Operators can
@@ -260,6 +268,10 @@ class Settings(BaseSettings):
     # for advisory REPORT-only. [PROTECTED] (foreground/user/pinned/validated)
     # entries are never mutated regardless.
     curator_destructive: bool = True
+    # Recovery artifacts for destructive curator operations. Lesson prune and
+    # skill delete capture full pre-images under <db dir>/curator/trash before
+    # mutating; this TTL bounds disk growth.
+    curator_trash_ttl_days: int = 30
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -423,9 +435,11 @@ _EXTRA_THREADKEEPER_ENV_KEYS = {
     "THREADKEEPER_ENV_FILE",
     "THREADKEEPER_EXTRA_SKILLS_DIRS",
     "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_GH_WRAPPER_DIR",
     "THREADKEEPER_LESSONS",
     "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
     "THREADKEEPER_PYTHON",
+    "THREADKEEPER_REAL_GH",
     "THREADKEEPER_REPO",
     "THREADKEEPER_SEARCH_PROXY_POLL_S",
     "THREADKEEPER_SKILL_WATCH_INTERVAL_S",
@@ -539,6 +553,17 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
         "AUTO_UPDATE_RESTART": s.auto_update_restart,
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
+        "AUTO_UPDATE_VERIFY_PROVENANCE": s.auto_update_verify_provenance,
+        "AUTO_UPDATE_PYPI_BASE_URL": s.auto_update_pypi_base_url,
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY": (
+            s.auto_update_expected_publisher_repository
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW": (
+            s.auto_update_expected_publisher_workflow
+        ),
+        "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
+            s.auto_update_expected_publisher_environment
+        ),
         "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
         "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
         "SKILL_UPDATE_SOURCES": s.skill_update_sources,
@@ -563,6 +588,7 @@ def _derive_constants(s: "Settings") -> dict:
         "PROBE_RESULT_RETENTION_DAYS": s.probe_result_retention_days,
         "RETENTION_WAL_CHECKPOINT": s.retention_wal_checkpoint,
         "RETENTION_VACUUM_AFTER_ROWS": s.retention_vacuum_after_rows,
+        "REDACT_DIALOG_SECRETS": s.redact_dialog_secrets,
         "SELF_CID_TTL_S": s.self_cid_ttl_s,
         "MEMORY_NUDGE_INTERVAL": s.memory_nudge_interval,
         "SKILL_NUDGE_INTERVAL": s.skill_nudge_interval,
@@ -597,6 +623,8 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
+        "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
+        "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
@@ -635,6 +663,14 @@ def _derive_constants(s: "Settings") -> dict:
 
 # Publish the initial constants into this module's namespace.
 globals().update(_derive_constants(settings))
+
+
+def _harden_current_storage() -> None:
+    harden_storage_paths(
+        DB_PATH,
+        env_file=_ENV_FILE,
+        curator_reports_dir=CURATOR_REPORTS_DIR,
+    )
 
 
 def _propagate(new_values: dict) -> None:
@@ -693,6 +729,7 @@ def reload_settings(env: Optional[dict] = None,
     new = _derive_constants(settings)
 
     globals().update(new)
+    _harden_current_storage()
     changed = {
         name: {"old": old.get(name), "new": val}
         for name, val in new.items()
@@ -750,6 +787,7 @@ BACKGROUND_DAEMONS_ALLOWED: bool = (
 # ── DB-path setup + legacy migration ─────────────────────────────────────────
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+_harden_current_storage()
 
 # One-shot migration from the historical name `memory_partner`. If the new
 # DB doesn't exist yet but the legacy one does, copy it (including the WAL
@@ -773,3 +811,4 @@ if (
         src = _LEGACY_DIR / fname
         if src.exists():
             shutil.copy2(src, DB_PATH.parent / fname)
+    _harden_current_storage()
