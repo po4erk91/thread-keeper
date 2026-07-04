@@ -701,9 +701,12 @@ before spawning, and advances to the next issue when an issue-local dispatch
 failure prevents startup. It implements exactly that issue, runs the full suite,
 opens a PR whose body includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
-pushes to `main`, and it never marks an issue applied without a real PR URL. A
-manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
-why that issue cannot start instead of silently switching to another issue.
+pushes to `main`, and it never marks an issue applied without a real PR URL. If
+that PR is later closed without merging, the parent reconciles the marker
+against GitHub PR state, records `roadmap_issue_requeued`, and lets the issue
+flow through the normal retry backoff/dead-letter gates again. A manual
+`evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports why that
+issue cannot start instead of silently switching to another issue.
 The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs

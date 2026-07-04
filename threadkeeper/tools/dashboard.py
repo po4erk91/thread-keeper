@@ -15,9 +15,10 @@ so it never drifts from the menu-bar status surface (it covers every loop,
 including the paid-spawn dialectic_validate and evolve_apply daemons and the
 thread_janitor). Outcomes come from the action events: skill/tier changes,
 accept/reject_candidate, AND knowledge-store mutations (lesson_append /
-lesson_remove, curator_report_applied, roadmap_issue_applied, evolve_applied,
-dialectic_claim / _supersede), plus a `curator_net_change` line so a loop
-silently shrinking the lessons store is visible at a glance.
+lesson_remove, curator_report_applied, roadmap_issue_applied /
+roadmap_issue_requeued, evolve_applied, dialectic_claim / _supersede), plus a
+`curator_net_change` line so a loop silently shrinking the lessons store is
+visible at a glance.
 """
 
 from __future__ import annotations
@@ -224,6 +225,7 @@ _LOOP_TASK_PREFIXES: dict[str, str] = {
 #   lesson_append / lesson_remove   — curator + shadow lesson writes/prunes
 #   curator_report_applied          — evolve_applier applied a curator report
 #   roadmap_issue_applied           — evolve_applier opened a roadmap-issue PR
+#   roadmap_issue_requeued          — closed-unmerged PR made an issue retryable
 #   roadmap_issue_skipped           — evolve_applier refused human-gated issue
 #   evolve_applied                  — evolve_applier marked a suggestion done
 #   dialectic_claim / _supersede    — user-model claim mutations
@@ -240,6 +242,7 @@ _OUTCOME_KINDS = (
     ("curator_restore", "curator_restore"),
     ("curator_report_applied", "curator_report_applied"),
     ("roadmap_issue_applied", "roadmap_issue_applied"),
+    ("roadmap_issue_requeued", "roadmap_issue_requeued"),
     ("roadmap_issue_skipped", "roadmap_issue_skipped"),
     ("evolve_applied", "evolve_applied"),
     ("dialectic_claim", "dialectic_claim"),
@@ -475,8 +478,16 @@ def mp_dashboard(window_days: int = 7) -> str:
     if rm_attempted:
         rm_applied = _scalar(
             conn,
-            "SELECT COUNT(DISTINCT target) FROM events "
-            "WHERE kind='roadmap_issue_applied'",
+            "SELECT COUNT(*) FROM ("
+            "  SELECT e.target FROM events e "
+            "  JOIN ("
+            "    SELECT target, MAX(id) AS id FROM events "
+            "    WHERE kind IN ('roadmap_issue_applied', "
+            "                   'roadmap_issue_requeued') "
+            "    GROUP BY target"
+            "  ) latest ON latest.id=e.id "
+            "  WHERE e.kind='roadmap_issue_applied'"
+            ")",
         )
         rm_dead = _scalar(
             conn,
@@ -486,9 +497,16 @@ def mp_dashboard(window_days: int = 7) -> str:
         rm_stuck = _scalar(
             conn,
             "SELECT COUNT(*) FROM (SELECT target FROM events "
-            "WHERE kind='roadmap_issue_attempt' AND target NOT IN "
-            "(SELECT target FROM events WHERE kind='roadmap_issue_applied') "
-            "AND target NOT IN (SELECT target FROM events "
+            "WHERE kind='roadmap_issue_attempt' AND target NOT IN ("
+            "  SELECT e.target FROM events e "
+            "  JOIN ("
+            "    SELECT target, MAX(id) AS id FROM events "
+            "    WHERE kind IN ('roadmap_issue_applied', "
+            "                   'roadmap_issue_requeued') "
+            "    GROUP BY target"
+            "  ) latest ON latest.id=e.id "
+            "  WHERE e.kind='roadmap_issue_applied'"
+            ") AND target NOT IN (SELECT target FROM events "
             "WHERE kind='roadmap_issue_dead_letter') GROUP BY target)",
         )
         out.append("")

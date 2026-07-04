@@ -20,7 +20,9 @@ Primary path:
   `ROADMAP_ISSUE_MAX_ATTEMPTS` the issue is dead-lettered — a `blocked` label
   plus a one-time summary comment — and dropped from the auto-drain until a
   human intervenes. A successful child writes `roadmap_issue_applied` (checked
-  first everywhere), so only genuinely-failing issues accrue backoff.
+  first everywhere), but the selector reconciles that marker with PR state:
+  a closed-unmerged PR records `roadmap_issue_requeued` and lets the existing
+  backoff/dead-letter ledger bound retries.
 
 Fallback paths:
 
@@ -183,6 +185,7 @@ ROADMAP_ISSUE_CLAIM_HOST_KIND = "roadmap_issue_claim_host"
 # written when an issue crosses the attempt cap and is flagged for a human.
 ROADMAP_ISSUE_ATTEMPT_KIND = "roadmap_issue_attempt"
 ROADMAP_ISSUE_DEAD_LETTER_KIND = "roadmap_issue_dead_letter"
+ROADMAP_ISSUE_REQUEUED_KIND = "roadmap_issue_requeued"
 EVOLVE_GIT_SAFETY_KIND = "evolve_git_safety"
 ROADMAP_ISSUE_SKIPPED_KIND = "roadmap_issue_skipped"
 # Label applied to a dead-lettered issue so it is visibly excluded from the
@@ -1246,6 +1249,7 @@ def _comment_issue_claim(
 
 
 _COMMENT_URL_ID_RE = re.compile(r"issuecomment[-_](\d+)")
+_PR_URL_NUMBER_RE = re.compile(r"/pull/(\d+)(?:\b|/|$)")
 
 
 def _comment_url_to_id(url: str) -> str:
@@ -1318,6 +1322,175 @@ def _open_prs_for_issue(
     if not isinstance(data, list):
         return [], "gh_pr_list_bad_shape"
     return data, ""
+
+
+def _pr_number_from_url(value: object) -> Optional[int]:
+    m = _PR_URL_NUMBER_RE.search(str(value or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _list_prs_for_applied_marker(
+    issue_number: int,
+    marker_summary: str,
+    repo_root: Optional[Path] = None,
+) -> tuple[list[dict], str]:
+    """Fetch PR state for the PR recorded in a roadmap applied marker.
+
+    The marker summary is the PR URL written by the child. We query via
+    `gh pr list` (rather than `view`) so open/closed/merged states share one
+    shape and tests can stub the same command family as the duplicate-PR guard.
+    """
+    repo = str(repo_root or _repo_root())
+    fields = "number,state,mergedAt,headRefName,url"
+    marker_pr = _pr_number_from_url(marker_summary)
+    searches: list[str] = []
+    if marker_pr is not None:
+        searches.append(str(marker_pr))
+    searches.append(f"in:body Closes #{int(issue_number)}")
+
+    last_err = ""
+    for search in searches:
+        cmd = [
+            "gh", "pr", "list",
+            "--state", "all",
+            "--search", search,
+            "--json", fields,
+            "--limit", "20",
+        ]
+        try:
+            proc = _run_gh(cmd, cwd=repo, timeout=30)
+        except FileNotFoundError:
+            return [], "gh_not_found"
+        except subprocess.TimeoutExpired:
+            return [], "gh_pr_list_timeout"
+        except OSError as e:
+            return [], f"gh_pr_list_error: {e}"
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            msg = err[-1] if err else f"exit={proc.returncode}"
+            last_err = f"gh_pr_list_failed: {msg[:180]}"
+            continue
+        try:
+            data = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError as e:
+            return [], f"gh_pr_list_bad_json: {e}"
+        if not isinstance(data, list):
+            return [], "gh_pr_list_bad_shape"
+        prs = [p for p in data if isinstance(p, dict)]
+        if marker_pr is not None:
+            exact = [
+                p for p in prs
+                if int(p.get("number") or 0) == marker_pr
+            ]
+            if exact:
+                return exact, ""
+            continue
+        if prs:
+            return prs, ""
+    if last_err:
+        return [], last_err
+    return [], ""
+
+
+def _pr_is_closed_unmerged(pr: dict) -> bool:
+    state = str(pr.get("state") or "").upper()
+    return state == "CLOSED" and not (pr.get("mergedAt") or "")
+
+
+def _roadmap_issue_applied_marker(
+    conn: sqlite3.Connection, issue_number: int
+) -> Optional[dict]:
+    """Latest applied/requeued marker for an issue, or None when requeued.
+
+    `events` is append-only, so stale applied markers are superseded by a later
+    `roadmap_issue_requeued` event instead of being deleted.
+    """
+    try:
+        row = conn.execute(
+            "SELECT id, kind, summary, created_at FROM events "
+            "WHERE target=? AND kind IN (?, ?) "
+            "ORDER BY id DESC LIMIT 1",
+            (
+                str(int(issue_number)),
+                ROADMAP_ISSUE_APPLIED_KIND,
+                ROADMAP_ISSUE_REQUEUED_KIND,
+            ),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or row["kind"] != ROADMAP_ISSUE_APPLIED_KIND:
+        return None
+    return {
+        "id": int(row["id"]),
+        "summary": row["summary"] or "",
+        "created_at": int(row["created_at"] or 0),
+    }
+
+
+def _record_roadmap_issue_requeued(
+    conn: sqlite3.Connection,
+    issue_number: int,
+    marker: dict,
+    pr: dict,
+) -> None:
+    num = int(issue_number)
+    pr_num = pr.get("number")
+    head = str(pr.get("headRefName") or "")
+    summary = (
+        f"closed_unmerged pr=#{pr_num} head={head[:80]} "
+        f"supersedes_event={marker.get('id')} "
+        f"pr_url={str(marker.get('summary') or '')[:120]}"
+    )
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                identity._session_id or "",
+                ROADMAP_ISSUE_REQUEUED_KIND,
+                str(num),
+                summary[:300],
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.debug(
+            "evolve_applier: failed to record roadmap issue requeue",
+            exc_info=True,
+        )
+
+
+def _roadmap_issue_applied_blocks_issue(
+    conn: sqlite3.Connection,
+    issue_number: int,
+    repo_root: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """True when an active applied marker should still suppress the issue.
+
+    Open PRs and merged PRs keep the marker active. A closed-unmerged PR
+    supersedes the marker with `roadmap_issue_requeued` so the issue can move
+    through the normal label/trust/backoff/dead-letter gates again.
+    """
+    marker = _roadmap_issue_applied_marker(conn, issue_number)
+    if marker is None:
+        return False, ""
+    prs, err = _list_prs_for_applied_marker(
+        issue_number, str(marker.get("summary") or ""), repo_root
+    )
+    if err:
+        return True, err
+    if not prs:
+        return True, "roadmap_issue_applied_pr_not_found"
+    if any(not _pr_is_closed_unmerged(pr) for pr in prs):
+        return True, ""
+    _record_roadmap_issue_requeued(conn, issue_number, marker, prs[0])
+    return False, ""
 
 
 def _fetch_open_prs(repo_root: Optional[Path] = None) -> tuple[list[dict], str]:
@@ -1449,14 +1622,7 @@ def _resolve_claim_race(
 
 
 def _roadmap_issue_applied(conn: sqlite3.Connection, issue_number: int) -> bool:
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM events WHERE kind=? AND target=? LIMIT 1",
-            (ROADMAP_ISSUE_APPLIED_KIND, str(int(issue_number))),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return False
-    return row is not None
+    return _roadmap_issue_applied_marker(conn, issue_number) is not None
 
 
 # ── Poison-issue failure backoff + dead-letter ──────────────────────────────
@@ -1759,6 +1925,7 @@ def _open_roadmap_issue_candidates(
         return [], err, []
     out: list[dict] = []
     claim_errors: list[str] = []
+    applied_errors: list[str] = []
     untrusted: list[int] = []
     label_skipped: list[tuple[int, str]] = []
     now_t = time.time()
@@ -1767,7 +1934,12 @@ def _open_roadmap_issue_candidates(
             num = int(issue.get("number"))
         except (TypeError, ValueError):
             continue
-        if _roadmap_issue_applied(conn, num):
+        applied_blocks, applied_err = _roadmap_issue_applied_blocks_issue(
+            conn, num, repo_root
+        )
+        if applied_err:
+            applied_errors.append(f"#{num}: {applied_err}")
+        if applied_blocks:
             continue
         skip_label = _roadmap_issue_skip_label(issue)
         if skip_label:
@@ -1807,10 +1979,15 @@ def _open_roadmap_issue_candidates(
             len(untrusted),
             ", ".join(f"#{n}" for n in untrusted[:20]),
         )
-    if not out and claim_errors:
-        return [], "roadmap_issue_claim_check_failed: " + "; ".join(
-            claim_errors
-        )[:240], label_skipped
+    if not out and (claim_errors or applied_errors):
+        parts = []
+        if applied_errors:
+            parts.append("roadmap_issue_applied_check_failed: "
+                         + "; ".join(applied_errors)[:240])
+        if claim_errors:
+            parts.append("roadmap_issue_claim_check_failed: "
+                         + "; ".join(claim_errors)[:240])
+        return [], " | ".join(parts), label_skipped
     return out, "", label_skipped
 
 

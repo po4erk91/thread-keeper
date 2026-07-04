@@ -252,7 +252,7 @@ def evolve_apply_status() -> str:
             "SELECT kind, created_at, summary FROM events "
             "WHERE kind IN ('evolve_apply_pass', 'curator_report_applied', "
             "'evolve_applied', 'roadmap_issue_applied', "
-            "'roadmap_issue_dead_letter') "
+            "'roadmap_issue_requeued', 'roadmap_issue_dead_letter') "
             "ORDER BY created_at DESC, id DESC LIMIT 5"
         ).fetchall()
     except Exception:

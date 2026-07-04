@@ -80,6 +80,11 @@ remains a live question.
   `blocked,needs-design,wontfix,question,discussion,help wanted`), reports
   exact-mode skips as `skipped: label X`, and surfaces skip telemetry in
   `evolve_apply_status()` / `mp_dashboard()`.
+- Evolve applier applied-marker reconciliation (#51): when an open issue has a
+  `roadmap_issue_applied` marker, the selector now checks the recorded PR state.
+  Open or merged PRs keep the issue out of the queue; a closed-unmerged PR
+  records `roadmap_issue_requeued`, supersedes the stale marker, and sends the
+  issue back through the existing retry backoff/dead-letter gates.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -776,12 +781,12 @@ return `skipped: label X` for a denylisted issue rather than switching to
 another issue. Skip telemetry is recorded as `roadmap_issue_skipped` and
 surfaced in `evolve_apply_status()` / `mp_dashboard()`. Scope was S.
 
-**Closed-unmerged applier PR strands its issue.** The child records a permanent
-`roadmap_issue_applied` marker once it opens a PR; if a human closes that PR
-without merging, GitHub leaves the issue open but the applier skips it forever.
-Reconcile applied-markers against PR merge state (re-queue closed-unmerged PRs
-with a bounded retry). Distinct from the shipped claim-leak / duplicate-PR
-guards (#23). (#51) Scope: S.
+**Closed-unmerged applier PR retry (done, #51).** `_open_roadmap_issues()` now
+reconciles a `roadmap_issue_applied` marker against the recorded applier PR
+state before skipping an open issue. Open or merged PRs still suppress the
+issue; a closed-unmerged PR records `roadmap_issue_requeued`, supersedes the
+stale marker, and re-enters the normal candidate flow subject to the existing
+retry backoff/dead-letter cap. Scope was S.
 
 **Destructive curator deletion recovery.** ✅ DONE (#41) —
 `lesson_remove` captures the exact removed lesson section plus usage row under
