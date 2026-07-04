@@ -35,7 +35,6 @@ Hardstops:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import logging
 import sqlite3
 import threading
@@ -44,10 +43,9 @@ import time
 from .config import (
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
-    DB_PATH,
 )
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -283,7 +281,6 @@ def _running_reviewer_children(conn: sqlite3.Connection) -> list[str]:
     return running
 
 
-@contextmanager
 def _review_spawn_lock():
     """Cross-process guard for check-running-then-spawn.
 
@@ -291,23 +288,7 @@ def _review_spawn_lock():
     processes. A short file lock prevents two daemon ticks from both observing
     no reviewer and spawning duplicate children for the same pending queue.
     """
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
-        yield True
-        return
-    lock_path = DB_PATH.parent / "candidate-reviewer.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    return single_flight_lock("candidate-reviewer")
 
 
 # ──────────────────────────────────────────────────────────────────────

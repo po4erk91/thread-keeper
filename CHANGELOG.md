@@ -73,6 +73,15 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Unified single-flight dispatch locks (#53).** Spawning daemons now share
+  `helpers.single_flight_lock()` for their non-blocking `fcntl.flock` pidfiles
+  instead of carrying local copies. Shadow review, evolve reviewer, and probe
+  passes now lock their check-running-then-spawn critical sections, so racing
+  foreground MCP servers return a `... (single-flight lock)` status instead of
+  spawning duplicate children. Existing candidate reviewer, curator, evolve
+  applier, auto-update, skill-update, and menu-bar autolaunch locks now route
+  through the same helper.
+
 - **Watchdog timeout continuation retry.** A spawned child killed by the
   wall-clock watchdog no longer leaves its assignment merely interrupted. After
   `return_code` 124 is stamped and the old row releases single-flight, the

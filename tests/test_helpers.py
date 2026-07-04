@@ -69,6 +69,16 @@ def test_daemon_sleep_non_numeric_idles(monkeypatch):
     assert calls and calls[0] > 0
 
 
+def test_single_flight_lock_is_non_blocking(tmp_path):
+    with helpers.single_flight_lock("daemon-test", lock_dir=tmp_path) as first:
+        assert first is True
+        with helpers.single_flight_lock("daemon-test", lock_dir=tmp_path) as second:
+            assert second is False
+
+    with helpers.single_flight_lock("daemon-test", lock_dir=tmp_path) as after:
+        assert after is True
+
+
 def test_alive_returns_false_for_zombie_state(monkeypatch):
     """A pid that exists but reports ps state Z is not a live parent."""
     monkeypatch.setattr(helpers.os, "waitpid", lambda pid, flags: (0, 0))

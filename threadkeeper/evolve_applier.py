@@ -70,7 +70,7 @@ from .config import (
 from .db import get_db
 from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .github_safety import GithubBodySafetyError, sanitize_public_github_body
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -1971,23 +1971,8 @@ def _apply_spawn_lock():
     can observe no running task before either spawn() inserts its row. This
     short file lock closes that race without holding a lock for the child run.
     """
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
-        yield True
-        return
-    lock_path = DB_PATH.parent / "evolve-applier.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with single_flight_lock("evolve-applier") as locked:
+        yield locked
 
 
 def mark_applied(conn: sqlite3.Connection, evolve_id: int,

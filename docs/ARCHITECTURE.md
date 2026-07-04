@@ -286,21 +286,38 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   JSON-parse guard and retried. Manual trigger `config_reload()`; diagnostics
   `config_watch_status()`. Embedding-backend / process-identity flags are
   intentionally not hot-reloaded.
+
+Spawning daemons that enforce single-flight share one non-blocking
+`helpers.single_flight_lock(name)` primitive around their local
+check-running-then-spawn critical section. The `fcntl.flock` pidfile under
+the DB directory closes the same-host TOCTOU window; the tasks-table
+running-child check remains for stale-pid cleanup and status visibility.
+
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
-  scans a dialog window and, if needed, spawns a slim-child evaluator.
+  scans a dialog window and, if needed, spawns a slim-child evaluator behind
+  `shadow-review.lock` plus the running shadow-child check. Lock-busy passes
+  return `shadow_child_running ... (single-flight lock)` without advancing the
+  dialog cursor, so the same useful window is retried after the active pass.
 - **candidate_reviewer** — once per `CANDIDATE_REVIEW_INTERVAL_S` (default
   0 = off) reviews pending `extract_candidates` through one slim child. The
-  queue is machine-wide single-flight: running-task detection plus
-  `candidate-reviewer.lock` prevents multiple foreground MCP servers from
-  spawning duplicate reviewers for the same pending candidates.
+  queue is machine-wide single-flight through the shared helper's
+  `candidate-reviewer.lock` plus running-task detection, preventing multiple
+  foreground MCP servers from spawning duplicate reviewers for the same
+  pending candidates.
+- **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
+  finished probe answers, then spawns at most one due objective probe runner
+  behind `probe-daemon.lock` plus the running probe-child check. A busy lock
+  reports `probe_child_running ... (single-flight lock)` and never blocks a
+  daemon tick.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
   existing lessons / skills / concepts inventory through one slim child. Before
   spawning, it hashes the stable inventory state and compares it to the last
   recorded complete/endorsed pass; unchanged snapshots record an
   `unchanged_inventory` no-op event instead of re-deriving the same report.
-  Wake-ups also coalesce behind a non-blocking `curator.lock` plus the running
-  curator-task check, so multiple foreground servers do not re-read and spawn
-  against the same snapshot. `curator_review_status()` exposes the last
+  Wake-ups also coalesce behind the shared helper's non-blocking
+  `curator.lock` plus the running curator-task check, so multiple foreground
+  servers do not re-read and spawn against the same snapshot.
+  `curator_review_status()` exposes the last
   endorsed `inventory_sha256` and the current inventory hash.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
@@ -322,8 +339,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   not a newest-first 50-item `gh issue list` window, so older open issues remain
   visible as the backlog grows.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
-  the existing single-flight (`_running_evolve_children`) and shadow/extract
-  exclusion cover both. A full research → audit cycle spans two due passes.
+  the running-child check and shadow/extract exclusion cover both; dispatch is
+  serialized by `evolve-reviewer.lock`. A full research → audit cycle spans two
+  due passes.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest

@@ -106,6 +106,13 @@ remains a live question.
   `THREADKEEPER_REDACT_DIALOG_SECRETS` knob can be disabled only for rare local
   debugging where raw transcript fidelity intentionally wins over durable
   secret protection.
+- Unified fcntl single-flight for spawning daemons (#53): the local
+  check-running-then-spawn mutex now lives in `helpers.single_flight_lock()`.
+  Shadow review, evolve reviewer, probe daemon, candidate reviewer, curator,
+  evolve applier, auto-update, skill-update, and menu-bar autolaunch all use the
+  same non-blocking lock helper where they need a process-wide dispatch guard;
+  running-child table checks remain as the second layer for stale-pid cleanup
+  and status visibility.
 
 ---
 
@@ -460,11 +467,12 @@ the three bare-`time.sleep` loops onto it), pruning `_last_notify_at` of
 past-cooldown / dead-pid entries each `_maybe_notify`, and collapsing
 consecutive no-op janitor passes into a single recorded row. Scope: S.
 
-**Daemon robustness under load.** Curator lacks the machine-wide single-flight
-every other spawning daemon has, and `candidate_reviewer`/`curator` dump an
-unbounded queue/inventory into the child prompt argv (the `E2BIG` class already
-fixed for `dialectic_validator`). Add curator single-flight + bound the
-prompts. (#24) Scope: S.
+**Daemon robustness under load.** ✅ PARTIAL (#24/#53). Curator single-flight
+has landed, and #53 unified the fcntl single-flight helper across the spawning
+daemon family. The remaining #24 work is bounding the
+`candidate_reviewer`/`curator` queue/inventory prompt payloads so a full dump
+cannot hit `E2BIG` (the class already fixed for `dialectic_validator`).
+Scope: S.
 
 **Spawn cost accounting.** ✅ DONE (#25, extends #6). The spawn budget now
 tracks more than child RSS: `_spawn_wrap.py` parses JSON or human-readable CLI

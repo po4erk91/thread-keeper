@@ -517,8 +517,12 @@ autonomous child lineage (no self-pollution) and strips adapter
 `[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
 ≥500 chars of meaningful signal remain, spawns a slim observer child
 that decides on class-level learning. It is single-flight across the shared
-DB: if any shadow observer task is already running, the daemon does not spawn
-another one and does not advance the cursor. Shadow observer children are
+DB: a non-blocking `helpers.single_flight_lock("shadow-review")` dispatch
+lock guards the running-child check and spawn, so if another MCP server is
+already in that critical section the daemon reports `shadow_child_running ...
+(single-flight lock)` and does not advance the cursor. If any shadow observer
+task is already running, the daemon also skips spawning another child and keeps
+the cursor unchanged. Shadow observer children are
 marked as spawned/background processes, so they cannot start their own shadow
 daemon even if a CLI drops the no-embeddings env. Idempotent through
 `events.kind='shadow_review_pass'`.
@@ -566,9 +570,17 @@ foreground-authored) skills off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
 `accept_candidate()` manually. The loop is machine-wide single-flight:
-while one reviewer child is running, other foreground servers/ticks report
-`candidate_review_running` instead of spawning another child for the same
-queue.
+while one reviewer child is running, or while another process holds the shared
+dispatch lock, other foreground servers/ticks report `candidate_review_running`
+instead of spawning another child for the same queue.
+
+All spawning learning-loop daemons that enforce single-flight use the same
+non-blocking `helpers.single_flight_lock()` helper around the
+check-running-then-spawn section. The local `fcntl.flock` closes the same-host
+TOCTOU window; the tasks-table running-child check remains as the second layer
+for stale-pid cleanup and status visibility. The helper is also used by the
+side-effecting auto-update, skill-update, and menu-bar autolaunch dispatch
+locks.
 
 #### 5. Autonomous Curator
 

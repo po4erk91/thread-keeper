@@ -2,13 +2,15 @@
 short-quoting, ID generation, process-aliveness check."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
+from pathlib import Path
 import random
 import secrets
 import sqlite3
 import subprocess
 import time
-from typing import Optional
+from typing import Iterator, Optional
 
 # ±15% wake-up jitter. Every always-on daemon (memory_guard, skill_watcher)
 # starts during `_ensure_session` bootstrap on every MCP instance, so with
@@ -45,6 +47,45 @@ def daemon_sleep(interval_s, idle_s: float = 30.0) -> None:
     except (TypeError, ValueError):
         interval = 0.0
     time.sleep(_jittered(interval if interval > 0 else idle_s))
+
+
+@contextmanager
+def single_flight_lock(
+    name: str,
+    lock_dir: os.PathLike[str] | str | None = None,
+) -> Iterator[bool]:
+    """Non-blocking process-wide file lock for daemon dispatch sections.
+
+    The lock is intentionally short-lived: callers hold it around the local
+    check-running-then-spawn critical section, not for the child lifetime.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
+        yield True
+        return
+
+    if not name or Path(name).name != name:
+        raise ValueError("single_flight_lock name must be a filename stem")
+    if lock_dir is None:
+        from .config import DB_PATH
+
+        lock_dir = DB_PATH.parent
+    lock_path = Path(lock_dir) / f"{name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 def fmt_age(seconds: int) -> str:

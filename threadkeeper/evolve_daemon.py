@@ -41,7 +41,7 @@ from .evolve_applier import (
     _ensure_repo_ready,
     _git_worktree_precondition,
 )
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -447,39 +447,45 @@ def run_evolve_pass(force: bool = False) -> str:
     if not force and not _pass_due(conn, now_t):
         return "not_due"
 
-    running = _running_evolve_children(conn)
-    if running:
-        out = f"reviewer_running n={len(running)}"
+    with single_flight_lock("evolve-reviewer") as locked:
+        if not locked:
+            out = "reviewer_running n=1 (single-flight lock)"
+            _record_evolve_pass(conn, now_t, out)
+            return out
+
+        running = _running_evolve_children(conn)
+        if running:
+            out = f"reviewer_running n={len(running)}"
+            _record_evolve_pass(conn, now_t, out)
+            return out
+
+        repo_root, repo_err = _ensure_repo_ready()
+        if repo_err:
+            _record_evolve_pass(conn, now_t, repo_err)
+            return repo_err
+
+        # Alternate: audit follows a research pass; otherwise (re)research.
+        # The audit runs even when the digest is empty — auditing the repo is
+        # the valuable half and must not depend on web research succeeding.
+        do_audit = _last_spawn_phase(conn) == "research"
+        try:
+            if do_audit:
+                guard = _git_worktree_precondition(
+                    conn, repo_root, "evolve_reviewer_audit"
+                )
+                if guard:
+                    _record_evolve_pass(conn, now_t, guard)
+                    return guard
+                _, research_text = _latest_research(now_t)
+                out = _spawn_audit(repo_root, pending, research_text)
+            else:
+                out = _spawn_research(repo_root, now_t)
+        except Exception as e:  # noqa: BLE001 — never crash the daemon
+            out = f"spawn_error: {e}"
+            _record_evolve_pass(conn, now_t, out)
+            return out
         _record_evolve_pass(conn, now_t, out)
         return out
-
-    repo_root, repo_err = _ensure_repo_ready()
-    if repo_err:
-        _record_evolve_pass(conn, now_t, repo_err)
-        return repo_err
-
-    # Alternate: audit follows a research pass; otherwise (re)research. The audit
-    # runs even when the digest is empty — auditing the repo is the valuable half
-    # and must not depend on web research succeeding.
-    do_audit = _last_spawn_phase(conn) == "research"
-    try:
-        if do_audit:
-            guard = _git_worktree_precondition(
-                conn, repo_root, "evolve_reviewer_audit"
-            )
-            if guard:
-                _record_evolve_pass(conn, now_t, guard)
-                return guard
-            _, research_text = _latest_research(now_t)
-            out = _spawn_audit(repo_root, pending, research_text)
-        else:
-            out = _spawn_research(repo_root, now_t)
-    except Exception as e:  # noqa: BLE001 — never crash the daemon
-        out = f"spawn_error: {e}"
-        _record_evolve_pass(conn, now_t, out)
-        return out
-    _record_evolve_pass(conn, now_t, out)
-    return out
 
 
 def _serve_loop() -> None:

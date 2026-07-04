@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 import sys
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -451,6 +452,53 @@ def test_run_shadow_pass_single_flight_when_child_running(tmp_path, monkeypatch)
     assert out == "shadow_child_running n=1"
     # Cursor does not advance; retry the same window when the child exits.
     assert pkg["shadow_review"]._last_shadow_rowid(conn) == 0
+
+
+def test_run_shadow_pass_single_flight_lock_race(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_chars="100")
+    conn = pkg["db"].get_db()
+    long_msg = "Pattern: in this type of task always X. " * 10
+    _seed_dialog(conn, "user", long_msg, int(time.time()) - 5)
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    entered_spawn = threading.Event()
+    release_spawn = threading.Event()
+    results: list[str] = []
+    errors: list[BaseException] = []
+    calls: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            entered_spawn.set()
+            assert release_spawn.wait(timeout=5)
+        return "spawn task_id=fake-shadow-task pid=0"
+
+    def run_pass():
+        try:
+            out = pkg["shadow_review"].run_shadow_pass(force=True)
+            results.append(out)
+        except BaseException as e:  # pragma: no cover - surfaced below
+            errors.append(e)
+            release_spawn.set()
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    t = threading.Thread(target=run_pass)
+    t.start()
+    assert entered_spawn.wait(timeout=5)
+    results.append(pkg["shadow_review"].run_shadow_pass(force=True))
+    release_spawn.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+    assert not errors
+    assert len(calls) == 1
+    assert len(results) == 2
+    assert any("fake-shadow-task" in r for r in results)
+    assert results.count("shadow_child_running n=1 (single-flight lock)") == 1
 
 
 def test_run_shadow_pass_idempotent_after_cursor_advance(tmp_path, monkeypatch):
