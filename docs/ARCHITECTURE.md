@@ -320,7 +320,12 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` fence it must treat as data.
   Its duplicate-issue check uses a paginated oldest-first REST issue listing,
   not a newest-first 50-item `gh issue list` window, so older open issues remain
-  visible as the backlog grows.
+  visible as the backlog grows. Before that child can create a roadmap-doc PR,
+  the parent also checks open PRs for automation-owned changes touching
+  `docs/ROADMAP.md` and embeds the result in the audit prompt. Existing
+  roadmap-doc PRs are appended to or skipped; new ones use/reuse the
+  deterministic daily `docs/roadmap-audit-YYYY-MM-DD` branch and carry a
+  PR-body marker for future passes.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the existing single-flight (`_running_evolve_children`) and shadow/extract
   exclusion cover both. A full research → audit cycle spans two due passes.
@@ -461,7 +466,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   be running. The guard intentionally ignores untracked scratch files, matching
   `auto_update`'s dirty-check semantics. Child prompts then branch from a fetched
   base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
-  of arbitrary current `HEAD`.
+  of arbitrary current `HEAD`; reviewer roadmap-doc prompts additionally reuse
+  the daily `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open
+  roadmap-doc PR branch so repeated audits do not collide.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   snapshot-first and report-first: destructive mode writes a recoverable
   snapshot before spawning the child, then the child writes its REPORT before
