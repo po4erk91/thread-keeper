@@ -416,6 +416,169 @@ def test_open_roadmap_issues_prioritizes_roadmap_and_skips_applied(
     assert [int(i["number"]) for i in issues] == [2, 3]
 
 
+def test_open_roadmap_issues_requeues_closed_unmerged_applied_marker(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Retry rejected PR")], ""),
+    )
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 6, "https://github.com/o/r/pull/60"
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps([
+            {
+                "number": 60,
+                "state": "CLOSED",
+                "mergedAt": None,
+                "headRefName": "roadmap/issue-6-retry-rejected-pr-abcdef",
+                "url": "https://github.com/o/r/pull/60",
+            }
+        ])
+        stderr = ""
+
+    calls = []
+
+    def _run_gh(cmd, **kwargs):
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", _run_gh)
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert [int(i["number"]) for i in issues] == [6]
+    assert pkg["ea"]._roadmap_issue_applied(conn, 6) is False
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind='roadmap_issue_requeued' "
+        "AND target='6'"
+    ).fetchone()
+    assert "closed_unmerged pr=#60" in row["summary"]
+    assert any("--state" in c and "all" in c for c in calls)
+
+
+def test_open_roadmap_issues_keeps_open_applied_pr_out(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Open PR")], ""),
+    )
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 6, "https://github.com/o/r/pull/60"
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps([
+            {
+                "number": 60,
+                "state": "OPEN",
+                "mergedAt": None,
+                "headRefName": "roadmap/issue-6-open-pr-abcdef",
+                "url": "https://github.com/o/r/pull/60",
+            }
+        ])
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", lambda *a, **k: _Proc())
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert issues == []
+    assert pkg["ea"]._roadmap_issue_applied(conn, 6) is True
+    row = conn.execute(
+        "SELECT 1 FROM events WHERE kind='roadmap_issue_requeued' "
+        "AND target='6'"
+    ).fetchone()
+    assert row is None
+
+
+def test_open_roadmap_issues_keeps_merged_applied_pr_out(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Merged PR")], ""),
+    )
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 6, "https://github.com/o/r/pull/60"
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps([
+            {
+                "number": 60,
+                "state": "MERGED",
+                "mergedAt": "2026-06-17T12:00:00Z",
+                "headRefName": "roadmap/issue-6-merged-pr-abcdef",
+                "url": "https://github.com/o/r/pull/60",
+            }
+        ])
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", lambda *a, **k: _Proc())
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert issues == []
+    assert pkg["ea"]._roadmap_issue_applied(conn, 6) is True
+
+
+def test_open_roadmap_issues_requeued_marker_obeys_attempt_cap(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(pkg["ea"], "ROADMAP_ISSUE_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Rejected too often")], ""),
+    )
+    _seed_attempts(conn, pkg["ea"], 6, 1, created_at=int(time.time()) - 999999)
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 6, "https://github.com/o/r/pull/60"
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps([
+            {
+                "number": 60,
+                "state": "CLOSED",
+                "mergedAt": None,
+                "headRefName": "roadmap/issue-6-rejected-too-often-abcdef",
+                "url": "https://github.com/o/r/pull/60",
+            }
+        ])
+        stderr = ""
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", lambda *a, **k: _Proc())
+
+    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+
+    assert err == ""
+    assert issues == []
+    assert pkg["ea"]._roadmap_issue_applied(conn, 6) is False
+    state, attempts, _ = pkg["ea"]._classify_roadmap_issue(
+        conn, 6, time.time()
+    )
+    assert (state, attempts) == ("dead_letter", 1)
+
+
 def test_open_roadmap_issues_skips_active_issue_claim(
     tmp_path, monkeypatch,
 ):

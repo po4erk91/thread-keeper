@@ -7,6 +7,9 @@ monkeypatched; no real child is launched.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
+import subprocess
 import sys
 import threading
 import time
@@ -48,10 +51,15 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2"):
     from threadkeeper import _mcp, db, evolve_applier, evolve_daemon, identity
     orig = {
         "_git_worktree_precondition": evolve_daemon._git_worktree_precondition,
+        "_open_roadmap_doc_prs": evolve_daemon._open_roadmap_doc_prs,
     }
     monkeypatch.setattr(
         evolve_daemon, "_git_worktree_precondition",
         lambda conn, repo_root, actor: "",
+    )
+    monkeypatch.setattr(
+        evolve_daemon, "_open_roadmap_doc_prs",
+        lambda repo_root, branch: ([], ""),
     )
     return {
         "mcp": _mcp.mcp,
@@ -105,7 +113,76 @@ def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
     assert "direction=asc" in prompt
     assert "pull_request" in prompt
     assert "git fetch origin {base_branch}" in prompt
-    assert "git checkout -b <branch> {base_ref}" in prompt
+    assert (
+        "git fetch origin {roadmap_branch}:refs/remotes/origin/{roadmap_branch}"
+        in prompt
+    )
+    assert "git checkout -b {roadmap_branch} {base_ref}" in prompt
+    assert "gh pr list --state open --json" in prompt
+    assert "docs/ROADMAP.md" in prompt
+    assert "append/skip" in prompt
+
+
+def test_roadmap_doc_branch_name_reuses_same_daily_branch(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ts1 = int(datetime(2026, 7, 5, 1, tzinfo=timezone.utc).timestamp())
+    ts2 = int(datetime(2026, 7, 5, 23, 59, tzinfo=timezone.utc).timestamp())
+    ts3 = int(datetime(2026, 7, 6, 0, tzinfo=timezone.utc).timestamp())
+
+    assert pkg["ed"].roadmap_doc_branch_name(ts1) == (
+        "docs/roadmap-audit-2026-07-05"
+    )
+    assert pkg["ed"].roadmap_doc_branch_name(ts2) == (
+        "docs/roadmap-audit-2026-07-05"
+    )
+    assert pkg["ed"].roadmap_doc_branch_name(ts3) == (
+        "docs/roadmap-audit-2026-07-06"
+    )
+
+
+def test_audit_prompt_reports_existing_roadmap_doc_pr(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="2")
+    conn = pkg["db"].get_db()
+    _seed_research(pkg, conn)
+    monkeypatch.setattr(
+        pkg["ed"], "_open_roadmap_doc_prs",
+        pkg["orig"]["_open_roadmap_doc_prs"],
+    )
+    seen = {}
+
+    def fake_run_gh(cmd, *, cwd, timeout=30):
+        seen["cmd"] = cmd
+        data = [{
+            "number": 123,
+            "url": "https://github.com/o/r/pull/123",
+            "headRefName": "docs/roadmap-audit-2026-07-05",
+            "title": "docs: update roadmap audit",
+            "author": {"login": "po4erk91"},
+            "body": "",
+            "files": [{"path": "docs/ROADMAP.md"}],
+        }]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(data), "")
+
+    monkeypatch.setattr(pkg["ed"], "_run_gh", fake_run_gh)
+    calls = {}
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn",
+                        lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit")
+    assert seen["cmd"][:4] == ["gh", "pr", "list", "--state"]
+    assert any("files" in part for part in seen["cmd"])
+    assert "Existing open reviewer roadmap-doc PR found: #123" in calls["prompt"]
+    assert "https://github.com/o/r/pull/123" in calls["prompt"]
+    assert "Use that branch; do not create a second roadmap-doc PR" in (
+        calls["prompt"]
+    )
 
 
 # ── pending selection ──────────────────────────────────────────────────
@@ -306,7 +383,11 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert "untrusted data" in calls["prompt"].lower()
     assert pkg["ed"].EVOLVE_RESEARCH_FENCE in calls["prompt"]
     assert "git fetch origin main" in calls["prompt"]
-    assert "git checkout -b <branch> origin/main" in calls["prompt"]
+    assert "git checkout -b docs/roadmap-audit-" in calls["prompt"]
+    assert "origin/main" in calls["prompt"]
+    assert "No open reviewer roadmap-doc PR touching docs/ROADMAP.md" in (
+        calls["prompt"]
+    )
 
 
 def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(

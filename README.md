@@ -696,6 +696,13 @@ shell/`bypassPermissions` to the same child:
 
 A full research → audit cycle therefore spans two due passes.
 
+Before an audit child can open a roadmap-doc PR, the parent preflights open PRs
+with `gh pr list --json ... files` and reports any automation-owned PR already
+touching `docs/ROADMAP.md`. The child must append to that PR or skip when no
+change is needed; otherwise it uses the deterministic daily
+`docs/roadmap-audit-YYYY-MM-DD` branch and reuses an existing local/remote branch
+with that name instead of minting overlapping roadmap PRs.
+
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
 the automatic pass first scans already-open same-repo applier PRs for GitHub
@@ -713,9 +720,12 @@ before spawning, and advances to the next issue when an issue-local dispatch
 failure prevents startup. It implements exactly that issue, runs the full suite,
 opens a PR whose body includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
-pushes to `main`, and it never marks an issue applied without a real PR URL. A
-manual `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports
-why that issue cannot start instead of silently switching to another issue.
+pushes to `main`, and it never marks an issue applied without a real PR URL. If
+that PR is later closed without merging, the parent reconciles the marker
+against GitHub PR state, records `roadmap_issue_requeued`, and lets the issue
+flow through the normal retry backoff/dead-letter gates again. A manual
+`evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports why that
+issue cannot start instead of silently switching to another issue.
 The queue fetch uses paginated GitHub REST reads in oldest-created order, then
 applies the documented roadmap/FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
@@ -793,7 +803,9 @@ Pin the agent/model with `THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER` /
 `THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER`. Single-flight (one applier child at
 a time, enforced by a short dispatch file lock plus running-task detection) and
 the shared git-writer guard keep code edits and roadmap PR writes from
-colliding.
+colliding. Reviewer roadmap-doc PRs also use a parent open-PR preflight and a
+daily deterministic `docs/roadmap-audit-YYYY-MM-DD` branch so repeated audit
+passes update or skip the existing roadmap PR rather than opening a second one.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
 Manual tools such as `evolve_apply_conflicted_pr()` and

@@ -67,6 +67,11 @@ remains a live question.
   overlapping reviewer/applier git writers in the shared checkout, and prompts
   children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
   instead of arbitrary current `HEAD`.
+- Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
+  audit child, the parent checks open PRs for automation-owned changes touching
+  `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one
+  exists, and otherwise to reuse the deterministic daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch instead of opening overlapping PRs.
 - Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
   consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
   Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
@@ -80,6 +85,11 @@ remains a live question.
   `blocked,needs-design,wontfix,question,discussion,help wanted`), reports
   exact-mode skips as `skipped: label X`, and surfaces skip telemetry in
   `evolve_apply_status()` / `mp_dashboard()`.
+- Evolve applier applied-marker reconciliation (#51): when an open issue has a
+  `roadmap_issue_applied` marker, the selector now checks the recorded PR state.
+  Open or merged PRs keep the issue out of the queue; a closed-unmerged PR
+  records `roadmap_issue_requeued`, supersedes the stale marker, and sends the
+  issue back through the existing retry backoff/dead-letter gates.
 - Config typo visibility (#88): startup and hot-config reload now warn on
   unknown `THREADKEEPER_*` process-env keys while preserving pydantic's
   `extra="ignore"` behavior, and `spawn_status()` surfaces unsupported spawn
@@ -442,6 +452,14 @@ full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
 can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
 spawn-after-claim test. (#23) Scope: S.
 
+**Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
+get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
+preflight for open automation-owned PRs that touch `docs/ROADMAP.md`. The child
+prompt tells the reviewer to append to that PR or skip, never open a second
+roadmap-doc PR, and new PRs use/reuse the deterministic
+`docs/roadmap-audit-YYYY-MM-DD` branch plus a PR-body marker for future passes.
+Scope was S.
+
 **Poison-issue backoff + dead-letter (done, #82).** An issue whose implementer
 child repeatedly aborts without opening a PR used to be re-selected every ~24h
 once its claim TTL lapsed, burning a fresh `bypassPermissions` child each time
@@ -784,12 +802,12 @@ return `skipped: label X` for a denylisted issue rather than switching to
 another issue. Skip telemetry is recorded as `roadmap_issue_skipped` and
 surfaced in `evolve_apply_status()` / `mp_dashboard()`. Scope was S.
 
-**Closed-unmerged applier PR strands its issue.** The child records a permanent
-`roadmap_issue_applied` marker once it opens a PR; if a human closes that PR
-without merging, GitHub leaves the issue open but the applier skips it forever.
-Reconcile applied-markers against PR merge state (re-queue closed-unmerged PRs
-with a bounded retry). Distinct from the shipped claim-leak / duplicate-PR
-guards (#23). (#51) Scope: S.
+**Closed-unmerged applier PR retry (done, #51).** `_open_roadmap_issues()` now
+reconciles a `roadmap_issue_applied` marker against the recorded applier PR
+state before skipping an open issue. Open or merged PRs still suppress the
+issue; a closed-unmerged PR records `roadmap_issue_requeued`, supersedes the
+stale marker, and re-enters the normal candidate flow subject to the existing
+retry backoff/dead-letter cap. Scope was S.
 
 **Destructive curator deletion recovery.** ✅ DONE (#41) —
 `lesson_remove` captures the exact removed lesson section plus usage row under

@@ -26,8 +26,10 @@ issues one at a time.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -41,6 +43,7 @@ from .evolve_applier import (
     _ensure_repo_ready,
     _git_worktree_precondition,
 )
+from .github_budget import run_gh
 from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 
@@ -61,6 +64,10 @@ EVOLVE_PROMPT_PREFIX = "You are an EVOLVE REVIEWER"
 # never as instructions.
 EVOLVE_RESEARCH_FENCE = "EVOLVE_RESEARCH_DATA"
 EVOLVE_LEGACY_QUEUE_TAG = "evolve_legacy_suggestions_data"
+ROADMAP_DOC_PATH = "docs/ROADMAP.md"
+ROADMAP_DOC_BRANCH_PREFIX = "docs/roadmap-audit-"
+ROADMAP_DOC_PR_MARKER = "<!-- thread-keeper:evolve-reviewer-roadmap-pr -->"
+ROADMAP_DOC_PR_FETCH_LIMIT = 100
 
 # ── Phase 1: read-only web research ──────────────────────────────────────────
 # No shell, no bypassPermissions, no GitHub. WebSearch/WebFetch + read-only repo
@@ -153,9 +160,37 @@ OUTPUTS
    not bypass it with an absolute gh path.
 
 2. If docs/ROADMAP.md is stale, update it on a branch and open a PR. Do not
-   commit to main. Start the branch from an up-to-date mainline:
+   commit to main. Reviewer roadmap-doc PR dedup is mandatory:
+   - Parent preflight result:
+{roadmap_pr_context}
+   - Use the existing open roadmap-doc PR's head branch when the preflight
+     reports one. Append commits there, or skip if your audit finds no roadmap
+     change is still needed. Do not open a second roadmap PR.
+   - If no open roadmap-doc PR exists, use this deterministic branch name:
+       {roadmap_branch}
+     Reuse an existing local/remote branch with that name instead of inventing a
+     new branch for the same period.
+   - Immediately before `gh pr create`, rerun:
+       gh pr list --state open --json number,url,headRefName,title,author,body,files --limit {roadmap_pr_limit}
+     If an open automation-owned PR touches docs/ROADMAP.md, append/skip instead
+     of opening another PR.
+   - Include this marker in any roadmap-doc PR body so future passes can
+     identify it:
+       {roadmap_marker}
+   Start from an up-to-date mainline, reusing the deterministic branch when it
+   already exists:
      git fetch origin {base_branch}
-     git checkout -b <branch> {base_ref}
+     git fetch origin {roadmap_branch}:refs/remotes/origin/{roadmap_branch} || true
+     if git show-ref --verify --quiet refs/heads/{roadmap_branch}; then
+       git checkout {roadmap_branch}
+       if git show-ref --verify --quiet refs/remotes/origin/{roadmap_branch}; then
+         git pull --ff-only origin {roadmap_branch}
+       fi
+     elif git show-ref --verify --quiet refs/remotes/origin/{roadmap_branch}; then
+       git checkout -b {roadmap_branch} --track origin/{roadmap_branch}
+     else
+       git checkout -b {roadmap_branch} {base_ref}
+     fi
    Do not implement product/code fixes in reviewer; only roadmap documentation
    changes are allowed.
 
@@ -274,6 +309,123 @@ def _running_evolve_children(conn: sqlite3.Connection) -> list[str]:
     if touched:
         conn.commit()
     return running
+
+
+def roadmap_doc_branch_name(now_t: Optional[int] = None) -> str:
+    """Deterministic branch for reviewer-owned ROADMAP.md updates.
+
+    One branch per UTC day gives repeated passes in the same audit period a
+    stable rendezvous point instead of minting overlapping roadmap PRs.
+    """
+    ts = int(time.time() if now_t is None else now_t)
+    day = time.strftime("%Y-%m-%d", time.gmtime(ts))
+    return f"{ROADMAP_DOC_BRANCH_PREFIX}{day}"
+
+
+def _run_gh(
+    cmd: list[str],
+    *,
+    cwd: Path | str,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess:
+    return run_gh(
+        cmd,
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+        runner=subprocess.run,
+    )
+
+
+def _pr_file_path(item: object) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return str(item.get("path") or "")
+    return ""
+
+
+def _pr_touches_roadmap_doc(pr: dict) -> bool:
+    files = pr.get("files")
+    if not isinstance(files, list):
+        return False
+    return any(_pr_file_path(f) == ROADMAP_DOC_PATH for f in files)
+
+
+def _pr_looks_reviewer_owned(pr: dict, branch: str) -> bool:
+    head = str(pr.get("headRefName") or "")
+    body = str(pr.get("body") or "")
+    return (
+        head == branch
+        or head.startswith(ROADMAP_DOC_BRANCH_PREFIX)
+        or ROADMAP_DOC_PR_MARKER in body
+    )
+
+
+def _open_roadmap_doc_prs(
+    repo_root: Path,
+    branch: str,
+) -> tuple[list[dict], str]:
+    """Open automation-owned PRs that already touch docs/ROADMAP.md."""
+    cmd = [
+        "gh", "pr", "list",
+        "--state", "open",
+        "--json", "number,url,headRefName,title,author,body,files",
+        "--limit", str(ROADMAP_DOC_PR_FETCH_LIMIT),
+    ]
+    try:
+        proc = _run_gh(cmd, cwd=repo_root, timeout=30)
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_pr_list_timeout"
+    except OSError as e:
+        return [], f"gh_pr_list_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_pr_list_failed: {msg[:180]}"
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as e:
+        return [], f"gh_pr_list_bad_json: {e}"
+    if not isinstance(data, list):
+        return [], "gh_pr_list_bad_shape"
+    prs = [
+        pr for pr in data
+        if isinstance(pr, dict)
+        and _pr_touches_roadmap_doc(pr)
+        and _pr_looks_reviewer_owned(pr, branch)
+    ]
+    return prs, ""
+
+
+def _roadmap_doc_pr_context(repo_root: Path, now_t: int) -> tuple[str, str]:
+    """Return (branch, prompt-ready preflight text) for roadmap PR dedup."""
+    branch = roadmap_doc_branch_name(now_t)
+    prs, err = _open_roadmap_doc_prs(repo_root, branch)
+    if err:
+        return branch, (
+            f"     - Could not inspect open roadmap-doc PRs before spawn: {err}. "
+            "Run the `gh pr list` check yourself before creating a PR, and "
+            "append/skip if a reviewer-owned PR already touches docs/ROADMAP.md."
+        )
+    if prs:
+        pr = prs[0]
+        number = str(pr.get("number") or "?")
+        url = str(pr.get("url") or "")
+        head = str(pr.get("headRefName") or branch)
+        return branch, (
+            f"     - Existing open reviewer roadmap-doc PR found: #{number} "
+            f"{url} (head branch `{head}`). Use that branch; do not create a "
+            "second roadmap-doc PR."
+        )
+    return branch, (
+        "     - No open reviewer roadmap-doc PR touching docs/ROADMAP.md was "
+        f"found. Use `{branch}` if a roadmap-doc PR is needed."
+    )
 
 
 # ── Two-phase research/audit split (#79) ─────────────────────────────────────
@@ -398,9 +550,16 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
         )
         if pending else "(none)"
     )
+    roadmap_branch, roadmap_pr_context = _roadmap_doc_pr_context(
+        repo_root, int(time.time())
+    )
     prompt = EVOLVE_AUDIT_PROMPT.format(
         base_branch=_base_branch_name(),
         base_ref=_base_ref(),
+        roadmap_branch=roadmap_branch,
+        roadmap_marker=ROADMAP_DOC_PR_MARKER,
+        roadmap_pr_context=roadmap_pr_context,
+        roadmap_pr_limit=ROADMAP_DOC_PR_FETCH_LIMIT,
         fence=EVOLVE_RESEARCH_FENCE,
         research=_fence_research(research_text),
         queue=_fence_untrusted_data(EVOLVE_LEGACY_QUEUE_TAG, queue),

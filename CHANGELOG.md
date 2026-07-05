@@ -82,6 +82,14 @@ version bumps follow semver per the policy in
   applier, auto-update, skill-update, and menu-bar autolaunch locks now route
   through the same helper.
 
+- **Evolve reviewer roadmap-doc PR dedup (#54).** Privileged reviewer audit
+  prompts now receive a parent-side `gh pr list --json ... files` preflight for
+  open automation-owned PRs touching `docs/ROADMAP.md`. The reviewer must append
+  to that PR or skip instead of opening a second roadmap-doc PR, and new
+  roadmap-doc PRs use/reuse a deterministic daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch with a PR-body marker for future
+  passes.
+
 - **Watchdog timeout continuation retry.** A spawned child killed by the
   wall-clock watchdog no longer leaves its assignment merely interrupted. After
   `return_code` 124 is stamped and the old row releases single-flight, the
@@ -147,6 +155,12 @@ version bumps follow semver per the policy in
   or spawn. Exact-number apply returns `skipped: label X` for a denylisted issue
   instead of silently switching tasks, and skip telemetry is visible through
   `evolve_apply_status()` plus the `roadmap_issue_skipped` dashboard outcome.
+
+- **Evolve applier applied-marker reconciliation (#51).** Open roadmap issues
+  with a `roadmap_issue_applied` marker now check the recorded applier PR state
+  before being skipped. Open or merged PRs remain suppressed; a closed-unmerged
+  PR records `roadmap_issue_requeued`, supersedes the stale marker, and lets the
+  issue flow through the existing retry backoff/dead-letter gates again.
 
 ## v0.14.0 — 2026-06-25
 
