@@ -147,6 +147,12 @@ version bumps follow semver per the policy in
   instead of silently switching tasks, and skip telemetry is visible through
   `evolve_apply_status()` plus the `roadmap_issue_skipped` dashboard outcome.
 
+- **Evolve applier applied-marker reconciliation (#51).** Open roadmap issues
+  with a `roadmap_issue_applied` marker now check the recorded applier PR state
+  before being skipped. Open or merged PRs remain suppressed; a closed-unmerged
+  PR records `roadmap_issue_requeued`, supersedes the stale marker, and lets the
+  issue flow through the existing retry backoff/dead-letter gates again.
+
 ## v0.14.0 — 2026-06-25
 
 ### Fixed

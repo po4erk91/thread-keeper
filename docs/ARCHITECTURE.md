@@ -416,9 +416,15 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   failure instead of switching tasks. The PR body must include `Closes #N`;
   after `gh pr create` prints a real URL, the child calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)` so the daemon does
-  not pick it again while human review/merge is pending. **Issue/body safety
-  (#22):** the issue body and legacy evolve suggestions are embedded only inside
-  explicit data fences, and privileged evolve children get a PATH-prepended
+  not pick it again while human review/merge is pending.
+  **Applied-marker reconciliation (#51):** before honoring that marker for an
+  open issue, `_open_roadmap_issues()` checks the recorded applier PR state via
+  `gh pr list --state all`. Open PRs and merged PRs keep the issue suppressed;
+  a closed-unmerged PR records `roadmap_issue_requeued`, supersedes the marker,
+  and lets the issue pass through the existing retry backoff/dead-letter gates.
+  **Issue/body safety (#22):** the issue body and legacy evolve suggestions are
+  embedded only inside explicit data fences, and privileged evolve children get
+  a PATH-prepended
   `gh` wrapper. For `gh issue create`, `gh issue comment`, and `gh pr create`,
   the wrapper redacts `/Users/<name>/...` and `/home/<name>/...` paths plus
   common token shapes before the real GitHub CLI receives the body, refusing if
