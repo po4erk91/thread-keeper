@@ -73,6 +73,14 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Evolve reviewer roadmap-doc PR dedup (#54).** Privileged reviewer audit
+  prompts now receive a parent-side `gh pr list --json ... files` preflight for
+  open automation-owned PRs touching `docs/ROADMAP.md`. The reviewer must append
+  to that PR or skip instead of opening a second roadmap-doc PR, and new
+  roadmap-doc PRs use/reuse a deterministic daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch with a PR-body marker for future
+  passes.
+
 - **Watchdog timeout continuation retry.** A spawned child killed by the
   wall-clock watchdog no longer leaves its assignment merely interrupted. After
   `return_code` 124 is stamped and the old row releases single-flight, the

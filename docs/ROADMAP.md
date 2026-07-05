@@ -67,6 +67,11 @@ remains a live question.
   overlapping reviewer/applier git writers in the shared checkout, and prompts
   children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
   instead of arbitrary current `HEAD`.
+- Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
+  audit child, the parent checks open PRs for automation-owned changes touching
+  `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one
+  exists, and otherwise to reuse the deterministic daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch instead of opening overlapping PRs.
 - Shared GitHub API budget/backoff across roadmap automation (#38): GitHub-
   consuming roadmap surfaces now share a SQLite `github_rate_budget` ledger.
   Parent-side applier reads/writes and the PATH `gh` wrapper used by privileged
@@ -434,6 +439,14 @@ spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
 full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
 can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
 spawn-after-claim test. (#23) Scope: S.
+
+**Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
+get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
+preflight for open automation-owned PRs that touch `docs/ROADMAP.md`. The child
+prompt tells the reviewer to append to that PR or skip, never open a second
+roadmap-doc PR, and new PRs use/reuse the deterministic
+`docs/roadmap-audit-YYYY-MM-DD` branch plus a PR-body marker for future passes.
+Scope was S.
 
 **Poison-issue backoff + dead-letter (done, #82).** An issue whose implementer
 child repeatedly aborts without opening a PR used to be re-selected every ~24h
