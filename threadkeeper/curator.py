@@ -55,7 +55,6 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
 
 from .config import (
     CURATOR_INTERVAL_S,
@@ -63,10 +62,9 @@ from .config import (
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
     CURATOR_SNAPSHOT_RETENTION,
-    DB_PATH,
 )
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 from . import identity, lessons
 from .curator_snapshots import (
     PASS_ID_ENV,
@@ -609,7 +607,6 @@ def _running_curator_children(conn: sqlite3.Connection) -> list[str]:
     return running
 
 
-@contextmanager
 def _curator_spawn_lock():
     """Cross-process guard for check-running-then-spawn.
 
@@ -620,23 +617,7 @@ def _curator_spawn_lock():
     Manual curator_run(force=True) bypasses the interval but still respects this
     lock.
     """
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
-        yield True
-        return
-    lock_path = DB_PATH.parent / "curator.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    return single_flight_lock("curator")
 
 
 # ──────────────────────────────────────────────────────────────────────

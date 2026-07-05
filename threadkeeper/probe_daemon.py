@@ -36,7 +36,7 @@ from .config import PROBE_INTERVAL_S, PROBE_COOLDOWN_S, TASK_LOG_DIR
 from .db import get_db
 from . import identity
 from .identity import _detect_self_cid, _emit
-from .helpers import alive
+from .helpers import alive, single_flight_lock
 
 logger = logging.getLogger(__name__)
 
@@ -225,27 +225,36 @@ def run_probe_pass(force: bool = False) -> str:
     now_t = int(time.time())
     graded = _grade_pending(conn)
 
-    running = _running_probe_children(conn)
-    if running:
-        out = f"graded={graded} probe_child_running n={len(running)}"
-        _record_probe_pass(conn, now_t, out)
-        return out
+    with single_flight_lock("probe-daemon") as locked:
+        if not locked:
+            out = f"graded={graded} probe_child_running n=1 (single-flight lock)"
+            _record_probe_pass(conn, now_t, out)
+            return out
 
-    due = _due_probes(conn, now_t)
-    if not due:
-        out = f"graded={graded} no_due"
-        _record_probe_pass(conn, now_t, out)
-        return out
+        running = _running_probe_children(conn)
+        if running:
+            out = f"graded={graded} probe_child_running n={len(running)}"
+            _record_probe_pass(conn, now_t, out)
+            return out
 
-    try:
-        result = _spawn_probe_child(due[0])
-    except Exception as e:  # noqa: BLE001 — never crash the daemon
-        out = f"graded={graded} spawn_error: {e}"
+        due = _due_probes(conn, now_t)
+        if not due:
+            out = f"graded={graded} no_due"
+            _record_probe_pass(conn, now_t, out)
+            return out
+
+        try:
+            result = _spawn_probe_child(due[0])
+        except Exception as e:  # noqa: BLE001 — never crash the daemon
+            out = f"graded={graded} spawn_error: {e}"
+            _record_probe_pass(conn, now_t, out)
+            return out
+        out = (
+            f"graded={graded} spawned cat={due[0]['category']} "
+            f"{str(result)[:120]}"
+        )
         _record_probe_pass(conn, now_t, out)
         return out
-    out = f"graded={graded} spawned cat={due[0]['category']} {str(result)[:120]}"
-    _record_probe_pass(conn, now_t, out)
-    return out
 
 
 def _serve_loop() -> None:

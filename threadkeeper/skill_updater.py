@@ -12,7 +12,6 @@ overwritten.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -23,7 +22,6 @@ import shutil
 import tempfile
 import threading
 import time
-from typing import Iterator
 from urllib import request
 import zipfile
 
@@ -39,7 +37,7 @@ from .config import (
     SKILL_UPDATE_TIMEOUT_S,
 )
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 
 logger = logging.getLogger(__name__)
 
@@ -117,30 +115,8 @@ def _due(now: int | None = None) -> tuple[bool, int]:
     return last == 0 or age >= SKILL_UPDATE_INTERVAL_S, max(0, age)
 
 
-@contextmanager
-def _update_lock() -> Iterator[bool]:
-    lock_path = DB_PATH.parent / "skill-update.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        try:
-            import fcntl
-
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except ImportError:
-            yield True
-            return
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            try:
-                import fcntl
-
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
+def _update_lock():
+    return single_flight_lock("skill-update")
 
 
 def _short(text: str, limit: int = 120) -> str:

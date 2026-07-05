@@ -42,6 +42,7 @@ from .helpers import (
     daemon_sleep,
     dialog_rowid_at_or_before,
     resolve_ingest_watermark,
+    single_flight_lock,
 )
 from .harvest import (
     INTERNAL_PROMPT_PREFIXES as _INTERNAL_PROMPT_PREFIXES,
@@ -535,52 +536,62 @@ def run_shadow_pass(force: bool = False) -> str:
         _record_shadow_pass(conn, high_water, "too_short")
         return "too_short"
 
-    running = _running_shadow_children(conn)
-    if running:
-        outcome = f"shadow_child_running n={len(running)}"
-        # Do not advance high-water. Re-evaluate this window when the current
-        # evaluator exits instead of dropping potentially useful dialog.
-        _record_shadow_pass(conn, floor, outcome)
-        return outcome
+    with single_flight_lock("shadow-review") as locked:
+        if not locked:
+            outcome = "shadow_child_running n=1 (single-flight lock)"
+            # Do not advance high-water. Re-evaluate this window when the
+            # current evaluator exits instead of dropping useful dialog.
+            _record_shadow_pass(conn, floor, outcome)
+            return outcome
 
-    # Fence the observed window as data (issue #76). The dump mixes turns
-    # from every real session, including assistant turns that echo content
-    # read from untrusted web/files; the delimiters + DATA_FENCE in the
-    # header keep a crafted "always do X / ignore prior skills" turn from
-    # being lifted into an auto-loaded skill.
-    full_prompt = SHADOW_REVIEW_PROMPT + fence_observed(dump, "recent dialog")
+        running = _running_shadow_children(conn)
+        if running:
+            outcome = f"shadow_child_running n={len(running)}"
+            # Do not advance high-water. Re-evaluate this window when the
+            # current evaluator exits instead of dropping useful dialog.
+            _record_shadow_pass(conn, floor, outcome)
+            return outcome
 
-    # Late import — spawn module imports identity / config; importing it
-    # at module load time would create cycles.
-    from .tools.spawn import spawn  # type: ignore
-    try:
-        result = spawn(
-            prompt=full_prompt,
-            visible=False,
-            capture_output=True,
-            permission_mode="auto",
-            role="shadow_observer",
-            write_origin="shadow_review",
-            slim=True,
-            # De-privileged (issue #76): only the path-scoped skill/lesson
-            # tools — no bare Read/Write. Reference files go through
-            # skill_manage(action='write_file'); shrinks the blast radius
-            # if the data fence is ever bypassed.
-            extra_allowed_tools=(
-                "mcp__thread-keeper__lesson_append,"
-                "mcp__thread-keeper__lesson_list,"
-                "mcp__thread-keeper__lesson_get,"
-                "mcp__thread-keeper__skill_manage,"
-                "mcp__thread-keeper__skill_list,"
-                "mcp__thread-keeper__mark_skill_materialized"
-            ),
+        # Fence the observed window as data (issue #76). The dump mixes turns
+        # from every real session, including assistant turns that echo content
+        # read from untrusted web/files; the delimiters + DATA_FENCE in the
+        # header keep a crafted "always do X / ignore prior skills" turn from
+        # being lifted into an auto-loaded skill.
+        full_prompt = SHADOW_REVIEW_PROMPT + fence_observed(
+            dump, "recent dialog"
         )
-    except Exception as e:
-        _record_shadow_pass(conn, high_water, f"spawn_error: {e}")
-        return f"spawn_error: {e}"
 
-    _record_shadow_pass(conn, high_water, str(result)[:200])
-    return str(result)
+        # Late import — spawn module imports identity / config; importing it
+        # at module load time would create cycles.
+        from .tools.spawn import spawn  # type: ignore
+        try:
+            result = spawn(
+                prompt=full_prompt,
+                visible=False,
+                capture_output=True,
+                permission_mode="auto",
+                role="shadow_observer",
+                write_origin="shadow_review",
+                slim=True,
+                # De-privileged (issue #76): only the path-scoped skill/lesson
+                # tools — no bare Read/Write. Reference files go through
+                # skill_manage(action='write_file'); shrinks the blast radius
+                # if the data fence is ever bypassed.
+                extra_allowed_tools=(
+                    "mcp__thread-keeper__lesson_append,"
+                    "mcp__thread-keeper__lesson_list,"
+                    "mcp__thread-keeper__lesson_get,"
+                    "mcp__thread-keeper__skill_manage,"
+                    "mcp__thread-keeper__skill_list,"
+                    "mcp__thread-keeper__mark_skill_materialized"
+                ),
+            )
+        except Exception as e:
+            _record_shadow_pass(conn, high_water, f"spawn_error: {e}")
+            return f"spawn_error: {e}"
+
+        _record_shadow_pass(conn, high_water, str(result)[:200])
+        return str(result)
 
 
 def _serve_loop() -> None:

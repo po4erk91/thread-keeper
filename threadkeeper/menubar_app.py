@@ -17,11 +17,13 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import (
+    DB_PATH,
     MENUBAR_AUTO_LAUNCH,
     SPAWNED_CHILD,
     TASK_LOG_DIR,
     WRITE_ORIGIN,
 )
+from .helpers import single_flight_lock
 
 
 APP_NAME = "ThreadKeeperAgentStatus"
@@ -331,14 +333,11 @@ def ensure_menubar_app() -> None:
         return
 
     TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = TASK_LOG_DIR / "menubar-autolaunch.lock"
     try:
-        import fcntl
-
-        with lock_path.open("w") as lock:
-            try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+        with single_flight_lock(
+            "menubar-autolaunch", lock_dir=DB_PATH.parent
+        ) as locked:
+            if not locked:
                 return
 
             app = _installed_app()

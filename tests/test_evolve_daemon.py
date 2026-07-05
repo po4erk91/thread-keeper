@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -525,6 +526,48 @@ def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn", _boom)
     assert "reviewer_running" in pkg["ed"].run_evolve_pass(force=True)
+
+
+def test_run_evolve_pass_single_flight_lock_race(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
+    import threadkeeper.tools.spawn as spawn_mod
+
+    entered_spawn = threading.Event()
+    release_spawn = threading.Event()
+    results: list[str] = []
+    errors: list[BaseException] = []
+    calls: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            entered_spawn.set()
+            assert release_spawn.wait(timeout=5)
+        return "ok task=tk_ev pid=1"
+
+    def run_pass():
+        try:
+            out = pkg["ed"].run_evolve_pass(force=True)
+            results.append(out)
+        except BaseException as e:  # pragma: no cover - surfaced below
+            errors.append(e)
+            release_spawn.set()
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    t = threading.Thread(target=run_pass)
+    t.start()
+    assert entered_spawn.wait(timeout=5)
+    results.append(pkg["ed"].run_evolve_pass(force=True))
+    release_spawn.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+    assert not errors
+    assert len(calls) == 1
+    assert len(results) == 2
+    assert sum(r.startswith("spawned research") for r in results) == 1
+    assert results.count("reviewer_running n=1 (single-flight lock)") == 1
 
 
 # ── brief surfaces promoted ★ first, drops dismissed ───────────────────

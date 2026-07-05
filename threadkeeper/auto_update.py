@@ -12,7 +12,6 @@ restart it against the newly installed code.
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib.metadata
 import importlib.util
@@ -24,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -39,9 +38,9 @@ from .config import (
     AUTO_UPDATE_TIMEOUT_S,
     AUTO_UPDATE_VERIFY_PROVENANCE,
     BACKGROUND_DAEMONS_ALLOWED,
-    DB_PATH,
 )
 from .db import get_db
+from .helpers import single_flight_lock
 from . import identity
 
 logger = logging.getLogger(__name__)
@@ -121,30 +120,8 @@ def _due(now: int | None = None) -> tuple[bool, int]:
     return last == 0 or age >= AUTO_UPDATE_INTERVAL_S, max(0, age)
 
 
-@contextmanager
-def _update_lock() -> Iterator[bool]:
-    lock_path = DB_PATH.parent / "auto-update.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        try:
-            import fcntl
-
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except ImportError:
-            yield True
-            return
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            try:
-                import fcntl
-
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
+def _update_lock():
+    return single_flight_lock("auto-update")
 
 
 def _package_root() -> Path:

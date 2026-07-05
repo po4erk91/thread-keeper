@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -215,3 +216,49 @@ def test_run_probe_pass_single_flight(tmp_path, monkeypatch):
 
     out = pkg["pd"].run_probe_pass(force=True)
     assert "probe_child_running" in out
+
+
+def test_run_probe_pass_single_flight_lock_race(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _add_probe(conn, "P022", "date_arithmetic", grader="regex", pattern="42")
+
+    entered_spawn = threading.Event()
+    release_spawn = threading.Event()
+    results: list[str] = []
+    errors: list[BaseException] = []
+    calls: list[str] = []
+
+    def fake_spawn(probe):
+        calls.append(probe["id"])
+        if len(calls) == 1:
+            entered_spawn.set()
+            assert release_spawn.wait(timeout=5)
+        return "ok task=tk_probe pid=4242"
+
+    def run_pass():
+        try:
+            out = pkg["pd"].run_probe_pass(force=True)
+            results.append(out)
+        except BaseException as e:  # pragma: no cover - surfaced below
+            errors.append(e)
+            release_spawn.set()
+
+    monkeypatch.setattr(pkg["pd"], "_spawn_probe_child", fake_spawn)
+
+    t = threading.Thread(target=run_pass)
+    t.start()
+    assert entered_spawn.wait(timeout=5)
+    results.append(pkg["pd"].run_probe_pass(force=True))
+    release_spawn.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+    assert not errors
+    assert calls == ["P022"]
+    assert len(results) == 2
+    assert sum("spawned" in r for r in results) == 1
+    assert (
+        results.count("graded=0 probe_child_running n=1 (single-flight lock)")
+        == 1
+    )

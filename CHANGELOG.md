@@ -73,6 +73,15 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Unified single-flight dispatch locks (#53).** Spawning daemons now share
+  `helpers.single_flight_lock()` for their non-blocking `fcntl.flock` pidfiles
+  instead of carrying local copies. Shadow review, evolve reviewer, and probe
+  passes now lock their check-running-then-spawn critical sections, so racing
+  foreground MCP servers return a `... (single-flight lock)` status instead of
+  spawning duplicate children. Existing candidate reviewer, curator, evolve
+  applier, auto-update, skill-update, and menu-bar autolaunch locks now route
+  through the same helper.
+
 - **Evolve reviewer roadmap-doc PR dedup (#54).** Privileged reviewer audit
   prompts now receive a parent-side `gh pr list --json ... files` preflight for
   open automation-owned PRs touching `docs/ROADMAP.md`. The reviewer must append
