@@ -398,7 +398,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
-                cli: str = "") -> str:
+                cli: str = "",
+                task_id_override: str = "") -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -463,15 +464,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             f"(set {_BYPASS_ENV_OVERRIDE}=1 to override)"
         )
 
-    # Admission control: refuse if running children + this one would
-    # breach SPAWN_BUDGET_MB. Estimate based on slim vs full.
+    # Admission control reserves a tasks row later, immediately before Popen,
+    # so concurrent spawners serialize their budget check with BEGIN IMMEDIATE.
     from ..spawn_budget import estimate_child_rss_kb, check_budget
-    _budget_conn = get_db()
-    _ensure_session(_budget_conn)
     _new_kb = estimate_child_rss_kb(slim)
-    _ok, _reason = check_budget(_budget_conn, _new_kb)
-    if not _ok:
-        return f"ERR {_reason}"
 
     parent_cid = parent_cid_override.strip() or _detect_self_cid()
     # child_cid is generated below; we craft sys_extra after that so it can
@@ -502,7 +498,12 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # (no ppid-walk needed for spawned children).
     import uuid as _uuid
     child_cid = str(_uuid.uuid4())
-    task_id = "tk_" + secrets.token_hex(3)
+    task_id = task_id_override.strip() or ("tk_" + secrets.token_hex(3))
+    if not task_id.startswith("tk_") or any(
+        c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+        for c in task_id
+    ):
+        return "ERR invalid_task_id"
     sys_extra = sys_extra_template.format(
         parent=parent_cid or "(unknown)",
         child=child_cid,
@@ -721,6 +722,34 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if capture_output and not visible:
         log_path = TASK_LOG_DIR / f"{task_id}.log"
     proc_pid = 0
+    now_t = int(time.time())
+    conn = get_db()
+    _ensure_session(conn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ok, _reason = check_budget(conn, _new_kb)
+        if not _ok:
+            conn.rollback()
+            return f"ERR {_reason}"
+        conn.execute(
+            "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+            "started_at, rss_kb, rss_updated_at, role, write_origin, "
+            "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
+            "model, effort, append_system, chosen_cli, retry_of, retry_root, "
+            "retry_attempt) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
+                _new_kb, now_t, role_clean, write_origin, permission_mode,
+                extra_allowed_tools, 1 if capture_output else 0,
+                1 if visible else 0, 1 if slim else 0, chosen_model, effort,
+                append_system, chosen_cli, retry_of or None,
+                retry_root or None, int(retry_attempt or 0),
+            ),
+        )
+    except sqlite3.Error as e:
+        conn.rollback()
+        return f"ERR spawn_reservation_failed={e}"
     try:
         if visible:
             # Build a self-contained .command shell script that Terminal.app
@@ -832,6 +861,7 @@ exit $rc
                     env=child_env,
                 )
             except (FileNotFoundError, OSError) as e:
+                conn.rollback()
                 return f"ERR open_terminal_failed={e}"
             # pid for Terminal-launched claude isn't directly trackable from
             # here; tasks() relies on spawned_cid + jsonl mtime instead.
@@ -877,28 +907,15 @@ exit $rc
                 stdin_f.close()
             proc_pid = proc.pid
     except (FileNotFoundError, OSError) as e:
+        conn.rollback()
         return f"ERR spawn_failed={e}"
-    now_t = int(time.time())
-    conn = get_db()
-    _ensure_session(conn)
-    conn.execute(
-        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
-        "started_at, rss_kb, rss_updated_at, role, write_origin, "
-        "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
-        "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-        "retry_attempt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            task_id, proc_pid, parent_cid, child_cid, cwd, prompt, now_t,
-            _new_kb, now_t, role_clean, write_origin, permission_mode,
-            extra_allowed_tools, 1 if capture_output else 0,
-            1 if visible else 0, 1 if slim else 0, chosen_model, effort,
-            append_system, chosen_cli, retry_of or None, retry_root or None,
-            int(retry_attempt or 0),
-        ),
-    )
-    _emit(conn, "spawn", target=task_id, summary=prompt[:140])
-    conn.commit()
+    try:
+        conn.execute("UPDATE tasks SET pid=? WHERE id=?", (proc_pid, task_id))
+        _emit(conn, "spawn", target=task_id, summary=prompt[:140])
+        conn.commit()
+    except sqlite3.Error as e:
+        conn.rollback()
+        return f"ERR spawn_record_failed={e}"
     mode = "visible" if visible else "headless"
     log_disp = log_path or ("Terminal.app" if visible else "devnull")
     return (

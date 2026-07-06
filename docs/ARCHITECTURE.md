@@ -314,6 +314,11 @@ running-child check remains for stale-pid cleanup and status visibility.
   behind `probe-daemon.lock` plus the running probe-child check. A busy lock
   reports `probe_child_running ... (single-flight lock)` and never blocks a
   daemon tick.
+- **dialectic_validator** — once per `DIALECTIC_VALIDATE_INTERVAL_S` (default
+  0 = off) leases a concrete batch of `dialectic_observations` before building
+  the validator prompt, then spawns one child behind `dialectic-validator.lock`
+  plus the running validator-task check. Spawn failures release the just-claimed
+  rows; parent crashes leave them under the normal stale-claim lease requeue.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
   existing lessons / skills / concepts inventory through one slim child. Before
   spawning, it hashes the stable inventory state and compares it to the last
@@ -611,14 +616,15 @@ optional 24h spawned-child token and dollar ceilings when
 `THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
 (disabled), so unset budgets preserve prior behavior.
 
-- `spawn()` admission control: `check_budget()` sums `rss_kb` of all running
-  tasks (NULL = conservative full-estimate placeholder) and the recorded 24h
-  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
-  new child would push past the RSS cap or if daily token/cost spend has already
-  reached its configured ceiling. ERR carries the exact numbers +
+- `spawn()` admission control: inside `BEGIN IMMEDIATE`, `check_budget()` sums
+  `rss_kb` of all running tasks (NULL = conservative full-estimate placeholder)
+  and the recorded 24h `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend,
+  then refuses if the new child would push past the RSS cap or if daily
+  token/cost spend has already reached its configured ceiling. If admitted, the
+  same transaction inserts the `tasks` row with the initial estimate
+  (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`) before `Popen`; launch
+  failure rolls the reservation back. ERR carries the exact numbers +
   how-to-override.
-- After admission, INSERT into `tasks` writes an initial estimate
-  (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`).
 - Headless children run through `_spawn_wrap.py`, which tees the child's
   output, parses final JSON or human-readable usage trailers when present,
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always

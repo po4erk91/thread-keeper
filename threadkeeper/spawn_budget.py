@@ -7,9 +7,10 @@ budget is `SPAWN_BUDGET_MB` (3072 MB).
 Flow:
   spawn() pre-flight:
     estimate child RSS (slim → SPAWN_ESTIMATE_SLIM_MB, else FULL)
-    check_budget(conn, new_kb) returns ("ok"|"refused", message)
-    if refused → spawn() returns ERR + reason
-    else → INSERT tasks row with rss_kb = estimate, then proceed
+    BEGIN IMMEDIATE, check_budget(conn, new_kb), and INSERT the tasks
+    row with rss_kb = estimate before Popen. The SQLite write transaction
+    serializes concurrent admission checks; if Popen fails, the reservation
+    rolls back and spawn() returns ERR + reason.
 
   background daemon (start_budget_daemon):
     every SPAWN_BUDGET_POLL_S seconds, walk running tasks, compute real

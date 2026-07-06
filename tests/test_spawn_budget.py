@@ -6,6 +6,7 @@ status logic exercises the budget module directly against a temp DB.
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 import pytest
@@ -180,6 +181,108 @@ def test_check_budget_refuses_when_cost_budget_reached(mp_with_cid, monkeypatch)
     ok, msg = check_budget(conn, 1)
     assert ok is False
     assert "cost_budget_exceeded" in msg
+
+
+def test_spawn_reserves_rss_budget_before_popen(mp_with_cid, monkeypatch):
+    """Two concurrent spawns against a cap that admits one must serialize at
+    reservation time, so only one subprocess launch is attempted."""
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "500")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB", "500")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    conn = pkg["db"].get_db()
+    pkg["identity"]._ensure_session(conn)
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    monkeypatch.setattr(
+        spawn_config, "resolve_agent", lambda role, active_cli=None: "claude"
+    )
+    monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "")
+
+    calls: list[list[str]] = []
+    call_lock = threading.Lock()
+
+    class _SlowPopen:
+        def __init__(self, args, **kwargs):
+            with call_lock:
+                calls.append(list(args))
+                self.pid = 5000 + len(calls)
+            time.sleep(0.2)
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _SlowPopen)
+
+    start = threading.Barrier(2)
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def run_spawn(i: int):
+        try:
+            start.wait(timeout=5)
+            results.append(
+                spawn_mod.spawn(
+                    prompt=f"budget child {i}",
+                    cwd=str(pkg["tmp"]),
+                    visible=False,
+                    capture_output=False,
+                    slim=True,
+                )
+            )
+        except BaseException as e:  # pragma: no cover - surfaced below
+            errors.append(e)
+
+    threads = [threading.Thread(target=run_spawn, args=(i,)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert not errors
+    assert len(calls) == 1
+    assert sum(r.startswith("ok task=") for r in results) == 1
+    assert sum(r.startswith("ERR budget_exceeded") for r in results) == 1
+    running = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE ended_at IS NULL"
+    ).fetchone()[0]
+    assert running == 1
+
+
+def test_spawn_reservation_rolls_back_when_popen_fails(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "500")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_ESTIMATE_SLIM_MB", "500")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    monkeypatch.setattr(
+        spawn_config, "resolve_agent", lambda role, active_cli=None: "claude"
+    )
+    monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "")
+
+    def fail_popen(*args, **kwargs):
+        raise OSError("simulated launch failure")
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", fail_popen)
+
+    out = spawn_mod.spawn(
+        prompt="will fail after reservation",
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=False,
+        slim=True,
+    )
+    assert out.startswith("ERR spawn_failed=simulated launch failure")
+    conn = pkg["db"].get_db()
+    tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert tasks == 0
 
 
 # ─────────────────────────────────────────────────────────────────────
