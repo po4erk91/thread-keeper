@@ -1,14 +1,18 @@
 """Dialectic validator — the SOLE interpreter of the dialectic_observations
-buffer. Periodically spawns one opus child that reads pending observations +
-the full current model and turns raw user replies into claims via the existing
-dialectic_* tools, then resolves each observation.
+buffer. Periodically claims a pending observation batch, then spawns one opus
+child that reads only those claimed observations + the full current model and
+turns raw user replies into claims via the existing dialectic_* tools, then
+resolves each observation.
 
 Mirrors candidate_reviewer (spawns an LLM child); the miner is the cheap
-mechanical producer, this is the careful infrequent consumer."""
+mechanical producer, this is the careful infrequent consumer. The dispatch
+section is protected by helpers.single_flight_lock(), while the per-row claim
+lease is the crash-recovery boundary."""
 from __future__ import annotations
 
 import logging
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -20,7 +24,7 @@ from .config import (
     DIALECTIC_MAX_NEW_CLAIMS,
 )
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 from .identity import _ensure_session
 
@@ -368,12 +372,23 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int, int, list[int]
     if not picked:
         return ("", 0, total_pending, [])
     rows = [r for _, r in picked]
+    ids = [int(r["id"]) for r in rows]
+    return (
+        _format_observation_rows([(score, r) for score, r in picked], total_pending),
+        len(rows),
+        total_pending,
+        ids,
+    )
+
+
+def _format_observation_rows(
+    scored_rows: list[tuple[int, sqlite3.Row]],
+    total_pending: int,
+) -> str:
     parts = [
-        f"PENDING OBSERVATIONS (batch={len(rows)} total={total_pending})\n"
+        f"PENDING OBSERVATIONS (batch={len(scored_rows)} total={total_pending})\n"
     ]
-    ids: list[int] = []
-    for score, r in picked:
-        ids.append(int(r["id"]))
+    for score, r in scored_rows:
         quote = (r["user_quote"] or "")[:400].replace("\n", " ")
         ctx = (r["context"] or "")[:200].replace("\n", " ")
         parts.append(
@@ -381,7 +396,41 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int, int, list[int]
             f"    context: {ctx}\n"
             f"    user: {quote}"
         )
-    return ("\n".join(parts), len(rows), total_pending, ids)
+    return "\n".join(parts)
+
+
+def _claimed_inventory(
+    conn: sqlite3.Connection,
+    ids: list[int],
+    task_id: str,
+    total_pending: int,
+) -> tuple[str, int]:
+    """Prompt inventory for the exact rows this pass successfully leased."""
+    if not ids:
+        return "", 0
+    placeholders = ",".join("?" for _ in ids)
+    try:
+        rows = conn.execute(
+            "SELECT id, user_quote, context, source_cid, created_at "
+            "FROM dialectic_observations "
+            f"WHERE id IN ({placeholders}) AND status='pending' "
+            "AND claimed_by_task=?",
+            [*ids, task_id],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return "", 0
+    by_id = {int(r["id"]): r for r in rows}
+    ordered = [by_id[oid] for oid in ids if oid in by_id]
+    if not ordered:
+        return "", 0
+
+    from .dialectic_miner import _dialectic_signal_score
+
+    scored_rows = [
+        (_dialectic_signal_score(r["user_quote"] or ""), r)
+        for r in ordered
+    ]
+    return _format_observation_rows(scored_rows, total_pending), len(ordered)
 
 
 def _task_id_from_spawn_result(result: str) -> str:
@@ -389,19 +438,71 @@ def _task_id_from_spawn_result(result: str) -> str:
     return match.group(1) if match else ""
 
 
-def _claim_batch(conn: sqlite3.Connection, ids: list[int], task_id: str, now: int) -> int:
+def _claim_batch(
+    conn: sqlite3.Connection,
+    ids: list[int],
+    task_id: str,
+    now: int,
+) -> list[int]:
     if not ids:
-        return 0
-    claimed = 0
+        return []
+    claimed: list[int] = []
     for oid in ids:
         cur = conn.execute(
             "UPDATE dialectic_observations SET claimed_at=?, claimed_by_task=? "
             "WHERE id=? AND status='pending' AND claimed_at IS NULL",
             (now, task_id, oid),
         )
-        claimed += max(0, cur.rowcount)
+        if cur.rowcount:
+            claimed.append(oid)
     conn.commit()
     return claimed
+
+
+def _release_batch_claims(
+    conn: sqlite3.Connection,
+    ids: list[int],
+    task_id: str,
+) -> int:
+    if not ids:
+        return 0
+    released = 0
+    for oid in ids:
+        cur = conn.execute(
+            "UPDATE dialectic_observations "
+            "SET claimed_at=NULL, claimed_by_task=NULL "
+            "WHERE id=? AND status='pending' AND claimed_by_task=?",
+            (oid, task_id),
+        )
+        released += max(0, cur.rowcount)
+    conn.commit()
+    return released
+
+
+def _new_validator_task_id() -> str:
+    return "tk_" + secrets.token_hex(3)
+
+
+def _spawn_validator_child(prompt: str, task_id: str) -> str:
+    from .tools.spawn import _spawn_impl  # type: ignore
+
+    return _spawn_impl(
+        prompt=prompt,
+        visible=False,
+        capture_output=True,
+        permission_mode="auto",
+        role="dialectic_validator",
+        write_origin="background_review",
+        slim=True,
+        extra_allowed_tools=(
+            "mcp__thread-keeper__dialectic_claim,"
+            "mcp__thread-keeper__dialectic_evidence,"
+            "mcp__thread-keeper__dialectic_supersede,"
+            "mcp__thread-keeper__dialectic_review,"
+            "mcp__thread-keeper__dialectic_observation_resolve"
+        ),
+        task_id_override=task_id,
+    )
 
 
 def _current_model_dump(conn: sqlite3.Connection) -> str:
@@ -445,80 +546,87 @@ def run_validate_pass(force: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
-    running = _running_validator_children(conn)
     _release_finished_claims(conn, now)
     _resolve_spawned_pending(conn)
-    if running:
-        return f"validator_running n={len(running)} (single-flight)"
-    stale_cutoff = now - 30 * 86400
-    _release_stale_claims(conn, now)
-    _resolve_noise_pending(conn)
-    _resolve_low_value_pending(conn)
-    _resolve_duplicate_pending(conn)
-    _resolve_stale_pending(conn, stale_cutoff)
-    inventory, batch_n, total_pending, batch_ids = _collect_pending(conn)
-    if total_pending > 0 and batch_n == 0:
-        _record_pass(conn, now, f"no_eligible pending={total_pending}")
-        return f"no_eligible n={total_pending}"
-    if total_pending < DIALECTIC_VALIDATE_MIN:
-        _record_pass(conn, now,
-                     f"below_threshold pending={total_pending} "
-                     f"min={DIALECTIC_VALIDATE_MIN}")
-        return f"below_threshold n={total_pending}"
 
-    from .review_prompts import DATA_FENCE, fence_observed
-    prompt = DIALECTIC_VALIDATOR_PROMPT % {
-        "max_new": DIALECTIC_MAX_NEW_CLAIMS,
-        "model": _current_model_dump(conn),
-        # The pending observations are raw user_quote + assistant context
-        # (issue #76): fence them as data so a crafted "user policy" planted
-        # in observed dialog can't be minted into a validated user-model
-        # claim that gates behavior. The current model is our own state.
-        "inventory": fence_observed(inventory, "pending user observations"),
-        "fence": DATA_FENCE,
-    }
+    with single_flight_lock("dialectic-validator") as locked:
+        if not locked:
+            return "validator_running n=1 (single-flight lock)"
 
-    from .tools.spawn import spawn  # type: ignore
-    try:
-        result = spawn(
-            prompt=prompt,
-            visible=False,
-            capture_output=True,
-            permission_mode="auto",
-            role="dialectic_validator",
-            write_origin="background_review",
-            slim=True,
-            extra_allowed_tools=(
-                "mcp__thread-keeper__dialectic_claim,"
-                "mcp__thread-keeper__dialectic_evidence,"
-                "mcp__thread-keeper__dialectic_supersede,"
-                "mcp__thread-keeper__dialectic_review,"
-                "mcp__thread-keeper__dialectic_observation_resolve"
-            ),
+        running = _running_validator_children(conn)
+        if running:
+            return f"validator_running n={len(running)} (single-flight)"
+        stale_cutoff = now - 30 * 86400
+        _release_stale_claims(conn, now)
+        _resolve_noise_pending(conn)
+        _resolve_low_value_pending(conn)
+        _resolve_duplicate_pending(conn)
+        _resolve_stale_pending(conn, stale_cutoff)
+        _, batch_n, total_pending, batch_ids = _collect_pending(conn)
+        if total_pending > 0 and batch_n == 0:
+            _record_pass(conn, now, f"no_eligible pending={total_pending}")
+            return f"no_eligible n={total_pending}"
+        if total_pending < DIALECTIC_VALIDATE_MIN:
+            _record_pass(conn, now,
+                         f"below_threshold pending={total_pending} "
+                         f"min={DIALECTIC_VALIDATE_MIN}")
+            return f"below_threshold n={total_pending}"
+
+        task_id = _new_validator_task_id()
+        claimed_ids = _claim_batch(conn, batch_ids, task_id, now)
+        inventory, claimed_n = _claimed_inventory(
+            conn, claimed_ids, task_id, total_pending
         )
-    except Exception as e:
-        _record_pass(conn, now, f"spawn_error: {e}")
-        return f"spawn_error: {e}"
+        if not claimed_n:
+            _record_pass(conn, now, f"claim_lost pending_batch={batch_n}")
+            return "claim_lost"
 
-    result_s = str(result)
-    if result_s.startswith("ERR"):
+        from .review_prompts import DATA_FENCE, fence_observed
+        prompt = DIALECTIC_VALIDATOR_PROMPT % {
+            "max_new": DIALECTIC_MAX_NEW_CLAIMS,
+            "model": _current_model_dump(conn),
+            # The pending observations are raw user_quote + assistant context
+            # (issue #76): fence them as data so a crafted "user policy" planted
+            # in observed dialog can't be minted into a validated user-model
+            # claim that gates behavior. The current model is our own state.
+            "inventory": fence_observed(inventory, "pending user observations"),
+            "fence": DATA_FENCE,
+        }
+
+        try:
+            result = _spawn_validator_child(prompt, task_id)
+        except Exception as e:
+            _release_batch_claims(conn, claimed_ids, task_id)
+            _record_pass(conn, now, f"spawn_error: {e}")
+            return f"spawn_error: {e}"
+
+        result_s = str(result)
+        if result_s.startswith("ERR"):
+            _release_batch_claims(conn, claimed_ids, task_id)
+            _record_pass(
+                conn,
+                now,
+                f"spawn_error pending_batch={claimed_n} total={total_pending} "
+                f":: {result_s[:180]}",
+            )
+            return result_s
+
+        spawned_task_id = _task_id_from_spawn_result(result_s)
+        if spawned_task_id and spawned_task_id != task_id:
+            conn.execute(
+                "UPDATE dialectic_observations SET claimed_by_task=? "
+                "WHERE status='pending' AND claimed_by_task=?",
+                (spawned_task_id, task_id),
+            )
+            conn.commit()
+            task_id = spawned_task_id
         _record_pass(
             conn,
             now,
-            f"spawn_error pending_batch={batch_n} total={total_pending} "
-            f":: {result_s[:180]}",
+            f"spawned pending_batch={claimed_n} total={total_pending} "
+            f"claimed={claimed_n} :: {result_s[:140]}",
         )
         return result_s
-
-    task_id = _task_id_from_spawn_result(result_s)
-    claimed = _claim_batch(conn, batch_ids, task_id, now) if task_id else 0
-    _record_pass(
-        conn,
-        now,
-        f"spawned pending_batch={batch_n} total={total_pending} claimed={claimed} "
-        f":: {result_s[:140]}",
-    )
-    return result_s
 
 
 def _serve_loop() -> None:

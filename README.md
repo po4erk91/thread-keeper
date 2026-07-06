@@ -259,6 +259,9 @@ A daemon measures combined child RSS every 10 s; admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
+Admission uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the
+budget and inserts the child task row with its RSS estimate before `Popen`, so
+two concurrent spawns cannot both squeeze through the cap.
 
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying

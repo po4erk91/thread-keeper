@@ -129,6 +129,13 @@ remains a live question.
   same non-blocking lock helper where they need a process-wide dispatch guard;
   running-child table checks remain as the second layer for stale-pid cleanup
   and status visibility.
+- Reserve-before-spawn admission and dialectic leases (#58): `spawn()` now
+  performs RSS/token/cost admission and inserts the estimated `tasks` row inside
+  one `BEGIN IMMEDIATE` transaction before `Popen`, rolling the reservation back
+  if launch fails. `dialectic_validator` now uses the shared single-flight lock,
+  claims the exact observation batch before constructing the prompt, releases
+  claims on spawn errors, and relies on the existing stale-claim lease requeue
+  after parent crashes.
 
 ---
 
@@ -606,7 +613,7 @@ verified at the cited file:line, deduplicated against the issues above):
   it carries in `ps` argv and measures its real subtree RSS, and a
   `SPAWN_VISIBLE_TTL_S` (1 h default) wall-clock backstop reaps any `pid<=0` row
   whose cid never resolves to a live process so it can't pin capacity forever.
-  (The admission-time check-then-spawn TOCTOU is #58; kill-path safety is #66.)
+  (Kill-path safety is #66.)
 - ✅ DONE (#80). No **wall-clock watchdog** for spawned learning-loop children:
   a child that hung while still alive (wedged `WebFetch`/`gh`/`git`, an agent
   loop that never converged, a prompt that never arrived) was never terminated —

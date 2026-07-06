@@ -9,6 +9,14 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Reserve-before-spawn admission and dialectic leases (#58).** `spawn()` now
+  reserves the `tasks` row with its RSS estimate inside a `BEGIN IMMEDIATE`
+  admission transaction before `Popen`, so concurrent spawns serialize against
+  `SPAWN_BUDGET_MB` / token / cost budgets and launch failure rolls the
+  reservation back. `dialectic_validator` now claims the exact observation batch
+  before building the child prompt, releases those claims on spawn errors, and
+  runs the dispatch section behind the shared `helpers.single_flight_lock()`.
+
 - **Recoverable destructive curator passes (#40).** Destructive curator runs now
   fail closed unless a pre-mutation snapshot is written under
   `<curator_reports_dir>/snapshots/<pass-id>/`. Each snapshot includes
@@ -379,9 +387,8 @@ version bumps follow semver per the policy in
   measures its real subtree RSS like any other child, and a new
   `THREADKEEPER_SPAWN_VISIBLE_TTL_S` (3600 s default; 0 disables) wall-clock
   backstop marks any `pid<=0` row whose cid never resolves to a live process as
-  ended once it outlives the TTL, so it can't pin capacity forever. The
-  admission-time check-then-spawn TOCTOU (#58), kill-path/pid-reuse hardening
-  (#66), and spool/tasks retention (#42) remain out of scope.
+  ended once it outlives the TTL, so it can't pin capacity forever. Kill-path /
+  pid-reuse hardening (#66) and spool/tasks retention (#42) remain out of scope.
 
 - **Extract H4 paraphrase-cluster path no longer re-harvests rejected
   candidates (#62).** The semantic-cluster heuristic had its own inline dedup
