@@ -342,3 +342,47 @@ def test_summary_table_warns_unused_model_key(tmp_path, monkeypatch):
     assert "model=sonnet" in out
     assert "THREADKEEPER_SPAWN__MODEL__CLAUD='opus'" in out
     assert "not used by a supported CLI or startup role" in out
+
+
+def test_summary_table_warns_claude_model_on_non_claude_cli(tmp_path, monkeypatch):
+    """The exact misconfig that broke the live curator loop: a Claude model
+    pinned to a role that resolves to codex → provider 400 at runtime, which we
+    now surface as a startup warning."""
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": "codex",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "opus",
+    })
+    out = sc.summary_table("codex")
+    assert "THREADKEEPER_SPAWN__MODEL__CURATOR='opus'" in out
+    assert "Claude-family model" in out
+    assert "codex" in out
+
+
+def test_summary_table_warns_claude_model_on_cli_keyed_pin(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__MODEL__CODEX": "sonnet",
+    })
+    out = sc.summary_table("codex")
+    assert "THREADKEEPER_SPAWN__MODEL__CODEX='sonnet'" in out
+    assert "Claude-family model" in out
+
+
+def test_summary_table_no_mismatch_for_codex_model_on_codex(tmp_path, monkeypatch):
+    """The fixed config: a codex-valid model on codex draws no warning."""
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": "codex",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "gpt-5.5",
+        "THREADKEEPER_SPAWN__MODEL__PROBE_RUNNER": "gpt-5.5",
+    })
+    out = sc.summary_table("codex")
+    assert "warning:" not in out
+
+
+def test_summary_table_no_mismatch_for_claude_model_on_claude(tmp_path, monkeypatch):
+    """opus on the claude CLI is correct — must NOT warn."""
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "claude",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "opus",
+    })
+    out = sc.summary_table("claude")
+    assert "warning:" not in out

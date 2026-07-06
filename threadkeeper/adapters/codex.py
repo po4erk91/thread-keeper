@@ -223,11 +223,20 @@ class CodexAdapter(CLIAdapter):
 
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
                    extra_allowed_tools="", mcp_config_path=None):
-        """Codex non-interactive: `codex exec [-m MODEL] -`.
+        """Codex non-interactive: `codex exec --skip-git-repo-check [-m MODEL] -`.
         Codex reads MCP servers from ~/.codex/config.toml which the
         thread-keeper-setup installer already wires up — no
         per-invocation MCP config file needed. Prompt text is supplied via
         stdin so large autonomous-loop inventories do not hit ARG_MAX.
+
+        `--skip-git-repo-check` is required because `codex exec` refuses to run
+        ("Not inside a trusted directory and --skip-git-repo-check was not
+        specified") whenever the spawn cwd is not a trusted git worktree. The
+        cwd is inherited from the spawning server, so without this flag the
+        autonomous loops fail intermittently — depending on where the host
+        server happened to launch — while `git`-rooted hosts pass. The child
+        is already isolated by the sandbox flag below and by the thread-keeper
+        permission model, so the repo-trust gate adds nothing here.
 
         Code-evolve children need to create branches/commits. Codex's default
         sandbox can write ordinary workspace files but blocks `.git` refs, so
@@ -237,7 +246,7 @@ class CodexAdapter(CLIAdapter):
         bin_path = shutil.which("codex")
         if not bin_path:
             return None
-        argv = [bin_path, "exec"]
+        argv = [bin_path, "exec", "--skip-git-repo-check"]
         if model:
             argv += ["-m", model]
         if permission_mode == "bypassPermissions":

@@ -7,6 +7,24 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex spawns pass `--skip-git-repo-check`.** `codex exec` refuses to run
+  ("Not inside a trusted directory and --skip-git-repo-check was not
+  specified") whenever the spawn cwd is not a trusted git worktree. Because the
+  child inherits the host server's cwd, the autonomous loops (shadow_observer,
+  probe_runner, …) failed intermittently — passing on git-rooted hosts, failing
+  elsewhere. The codex adapter now always passes the flag, so codex-routed
+  loops launch deterministically regardless of where the server started.
+
+- **Startup validator warns on a Claude model routed to a non-Claude CLI.** A
+  model pin like `THREADKEEPER_SPAWN__MODEL__CURATOR=opus` while the role
+  resolves to codex is silently rejected by the provider at runtime (HTTP 400),
+  so the loop burns a spawn on every tick and never runs. `summary_table` /
+  `audit_threadkeeper` now flag a Claude-family model (`opus`/`sonnet`/`haiku`/
+  `claude*`) whose effective CLI is not `claude`, catching the misconfig at
+  validation instead of runtime.
+
 ### Added
 
 - **Reserve-before-spawn admission and dialectic leases (#58).** `spawn()` now
