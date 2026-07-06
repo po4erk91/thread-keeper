@@ -332,6 +332,30 @@ def test_codex_register_mcp_writes_toml(tmp_path, monkeypatch):
     assert 'approval_mode = "approve"' in body
 
 
+def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
+    """`codex exec` refuses to run outside a trusted git worktree unless
+    --skip-git-repo-check is passed. The spawn cwd is inherited from the host
+    server, so without the flag the autonomous loops fail intermittently."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex")
+
+    argv = pkg["codex"].spawn_argv("hi", model="gpt-5.5")
+    assert argv is not None
+    assert argv[:3] == ["/usr/local/bin/codex", "exec", "--skip-git-repo-check"]
+    assert argv[-1] == "-"
+    assert "-m" in argv and "gpt-5.5" in argv
+    # Default (non-bypass) path still sandboxes.
+    assert "--sandbox" in argv and "workspace-write" in argv
+
+    # Flag is present on the bypass path too.
+    argv_bypass = pkg["codex"].spawn_argv(
+        "hi", permission_mode="bypassPermissions"
+    )
+    assert "--skip-git-repo-check" in argv_bypass
+    assert "--dangerously-bypass-approvals-and-sandbox" in argv_bypass
+
+
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"

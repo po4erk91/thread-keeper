@@ -21,9 +21,21 @@ dialectic_validator. Resolution is case-insensitive.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from . import config
+
+# A model name that clearly belongs to Anthropic's Claude family. Used only to
+# warn when such a model is routed to a non-Claude CLI (e.g. `opus` on codex),
+# which a provider silently rejects at runtime with a 400 rather than at
+# config-validation time. Deliberately narrow to avoid false positives on
+# provider-neutral names.
+_CLAUDE_MODEL_RE = re.compile(r"^(?:opus|sonnet|haiku|claude)\b", re.IGNORECASE)
+
+
+def _looks_like_claude_model(model: str) -> bool:
+    return bool(isinstance(model, str) and _CLAUDE_MODEL_RE.match(model.strip()))
 
 SUPPORTED_CLIS = ("claude", "codex", "antigravity", "gemini", "copilot")
 CLI_ALIASES = {
@@ -155,6 +167,28 @@ def _spawn_warnings(active_cli: Optional[str]) -> list[str]:
                 f"{_env_suffix('THREADKEEPER_SPAWN__MODEL__', key)}="
                 f"{model!r} is not used by a supported CLI or startup role"
             )
+            continue
+        # Provider mismatch: a Claude-family model pinned onto a non-Claude CLI
+        # is silently rejected at runtime (e.g. `opus` on codex → HTTP 400). The
+        # effective CLI is the role's resolved agent for a role-keyed pin, or the
+        # key itself for a CLI-keyed pin. Surface it at validation instead.
+        if _looks_like_claude_model(model):
+            if role_key in {r.lower() for r in SUMMARY_ROLES} | set(
+                PREDEFINED_ROLE_PROMPTS
+            ):
+                effective_cli = resolve_agent(role_key, active_cli)
+            elif model_key in SUPPORTED_CLIS:
+                effective_cli = model_key
+            else:
+                effective_cli = ""
+            if effective_cli and effective_cli != "claude":
+                warnings.append(
+                    "  warning: "
+                    f"{_env_suffix('THREADKEEPER_SPAWN__MODEL__', key)}="
+                    f"{model!r} is a Claude-family model but resolves to CLI "
+                    f"{effective_cli!r}; that provider will reject it at "
+                    "runtime — pin a model that CLI supports"
+                )
     return warnings
 
 
