@@ -55,6 +55,21 @@ python -m pytest
 Test isolation uses a tempdir DB per test, all daemons disabled via env
 (`THREADKEEPER_*_INTERVAL_S=0`). See `tests/conftest.py`.
 
+## Schema migrations
+
+SQLite schema changes live in `threadkeeper/db.py` and must be versioned with
+`CURRENT_SCHEMA_VERSION`.
+
+1. Add new baseline tables/indexes to `SCHEMA` for fresh installs.
+2. Add upgrade DDL/data backfills to the version-gated migration path, then
+   bump `CURRENT_SCHEMA_VERSION`.
+3. Keep migrations idempotent by intent. For legacy `ALTER TABLE ... ADD
+   COLUMN`, only duplicate-column errors may be ignored; any other
+   `sqlite3.OperationalError` should be logged and raised so a partial schema
+   does not masquerade as healthy.
+4. Add tests for v0 upgrade, version stamping, and any concurrency or data
+   backfill behavior the migration relies on.
+
 ## Adding a new CLI adapter
 
 1. Create `threadkeeper/adapters/<name>.py` exporting `ADAPTER`

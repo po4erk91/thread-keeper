@@ -62,6 +62,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **SQLite schema migrations are version-gated (#59).** `get_db()` now uses
+  `PRAGMA user_version` and a `BEGIN IMMEDIATE` migration transaction so the
+  legacy column-migration list runs once per database version instead of on
+  every connection. Duplicate-column `ALTER TABLE` failures remain harmless,
+  but other migration `OperationalError`s are logged and raised instead of
+  being silently swallowed.
+
 - **Spawn usage parsing no longer ingests prose numbers as spend.**
   `_spawn_wrap.parse_usage` scoped its regex fallbacks to the whole captured
   output, so a child that merely *discussed* money recorded it as its own
