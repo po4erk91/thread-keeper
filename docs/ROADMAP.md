@@ -116,6 +116,12 @@ remains a live question.
   `THREADKEEPER_REDACT_DIALOG_SECRETS` knob can be disabled only for rare local
   debugging where raw transcript fidelity intentionally wins over durable
   secret protection.
+- PyPI release authorization gate (#57): merge-to-main release readiness now
+  runs with `contents: read` only, validates version/changelog metadata, and
+  stops before tag creation or workflow dispatch. Publishing is decoupled from
+  auto-tagging: `publish.yml` requires a GitHub-verified signed annotated `v*`
+  tag, matching release metadata, and the protected `pypi` environment before
+  the Trusted Publisher upload job can run.
 - Unified fcntl single-flight for spawning daemons (#53): the local
   check-running-then-spawn mutex now lives in `helpers.single_flight_lock()`.
   Shadow review, evolve reviewer, probe daemon, candidate reviewer, curator,

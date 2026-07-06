@@ -1,6 +1,7 @@
 name: publish
 
-# Publish to PyPI on every annotated tag matching v*.
+# Publish to PyPI only from a maintainer-signed annotated tag matching v*
+# after the protected pypi environment admits the upload job.
 # Uses PyPI's Trusted Publisher OIDC flow — no API token in repo
 # secrets. Configure once on PyPI side: project → Settings → Publishing
 # → "Add a new pending publisher" with repo=po4erk91/thread-keeper,
@@ -11,11 +12,53 @@ on:
     tags:
       - "v*"
   # Manual trigger for re-publishing if a previous run failed (rare).
+  # Choose the already-pushed signed tag in the "Use workflow from" ref picker.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  authorize:
+    name: Verify release authorization
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require v* tag ref
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ] || [[ "$REF_NAME" != v* ]]; then
+            echo "::error::publish.yml must run from a signed v* tag ref, not $REF_TYPE '$REF_NAME'."
+            exit 1
+          fi
+
+      - name: Verify signed annotated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ref_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')"
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+
+          if [ "$ref_type" != "tag" ]; then
+            echo "::error::$TAG must be an annotated tag; lightweight tags cannot publish."
+            exit 1
+          fi
+
+          verified="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified')"
+          reason="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.reason')"
+
+          if [ "$verified" != "true" ]; then
+            echo "::error::$TAG is not a verified signed tag (reason: $reason)."
+            exit 1
+          fi
+
   build:
     name: Build distribution
+    needs: authorize
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,6 +72,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install build
+
+      - name: Validate release metadata
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          )"
+
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match pyproject.toml version $version."
+            exit 1
+          fi
+
+          grep -q "^## v${version} " CHANGELOG.md
 
       - name: Build sdist + wheel
         run: python -m build
@@ -52,6 +114,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/threadkeeper
     permissions:
+      contents: read
       # OIDC token for Trusted Publisher flow.
       id-token: write
     steps:
@@ -70,8 +133,8 @@ jobs:
     name: Create GitHub Release
     needs: publish-pypi
     runs-on: ubuntu-latest
-    # Auto-create the release on tag pushes and on explicit dispatches
-    # pointed at a tag ref (used by release-tag.yml after tests pass).
+    # Auto-create the release on signed tag pushes and on explicit dispatches
+    # pointed at the same tag ref.
     if: >
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/v')
