@@ -7,6 +7,18 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- **Menu-bar env editor lists the full Spawn Routing surface.** The Spawn
+  Routing panel previously showed a hand-picked subset (default CLI, one loop
+  CLI, four model pins). It now generates every knob from the spawn-role list:
+  a **Spawn Routing** section (Default CLI + a CLI selector for each of the 8
+  loop roles), a **Spawn Models (per CLI)** section (claude / codex /
+  antigravity / gemini / copilot), and a **Spawn Models (per role)** section (a
+  per-role model override). Each row carries a plain-language description of
+  what the role does and its exact `THREADKEEPER_SPAWN__*` key; an unset value
+  renders as "Default" and is not written to `.env`.
+
 ### Fixed
 
 - **Codex spawns pass `--skip-git-repo-check`.** `codex exec` refuses to run

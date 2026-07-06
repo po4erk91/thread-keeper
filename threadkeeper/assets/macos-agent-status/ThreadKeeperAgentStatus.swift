@@ -210,7 +210,120 @@ private let roleModelChoices = (
     }
 }
 
-private let envSettingDefinitions: [EnvSettingDefinition] = [
+// Every autonomous loop that actually spawns a child agent. The env key
+// suffix is the role token; `activity` fills the human-readable descriptions so
+// the Spawn Routing panel lists every role explicitly (CLI + model per role)
+// instead of a hand-picked subset. Keep in sync with spawn_config.SUMMARY_ROLES
+// (the roles that reach a spawn() call-site).
+private struct SpawnRole {
+    let token: String
+    let label: String
+    let activity: String
+}
+
+private let spawnRoles: [SpawnRole] = [
+    SpawnRole(token: "SHADOW_OBSERVER", label: "Shadow observer",
+              activity: "scans recent dialog for durable lessons and skills"),
+    SpawnRole(token: "ARCHIVIST", label: "Archivist",
+              activity: "materializes a closed thread into a skill"),
+    SpawnRole(token: "CURATOR", label: "Curator",
+              activity: "audits, dedups and prunes the lessons/skills library"),
+    SpawnRole(token: "CANDIDATE_REVIEWER", label: "Candidate reviewer",
+              activity: "triages the extract-candidate queue into skills"),
+    SpawnRole(token: "DIALECTIC_VALIDATOR", label: "Dialectic validator",
+              activity: "turns observations into user-model claims"),
+    SpawnRole(token: "PROBE_RUNNER", label: "Probe runner",
+              activity: "runs self-diagnostic reliability probes"),
+    SpawnRole(token: "EVOLVE_REVIEWER", label: "Evolve reviewer",
+              activity: "audits the repo and files roadmap issues"),
+    SpawnRole(token: "EVOLVE_APPLIER", label: "Evolve applier",
+              activity: "implements a roadmap issue and opens a PR"),
+]
+
+// The full Spawn Routing surface, generated so no knob is missing:
+//   • Spawn Routing            — Default CLI + which CLI runs each role
+//   • Spawn Models (per CLI)   — the model each CLI uses
+//   • Spawn Models (per role)  — optional per-role model override
+private let spawnRoutingDefinitions: [EnvSettingDefinition] =
+    [
+        EnvSettingDefinition(
+            group: "Spawn Routing",
+            key: "THREADKEEPER_SPAWN__DEFAULT",
+            title: "Default CLI",
+            detail: "Agent CLI for every role that has no explicit route below.",
+            defaultValue: "",
+            kind: .choice(cliChoices)
+        )
+    ]
+    + spawnRoles.map { role in
+        EnvSettingDefinition(
+            group: "Spawn Routing",
+            key: "THREADKEEPER_SPAWN__LOOP__\(role.token)",
+            title: "\(role.label) → CLI",
+            detail: "Which CLI runs the loop that \(role.activity). "
+                + "Default = the Default CLI above.",
+            defaultValue: "",
+            kind: .choice(cliChoices)
+        )
+    }
+    + [
+        EnvSettingDefinition(
+            group: "Spawn Models (per CLI)",
+            key: "THREADKEEPER_SPAWN__MODEL__CLAUDE",
+            title: "Claude model",
+            detail: "Model passed to Claude Code --model, for claude-routed roles.",
+            defaultValue: "",
+            kind: .choice(claudeModelChoices)
+        ),
+        EnvSettingDefinition(
+            group: "Spawn Models (per CLI)",
+            key: "THREADKEEPER_SPAWN__MODEL__CODEX",
+            title: "Codex model",
+            detail: "Base model passed to `codex exec -m`, for codex-routed roles.",
+            defaultValue: "",
+            kind: .choice(codexModelChoices)
+        ),
+        EnvSettingDefinition(
+            group: "Spawn Models (per CLI)",
+            key: "THREADKEEPER_SPAWN__MODEL__AGY",
+            title: "Antigravity model",
+            detail: "Model label from `agy models`; agy is the Antigravity executable.",
+            defaultValue: "",
+            kind: .choice(antigravityModelChoices)
+        ),
+        EnvSettingDefinition(
+            group: "Spawn Models (per CLI)",
+            key: "THREADKEEPER_SPAWN__MODEL__GEMINI",
+            title: "Gemini (legacy) model",
+            detail: "Model id or alias passed to the legacy gemini --model.",
+            defaultValue: "",
+            kind: .choice(geminiLegacyModelChoices)
+        ),
+        EnvSettingDefinition(
+            group: "Spawn Models (per CLI)",
+            key: "THREADKEEPER_SPAWN__MODEL__COPILOT",
+            title: "Copilot model",
+            detail: "Model passed to copilot --model, for copilot-routed roles.",
+            defaultValue: "",
+            kind: .text
+        )
+    ]
+    + spawnRoles.map { role in
+        EnvSettingDefinition(
+            group: "Spawn Models (per role)",
+            key: "THREADKEEPER_SPAWN__MODEL__\(role.token)",
+            title: "\(role.label) model",
+            detail: "Overrides this role's model; Default = its CLI's model. "
+                + "Must be valid for the CLI the role runs on.",
+            defaultValue: "",
+            kind: .choice(roleModelChoices)
+        )
+    }
+
+private let envSettingDefinitions: [EnvSettingDefinition] =
+    baseEnvSettingDefinitions + spawnRoutingDefinitions
+
+private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
     EnvSettingDefinition(
         group: "Core",
         key: disableBackgroundDaemonsKey,
@@ -397,72 +510,9 @@ private let envSettingDefinitions: [EnvSettingDefinition] = [
         defaultValue: "1",
         kind: .number
     ),
-
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__DEFAULT",
-        title: "Default CLI",
-        detail: "Fallback agent CLI when a role has no explicit route.",
-        defaultValue: "",
-        kind: .choice(cliChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__LOOP__EVOLVE_APPLIER",
-        title: "Evolve applier CLI",
-        detail: "CLI used by the role that writes code and opens PRs.",
-        defaultValue: "claude",
-        kind: .choice(cliChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__CLAUDE",
-        title: "Claude model",
-        detail: "Model pin passed to Claude Code --model.",
-        defaultValue: "opus",
-        kind: .choice(claudeModelChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__CODEX",
-        title: "Codex model",
-        detail: "Model pin passed to codex exec -m.",
-        defaultValue: "gpt-5.5",
-        kind: .choice(codexModelChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__AGY",
-        title: "Antigravity model",
-        detail: "Model label from `agy models`; agy is the executable for Antigravity.",
-        defaultValue: "Gemini 3.1 Pro (High)",
-        kind: .choice(antigravityModelChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__GEMINI",
-        title: "Gemini legacy model",
-        detail: "Model id or routing alias passed to legacy gemini --model.",
-        defaultValue: "auto",
-        kind: .choice(geminiLegacyModelChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER",
-        title: "Evolve applier model",
-        detail: "Model pin for the code-writing evolve role.",
-        defaultValue: "opus",
-        kind: .choice(roleModelChoices)
-    ),
-    EnvSettingDefinition(
-        group: "Spawn Routing",
-        key: "THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR",
-        title: "Dialectic validator model",
-        detail: "Model pin for claim-validation work.",
-        defaultValue: "opus",
-        kind: .choice(roleModelChoices)
-    ),
 ]
+// Spawn Routing sections are generated in `spawnRoutingDefinitions` above so
+// every role/CLI/model knob is listed — see envSettingDefinitions.
 
 private var envSettingGroups: [String] {
     var groups: [String] = []
