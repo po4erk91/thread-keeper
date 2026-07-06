@@ -127,7 +127,19 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "THREADKEEPER_DISABLE_BG_DAEMONS" in swift
     assert "setThreadKeeperDisabled(_ disabled: Bool, restart: Bool)" in swift
     assert "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S" in swift
-    assert "THREADKEEPER_SPAWN__MODEL__EVOLVE_APPLIER" in swift
+    # Spawn routing is generated from the spawn-role list, so per-role keys are
+    # interpolated (THREADKEEPER_SPAWN__{LOOP,MODEL}__<token>) rather than
+    # literal. Assert the generators plus every role token, so the panel is
+    # verified to expose a CLI + model knob for all eight spawn roles.
+    assert "THREADKEEPER_SPAWN__LOOP__\\(role.token)" in swift
+    assert "THREADKEEPER_SPAWN__MODEL__\\(role.token)" in swift
+    for _role_token in (
+        "SHADOW_OBSERVER", "ARCHIVIST", "CURATOR", "CANDIDATE_REVIEWER",
+        "DIALECTIC_VALIDATOR", "PROBE_RUNNER", "EVOLVE_REVIEWER",
+        "EVOLVE_APPLIER",
+    ):
+        assert f'token: "{_role_token}"' in swift
+    assert "THREADKEEPER_SPAWN__MODEL__COPILOT" in swift
     assert 'Label("Save & Restart", systemImage: "arrow.clockwise.circle")' in swift
     assert 'process.arguments = ["-TERM", "-f", "threadkeeper.server"]' in swift
 
