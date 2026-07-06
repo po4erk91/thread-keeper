@@ -75,6 +75,7 @@ _DAEMON_FOR_INTERVAL: dict[str, tuple[str, str]] = {
         "dialectic_miner", "start_dialectic_miner_daemon"),
     "DIALECTIC_VALIDATE_INTERVAL_S": (
         "dialectic_validator", "start_dialectic_validator_daemon"),
+    "RETENTION_INTERVAL_S": ("retention", "start_retention_daemon"),
 }
 
 

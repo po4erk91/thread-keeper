@@ -193,6 +193,31 @@ def test_enable_transition_starts_daemon(tmp_path, monkeypatch):
     assert calls == ["started"]
 
 
+def test_enable_transition_starts_retention_daemon(tmp_path, monkeypatch):
+    """Enabling retention live (0 → >0) hot-starts its daemon, same as the
+    other loops — no server restart needed to begin pruning."""
+    # Ensure a clean 0 baseline regardless of the runner's own environment:
+    # a host that already exports THREADKEEPER_RETENTION_INTERVAL_S (e.g. it's
+    # set in the developer's ~/.claude/settings.json) would otherwise make the
+    # 0→>0 transition invisible at import time.
+    monkeypatch.delenv("THREADKEEPER_RETENTION_INTERVAL_S", raising=False)
+    pkg = _bootstrap(tmp_path, monkeypatch, shadow="0")
+    w = pkg["watcher"]
+    w.run_config_watch_pass()  # initialize (retention disabled by default)
+
+    from threadkeeper import retention
+    calls = []
+    monkeypatch.setattr(
+        retention, "start_retention_daemon", lambda: calls.append("started")
+    )
+    _write_env(pkg["settings_json"],
+               {"THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+                "THREADKEEPER_RETENTION_INTERVAL_S": "86400"})
+    w.run_config_watch_pass()
+    assert calls == ["started"]
+    assert pkg["config"].RETENTION_INTERVAL_S == 86400.0
+
+
 def test_interval_change_does_not_restart_running_daemon(tmp_path, monkeypatch):
     """600 → 900 is not an enable transition; the running loop self-adjusts."""
     pkg = _bootstrap(tmp_path, monkeypatch, shadow="600")
