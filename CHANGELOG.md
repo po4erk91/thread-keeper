@@ -9,6 +9,19 @@ version bumps follow semver per the policy in
 
 ### Changed
 
+- **Evolve loops run in a dedicated managed checkout by default (#164
+  isolation).** The reviewer and applier resolve their working checkout to
+  `~/.threadkeeper/evolve-repo` even on an editable install, instead of the
+  package-parent checkout. The loops branch-switch, merge and hard-reset the
+  tree they work in, and on a dev install the package-parent is the user's own
+  working tree — running there flipped its branch out from under in-progress
+  edits (observed this session: the applier left the shared checkout on a
+  `roadmap/issue-*` branch mid-session). The managed checkout is auto-cloned +
+  venv-provisioned on first use (unchanged machinery) and gives the issue → PR
+  flow a clean origin-tracking base. `THREADKEEPER_EVOLVE_AUTO_CLONE=0` keeps
+  the old in-place behaviour on editable installs; `THREADKEEPER_EVOLVE_REPO_ROOT`
+  still pins an explicit checkout.
+
 - **Menu-bar env editor lists the full Spawn Routing surface.** The Spawn
   Routing panel previously showed a hand-picked subset (default CLI, one loop
   CLI, four model pins). It now generates every knob from the spawn-role list:

@@ -473,17 +473,27 @@ def _resolve_repo_root() -> Path:
     """Pure repo-root resolution — no network, no git subprocess.
 
     Order:
-      1. explicit EVOLVE_REPO_ROOT override;
-      2. the package's parent dir when it is itself a checkout (editable
-         install.sh), detected cheaply by a `.git` entry;
-      3. the managed checkout under the DB dir (PyPI/site-packages installs),
-         which `_ensure_repo_ready()` auto-provisions on first use."""
+      1. explicit EVOLVE_REPO_ROOT override — the operator pinned a checkout;
+      2. a dedicated managed checkout under the DB dir (the DEFAULT). The evolve
+         loops branch-switch, merge, and reset the tree they work in, so they
+         must NOT run inside the editable package-parent checkout — for a dev
+         install that is the user's own working tree, and the loops would flip
+         its branch out from under an in-progress edit (isolation, #164). The
+         managed checkout is auto-provisioned by `_ensure_repo_ready()` and
+         tracks origin, which is also the correct base for the issue → PR flow;
+      3. only when auto-clone is disabled does an editable package-parent
+         checkout serve as the in-place fallback (no clone is permitted then).
+
+    Set THREADKEEPER_EVOLVE_REPO_ROOT to run against a specific checkout, or
+    THREADKEEPER_EVOLVE_AUTO_CLONE=0 to keep the pre-isolation in-place
+    behaviour on an editable install."""
     override = (EVOLVE_REPO_ROOT or "").strip()
     if override:
         return Path(override).expanduser()
-    pkg_parent = Path(__file__).resolve().parent.parent
-    if (pkg_parent / ".git").exists():
-        return pkg_parent
+    if not EVOLVE_AUTO_CLONE:
+        pkg_parent = Path(__file__).resolve().parent.parent
+        if (pkg_parent / ".git").exists():
+            return pkg_parent
     return _managed_repo_dir()
 
 
