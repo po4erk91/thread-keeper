@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .config import PROBE_INTERVAL_S, PROBE_COOLDOWN_S, TASK_LOG_DIR
 from .db import get_db
-from . import identity
+from . import daemon_state, identity
 from .identity import _detect_self_cid, _emit
 from .helpers import alive, single_flight_lock
 
@@ -208,12 +208,14 @@ def _spawn_probe_child(probe: sqlite3.Row) -> str:
     )
 
 
-def run_probe_pass(force: bool = False) -> str:
+def run_probe_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """One probe pass. Phase 1: grade finished children's answers. Phase 2:
     spawn the next due probe (unless one is already running).
 
     Status strings (for observability / tests):
       'disabled'                     — knob off and not forced
+      'not_due'                      — scheduled tick, another server already
+                                       ran this loop within the interval
       'graded=N no_due'              — nothing due to spawn this tick
       'graded=N probe_child_running' — a probe child is still in flight
       'graded=N spawned …'           — launched the next probe child
@@ -222,6 +224,10 @@ def run_probe_pass(force: bool = False) -> str:
     if PROBE_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "probe", PROBE_INTERVAL_S, scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     now_t = int(time.time())
     graded = _grade_pending(conn)
 
@@ -260,7 +266,7 @@ def run_probe_pass(force: bool = False) -> str:
 def _serve_loop() -> None:
     while True:
         try:
-            run_probe_pass()
+            run_probe_pass(scheduled=True)
         except Exception:
             logger.debug("probe_daemon tick failed", exc_info=True)
         daemon_sleep(PROBE_INTERVAL_S)

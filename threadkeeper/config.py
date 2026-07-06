@@ -243,6 +243,11 @@ class Settings(BaseSettings):
         ),
     )
     memory_guard_cooldown_s: int = 300
+    # Reclaim guard: skip unloading the embedding model when it was used
+    # within this window. An active ingester lazily reloads the model seconds
+    # after an unload, so trimming a hot model is net-negative (fresh copy
+    # resident while the freed arenas are still mapped). 0 disables the guard.
+    memory_guard_embed_hot_s: float = 300.0
 
     # ── Auto-review ──────────────────────────────────────────────────────────
     auto_review: bool = Field(
@@ -658,6 +663,7 @@ def _derive_constants(s: "Settings") -> dict:
         "MEMORY_GUARD_RETIRE_LIVE": s.memory_guard_retire_live,
         "MEMORY_GUARD_NOTIFY": s.memory_guard_notify,
         "MEMORY_GUARD_COOLDOWN_S": s.memory_guard_cooldown_s,
+        "MEMORY_GUARD_EMBED_HOT_S": s.memory_guard_embed_hot_s,
         "SHADOW_REVIEW_INTERVAL_S": s.shadow_review_interval_s,
         "SHADOW_REVIEW_WINDOW_S": s.shadow_review_window_s,
         "SHADOW_REVIEW_MIN_CHARS": s.shadow_review_min_chars,

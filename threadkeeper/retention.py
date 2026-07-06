@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 
-from . import identity
+from . import daemon_state, identity
 from .config import (
     BACKGROUND_DAEMONS_ALLOWED,
     DIALOG_RETENTION_DAYS,
@@ -182,17 +182,23 @@ def _record_pass(conn: sqlite3.Connection, summary: str) -> None:
         logger.debug("retention: failed to record pass", exc_info=True)
 
 
-def run_retention_pass(force: bool = False) -> str:
+def run_retention_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Run one retention/compaction pass.
 
     Returns a compact status string. Destructive table pruning runs only for
     windows whose day knob is >0. `force=True` bypasses the daemon interval
     switch for tests/manual calls, but does not override individual windows.
+    A scheduled tick returns 'not_due' when another server already ran this
+    loop within the interval (daemon_state).
     """
     if RETENTION_INTERVAL_S <= 0 and not force:
         return "disabled"
 
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "retention", RETENTION_INTERVAL_S, scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     now = int(time.time())
     counts = {
         "dialog": _prune_dialog(conn, _age_cutoff(now, DIALOG_RETENTION_DAYS)),
@@ -245,7 +251,7 @@ def run_retention_pass(force: bool = False) -> str:
 def _serve_loop() -> None:
     while True:
         try:
-            run_retention_pass()
+            run_retention_pass(scheduled=True)
         except Exception:
             logger.debug("retention tick failed", exc_info=True)
         daemon_sleep(RETENTION_INTERVAL_S)

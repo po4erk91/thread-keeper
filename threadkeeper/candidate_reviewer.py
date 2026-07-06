@@ -46,7 +46,7 @@ from .config import (
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
-from . import identity
+from . import daemon_state, identity
 
 logger = logging.getLogger(__name__)
 
@@ -295,11 +295,13 @@ def _review_spawn_lock():
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
 
-def run_review_pass(force: bool = False) -> str:
+def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one candidate review pass synchronously.
 
     Returns a short status string:
       - 'disabled'             — env knob off and not forced
+      - 'not_due'              — scheduled tick, but another server already
+                                 ran this loop within the interval
       - 'below_threshold n=X'  — fewer than CANDIDATE_REVIEW_MIN
                                  pending; skip the spawn
       - 'spawned task_id=…'    — reviewer child launched
@@ -307,6 +309,10 @@ def run_review_pass(force: bool = False) -> str:
     """
     if CANDIDATE_REVIEW_INTERVAL_S <= 0 and not force:
         return "disabled"
+    if not daemon_state.claim_pass(
+        "candidate_review", CANDIDATE_REVIEW_INTERVAL_S, scheduled=scheduled,
+    ):
+        return "not_due"
     with _review_spawn_lock() as locked:
         if not locked:
             return "candidate_review_running n=1 (single-flight lock)"
@@ -377,7 +383,7 @@ def _serve_loop() -> None:
     """Daemon body. Sleep → tick → sleep, until process dies."""
     while True:
         try:
-            run_review_pass()
+            run_review_pass(scheduled=True)
         except Exception:
             logger.debug("candidate_reviewer tick failed", exc_info=True)
         daemon_sleep(CANDIDATE_REVIEW_INTERVAL_S)

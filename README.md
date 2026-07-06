@@ -959,6 +959,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_GUARD_AGG_WARN_MB` | 2048 | notify/request trim when all server RSS crosses this |
 | `THREADKEEPER_MEMORY_GUARD_AGG_KILL_MB` | 3072 | under aggregate pressure, retire stale idle servers |
 | `THREADKEEPER_MEMORY_GUARD_RECLAIM_MB` | 1024 | local RSS floor before warn-triggered self trim |
+| `THREADKEEPER_MEMORY_GUARD_EMBED_HOT_S` | 300 | don't unload an embedding model used within this window (an active ingester reloads it seconds later, making the trim net-negative); ineffective reclaims also back off exponentially (30m→4h); 0 disables the hot guard |
 | `THREADKEEPER_MEMORY_GUARD_TARGET_SERVERS` | 1 | aggregate-pressure target after retiring stale idle servers |
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_IDLE_S` | 900 | heartbeat age before a non-self server is retireable |
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | "" (off) | allow retiring parent-alive MCP servers; off protects live clients |

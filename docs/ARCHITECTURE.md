@@ -298,6 +298,19 @@ check-running-then-spawn critical section. The `fcntl.flock` pidfile under
 the DB directory closes the same-host TOCTOU window; the tasks-table
 running-child check remains for stale-pid cleanup and status visibility.
 
+Orthogonal to concurrency, **cadence** is persisted in the `daemon_state`
+table (`daemon_state.claim_pass`): each scheduled tick claims its slot with
+one atomic upsert keyed by loop name, so a freshly started MCP server does
+not treat every interval daemon as overdue and refire it (pre-fix, every new
+CLI session ran its own "overdue" curator/probe/shadow pass — the flock only
+stops *concurrent* passes, not *frequent sequential* ones). Scheduled ticks
+that lose the claim return `not_due`; manual / tool-invoked passes bypass
+the gate but still record the run, pushing the next scheduled fire a full
+interval out. Applies to shadow_review, curator, candidate_reviewer,
+extract, dialectic miner/validator, probe, thread_janitor, and retention;
+evolve reviewer/applier, skill_updater, and auto_update keep their own
+pre-existing due gates.
+
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator behind
   `shadow-review.lock` plus the running shadow-child check. Lock-busy passes

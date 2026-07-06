@@ -441,6 +441,15 @@ CREATE TABLE IF NOT EXISTS resource_controls (
     result        TEXT
 );
 
+-- Cross-process daemon cadence: persisted last-run per interval loop, so a
+-- freshly started server doesn't consider every daemon overdue and refire it.
+-- Claimed atomically by daemon_state.claim_pass(); single-flight locks handle
+-- concurrency, this table handles frequency.
+CREATE TABLE IF NOT EXISTS daemon_state (
+    name        TEXT PRIMARY KEY,
+    last_run_at INTEGER NOT NULL
+);
+
 -- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
 -- across foreground status processes, reviewer/applier daemons, and spawned
 -- gh-wrapper children so one account-level throttle stops all workers.

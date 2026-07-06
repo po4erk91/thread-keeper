@@ -118,7 +118,7 @@ def memory_guard_reclaim(scope: str = "self") -> str:
     scope = (scope or "self").strip().lower()
     if scope not in {"self", "all"}:
         return "ERR bad_scope (use self|all)"
-    result = memory_guard.reclaim_memory(reason=f"manual:{scope}")
+    result = memory_guard.reclaim_memory(reason=f"manual:{scope}", force=True)
     out = [
         f"self pid={result['pid']} before={result['before_mb']}MB "
         f"after={result['after_mb']}MB freed={result['freed_mb']}MB",
