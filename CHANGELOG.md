@@ -73,6 +73,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **PyPI release authorization gate (#57).** Merge-to-main release readiness is
+  now read-only: it validates version/changelog metadata but no longer creates
+  tags or dispatches `publish.yml`, and its permissions are reduced to
+  `contents: read`. Publishing now requires a GitHub-verified signed annotated
+  `v*` tag, matching release metadata, and the protected `pypi` environment
+  before the Trusted Publisher upload job can run.
+
 - **Unified single-flight dispatch locks (#53).** Spawning daemons now share
   `helpers.single_flight_lock()` for their non-blocking `fcntl.flock` pidfiles
   instead of carrying local copies. Shadow review, evolve reviewer, and probe

@@ -1,4 +1,4 @@
-name: release tag
+name: release readiness
 
 on:
   workflow_run:
@@ -7,12 +7,11 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 jobs:
-  tag:
-    name: Tag successful main build
+  check:
+    name: Check release-ready main build
     runs-on: ubuntu-latest
     if: >
       github.event.workflow_run.conclusion == 'success' &&
@@ -48,23 +47,12 @@ jobs:
         run: |
           grep -q "^## v${VERSION} " CHANGELOG.md
 
-      - name: Create annotated tag
+      - name: Report maintainer release action
         if: steps.existing.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" "$SHA" -m "release: $TAG"
-          git push origin "refs/tags/$TAG"
-
-      - name: Dispatch publish workflow
-        if: steps.existing.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          # Tag pushes made with GITHUB_TOKEN do not reliably trigger new
-          # push-based workflow runs, so dispatch publish.yml explicitly.
-          gh workflow run publish.yml --ref "$TAG"
+          echo "::notice::Release metadata for $TAG is present on $SHA."
+          echo "::notice::Publishing now requires a maintainer-signed annotated tag:"
+          echo "::notice::git tag -s $TAG $SHA -m 'release: $TAG' && git push origin refs/tags/$TAG"

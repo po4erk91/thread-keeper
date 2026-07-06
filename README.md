@@ -64,6 +64,10 @@ Integrity API provenance from the expected GitHub Trusted Publisher. Dirty or
 diverged git checkouts are skipped rather than overwritten. Restarts are gated
 on install/setup success plus a subprocess import smoke check, so a broken or
 unverified update is recorded but the current server keeps running.
+Upstream PyPI publishing is intentionally gated: merge-to-main checks no longer
+dispatch uploads, and a release requires a maintainer-signed annotated `v*` tag
+plus the protected `pypi` GitHub Environment described in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 They also run a twice-weekly installed-skill updater by default. It keeps all
 configured CLI skill roots in sync, adopts newer local copies installed into a
