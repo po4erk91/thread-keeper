@@ -136,6 +136,12 @@ remains a live question.
   claims the exact observation batch before constructing the prompt, releases
   claims on spawn errors, and relies on the existing stale-claim lease requeue
   after parent crashes.
+- SQLite schema versioning (#59): `get_db()` now gates baseline schema setup
+  and legacy column migrations on `PRAGMA user_version`, runs v0 upgrades under
+  a `BEGIN IMMEDIATE` writer transaction, re-checks the version after waiting
+  for another migrator, and records `CURRENT_SCHEMA_VERSION` on success.
+  Duplicate-column `ALTER TABLE` errors remain the only swallowed migration
+  no-op; other migration `OperationalError`s are logged and raised.
 
 ---
 
@@ -788,8 +794,8 @@ deduplicated against the issues above):
   confused (injection-prone) child can mass-create skills in one pass (#98).
 
 Also extended existing issues with verified file:line detail rather than filing
-anew: `get_db` re-runs the full schema + ~25 migrations per call and leaks
-connections (→ #59); the `project='subagents'` exclusion is dead across six
+anew: the `get_db` per-call migration issue was closed by schema versioning
+(#59); the `project='subagents'` exclusion is dead across six
 modules (→ #36); pid-reuse also hits `task_kill`/`_reap_finished_tasks` (→ #66);
 a SIGKILL'd `_spawn_wrap` leaves a budget row pinned (→ #64); applied markers key
 on issue number, not PR url (→ #51); the roadmap apply pass double-fetches the

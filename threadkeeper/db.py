@@ -2,6 +2,7 @@
 Imported by every tool module that needs DB access."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 import logging
 import sqlite3
 
@@ -16,7 +17,15 @@ logger = logging.getLogger(__name__)
 # different dimension, set THREADKEEPER_EMBED_DIM AND drop & recreate the
 # *_vec tables; embeddings._vec_dim_ok warns loudly if a vector's width
 # doesn't match this. Re-exported here for callers that import db.EMBED_DIM.
-__all__ = ["EMBED_DIM", "get_db", "vec_available", "SCHEMA"]
+__all__ = [
+    "CURRENT_SCHEMA_VERSION",
+    "EMBED_DIM",
+    "get_db",
+    "vec_available",
+    "SCHEMA",
+]
+
+CURRENT_SCHEMA_VERSION = 1
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -522,6 +531,197 @@ CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
 END;
 """
 
+# Historical column migrations layered on top of the baseline SCHEMA.
+# Some columns are already present in new-table definitions; duplicate column
+# errors are the only expected no-op.
+LEGACY_COLUMN_MIGRATIONS = (
+    "ALTER TABLE threads ADD COLUMN claimed_at INTEGER",
+    "ALTER TABLE threads ADD COLUMN claimed_by_cid TEXT",
+    "ALTER TABLE signals ADD COLUMN task_id TEXT",
+    "ALTER TABLE sessions ADD COLUMN write_origin "
+    "TEXT NOT NULL DEFAULT 'foreground'",
+    "ALTER TABLE tasks ADD COLUMN rss_kb INTEGER",
+    "ALTER TABLE tasks ADD COLUMN rss_updated_at INTEGER",
+    "ALTER TABLE tasks ADD COLUMN tokens_in INTEGER",
+    "ALTER TABLE tasks ADD COLUMN tokens_out INTEGER",
+    "ALTER TABLE tasks ADD COLUMN tokens_total INTEGER",
+    "ALTER TABLE tasks ADD COLUMN cost_usd REAL",
+    "ALTER TABLE tasks ADD COLUMN duration_s INTEGER",
+    "ALTER TABLE tasks ADD COLUMN role TEXT",
+    "ALTER TABLE tasks ADD COLUMN write_origin TEXT",
+    "ALTER TABLE tasks ADD COLUMN permission_mode TEXT",
+    "ALTER TABLE tasks ADD COLUMN extra_allowed_tools TEXT",
+    "ALTER TABLE tasks ADD COLUMN capture_output INTEGER",
+    "ALTER TABLE tasks ADD COLUMN visible INTEGER",
+    "ALTER TABLE tasks ADD COLUMN slim INTEGER",
+    "ALTER TABLE tasks ADD COLUMN model TEXT",
+    "ALTER TABLE tasks ADD COLUMN effort TEXT",
+    "ALTER TABLE tasks ADD COLUMN append_system TEXT",
+    "ALTER TABLE tasks ADD COLUMN chosen_cli TEXT",
+    "ALTER TABLE tasks ADD COLUMN retry_of TEXT",
+    "ALTER TABLE tasks ADD COLUMN retry_root TEXT",
+    "ALTER TABLE tasks ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN timeout_respawned_as TEXT",
+    # Tier promotion machinery: discrete state machine over claims and skills.
+    "ALTER TABLE user_dialectic ADD COLUMN tier "
+    "TEXT NOT NULL DEFAULT 'hypothesis'",
+    "ALTER TABLE user_dialectic ADD COLUMN tier_changed_at INTEGER",
+    "ALTER TABLE user_dialectic ADD COLUMN valid_from INTEGER",
+    "ALTER TABLE user_dialectic ADD COLUMN valid_to INTEGER",
+    "ALTER TABLE skill_usage ADD COLUMN tier "
+    "TEXT NOT NULL DEFAULT 'hypothesis'",
+    "ALTER TABLE skill_usage ADD COLUMN tier_changed_at INTEGER",
+    # Weighted use counter on skills: foreground use counts separately from
+    # system-authored review-fork activity.
+    "ALTER TABLE skill_usage ADD COLUMN foreground_use_count "
+    "INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE skill_usage ADD COLUMN wrong_count "
+    "INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE skill_usage ADD COLUMN last_wrong_at INTEGER",
+    # Embedding backend tag. NULL = legacy sentence-transformers vectors.
+    "ALTER TABLE notes ADD COLUMN embed_backend TEXT",
+    "ALTER TABLE dialog_messages ADD COLUMN embed_backend TEXT",
+    # Dialectic validator lease columns.
+    "ALTER TABLE dialectic_observations ADD COLUMN claimed_at INTEGER",
+    "ALTER TABLE dialectic_observations ADD COLUMN claimed_by_task TEXT",
+    # Evolve triage state.
+    "ALTER TABLE evolve ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+    "ALTER TABLE evolve ADD COLUMN reviewed_at INTEGER",
+    "ALTER TABLE evolve ADD COLUMN review_reason TEXT",
+    # Concept dedup-on-write embedding columns.
+    "ALTER TABLE concepts ADD COLUMN embedding BLOB",
+    "ALTER TABLE concepts ADD COLUMN embed_backend TEXT",
+)
+
+POST_SCHEMA_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
+    "ON user_dialectic(tier)",
+    "CREATE INDEX IF NOT EXISTS idx_dialectic_validity "
+    "ON user_dialectic(valid_from, valid_to)",
+    "CREATE INDEX IF NOT EXISTS idx_dialectic_obs_claimed "
+    "ON dialectic_observations(status, claimed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
+    "ON skill_usage(tier)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_retry_root "
+    "ON tasks(retry_root)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_retry_of "
+    "ON tasks(retry_of)",
+)
+
+
+def _iter_sql_statements(script: str) -> Iterator[str]:
+    """Yield complete SQLite statements without breaking trigger bodies."""
+    buf: list[str] = []
+    for line in script.splitlines():
+        if not line.strip() and not buf:
+            continue
+        buf.append(line)
+        statement = "\n".join(buf).strip()
+        if sqlite3.complete_statement(statement):
+            yield statement
+            buf.clear()
+    if any(line.strip() for line in buf):
+        raise ValueError("incomplete schema SQL statement")
+
+
+def _user_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return int(row[0])
+
+
+def _set_user_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(f"PRAGMA user_version = {int(version)}")
+
+
+def _is_duplicate_column_error(exc: sqlite3.OperationalError) -> bool:
+    return "duplicate column name" in str(exc).lower()
+
+
+def _apply_column_migration(conn: sqlite3.Connection, ddl: str) -> None:
+    try:
+        conn.execute(ddl)
+    except sqlite3.OperationalError as exc:
+        if _is_duplicate_column_error(exc):
+            return
+        logger.warning("SQLite schema migration DDL failed: %s", ddl)
+        raise
+
+
+def _backfill_schema_data(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE user_dialectic SET valid_from=created_at "
+        "WHERE valid_from IS NULL"
+    )
+    conn.execute(
+        "UPDATE user_dialectic "
+        "SET valid_to=("
+        "  SELECT COALESCE(new.valid_from, new.created_at) "
+        "  FROM user_dialectic AS new "
+        "  WHERE new.id=user_dialectic.superseded_by"
+        ") "
+        "WHERE state='superseded' "
+        "  AND superseded_by IS NOT NULL "
+        "  AND valid_to IS NULL "
+        "  AND EXISTS ("
+        "    SELECT 1 FROM user_dialectic AS new "
+        "    WHERE new.id=user_dialectic.superseded_by"
+        "  )"
+    )
+
+
+def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
+    if from_version != 0:
+        raise RuntimeError(
+            f"unsupported SQLite schema version {from_version}; "
+            f"expected 0..{CURRENT_SCHEMA_VERSION}"
+        )
+
+    for statement in _iter_sql_statements(SCHEMA):
+        conn.execute(statement)
+    for ddl in LEGACY_COLUMN_MIGRATIONS:
+        _apply_column_migration(conn, ddl)
+    _backfill_schema_data(conn)
+    for idx in POST_SCHEMA_INDEXES:
+        conn.execute(idx)
+    _set_user_version(conn, CURRENT_SCHEMA_VERSION)
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    version = _user_version(conn)
+    if version == CURRENT_SCHEMA_VERSION:
+        return
+    if version > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"database schema version {version} is newer than this "
+            f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
+        )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-check after taking the writer lock. A concurrent process may have
+        # completed the migration while this connection waited.
+        version = _user_version(conn)
+        if version < CURRENT_SCHEMA_VERSION:
+            _run_schema_migrations(conn, version)
+        elif version > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema version {version} is newer than this "
+                f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
+            )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.warning(
+            "SQLite schema migration failed; user_version remains below %s",
+            CURRENT_SCHEMA_VERSION,
+            exc_info=True,
+        )
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
     harden_storage_paths(
@@ -546,7 +746,7 @@ def get_db() -> sqlite3.Connection:
     vec_loaded = _try_load_vec(conn)
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
-    conn.executescript(SCHEMA)
+    _ensure_schema(conn)
     if vec_loaded:
         # Create vec0 virtual tables side-by-side with the BLOB-embedding
         # ones. Existing data in notes.embedding / dialog_messages.embedding
@@ -574,136 +774,7 @@ def get_db() -> sqlite3.Connection:
             )
         except sqlite3.OperationalError as e:
             logger.debug("vec0 table creation skipped: %s", e)
-    # Lightweight column migrations. ALTER TABLE ADD COLUMN is idempotent-safe
-    # if we swallow OperationalError ("duplicate column name").
-    for ddl in (
-        "ALTER TABLE threads ADD COLUMN claimed_at INTEGER",
-        "ALTER TABLE threads ADD COLUMN claimed_by_cid TEXT",
-        "ALTER TABLE signals ADD COLUMN task_id TEXT",
-        "ALTER TABLE sessions ADD COLUMN write_origin "
-        "TEXT NOT NULL DEFAULT 'foreground'",
-        "ALTER TABLE tasks ADD COLUMN rss_kb INTEGER",
-        "ALTER TABLE tasks ADD COLUMN rss_updated_at INTEGER",
-        "ALTER TABLE tasks ADD COLUMN tokens_in INTEGER",
-        "ALTER TABLE tasks ADD COLUMN tokens_out INTEGER",
-        "ALTER TABLE tasks ADD COLUMN tokens_total INTEGER",
-        "ALTER TABLE tasks ADD COLUMN cost_usd REAL",
-        "ALTER TABLE tasks ADD COLUMN duration_s INTEGER",
-        "ALTER TABLE tasks ADD COLUMN role TEXT",
-        "ALTER TABLE tasks ADD COLUMN write_origin TEXT",
-        "ALTER TABLE tasks ADD COLUMN permission_mode TEXT",
-        "ALTER TABLE tasks ADD COLUMN extra_allowed_tools TEXT",
-        "ALTER TABLE tasks ADD COLUMN capture_output INTEGER",
-        "ALTER TABLE tasks ADD COLUMN visible INTEGER",
-        "ALTER TABLE tasks ADD COLUMN slim INTEGER",
-        "ALTER TABLE tasks ADD COLUMN model TEXT",
-        "ALTER TABLE tasks ADD COLUMN effort TEXT",
-        "ALTER TABLE tasks ADD COLUMN append_system TEXT",
-        "ALTER TABLE tasks ADD COLUMN chosen_cli TEXT",
-        "ALTER TABLE tasks ADD COLUMN retry_of TEXT",
-        "ALTER TABLE tasks ADD COLUMN retry_root TEXT",
-        "ALTER TABLE tasks ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE tasks ADD COLUMN timeout_respawned_as TEXT",
-        # Tier promotion machinery — discrete state machine over claims
-        # and skills. Independent of the continuous confidence/state
-        # columns; tier is what gates downstream behavior (brief framing,
-        # curator archival, auto-action thresholds).
-        "ALTER TABLE user_dialectic ADD COLUMN tier "
-        "TEXT NOT NULL DEFAULT 'hypothesis'",
-        "ALTER TABLE user_dialectic ADD COLUMN tier_changed_at INTEGER",
-        "ALTER TABLE user_dialectic ADD COLUMN valid_from INTEGER",
-        "ALTER TABLE user_dialectic ADD COLUMN valid_to INTEGER",
-        "ALTER TABLE skill_usage ADD COLUMN tier "
-        "TEXT NOT NULL DEFAULT 'hypothesis'",
-        "ALTER TABLE skill_usage ADD COLUMN tier_changed_at INTEGER",
-        # Weighted use counter on skills: a foreground 'use' counts 1.0,
-        # background_review/shadow_review/curator 'use' counts 0.5. Lets
-        # tier promotion ignore self-generated activity (skills the
-        # system-itself used through review-forks).
-        "ALTER TABLE skill_usage ADD COLUMN foreground_use_count "
-        "INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE skill_usage ADD COLUMN wrong_count "
-        "INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE skill_usage ADD COLUMN last_wrong_at INTEGER",
-        # Embedding backend tag. NULL = legacy (sentence-transformers, pre-ONNX
-        # migration). New/recomputed rows carry 'onnx' or 'sentence-transformers'
-        # so `tk-migrate-embeddings` can find stale vectors and skip done ones.
-        "ALTER TABLE notes ADD COLUMN embed_backend TEXT",
-        "ALTER TABLE dialog_messages ADD COLUMN embed_backend TEXT",
-        # Dialectic validator lease: rows are still status='pending' until the
-        # child resolves them, but claimed rows are no longer visible backlog.
-        # If the child dies, the validator requeues stale claims by clearing
-        # these columns.
-        "ALTER TABLE dialectic_observations ADD COLUMN claimed_at INTEGER",
-        "ALTER TABLE dialectic_observations ADD COLUMN claimed_by_task TEXT",
-        # Evolve triage: the autonomous evolve reviewer moves a suggestion
-        # from 'pending' to 'promoted' (still relevant, surface it sharply
-        # for the foreground agent / human to APPLY) or 'dismissed' (dup /
-        # superseded / stale). The legacy `applied` flag stays for the human
-        # "I implemented this" mark. status default 'pending' so existing
-        # rows enter the queue.
-        "ALTER TABLE evolve ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
-        "ALTER TABLE evolve ADD COLUMN reviewed_at INTEGER",
-        "ALTER TABLE evolve ADD COLUMN review_reason TEXT",
-        # Concept dedup-on-write: store the description embedding so the
-        # register/extract path can re-corroborate an equivalent invariant
-        # (cosine over `description`) and bump last_evidence_at instead of
-        # inserting a near-duplicate row. embed_backend tags the vector the
-        # same way notes/dialog_messages are tagged (NULL = no embedding).
-        "ALTER TABLE concepts ADD COLUMN embedding BLOB",
-        "ALTER TABLE concepts ADD COLUMN embed_backend TEXT",
-    ):
-        try:
-            conn.execute(ddl)
-        except sqlite3.OperationalError:
-            pass
-
-    try:
-        conn.execute(
-            "UPDATE user_dialectic SET valid_from=created_at "
-            "WHERE valid_from IS NULL"
-        )
-        conn.execute(
-            "UPDATE user_dialectic "
-            "SET valid_to=("
-            "  SELECT COALESCE(new.valid_from, new.created_at) "
-            "  FROM user_dialectic AS new "
-            "  WHERE new.id=user_dialectic.superseded_by"
-            ") "
-            "WHERE state='superseded' "
-            "  AND superseded_by IS NOT NULL "
-            "  AND valid_to IS NULL "
-            "  AND EXISTS ("
-            "    SELECT 1 FROM user_dialectic AS new "
-            "    WHERE new.id=user_dialectic.superseded_by"
-            "  )"
-        )
-    except sqlite3.OperationalError:
-        pass
-
-    # Indexes for tier-aware queries. Safe to repeat (IF NOT EXISTS).
-    for idx in (
-        "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
-        "ON user_dialectic(tier)",
-        "CREATE INDEX IF NOT EXISTS idx_dialectic_validity "
-        "ON user_dialectic(valid_from, valid_to)",
-        "CREATE INDEX IF NOT EXISTS idx_dialectic_obs_claimed "
-        "ON dialectic_observations(status, claimed_at)",
-        "CREATE INDEX IF NOT EXISTS idx_skill_usage_tier "
-        "ON skill_usage(tier)",
-        "CREATE INDEX IF NOT EXISTS idx_tasks_retry_root "
-        "ON tasks(retry_root)",
-        "CREATE INDEX IF NOT EXISTS idx_tasks_retry_of "
-        "ON tasks(retry_of)",
-    ):
-        try:
-            conn.execute(idx)
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    conn.commit()
     harden_storage_paths(
         DB_PATH,
         env_file=_ENV_FILE,

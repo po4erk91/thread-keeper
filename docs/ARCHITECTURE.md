@@ -16,7 +16,7 @@ threadkeeper/
 ├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
-├── db.py              SCHEMA + migrations + WAL-knobs + sqlite-vec loader
+├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
 ├── verify_ingest.py   cross-CLI production verification — slot coverage + PASS/PARTIAL/FAIL verdict (issue #1)
@@ -137,6 +137,17 @@ startup and `get_db()` best-effort harden the default store:
 `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
 sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
 `0600`. Logically six levels:
+
+`get_db()` gates baseline schema setup and legacy column migrations with
+SQLite `PRAGMA user_version`. Databases at the current version skip the
+historical `ALTER TABLE` list entirely; v0 databases acquire a
+`BEGIN IMMEDIATE` writer transaction, create baseline tables/indexes, apply
+legacy columns, run data backfills, then set `user_version` to the code's
+`CURRENT_SCHEMA_VERSION`. A second process that waited on the writer lock
+re-checks `user_version` before doing work, so only one process performs the
+migration. Duplicate-column `ALTER TABLE` failures are the only swallowed
+migration errors; any other `OperationalError` is logged and raised with the
+version left unchanged for a retry.
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
