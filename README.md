@@ -1130,6 +1130,12 @@ mode for multi-writer concurrency. Optional `notes_vec` / `dialog_vec`
 HNSW indexes through `sqlite-vec` for sub-linear semantic search;
 fallback to Python-side cosine when the extension is missing.
 
+Schema bootstrap uses SQLite `PRAGMA user_version`: a current database skips
+legacy `ALTER TABLE` migrations on later `get_db()` calls, while an old or
+fresh v0 database migrates once under a writer transaction and records the
+current version. Duplicate-column migrations are treated as the only expected
+no-op; other DDL errors are logged and raised.
+
 On POSIX systems, startup and `get_db()` harden the default local store
 best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
 `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
