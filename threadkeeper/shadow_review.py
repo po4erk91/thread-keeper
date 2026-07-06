@@ -49,7 +49,7 @@ from .harvest import (
     SPAWNED_SESSION_MARKERS as _SPAWNED_SESSION_MARKERS,
     harvest_exclusion_cte,
 )
-from . import identity
+from . import daemon_state, identity
 
 logger = logging.getLogger(__name__)
 
@@ -511,12 +511,14 @@ def shadow_telemetry(conn: sqlite3.Connection,
             "log_dir": str(log_dir)}
 
 
-def run_shadow_pass(force: bool = False) -> str:
+def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one shadow pass synchronously. Used by the daemon AND by
     the MCP tool for manual triggering / testing.
 
     Returns a short status string for observability:
       - 'disabled'        — env knob off and not forced
+      - 'not_due'         — scheduled tick, but another server already ran
+                            this loop within the interval (daemon_state)
       - 'no_window'       — no fresh dialog since last cursor
       - 'too_short'       — window exists but < MIN_CHARS
       - 'spawned task_id=…' — evaluator child launched
@@ -525,6 +527,11 @@ def run_shadow_pass(force: bool = False) -> str:
     if SHADOW_REVIEW_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "shadow_review", SHADOW_REVIEW_INTERVAL_S,
+        scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     floor = _last_shadow_rowid(conn)
     dump, high_water, n_chars = _collect_window(
         conn, floor, SHADOW_REVIEW_WINDOW_S,
@@ -598,7 +605,7 @@ def _serve_loop() -> None:
     """Daemon body. Sleep → tick → sleep, until process dies."""
     while True:
         try:
-            run_shadow_pass()
+            run_shadow_pass(scheduled=True)
         except Exception:
             logger.debug("shadow_review tick failed", exc_info=True)
         daemon_sleep(SHADOW_REVIEW_INTERVAL_S)

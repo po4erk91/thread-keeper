@@ -25,7 +25,7 @@ from .config import (
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
-from . import identity
+from . import daemon_state, identity
 from .identity import _ensure_session
 
 logger = logging.getLogger(__name__)
@@ -540,10 +540,17 @@ def _running_validator_children(conn: sqlite3.Connection) -> list[str]:
     return running
 
 
-def run_validate_pass(force: bool = False) -> str:
+def run_validate_pass(force: bool = False, *, scheduled: bool = False) -> str:
+    """One validate pass. A scheduled tick returns 'not_due' when another
+    server already ran this loop within the interval (daemon_state)."""
     if DIALECTIC_VALIDATE_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "dialectic_validate", DIALECTIC_VALIDATE_INTERVAL_S,
+        scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     _ensure_session(conn)
     now = int(time.time())
     _release_finished_claims(conn, now)
@@ -632,7 +639,7 @@ def run_validate_pass(force: bool = False) -> str:
 def _serve_loop() -> None:
     while True:
         try:
-            run_validate_pass()
+            run_validate_pass(scheduled=True)
         except Exception:
             logger.debug("dialectic_validator tick failed", exc_info=True)
         daemon_sleep(DIALECTIC_VALIDATE_INTERVAL_S)

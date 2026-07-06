@@ -123,6 +123,37 @@ def test_parse_usage_codex_tokens_used_trailer(db_mod):
     assert usage.tokens_total == 44777
 
 
+def test_parse_usage_ignores_prose_dollar_amounts(db_mod):
+    """A child that merely DISCUSSES money must not record it as spend —
+    observed in production as a $4,445 ad-spend figure landing in cost_usd.
+    Only an explicit cost label counts."""
+    import threadkeeper._spawn_wrap as w
+    usage = w.parse_usage(
+        "the ad spend was $4,445 across campaigns\nfinal answer: done\n"
+    )
+    assert usage.cost_usd is None
+
+
+def test_parse_usage_ignores_trailer_lookalikes_far_from_end(db_mod):
+    """Usage trailers print at the END of a run; a lookalike buried deep in
+    the child's narrative output is not a trailer."""
+    import threadkeeper._spawn_wrap as w
+    filler = "\n".join(f"narrative line {i}" for i in range(200))
+    usage = w.parse_usage("tokens used\n9,876\n" + filler)
+    assert usage.tokens_total is None
+
+
+def test_parse_usage_drops_implausible_values(db_mod):
+    """Values beyond plausibility bounds are mis-parses, not measurements —
+    better NULL than poisoning the 24h budget-admission sums."""
+    import threadkeeper._spawn_wrap as w
+    usage = w.parse_usage(
+        "total cost: $99,999\ntokens used\n999,999,999,999\n"
+    )
+    assert usage.cost_usd is None
+    assert usage.tokens_total is None
+
+
 def test_record_persists_usage_and_duration(db_mod):
     db, db_path = db_mod
     _mk_task(db, "tk_usage")

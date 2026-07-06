@@ -452,3 +452,77 @@ def test_maybe_notify_keeps_dict_bounded(monkeypatch):
         assert len(mg._last_notify_at) <= 1
     finally:
         mg._last_notify_at.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# reclaim_memory guards: hot-model skip + ineffective-reclaim back-off
+# ──────────────────────────────────────────────────────────────────────
+
+def test_reclaim_skips_hot_model(mp_with_cid, monkeypatch):
+    """A model used seconds ago is not unloaded — the ingester would reload
+    a fresh copy immediately, making the reclaim net-negative."""
+    mp_with_cid(_FAKE_CID)
+    import time as _time
+    from threadkeeper import embeddings, memory_guard as mg
+
+    monkeypatch.setattr(mg, "MEMORY_GUARD_EMBED_HOT_S", 300.0)
+    monkeypatch.setattr(mg, "_reclaim_backoff_until", 0.0)
+    monkeypatch.setattr(mg, "_reclaim_fail_streak", 0)
+    monkeypatch.setattr(mg, "_log_line", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "model_loaded", lambda: True)
+    monkeypatch.setattr(embeddings, "last_used_at", lambda: _time.time())
+    unloaded: list[int] = []
+    monkeypatch.setattr(
+        embeddings, "unload_model", lambda: unloaded.append(1) or True
+    )
+
+    out = mg.reclaim_memory(reason="aggregate_warn")
+    assert out.get("skipped") == "model_hot"
+    assert out["freed_mb"] == 0
+    assert unloaded == []
+
+
+def test_reclaim_force_bypasses_hot_guard(mp_with_cid, monkeypatch):
+    """Manual tool invocations (force=True) trim regardless of the guards."""
+    mp_with_cid(_FAKE_CID)
+    import time as _time
+    from threadkeeper import embeddings, memory_guard as mg
+
+    monkeypatch.setattr(mg, "MEMORY_GUARD_EMBED_HOT_S", 300.0)
+    monkeypatch.setattr(mg, "_reclaim_backoff_until", _time.time() + 999)
+    monkeypatch.setattr(mg, "_reclaim_fail_streak", 3)
+    monkeypatch.setattr(mg, "_log_line", lambda *a, **k: None)
+    monkeypatch.setattr(mg, "_emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "model_loaded", lambda: True)
+    monkeypatch.setattr(embeddings, "last_used_at", lambda: _time.time())
+    unloaded: list[int] = []
+    monkeypatch.setattr(
+        embeddings, "unload_model", lambda: unloaded.append(1) or True
+    )
+
+    out = mg.reclaim_memory(reason="manual:self", force=True)
+    assert "skipped" not in out
+    assert unloaded == [1]
+
+
+def test_reclaim_backs_off_after_ineffective_pass(mp_with_cid, monkeypatch):
+    """A reclaim that GREW RSS (after > before — the observed pathology)
+    engages an exponential back-off instead of thrash-repeating."""
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import embeddings, memory_guard as mg
+
+    monkeypatch.setattr(mg, "MEMORY_GUARD_EMBED_HOT_S", 300.0)
+    monkeypatch.setattr(mg, "_reclaim_backoff_until", 0.0)
+    monkeypatch.setattr(mg, "_reclaim_fail_streak", 0)
+    monkeypatch.setattr(mg, "_log_line", lambda *a, **k: None)
+    monkeypatch.setattr(mg, "_emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "model_loaded", lambda: False)
+    rss = iter([100, 350])  # before=100 → after=350 (net-negative reclaim)
+    monkeypatch.setattr(mg, "_pid_rss_mb", lambda pid: next(rss, 350))
+
+    out = mg.reclaim_memory(reason="aggregate_warn")
+    assert out["freed_mb"] == 0
+    assert any(a.startswith("backoff=") for a in out["actions"])
+
+    out2 = mg.reclaim_memory(reason="aggregate_warn")
+    assert str(out2.get("skipped", "")).startswith("backoff")

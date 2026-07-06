@@ -17,7 +17,7 @@ import time
 from .config import DIALECTIC_MINE_INTERVAL_S
 from .db import get_db
 from .helpers import daemon_sleep, resolve_ingest_watermark
-from . import identity
+from . import daemon_state, identity
 from .identity import _ensure_session, _emit
 
 logger = logging.getLogger(__name__)
@@ -345,12 +345,18 @@ def _preceding_context(conn: sqlite3.Connection, session_id: str,
     return row["content"][:_CONTEXT_MAX]
 
 
-def run_mine_pass(force: bool = False) -> str:
+def run_mine_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Capture new user replies since the cursor. Returns
-    'ok captured=N skipped=M' / 'no_user_dialog' / 'disabled'."""
+    'ok captured=N skipped=M' / 'no_user_dialog' / 'disabled' / 'not_due'
+    (scheduled tick, another server ran this loop within the interval)."""
     if DIALECTIC_MINE_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "dialectic_mine", DIALECTIC_MINE_INTERVAL_S,
+        scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     _ensure_session(conn)
     now = int(time.time())
     cursor = _last_mine_rowid(conn)
@@ -422,7 +428,7 @@ def run_mine_pass(force: bool = False) -> str:
 def _serve_loop() -> None:
     while True:
         try:
-            run_mine_pass()
+            run_mine_pass(scheduled=True)
         except Exception:
             logger.debug("dialectic_miner tick failed", exc_info=True)
         daemon_sleep(DIALECTIC_MINE_INTERVAL_S)

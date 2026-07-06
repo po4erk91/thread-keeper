@@ -42,6 +42,19 @@ from dataclasses import dataclass
 
 _TAIL_LIMIT = 256 * 1024
 
+# Usage trailers print at the very END of a run, but the captured tail also
+# contains the child's own narrative output. Scanning all of it invites false
+# positives — a child that merely DISCUSSED ad spend once recorded "$4,445"
+# as its own cost_usd. So the JSON scan is bounded to the final result lines
+# and the loose regex fallbacks to the last few lines only.
+_JSON_SCAN_LINES = 120
+_REGEX_SCAN_LINES = 40
+# Parse-garbage bounds: one child cannot plausibly exceed these; a match
+# beyond them is a mis-parse, not a measurement — better NULL than noise
+# (budget admission sums these columns over a 24h window).
+_MAX_PLAUSIBLE_COST_USD = 500.0
+_MAX_PLAUSIBLE_TOKENS = 200_000_000
+
 
 @dataclass
 class Usage:
@@ -157,38 +170,54 @@ def parse_usage(text: str) -> Usage:
     Claude/Codex output formats are not a stable API, so this intentionally
     accepts both JSON result lines and human-readable summaries such as
     ``tokens used`` followed by a number. Missing fields remain ``None``.
+
+    Scanning is scoped to the END of the output (where trailers live): JSON
+    over the last ``_JSON_SCAN_LINES``, regex fallbacks over the last
+    ``_REGEX_SCAN_LINES``. Cost matches require an explicit ``cost`` label —
+    a bare dollar amount in the child's prose is not a spend record — and
+    implausibly large values are dropped as mis-parses.
     """
     text = text or ""
-    usage = _parse_json_usage(text)
+    all_lines = text.splitlines()
+    json_text = "\n".join(all_lines[-_JSON_SCAN_LINES:])
+    tail = "\n".join(all_lines[-_REGEX_SCAN_LINES:])
+    usage = _parse_json_usage(json_text)
     if usage.tokens_in is None:
         usage.tokens_in = _first_not_none(
-            _last_int(rf"\binput(?:\s+tokens?)?\s*[:=]\s*{_NUM}", text),
-            _last_int(rf"{_NUM}\s+input(?:\s+tokens?)?\b", text),
+            _last_int(rf"\binput(?:\s+tokens?)?\s*[:=]\s*{_NUM}", tail),
+            _last_int(rf"{_NUM}[ \t]+input(?:\s+tokens?)?\b", tail),
         )
     if usage.tokens_out is None:
         usage.tokens_out = _first_not_none(
-            _last_int(rf"\boutput(?:\s+tokens?)?\s*[:=]\s*{_NUM}", text),
-            _last_int(rf"{_NUM}\s+output(?:\s+tokens?)?\b", text),
+            _last_int(rf"\boutput(?:\s+tokens?)?\s*[:=]\s*{_NUM}", tail),
+            _last_int(rf"{_NUM}[ \t]+output(?:\s+tokens?)?\b", tail),
         )
     if usage.tokens_total is None:
         usage.tokens_total = _first_not_none(
-            _last_int(rf"(?m)^\s*total\s+tokens?\s*[:=]\s*{_NUM}", text),
-            _last_int(rf"(?m)^\s*tokens(?:\s+used)?\s*[:=]\s*{_NUM}", text),
-            _last_int(rf"{_NUM}\s+tokens\s+used\b", text),
+            _last_int(rf"(?m)^\s*total\s+tokens?\s*[:=]\s*{_NUM}", tail),
+            _last_int(rf"(?m)^\s*tokens(?:\s+used)?\s*[:=]\s*{_NUM}", tail),
+            # Same-line only: a number ending one line followed by a
+            # "tokens used" heading on the next is NOT a trailer pair.
+            _last_int(rf"{_NUM}[ \t]+tokens[ \t]+used\b", tail),
         )
     if usage.tokens_total is None:
-        lines = [ln.strip() for ln in text.splitlines()]
+        lines = [ln.strip() for ln in tail.splitlines()]
         for i, line in enumerate(lines[:-1]):
             if line.lower() == "tokens used":
                 usage.tokens_total = _intish(lines[i + 1])
     if usage.cost_usd is None:
-        usage.cost_usd = _first_not_none(
-            _last_float(
-                rf"\b(?:total[_\s-]*)?cost(?:[_\s-]*usd)?\s*[:=]\s*\$?\s*{_NUM}",
-                text,
-            ),
-            _last_float(rf"\$\s*{_NUM}\s*(?:usd)?", text),
+        usage.cost_usd = _last_float(
+            rf"\b(?:total[_\s-]*)?cost(?:[_\s-]*usd)?\s*[:=]\s*\$?\s*{_NUM}",
+            tail,
         )
+    for attr in ("tokens_in", "tokens_out", "tokens_total"):
+        v = getattr(usage, attr)
+        if v is not None and not (0 <= v <= _MAX_PLAUSIBLE_TOKENS):
+            setattr(usage, attr, None)
+    if usage.cost_usd is not None and not (
+        0 <= usage.cost_usd <= _MAX_PLAUSIBLE_COST_USD
+    ):
+        usage.cost_usd = None
     if usage.tokens_total is None and (
         usage.tokens_in is not None or usage.tokens_out is not None
     ):

@@ -16,6 +16,7 @@ backfilled to vec0 lazily by the ingester.
 import logging
 import sqlite3
 import threading
+import time
 from typing import Optional
 
 from .config import (
@@ -69,6 +70,7 @@ def _vec_dim_ok(emb_blob: bytes) -> bool:
 
 _model = None
 _model_lock = threading.RLock()
+_last_used_at = 0.0
 
 def _get_model():
     """Lazily load and cache the embedding model for the active backend.
@@ -94,6 +96,16 @@ def model_loaded() -> bool:
     """True when this process currently holds the embedding model in RAM."""
     with _model_lock:
         return _model is not None
+
+
+def last_used_at() -> float:
+    """Wall-clock time of this process's last encode through the model.
+
+    Lets the memory guard tell a HOT model apart from a cold one: with an
+    active ingester, an unloaded model is lazily reloaded within seconds, so
+    trimming it is net-negative (fresh copy resident while the freed arenas
+    are still mapped). 0.0 when the model was never used."""
+    return _last_used_at
 
 
 def unload_model() -> bool:
@@ -125,10 +137,12 @@ def _encode(texts: list[str]):
     by the vec0 and legacy paths equals cosine similarity, regardless of
     whether the backend already normalizes.
     """
+    global _last_used_at
     with _model_lock:
         m = _get_model()
         if m is None:
             return None
+        _last_used_at = time.time()
         import numpy as np  # type: ignore
         if EMBED_BACKEND == "sentence-transformers":
             arr = np.asarray(m.encode(list(texts)), dtype="float32")

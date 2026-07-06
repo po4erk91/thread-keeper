@@ -35,7 +35,7 @@ import time
 from .config import THREAD_JANITOR_INTERVAL_S, THREAD_IDLE_CLOSE_DAYS
 from .db import get_db
 from .helpers import daemon_sleep
-from . import identity
+from . import daemon_state, identity
 
 logger = logging.getLogger(__name__)
 
@@ -79,18 +79,25 @@ def _stale_threads(conn: sqlite3.Connection, cutoff: int) -> list[sqlite3.Row]:
         return []
 
 
-def run_janitor_pass(force: bool = False) -> str:
+def run_janitor_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """One janitor pass: close every thread idle past the threshold via
     close_thread() (which fires the auto-review hook). Returns a short
     status string for observability:
 
       'disabled'        — knob off and not forced
+      'not_due'         — scheduled tick, another server already ran this
+                          loop within the interval (daemon_state)
       'no_stale'        — nothing past the idle threshold
       'closed=N'        — closed N stale threads
     """
     if THREAD_JANITOR_INTERVAL_S <= 0 and not force:
         return "disabled"
     conn = get_db()
+    if not daemon_state.claim_pass(
+        "thread_janitor", THREAD_JANITOR_INTERVAL_S,
+        scheduled=scheduled, conn=conn,
+    ):
+        return "not_due"
     now = int(time.time())
     cutoff = now - int(max(0.0, THREAD_IDLE_CLOSE_DAYS) * 86400)
     stale = _stale_threads(conn, cutoff)
@@ -130,7 +137,7 @@ def run_janitor_pass(force: bool = False) -> str:
 def _serve_loop() -> None:
     while True:
         try:
-            run_janitor_pass()
+            run_janitor_pass(scheduled=True)
         except Exception:
             logger.debug("thread_janitor tick failed", exc_info=True)
         daemon_sleep(THREAD_JANITOR_INTERVAL_S)

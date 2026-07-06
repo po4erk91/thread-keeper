@@ -17,6 +17,43 @@ version bumps follow semver per the policy in
   before building the child prompt, releases those claims on spawn errors, and
   runs the dispatch section behind the shared `helpers.single_flight_lock()`.
 
+- **Cross-process daemon cadence gate (`daemon_state`).** Interval daemons now
+  persist their last-run timestamp in a shared `daemon_state` table and claim
+  each scheduled tick with one atomic upsert, so a freshly started MCP server
+  no longer considers every loop overdue and refires it. (Observed pre-fix:
+  an "every 3 days" curator ran 51 times in one day — one pass per new CLI
+  session — plus equivalent amplification for probe/shadow/extract loops, at
+  ~128 LLM children and ~2.8M tokens per day.) Single-flight flocks still
+  serialize concurrency; the gate governs frequency. Applies to shadow_review,
+  curator, candidate_reviewer, extract, dialectic miner/validator, probe,
+  thread_janitor, and retention (evolve reviewer/applier, skill_updater, and
+  auto_update already had their own due gates). Manual/tool-invoked passes
+  bypass the gate but record the run, pushing the next scheduled fire a full
+  interval out; scheduled ticks that lose the claim return `not_due`.
+
+- **Memory-reclaim guards (hot model + effectiveness back-off).** The RSS
+  guard's `reclaim_memory` no longer unloads an embedding model that was used
+  within `THREADKEEPER_MEMORY_GUARD_EMBED_HOT_S` (default 300s) — with an
+  active ingester the model reloads seconds later while the freed arenas are
+  still resident, which made reclaims net-negative (observed: +200–330MB per
+  reclaim, ~2,350 reclaims/week of synchronized thrash). A reclaim that frees
+  nothing now engages an exponential per-process back-off (30min → 4h max),
+  reset by the next effective trim. Manual `memory_guard_reclaim` calls bypass
+  both guards (`force=True`), and reclaim log/event lines now include
+  `freed=`.
+
+### Fixed
+
+- **Spawn usage parsing no longer ingests prose numbers as spend.**
+  `_spawn_wrap.parse_usage` scoped its regex fallbacks to the whole captured
+  output, so a child that merely *discussed* money recorded it as its own
+  cost (observed: a `$4,445` ad-spend figure landing in `cost_usd`, poisoning
+  the 24h budget-admission sums). Scanning is now bounded to the trailing
+  lines where CLI usage trailers actually print, the bare `$<amount>` pattern
+  is gone (an explicit `cost` label is required), number-before-label matches
+  must be same-line, and implausible values (cost > $500, tokens > 2×10⁸) are
+  dropped as mis-parses.
+
 - **Recoverable destructive curator passes (#40).** Destructive curator runs now
   fail closed unless a pre-mutation snapshot is written under
   `<curator_reports_dir>/snapshots/<pass-id>/`. Each snapshot includes

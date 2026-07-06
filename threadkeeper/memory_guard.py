@@ -23,6 +23,7 @@ from .config import (
     MEMORY_GUARD_AGG_KILL_MB,
     MEMORY_GUARD_AGG_WARN_MB,
     MEMORY_GUARD_COOLDOWN_S,
+    MEMORY_GUARD_EMBED_HOT_S,
     MEMORY_GUARD_KILL_MB,
     MEMORY_GUARD_NOTIFY,
     MEMORY_GUARD_POLL_S,
@@ -41,6 +42,18 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _last_notify_at: dict[tuple[int, str], float] = {}
+
+# Reclaim effectiveness back-off. On this allocator stack (macOS +
+# fastembed/ONNX) an unload can be net-negative: gc.collect() re-faults
+# OS-compressed pages back to resident, and with an active ingester the model
+# reloads within seconds while the freed arenas are still mapped. Observed in
+# production as every reclaim ADDING 200-330MB, 2000+ times a week. When a
+# reclaim frees nothing, back off exponentially instead of thrash-repeating
+# on every cooldown tick; an effective reclaim resets the streak.
+_RECLAIM_BACKOFF_BASE_S = 1800.0
+_RECLAIM_BACKOFF_MAX_S = 4 * 3600.0
+_reclaim_backoff_until = 0.0
+_reclaim_fail_streak = 0
 
 
 def _rss_mb(p: dict) -> int:
@@ -206,13 +219,54 @@ def _empty_torch_caches() -> list[str]:
     return actions
 
 
-def reclaim_memory(reason: str = "manual") -> dict:
+def reclaim_memory(reason: str = "manual", force: bool = False) -> dict:
     """Best-effort local trim: unload embeddings, clear caches, run GC.
 
     This cannot guarantee RSS shrinkage because Python/PyTorch allocators may
     retain arenas for reuse. It does make heavyweight objects collectible and
     asks the OS allocator to release free pages where supported.
+
+    Two guards keep the trim from going net-negative: a HOT embedding model
+    (used within MEMORY_GUARD_EMBED_HOT_S) is never unloaded — an active
+    ingester would reload a fresh copy seconds later while the freed arenas
+    are still resident — and after a reclaim that freed nothing the process
+    backs off exponentially. `force=True` (manual tool calls) bypasses both.
     """
+    global _reclaim_backoff_until, _reclaim_fail_streak
+    now = time.time()
+    if not force:
+        skip = None
+        if now < _reclaim_backoff_until:
+            skip = (
+                f"backoff({int(_reclaim_backoff_until - now)}s_left"
+                f"_after_{_reclaim_fail_streak}_ineffective)"
+            )
+        else:
+            try:
+                from . import embeddings
+                if embeddings.model_loaded() and (
+                    now - embeddings.last_used_at() < MEMORY_GUARD_EMBED_HOT_S
+                ):
+                    skip = "model_hot"
+            except Exception:
+                logger.debug(
+                    "memory_guard: embed-hot check failed", exc_info=True
+                )
+        if skip:
+            rss = _pid_rss_mb(os.getpid())
+            _log_line(
+                f"{int(now)} reclaim_skip pid={os.getpid()} rss={rss}MB "
+                f"reason={reason} skip={skip}"
+            )
+            return {
+                "pid": os.getpid(),
+                "reason": reason,
+                "before_mb": rss,
+                "after_mb": rss,
+                "freed_mb": 0,
+                "actions": [f"skipped:{skip}"],
+                "skipped": skip,
+            }
     before = _pid_rss_mb(os.getpid())
     actions: list[str] = []
     try:
@@ -237,21 +291,33 @@ def reclaim_memory(reason: str = "manual") -> dict:
     actions.append(f"gc.collect={collected}")
     actions.extend(_allocator_pressure_relief())
     after = _pid_rss_mb(os.getpid())
+    freed = before - after
+    if freed <= 0 and before > 0:
+        _reclaim_fail_streak += 1
+        backoff = min(
+            _RECLAIM_BACKOFF_MAX_S,
+            _RECLAIM_BACKOFF_BASE_S * (2 ** (_reclaim_fail_streak - 1)),
+        )
+        _reclaim_backoff_until = time.time() + backoff
+        actions.append(f"backoff={int(backoff)}s")
+    else:
+        _reclaim_fail_streak = 0
+        _reclaim_backoff_until = 0.0
     result = {
         "pid": os.getpid(),
         "reason": reason,
         "before_mb": before,
         "after_mb": after,
-        "freed_mb": max(0, before - after),
+        "freed_mb": max(0, freed),
         "actions": actions,
     }
     _log_line(
         f"{int(time.time())} reclaim pid={os.getpid()} "
-        f"before={before}MB after={after}MB reason={reason}"
+        f"before={before}MB after={after}MB freed={freed}MB reason={reason}"
     )
     _emit_event(
         "memory_reclaim", os.getpid(),
-        f"before={before}MB after={after}MB reason={reason}",
+        f"before={before}MB after={after}MB freed={freed}MB reason={reason}",
     )
     return result
 

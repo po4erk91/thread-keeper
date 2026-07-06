@@ -65,7 +65,7 @@ from .config import (
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
-from . import identity, lessons
+from . import daemon_state, identity, lessons
 from .curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
@@ -624,12 +624,14 @@ def _curator_spawn_lock():
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
 
-def run_curator_pass(force: bool = False) -> str:
+def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one curator pass synchronously. Used by the daemon AND
     by the MCP tool for manual triggering / testing.
 
     Returns a short status string for observability:
       - 'disabled'        — env knob off and not forced
+      - 'not_due'         — scheduled tick, but another server already ran
+                            this loop within the interval (daemon_state)
       - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
       - 'unchanged_inventory' — latest complete inventory already reviewed
@@ -638,6 +640,10 @@ def run_curator_pass(force: bool = False) -> str:
     """
     if CURATOR_INTERVAL_S <= 0 and not force:
         return "disabled"
+    if not daemon_state.claim_pass(
+        "curator", CURATOR_INTERVAL_S, scheduled=scheduled,
+    ):
+        return "not_due"
 
     # Single-flight: the flock makes the running-children check + spawn atomic
     # across every MCP server process, so two ticks (or a tick racing a manual
@@ -828,7 +834,7 @@ def _serve_loop() -> None:
     """Daemon body. Sleep → tick → sleep, until process dies."""
     while True:
         try:
-            run_curator_pass()
+            run_curator_pass(scheduled=True)
         except Exception:
             logger.debug("curator tick failed", exc_info=True)
         daemon_sleep(CURATOR_INTERVAL_S)

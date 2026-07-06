@@ -32,7 +32,7 @@ import time
 from .config import EXTRACT_INTERVAL_S, EXTRACT_WINDOW_MIN
 from .db import get_db
 from .helpers import daemon_sleep
-from . import identity
+from . import daemon_state, identity
 
 logger = logging.getLogger(__name__)
 
@@ -71,17 +71,22 @@ def _record_extract_pass(conn: sqlite3.Connection,
         logger.debug("extract_daemon: failed to record pass", exc_info=True)
 
 
-def run_extract_pass(force: bool = False) -> str:
+def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one extract pass synchronously. Used by the daemon AND by
     the MCP tool for manual triggering.
 
     Returns the same status string `extract_recent` returns ("ok
     window=… scanned=… verbatim=… distill=… concept=… note=…
-    skipped_existing=…" or "no_dialog window=…m"). Plus advances the
-    `extract_pass` cursor for telemetry.
+    skipped_existing=…" or "no_dialog window=…m"), or 'not_due' for a
+    scheduled tick when another server already ran this loop within the
+    interval. Plus advances the `extract_pass` cursor for telemetry.
     """
     if EXTRACT_INTERVAL_S <= 0 and not force:
         return "disabled"
+    if not daemon_state.claim_pass(
+        "extract", EXTRACT_INTERVAL_S, scheduled=scheduled,
+    ):
+        return "not_due"
     # Late import — tools.extract registers MCP tools at import time, and
     # the daemon module loads before all tools are registered.
     from .tools.extract import extract_recent
@@ -100,7 +105,7 @@ def _serve_loop() -> None:
     """Daemon body. Sleep → tick → sleep, until process dies."""
     while True:
         try:
-            run_extract_pass()
+            run_extract_pass(scheduled=True)
         except Exception:
             logger.debug("extract_daemon tick failed", exc_info=True)
         daemon_sleep(EXTRACT_INTERVAL_S)
