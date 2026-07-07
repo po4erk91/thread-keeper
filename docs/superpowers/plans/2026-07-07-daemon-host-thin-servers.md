@@ -743,24 +743,34 @@ def _host_alive() -> bool:
 
 Wrap the daemon-start block (lines ~128–217) so it only runs when the flag is OFF; when ON, ensure the host instead. Keep the one-shot ingest reads (lines ~113–122) unconditional (cheap SQLite, per-session freshness).
 
+Replace the existing in-line `try: from . import X; X.start_*_daemon()` series
+(lines ~128–217) with a call to the single shared `host.start_daemons()` (Task
+4), gated on the flag. No logic is duplicated — `host.start_daemons()` starts
+the loops in *whatever process calls it*, so the flag-off path runs them
+in-process exactly as before, and the host path runs them in the host. Both use
+lazy `from . import host` (no import cycle).
+
 ```python
-        # ... one-shot ingest reads stay here (unchanged) ...
+        # ... one-shot ingest reads stay here (unchanged: _ingest_all,
+        #     _backfill_dialog_fts_if_empty) ...
         from . import config as _cfg
+        from . import host
         if _cfg.DAEMON_HOST_ENABLED and _cfg.PROCESS_ROLE == "server":
             try:
-                from . import host
-                host.ensure_host_running()
+                host.ensure_host_running()   # thin: delegate loops to the host
             except Exception:
                 pass  # a thin server must never fail to start on host trouble
         else:
-            # legacy in-process daemons (flag off) — UNCHANGED existing block
             try:
-                from . import ingest
-                ingest._start_background_ingester()
+                host.start_daemons()         # flag off / host role: in-process (legacy)
             except Exception:
                 pass
-            # ... the rest of the existing start_*_daemon block, verbatim ...
 ```
+
+Note: the current code starts the background ingester via
+`ingest._start_background_ingester()` and each daemon in its own `try/except`;
+`host.start_daemons()` (Task 4) already wraps the ingester + all 18 starters the
+same way, so this is the *same* behavior with the flag off, just centralized.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -1008,8 +1018,8 @@ git commit -m "docs(host): document daemon-host + thin servers + rollout flag"
 
 **Spec coverage:** host.py (T4), embed IPC (T2), embed_text routing (T3), _ensure_session split + ensure_host_running (T5), memory_guard supervision (T6), config knobs (T1), integration + failover (T7), rollout flag + docs (T1/T8). Every spec §Components item maps to a task.
 
-**Placeholder scan:** New-file code is complete. Two existing-file edits ("the rest of the existing start_*_daemon block, verbatim" in T5; "unchanged remainder" in T3) reference real, quoted current code the implementer copies in place — not invented behavior. Presence writer resolved: `identity._ensure_session(conn, client="daemon-host")` (identity.py:83).
+**Placeholder scan:** New-file code is complete. The daemon-start block is centralized in `host.start_daemons()` (T4) and called from both the host main and the flag-off branch (T5) — no verbatim duplication. T3's "unchanged remainder" references the real current `_encode` model path the implementer keeps in place. Presence writer resolved: `identity._ensure_session(conn, client="daemon-host")` (identity.py:83).
 
 **Type consistency:** `embed_via_host(texts, sock_path, timeout)` and `serve_embed_socket(sock_path, encode_fn)` are used identically in T2/T3/T4/T7. `ensure_host_running() -> bool`, `_host_alive() -> bool`, `start_daemons() -> list[str]` consistent across T4/T5/T6. `_encode` returns a normalized `np.ndarray | None` on every branch.
 
-**Open confirmation for the implementer:** copy the current `_ensure_session` daemon-start block (identity.py ~128–217) verbatim into `host.start_daemons()` (T4) and the flag-off branch (T5) — the `_DAEMON_STARTERS` list in T4 already mirrors it; diff the two before committing T4 so no starter is dropped or added.
+**Open confirmation for the implementer:** the `_DAEMON_STARTERS` list in T4 must mirror the current `_ensure_session` daemon-start block (identity.py ~128–217) exactly — diff the two before committing T4 so no starter is dropped or added, then T5 replaces that block with a single `host.start_daemons()` call (no duplication).
