@@ -495,20 +495,27 @@ pre-existing due gates.
   `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
   order: (1) an explicit `EVOLVE_REPO_ROOT` (`THREADKEEPER_EVOLVE_REPO_ROOT`);
-  (2) the package's parent dir when it carries a `.git` entry — the
-  editable-from-checkout `install.sh`; (3) otherwise a **managed checkout**
-  under the DB dir (`~/.threadkeeper/evolve-repo`). On a PyPI/site-packages
-  install where no source tree exists, the managed checkout is **auto-cloned on
-  first use** (from `EVOLVE_REPO_URL`/`EVOLVE_REPO_BRANCH`, defaulting to the
-  upstream repo) and given its own `.venv` with the `[semantic,dev]` extras so
-  the children can branch, run the suite, and open PRs. This makes the loops
-  work by default with no configuration. Set `THREADKEEPER_EVOLVE_AUTO_CLONE=0`
-  to disable provisioning — then a non-checkout install reports
-  `ERR evolve_repo_unavailable=<path>` until an editable install or an explicit
-  `EVOLVE_REPO_ROOT` is provided. An explicit override that is not itself a
-  checkout is never auto-cloned into and reports `ERR repo_root_not_git`.
-  Provisioning is serialized by `evolve-repo-provision.lock`. Curator report
-  apply needs no git tree and runs regardless.
+  (2) by default, a dedicated **managed checkout** under the DB dir
+  (`~/.threadkeeper/evolve-repo`), **auto-cloned on first use** (from
+  `EVOLVE_REPO_URL`/`EVOLVE_REPO_BRANCH`, defaulting to the upstream repo) and
+  given its own `.venv` with the `[semantic,dev]` extras so the children can
+  branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
+  the package's parent dir (when it carries a `.git` entry — the
+  editable-from-checkout `install.sh`) serve as an in-place fallback. The
+  managed checkout is the default even for editable installs on purpose
+  (**isolation, #164**): the loops branch-switch, merge and hard-reset the tree
+  they work in, and the editable package-parent is the user's own working tree —
+  running there would flip its branch out from under an in-progress edit. It
+  also gives the issue → PR flow a clean origin-tracking base. This makes the
+  loops work by default with no configuration and without touching your
+  checkout. Set `THREADKEEPER_EVOLVE_AUTO_CLONE=0` to disable provisioning and
+  keep the pre-isolation in-place behaviour on an editable install; on a
+  non-checkout install with auto-clone off the loops report
+  `ERR evolve_repo_unavailable=<path>` until an explicit `EVOLVE_REPO_ROOT` is
+  provided. An explicit override that is not itself a checkout is never
+  auto-cloned into and reports `ERR repo_root_not_git`. Provisioning is
+  serialized by `evolve-repo-provision.lock`. Curator report apply needs no git
+  tree and runs regardless.
 
   Before the privileged reviewer audit or any code/PR applier child is spawned,
   the parent enforces local git safety on that checkout: `git status
