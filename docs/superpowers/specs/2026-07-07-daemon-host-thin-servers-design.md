@@ -138,9 +138,14 @@ CLI session C ─ python -m threadkeeper.server (THIN) ┘                     �
 
 - Thin servers are cheap (no ONNX, no daemons); drop them from the aggressive
   idle-retire path (still reap truly-dead rows).
-- New responsibility: **host supervision** — if the host row is stale (no
-  heartbeat past a TTL) or its RSS exceeds the kill threshold, SIGTERM it; the
-  next thin-server tick re-spawns it via `ensure_host_running()`.
+- New responsibility: **host supervision** — `supervise_host()` calls
+  `ensure_host_running()` once the host's heartbeat is stale past a TTL. That
+  respawn only takes effect when no live host still holds the election lock,
+  so end-to-end this recovers a fully-dead host; a thin session's own
+  `ensure_host_running()` call at session start is the primary recovery path.
+  **As implemented:** recovering a wedged-but-alive host (stale heartbeat,
+  process still up, lock still held) via SIGTERM-by-pid is not yet built —
+  tracked as a pre-enable follow-up, not part of this pass.
 - `TARGET_SERVERS` reinterpreted: the host is the one heavy process; thin
   servers are ephemeral and light, not retire targets.
 

@@ -1,6 +1,7 @@
 # tests/test_daemon_host_integration.py
 """End-to-end: a host process + two thin sessions against one tmp DB."""
 from __future__ import annotations
+import shutil
 import sys, importlib, tempfile, time
 from pathlib import Path
 import numpy as np
@@ -55,3 +56,4 @@ def test_thin_search_embeds_via_host_socket(monkeypatch, tmp_path):
     finally:
         host_embed.stop_embed_socket()
         t.join(timeout=2)
+        shutil.rmtree(sock.parent, ignore_errors=True)

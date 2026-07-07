@@ -439,10 +439,14 @@ def is_global_guard_coordinator(procs: list[dict]) -> bool:
 def _idle_retire_candidates(procs: list[dict]) -> list[dict]:
     from . import config as _cfg
 
+    if _cfg.DAEMON_HOST_ENABLED:
+        # Under daemon-host mode, thin servers are cheap and are never
+        # idle-retired; the single host is supervised separately via
+        # supervise_host(), not this path.
+        return []
+
     candidates: list[dict] = []
     for p in procs:
-        if _cfg.DAEMON_HOST_ENABLED and p.get("client") != "daemon-host":
-            continue  # thin servers are cheap; never idle-retire under host mode
         if p.get("is_self"):
             continue
         if p.get("parent_alive") and not MEMORY_GUARD_RETIRE_LIVE:

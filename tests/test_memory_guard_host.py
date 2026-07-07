@@ -5,7 +5,7 @@ idle-retire candidates, and a stale host heartbeat triggers a respawn via
 host.ensure_host_running().
 """
 from __future__ import annotations
-import sys, importlib, time
+import sys, importlib
 
 
 def _reimport(monkeypatch, tmp_path, flag="1"):
@@ -21,8 +21,11 @@ def _reimport(monkeypatch, tmp_path, flag="1"):
 
 def test_thin_not_retired_when_flag_on(monkeypatch, tmp_path):
     mg = _reimport(monkeypatch, tmp_path, flag="1")
-    procs = [{"pid": 111, "client": "claude", "heartbeat_age_s": 99999,
-              "parent_alive": False, "rss_kb": 120000}]
+    # Realistic process_health.scan() row shape: process_health.classify()
+    # never adds a "client" key, so the check must not depend on one.
+    procs = [{"pid": 111, "ppid": 1, "rss_kb": 120000,
+              "parent_alive": False, "heartbeat_age_s": 99999,
+              "is_self": False, "is_orphaned": True}]
     assert mg._idle_retire_candidates(procs) == []   # thin never retired under host mode
 
 

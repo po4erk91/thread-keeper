@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -28,6 +29,7 @@ def test_roundtrip_and_batch(tmp_path):
     finally:
         host_embed.stop_embed_socket()
         t.join(timeout=2)
+        shutil.rmtree(sock.parent, ignore_errors=True)
 
 
 def test_client_returns_none_when_no_host(tmp_path):
@@ -47,3 +49,4 @@ def test_server_error_maps_to_none(tmp_path):
     finally:
         host_embed.stop_embed_socket()
         t.join(timeout=2)
+        shutil.rmtree(sock.parent, ignore_errors=True)

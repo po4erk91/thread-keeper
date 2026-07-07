@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 from . import config
 from . import host_embed
@@ -126,10 +125,27 @@ def ensure_host_running() -> bool:
         if not locked or _host_alive():
             return False
         log = open(config.HOST_LOCK_PATH.parent / "host.log", "ab", buffering=0)
+        # Sanitize the env for the detached host. If a spawned review child
+        # (THREADKEEPER_SPAWNED_CHILD=1, non-foreground THREADKEEPER_WRITE_ORIGIN)
+        # is the first process to call ensure_host_running(), a bare env
+        # inheritance would carry those markers into the host. Since
+        # config.BACKGROUND_DAEMONS_ALLOWED = not SPAWNED_CHILD and
+        # WRITE_ORIGIN=="foreground" and not DISABLE_BG_DAEMONS, that would make
+        # ~13 of the 18 daemon starters self-gate off in the host process — it
+        # would still bind the embed socket and heartbeat (looks alive, holds
+        # the election lock) while running almost none of its loops. Force a
+        # clean foreground-equivalent env instead, regardless of who spawned it.
+        env = os.environ.copy()
+        env.pop("THREADKEEPER_SPAWNED_CHILD", None)
+        env["THREADKEEPER_WRITE_ORIGIN"] = "foreground"
+        env.pop("THREADKEEPER_DISABLE_BG_DAEMONS", None)
+        env.pop("THREADKEEPER_NO_EMBEDDINGS", None)
+        env["THREADKEEPER_ROLE"] = "host"  # belt-and-suspenders; main() also sets this
         subprocess.Popen(
             [sys.executable, "-m", "threadkeeper.host"],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True,
+            env=env,
         )
         return True
 

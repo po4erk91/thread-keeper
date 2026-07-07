@@ -615,10 +615,15 @@ one always-on headless process per machine:
   needs goes through this same host-then-fallback path.
 - **`memory_guard` supervision** — thin servers are cheap (no ONNX, no
   daemon threads) and are excluded from aggregate idle-retire while the flag
-  is on (`_idle_retire_candidates`); instead `supervise_host()` checks the
-  host's presence heartbeat and, once it has gone stale past
-  `THREADKEEPER_HOST_HEARTBEAT_TTL_S`, calls `host.ensure_host_running()` to
-  spawn a replacement.
+  is on (`_idle_retire_candidates`); instead `supervise_host()` calls
+  `host.ensure_host_running()` once the host's presence heartbeat has gone
+  stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S`. That respawn only takes
+  effect when no live host still holds the election lock (`host.main()`
+  exits 0 immediately otherwise), so end-to-end this recovers a fully-dead
+  host; a thin session's own `ensure_host_running()` call at session start
+  (below) is the primary recovery path. Recovering a wedged-but-alive host
+  (stale heartbeat, process still up, lock still held) via SIGTERM-by-pid is
+  not yet implemented — tracked as a pre-enable follow-up.
 - **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`
   calls `host.ensure_host_running()` on every session start: a no-op if a
   live heartbeat already exists, otherwise a **detached** spawn
@@ -626,8 +631,8 @@ one always-on headless process per machine:
   host outlives the session that spawned it and a closing CLI can never HUP
   it. The host then runs forever — no idle-exit — because the loops (daily
   retention, weekly curator, probe, …) must keep ticking with no active
-  session; it exits only on SIGTERM (a `memory_guard` restart) or losing the
-  host lock.
+  session; it exits only on SIGTERM (sent manually today — see the
+  supervision caveat above) or failing to acquire the host lock at startup.
 
 Flag off ⇒ zero behavior change: every session starts its own daemons and
 embeds locally, exactly as before Phase 1.
