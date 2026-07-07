@@ -19,7 +19,8 @@ from pathlib import Path
 _FAKE_CID = "dddd4444-5555-6666-7777-888899990000"
 
 
-def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2"):
+def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2",
+               pin_repo=True):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
@@ -61,6 +62,15 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2"):
         evolve_daemon, "_open_roadmap_doc_prs",
         lambda repo_root, branch: ([], ""),
     )
+    # Pin a ready tmp checkout so the reviewer's _ensure_repo_ready() gate does
+    # not run a real `git clone` + venv + `pip install` (~30 s/test) against the
+    # shared managed checkout. `_resolve_repo_root`/`_is_git_repo` live in
+    # evolve_applier; the daemon resolves them there. Tests exercising the
+    # provisioning/error path pass pin_repo=False.
+    if pin_repo:
+        _repo = tmp_path / "evolve-repo"
+        monkeypatch.setattr(evolve_applier, "_resolve_repo_root", lambda: _repo)
+        monkeypatch.setattr(evolve_applier, "_is_git_repo", lambda p: True)
     return {
         "mcp": _mcp.mcp,
         "db": db,
