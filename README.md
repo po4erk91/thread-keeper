@@ -351,13 +351,14 @@ By default it checks once per day (`THREADKEEPER_AUTO_UPDATE_INTERVAL_S=86400`):
 
 - editable git checkout: skip if tracked files are dirty, otherwise fetch the
   tracked remote branch, fast-forward with `git pull --ff-only`, reinstall the
-  editable package, and rerun `threadkeeper._setup`;
+  editable package, and run the configured post-update setup check;
 - installed package: run `pip install --upgrade threadkeeper` or
   `threadkeeper[semantic]` in the current interpreter environment, preserving
   semantic extras when they are already installed, but only after the candidate
   PyPI release's non-yanked files have PyPI Integrity API provenance from the
   expected GitHub Trusted Publisher (`po4erk91/thread-keeper`, `publish.yml`,
-  environment `pypi`), then rerun setup when the installed version changes.
+  environment `pypi`), then run the configured post-update setup check when the
+  installed version changes.
 
 Auto-update is standing consent for thread-keeper to fetch and run future
 maintainer code. A packaged update whose provenance is missing, whose publisher
@@ -368,6 +369,14 @@ daemon exits the current MCP process by default so the host can restart it on
 the new code. Before scheduling that exit, it imports `threadkeeper.server` in a
 subprocess; install/setup/import failures are recorded as `auto_update_pass`
 with `restart=suppressed`, and the current known-working process stays alive.
+Post-update setup defaults to `THREADKEEPER_AUTO_UPDATE_SETUP=check`, which runs
+`thread-keeper-setup --dry-run` only. It records `setup=checked
+status=unchanged` when configs already match and logs/records
+`status=changes_pending` if MCP registrations, hooks, or managed instruction
+blocks would be rewritten; it does not re-add config the user removed. Set
+`THREADKEEPER_AUTO_UPDATE_SETUP=apply` to give standing consent for auto-update
+to run the full setup writer after future successful updates, or `skip` to avoid
+even the dry-run check.
 Disable restart with
 `THREADKEEPER_AUTO_UPDATE_RESTART=0`, or disable the updater entirely with
 `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0`. The provenance gate is on by default;
@@ -918,6 +927,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_SETUP` | `check` | post-update setup mode: `check` runs `thread-keeper-setup --dry-run` and logs pending CLI config rewrites without applying them; `apply` gives standing consent to rewrite MCP/hooks/instruction config after updates; `skip` disables the setup step |
 | `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
 | `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
 | `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |

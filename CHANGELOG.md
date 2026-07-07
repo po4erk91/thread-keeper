@@ -21,6 +21,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Auto-update no longer silently rewrites CLI setup config (#87).**
+  Post-update setup now defaults to a dry-run check
+  (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending
+  MCP/hook/instruction rewrites without applying them. Users can opt into the
+  previous full setup writer with `THREADKEEPER_AUTO_UPDATE_SETUP=apply`, or
+  disable the setup subprocess with `skip`.
+
 - **Codex spawns pass `--skip-git-repo-check`.** `codex exec` refuses to run
   ("Not inside a trusted directory and --skip-git-repo-check was not
   specified") whenever the spawn cwd is not a trusted git worktree. Because the
