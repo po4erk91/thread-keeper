@@ -861,6 +861,11 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   swept on new trash writes. Protected refusal behavior is unchanged:
   user/foreground lessons still require `force`, and pinned skills still refuse
   deletion. `mp_dashboard()` renders destructive action counts by window.
+  The lesson file itself is a separate serialization boundary:
+  `append_lesson`, `lesson_remove`, and `lesson_restore` hold a blocking
+  `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
+  foreground writes and every learning-loop child serialize on the shared
+  store instead of relying on per-daemon dispatch locks.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to

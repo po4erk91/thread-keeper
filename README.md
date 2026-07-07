@@ -653,6 +653,11 @@ foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
 the same report.
 
+The shared lesson file has its own write serialization: `lesson_append`,
+`lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
+`lessons.md.lock` around file creation/read/mutate/write, so foreground calls
+and learning-loop children cannot last-writer-win over each other's sections.
+
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
 `lesson_usage.use_count` for the returned lesson. Curator dry runs include a

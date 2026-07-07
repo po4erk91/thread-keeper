@@ -27,6 +27,7 @@ land at the bottom (chronological).
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import math
 import os
 import re
@@ -91,6 +92,28 @@ _BLOCK_RE = re.compile(
 )
 
 
+@contextmanager
+def _lessons_file_lock(path: Path) -> Iterator[None]:
+    """Serialize read-modify-write access to one lessons.md file."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
+        yield
+        return
+
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
 LESSON_DECAY_TAU_DAYS = 45
 LESSON_STALE_AFTER_DAYS = 30
 LESSON_STALE_MAX_PULLS = 1
@@ -121,42 +144,46 @@ def append_lesson(
     id ("Tabc123") or "shadow" for shadow_review writes.
     """
     fp = path or _LESSONS_PATH
-    _ensure_file(fp)
     slug = _slugify(title)
     ts = int(time.time())
     new_section = _format_section(slug, summary, body, source or "", ts)
 
-    body_existing = fp.read_text()
-    # If a section with this slug already exists, replace it in-place
-    # (idempotent re-materialization of the same lesson).
-    target_begin = f"<!-- LESSON:BEGIN slug={slug} "
-    target_end = f"<!-- LESSON:END slug={slug} -->"
-    if target_begin in body_existing and target_end in body_existing:
-        head, _, rest = body_existing.partition(target_begin)
-        # Find the matching END after the BEGIN.
-        end_marker = target_end
-        end_idx = rest.find(end_marker)
-        if end_idx >= 0:
-            tail = rest[end_idx + len(end_marker):]
-            body_existing = head + new_section.rstrip() + "\n" + tail.lstrip("\n")
+    with _lessons_file_lock(fp):
+        _ensure_file(fp)
+        body_existing = fp.read_text()
+        # If a section with this slug already exists, replace it in-place
+        # (idempotent re-materialization of the same lesson).
+        target_begin = f"<!-- LESSON:BEGIN slug={slug} "
+        target_end = f"<!-- LESSON:END slug={slug} -->"
+        if target_begin in body_existing and target_end in body_existing:
+            head, _, rest = body_existing.partition(target_begin)
+            # Find the matching END after the BEGIN.
+            end_marker = target_end
+            end_idx = rest.find(end_marker)
+            if end_idx >= 0:
+                tail = rest[end_idx + len(end_marker):]
+                body_existing = (
+                    head + new_section.rstrip() + "\n" + tail.lstrip("\n")
+                )
+            else:
+                # Malformed file (BEGIN without END) — just append at end.
+                body_existing = body_existing.rstrip() + "\n\n" + new_section
         else:
-            # Malformed file (BEGIN without END) — just append at end.
             body_existing = body_existing.rstrip() + "\n\n" + new_section
-    else:
-        body_existing = body_existing.rstrip() + "\n\n" + new_section
-    fp.write_text(body_existing)
+        fp.write_text(body_existing)
     return slug
 
 
 def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:
     """Remove one lesson section by exact slug. Returns True when removed."""
-    found = lesson_section(slug, path=path)
-    if not found:
-        return False
     fp = path or _LESSONS_PATH
-    body_existing = found["file_body"]
-    new_body = body_existing[:found["start"]] + body_existing[found["end"]:]
-    fp.write_text(new_body)
+    with _lessons_file_lock(fp):
+        found = lesson_section(slug, path=fp)
+        if not found:
+            return False
+        body_existing = found["file_body"]
+        new_body = body_existing[:found["start"]] + body_existing[found["end"]:]
+        fp.write_text(new_body)
     return True
 
 
@@ -206,15 +233,16 @@ def restore_lesson_section(
 ) -> bool:
     """Restore an exact lesson section. Refuses to overwrite an existing slug."""
     fp = path or _LESSONS_PATH
-    _ensure_file(fp)
-    if lesson_section(slug, path=fp):
-        return False
-    body_existing = fp.read_text()
-    insert_at = len(body_existing)
-    if char_start is not None and 0 <= char_start <= len(body_existing):
-        insert_at = char_start
-    new_body = body_existing[:insert_at] + section + body_existing[insert_at:]
-    fp.write_text(new_body)
+    with _lessons_file_lock(fp):
+        _ensure_file(fp)
+        if lesson_section(slug, path=fp):
+            return False
+        body_existing = fp.read_text()
+        insert_at = len(body_existing)
+        if char_start is not None and 0 <= char_start <= len(body_existing):
+            insert_at = char_start
+        new_body = body_existing[:insert_at] + section + body_existing[insert_at:]
+        fp.write_text(new_body)
     return True
 
 
