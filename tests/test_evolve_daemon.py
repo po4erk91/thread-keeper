@@ -15,6 +15,13 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
+# These evolve tests run ~30 s each and dominate the suite's wall-clock
+# (measured via --durations). Marked `slow` so `pytest -m "not slow"` gives a
+# fast local inner loop; CI still runs the full suite.
+pytestmark = pytest.mark.slow
+
 
 _FAKE_CID = "dddd4444-5555-6666-7777-888899990000"
 

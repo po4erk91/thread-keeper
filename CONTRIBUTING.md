@@ -49,11 +49,28 @@ threadkeeper/            # the package
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[semantic,dev]'
-python -m pytest
+python -m pytest                 # full suite
+python -m pytest -m "not slow"   # fast inner loop — skips the slow evolve/embedding tests
 ```
+
+CI runs the full suite under `--forked` (each test in its own process; the
+per-test package re-import otherwise piles up native ONNX/tokenizer thread
+pools that can deadlock sqlite finalize in one long-lived interpreter).
 
 Test isolation uses a tempdir DB per test, all daemons disabled via env
 (`THREADKEEPER_*_INTERVAL_S=0`). See `tests/conftest.py`.
+
+The heaviest files (`test_evolve_applier.py`, `test_evolve_daemon.py`,
+`test_onnx_embeddings.py`) carry `pytestmark = pytest.mark.slow` — they exercise
+real git plumbing / embedding warmup and dominate wall-clock. `-m "not slow"`
+skips them for a fast local loop; CI still runs everything.
+
+`pytest-xdist` ships in the `dev` extra as an **opt-in local** accelerator
+(`pytest -n auto`). It is not the CI default: the suite is not yet fully
+parallel-safe (a few tests race on shared state) and `-n auto` does not compose
+with `--forked`. See [#217](https://github.com/po4erk91/thread-keeper/issues/217).
+On macOS, combining `-n` with `--forked` also needs
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
 
 ## Schema migrations
 

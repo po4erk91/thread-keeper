@@ -9,6 +9,13 @@ version bumps follow semver per the policy in
 
 ### Changed
 
+- **Faster local test loop + opt-in parallel runs.** The heaviest test files
+  (`test_evolve_applier.py`, `test_evolve_daemon.py`) are now marked
+  `pytest.mark.slow` (joining `test_onnx_embeddings.py`), so `pytest -m "not
+  slow"` skips the ~30 s-per-test evolve suite for a fast local inner loop.
+  Added `pytest-xdist` to the `dev` extra as an opt-in local accelerator
+  (`-n auto`); CI stays serial `--forked` because the suite is not yet
+  parallel-safe (tracked in #217). CONTRIBUTING documents both.
 - **Evolve loops run in a dedicated managed checkout by default (#164
   isolation).** The reviewer and applier resolve their working checkout to
   `~/.threadkeeper/evolve-repo` even on an editable install, instead of the
