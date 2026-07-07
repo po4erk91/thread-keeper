@@ -473,6 +473,12 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
     conn = pkg["db"].get_db()
     _add_evolve(conn, "s1")
+    # Pin a ready checkout (the isolation default resolves to an unprovisioned
+    # managed dir) so the reviewer reaches spawn; the point of the test is that
+    # cwd is the resolved checkout, not the host CLI's working dir.
+    repo = tmp_path / "evolve-repo"
+    repo.mkdir()
+    monkeypatch.setattr(pkg["ed"], "_ensure_repo_ready", lambda: (repo, ""))
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn",
@@ -481,8 +487,7 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
     out = pkg["ed"].run_evolve_pass(force=True)
 
     assert out.startswith("spawned research")
-    expected = str(Path(pkg["ed"].__file__).resolve().parent.parent)
-    assert calls["cwd"] == expected
+    assert calls["cwd"] == str(repo)
 
 
 def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
@@ -530,6 +535,9 @@ def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
 
 def test_run_evolve_pass_single_flight_lock_race(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
+    repo = tmp_path / "evolve-repo"
+    repo.mkdir()
+    monkeypatch.setattr(pkg["ed"], "_ensure_repo_ready", lambda: (repo, ""))
     import threadkeeper.tools.spawn as spawn_mod
 
     entered_spawn = threading.Event()

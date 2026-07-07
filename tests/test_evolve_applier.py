@@ -289,6 +289,12 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
+    # Isolation default resolves to the (unprovisioned) managed checkout; pin a
+    # ready tmp checkout so the spawn path runs without a real clone.
+    repo = tmp_path / "evolve-repo"
+    repo.mkdir()
+    monkeypatch.setattr(pkg["ea"], "_resolve_repo_root", lambda: repo)
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda p: True)
     report = _write_report(pkg)
     calls = {}
     _mock_spawn(monkeypatch, calls)
@@ -1903,13 +1909,26 @@ def test_repo_root_prefers_env_override(tmp_path, monkeypatch):
     assert pkg["ea"]._repo_root() == external
 
 
-def test_repo_root_defaults_to_package_checkout(tmp_path, monkeypatch):
-    """With no override, an editable-from-checkout install resolves to the
-    package's parent dir (which carries a .git entry)."""
+def test_repo_root_defaults_to_managed_checkout(tmp_path, monkeypatch):
+    """Isolation (#164): with no override and auto-clone on (the default), the
+    loops resolve to the dedicated managed checkout under the DB dir — NOT the
+    editable package-parent, which for a dev install is the user's own working
+    tree that must never be branch-switched by the applier."""
     pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["ea"]._repo_root() == pkg["ea"]._managed_repo_dir()
+
+
+def test_repo_root_falls_back_in_place_when_autoclone_off(tmp_path, monkeypatch):
+    """The escape hatch: THREADKEEPER_EVOLVE_AUTO_CLONE=0 keeps the pre-isolation
+    in-place behaviour, resolving to the editable package-parent checkout."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTO_CLONE", False)
     from pathlib import Path as _P
-    expected = _P(pkg["ea"].__file__).resolve().parent.parent
-    assert pkg["ea"]._repo_root() == expected
+    pkg_parent = _P(pkg["ea"].__file__).resolve().parent.parent
+    if (pkg_parent / ".git").exists():
+        assert pkg["ea"]._repo_root() == pkg_parent
+    else:  # installed non-editable → no in-place checkout, still managed
+        assert pkg["ea"]._repo_root() == pkg["ea"]._managed_repo_dir()
 
 
 def test_managed_repo_dir_is_under_db_dir(tmp_path, monkeypatch):
@@ -1922,9 +1941,10 @@ def test_managed_repo_dir_is_under_db_dir(tmp_path, monkeypatch):
 
 
 def test_ensure_repo_ready_uses_existing_checkout(tmp_path, monkeypatch):
-    """The common path: the resolved root is already a git tree (editable
-    install / dev checkout) → ready, no provisioning."""
+    """The steady-state path: the resolved managed checkout is already a git
+    tree (provisioned on a prior pass) → ready, no re-provisioning."""
     pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: True)
 
     def _no_provision(dest):
         raise AssertionError("must not provision when a checkout exists")
