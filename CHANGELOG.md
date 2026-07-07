@@ -10,13 +10,14 @@ version bumps follow semver per the policy in
 ### Added
 
 - **Daemon-host + thin per-session servers (dark, `THREADKEEPER_DAEMON_HOST`).**
-  One headless host per machine owns the 18 background loops + the warm ONNX
-  model + a narrow embed unix-socket; per-session servers go thin (stdio MCP +
-  direct SQLite, no daemons, no ONNX) and route only query-embedding to the
-  host, falling back to FTS when it is unreachable. Elected via a flock, spawned
-  detached by the first thin server, supervised by memory_guard. Off by default;
-  no CLI config change. Removes the per-session RAM multiplier and the
-  reclaim-thrash root.
+  One headless host per machine owns the background loops (18 daemon starters
+  + the ingester) + the warm ONNX model + a narrow embed unix-socket;
+  per-session servers go thin (stdio MCP + direct SQLite, no daemons, no ONNX)
+  and route the embeddings they need (a search query, and content ingested
+  during the session) to the host, falling back to FTS when it is unreachable.
+  Elected via a flock, spawned detached by the first thin server, supervised
+  by memory_guard. Off by default; no CLI config change. Removes the
+  per-session RAM multiplier and the reclaim-thrash root.
 
 ### Changed
 
