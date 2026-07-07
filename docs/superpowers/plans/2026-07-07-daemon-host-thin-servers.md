@@ -750,27 +750,37 @@ the loops in *whatever process calls it*, so the flag-off path runs them
 in-process exactly as before, and the host path runs them in the host. Both use
 lazy `from . import host` (no import cycle).
 
+Three cases (the host role must NOT restart daemons — `host.main()` already
+did, and `_ensure_session` runs again on the host's own heartbeat):
+
 ```python
         # ... one-shot ingest reads stay here (unchanged: _ingest_all,
         #     _backfill_dialog_fts_if_empty) ...
         from . import config as _cfg
         from . import host
-        if _cfg.DAEMON_HOST_ENABLED and _cfg.PROCESS_ROLE == "server":
+        if not _cfg.DAEMON_HOST_ENABLED:
+            # legacy (flag off): run every loop in THIS process, as before.
             try:
-                host.ensure_host_running()   # thin: delegate loops to the host
-            except Exception:
-                pass  # a thin server must never fail to start on host trouble
-        else:
-            try:
-                host.start_daemons()         # flag off / host role: in-process (legacy)
+                host.start_daemons()
             except Exception:
                 pass
+        elif _cfg.PROCESS_ROLE == "server":
+            # thin server: delegate the loops to the shared host.
+            try:
+                host.ensure_host_running()
+            except Exception:
+                pass  # a thin server must never fail to start on host trouble
+        # else: flag on + role == "host" — host.main() already started the
+        # loops; a re-entrant _ensure_session (e.g. the host heartbeat) must
+        # NOT restart them. Do nothing.
 ```
 
 Note: the current code starts the background ingester via
 `ingest._start_background_ingester()` and each daemon in its own `try/except`;
 `host.start_daemons()` (Task 4) already wraps the ingester + all 18 starters the
-same way, so this is the *same* behavior with the flag off, just centralized.
+same way, so the flag-off path is the *same* behavior, just centralized. The
+`elif`/no-`else` structure ensures the host process never double-starts its own
+loops on the heartbeat's re-entrant `_ensure_session`.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
