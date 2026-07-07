@@ -759,7 +759,11 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
    broad skill. `lesson_append(source='shadow')` is the compact fallback.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
-8. Write events.kind='shadow_review_pass' with the new high-water rowid.
+8. Write events.kind='shadow_review_pass' with the new high-water rowid only
+   after a child is actually spawned or the window was intentionally classified
+   as `no_window`/`too_short`; spawn `ERR ...` rejections, exceptions, and
+   already-running-child deferrals keep the old cursor so the same window is
+   retried.
 ```
 
 Dedupe — via an **ingest-order** cursor in `events.target` (the rowid of the
@@ -770,6 +774,12 @@ whose `created_at` lands below the cursor — still gets a fresh rowid above it
 and is reviewed exactly once (a `created_at` cursor silently stepped over it).
 Idempotent: the monotonic rowid advance means a repeated tick will not
 re-evaluate (or re-spawn on) what it has already seen.
+
+The cursor advances only after real processing. If the dispatch layer cannot
+launch an observer child — budget admission returns `ERR ...`, spawn raises, or
+another observer is already running — the pass records the prior cursor with an
+error/deferred outcome. That preserves the dialog window for the next tick
+instead of treating a launch rejection as a completed evaluation.
 
 Harvest boundary (#36): raw transcript ingest keeps autonomous child rows for
 diagnostics, but dialog-derived memory loops must not learn from their own

@@ -48,6 +48,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Learning daemons no longer drop unprocessed dialog windows (#90).**
+  `shadow_review` now keeps its old cursor when spawn admission returns
+  `ERR ...` or raises before an observer child launches, so budget-cap
+  rejections are retried on the next tick. `extract_daemon` now uses its
+  `extract_pass` cursor to extend scans when the configured interval is longer
+  than the base window, avoiding uncovered gaps between ticks.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

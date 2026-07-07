@@ -127,9 +127,13 @@ def _enqueue(conn, kind, source_uuid, source_cid, content, rationale):
     return cur.lastrowid
 
 
-@write_tool()
-def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
-    """Scan recent dialog_messages and enqueue heuristic candidates.
+def _extract_recent_from_cutoff(
+    cutoff: int,
+    *,
+    window_min: int = 60,
+    max_messages: int = 500,
+) -> str:
+    """Shared extract implementation for wall-clock and cursor-based scans.
 
     H1 user_want         → verbatim (normative phrasing)
     H2 long_insight      → distill (assistant ≥500ch + ## headers + conclusion marker)
@@ -137,8 +141,8 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
     H4 paraphrase_repeat → note (≥3 msgs cosine ≥0.80 within same session)"""
     conn = get_db()
     _ensure_session(conn)
-    now = int(time.time())
-    cutoff = now - max(1, int(window_min)) * 60
+    window_min = max(1, int(window_min))
+    cutoff = int(cutoff)
     # Exclude autonomous review/audit lineage before applying heuristics.
     from ..harvest import harvest_exclusion_cte
 
@@ -268,6 +272,16 @@ def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
         f"verbatim={counts['verbatim']} distill={counts['distill']} "
         f"concept={counts['concept']} note={counts['note']} "
         f"skipped_existing={skipped}"
+    )
+
+
+@write_tool()
+def extract_recent(window_min: int = 60, max_messages: int = 500) -> str:
+    """Scan recent dialog_messages and enqueue heuristic candidates."""
+    window_min = max(1, int(window_min))
+    cutoff = int(time.time()) - window_min * 60
+    return _extract_recent_from_cutoff(
+        cutoff, window_min=window_min, max_messages=max_messages,
     )
 
 
