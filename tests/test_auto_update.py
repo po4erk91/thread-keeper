@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -287,6 +288,107 @@ def test_git_checkout_with_dirty_tracked_files_is_skipped(tmp_path, monkeypatch)
     assert (
         pkg["auto_update"]._update_git_checkout(tmp_path)
         == "skipped_dirty_checkout mode=git"
+    )
+
+
+def test_auto_update_setup_check_noops_when_config_already_matches(
+    tmp_path,
+    monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+    stdout = """thread-keeper setup (dry-run)
+  [dir] ~/.threadkeeper: already exists
+  [mcp_server[codex]] codex: already current
+  [instructions[codex]] AGENTS.md: managed block already current
+  [hooks] hooks: tk-brief.sh already current
+
+Done. Restart connected CLIs for instructions + MCP changes to take effect.
+"""
+
+    def fake_run(args, *, cwd=None, timeout=None):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
+
+    out = pkg["auto_update"]._run_setup()
+
+    assert out == " setup=checked status=unchanged"
+    assert calls == [[sys.executable, "-m", "threadkeeper._setup", "--dry-run"]]
+
+
+def test_auto_update_setup_check_logs_pending_config_rewrite(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    caplog.set_level(logging.WARNING, logger="threadkeeper.auto_update")
+    stdout = """thread-keeper setup (dry-run)
+  [mcp_server[codex]] codex: would create config.toml with mcp section
+  [instructions[codex]] AGENTS.md: would prepend managed block
+
+Done. Restart connected CLIs for instructions + MCP changes to take effect.
+"""
+
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run",
+        lambda args, *, cwd=None, timeout=None: SimpleNamespace(
+            returncode=0,
+            stdout=stdout,
+            stderr="",
+        ),
+    )
+
+    out = pkg["auto_update"]._run_setup()
+
+    assert out == " setup=checked status=changes_pending"
+    assert any(
+        "setup dry-run found pending CLI config changes" in rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "threadkeeper.auto_update"
+    )
+
+
+def test_auto_update_setup_apply_mode_runs_full_setup(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, cwd=None, timeout=None):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pkg["auto_update"], "AUTO_UPDATE_SETUP", "apply")
+    monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
+
+    out = pkg["auto_update"]._run_setup()
+
+    assert out == " setup=ok"
+    assert calls == [[sys.executable, "-m", "threadkeeper._setup"]]
+
+
+def test_auto_update_setup_skip_mode_avoids_subprocess(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(pkg["auto_update"], "AUTO_UPDATE_SETUP", "skip")
+    monkeypatch.setattr(
+        pkg["auto_update"],
+        "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("setup subprocess should not run")
+        ),
+    )
+
+    assert pkg["auto_update"]._run_setup() == " setup=skipped mode=skip"
+
+
+def test_setup_dry_run_detects_legacy_migration_status(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+
+    assert pkg["auto_update"]._setup_dry_run_would_change(
+        "  [mcp_server[copilot]] copilot: migrated legacy schema + updated thread-keeper\n"
     )
 
 

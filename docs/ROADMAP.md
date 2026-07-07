@@ -56,6 +56,11 @@ remains a live question.
   `threadkeeper.server` import smoke check. Failures are recorded on
   `auto_update_pass` with `restart=suppressed`, and the current process stays
   alive on its already-loaded code.
+- Auto-update setup consent gate (#87): post-update setup now defaults to
+  `THREADKEEPER_AUTO_UPDATE_SETUP=check`, a dry-run that records unchanged vs
+  pending CLI config rewrites without re-adding removed MCP entries, hooks, or
+  managed instruction blocks. `apply` is explicit standing consent for the old
+  full setup writer, and `skip` disables the setup subprocess.
 - Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
   paginated, oldest-first GitHub REST issue reads instead of a newest-first
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by

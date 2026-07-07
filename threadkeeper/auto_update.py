@@ -35,6 +35,7 @@ from .config import (
     AUTO_UPDATE_INTERVAL_S,
     AUTO_UPDATE_PYPI_BASE_URL,
     AUTO_UPDATE_RESTART,
+    AUTO_UPDATE_SETUP,
     AUTO_UPDATE_TIMEOUT_S,
     AUTO_UPDATE_VERIFY_PROVENANCE,
     BACKGROUND_DAEMONS_ALLOWED,
@@ -394,13 +395,54 @@ def _git_branch_remote(repo: Path) -> tuple[str, str, str] | str:
     return branch, remote, remote_branch
 
 
+def _setup_dry_run_would_change(stdout: str) -> bool:
+    """Best-effort parse of thread-keeper-setup --dry-run output."""
+    change_markers = (
+        " would ",
+        ": would ",
+        ": created",
+        ": updated",
+        ": installed",
+        ": prepended",
+        ": migrated ",
+        " + added ",
+        " + updated ",
+    )
+    for line in stdout.splitlines():
+        text = line.strip().lower()
+        if not text or text.startswith("thread-keeper setup"):
+            continue
+        if text.startswith("done."):
+            continue
+        if any(marker in text for marker in change_markers):
+            return True
+    return False
+
+
 def _run_setup() -> str:
+    mode = str(AUTO_UPDATE_SETUP).strip().lower()
+    if mode == "skip":
+        return " setup=skipped mode=skip"
+
+    args = [sys.executable, "-m", "threadkeeper._setup"]
+    if mode == "check":
+        args.append("--dry-run")
     setup = _run(
-        [sys.executable, "-m", "threadkeeper._setup"],
+        args,
         timeout=min(120, AUTO_UPDATE_TIMEOUT_S),
     )
     if setup.returncode != 0:
         return f" setup=failed err={_short(setup.stderr)}"
+    if mode == "check":
+        if _setup_dry_run_would_change(setup.stdout):
+            logger.warning(
+                "auto_update: setup dry-run found pending CLI config changes; "
+                "set THREADKEEPER_AUTO_UPDATE_SETUP=apply to allow auto-update "
+                "to write them, or run thread-keeper-setup manually. output=%s",
+                _short(setup.stdout, 240),
+            )
+            return " setup=checked status=changes_pending"
+        return " setup=checked status=unchanged"
     return " setup=ok"
 
 

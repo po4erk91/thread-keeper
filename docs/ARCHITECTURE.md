@@ -113,14 +113,19 @@ bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
 and checks the attested subject filename/SHA-256 against PyPI metadata before
 `pip` is invoked. Missing provenance, mismatched publisher identity, or digest
 mismatch returns `refused mode=pip ...` and records an `auto_update_pass` without
-restarting. Successful updates optionally exit the current MCP process
+restarting. After a successful install, `THREADKEEPER_AUTO_UPDATE_SETUP` governs
+the setup step: `check` (default) runs `thread-keeper-setup --dry-run`, records
+`setup=checked status=unchanged` or `status=changes_pending`, and logs when the
+dry-run would rewrite MCP registrations, hook wiring, or managed instruction
+blocks; `apply` is standing consent to run the full setup writer; `skip` avoids
+the setup subprocess. Successful updates optionally exit the current MCP process
 (`THREADKEEPER_AUTO_UPDATE_RESTART` default true) so the host reconnects to the
-new code, but only after setup and a subprocess import smoke check both pass.
-Install/setup/import failures are recorded on the `auto_update_pass` event with
-`restart=suppressed`, and the already-running process stays alive on its current
-in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt out of the
-standing-consent update channel entirely; the provenance gate itself is
-controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
+new code, but only after setup check/apply and a subprocess import smoke check
+both pass. Install/setup/import failures are recorded on the `auto_update_pass`
+event with `restart=suppressed`, and the already-running process stays alive on
+its current in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt
+out of the standing-consent update channel entirely; the provenance gate itself
+is controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
 mirrors.
 The upstream publish path is gated before that provenance exists: the
 post-test release readiness workflow is read-only and does not dispatch PyPI,
@@ -1383,6 +1388,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | true | exit MCP process after an update passes setup/import smoke checks |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
+| `THREADKEEPER_AUTO_UPDATE_SETUP` | `check` | post-update setup mode: `check` dry-runs and logs pending CLI config rewrites; `apply` writes setup config; `skip` disables setup |
 | `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |
 | `THREADKEEPER_AUTO_UPDATE_PYPI_BASE_URL` | `https://pypi.org` | PyPI base URL used for JSON metadata and Integrity API checks |
 | `THREADKEEPER_AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY` | `po4erk91/thread-keeper` | expected GitHub Trusted Publisher repository for packaged self-upgrades |

@@ -38,6 +38,7 @@ def test_defaults_match(monkeypatch):
     assert c.SPAWN_TIMEOUT_RETRY_DELAY_S == 0.0
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
+    assert c.AUTO_UPDATE_SETUP == "check"
     assert c.RETENTION_INTERVAL_S == 0.0
     assert c.DIALOG_RETENTION_DAYS == 0.0
     assert c.TASK_RETENTION_DAYS == 30
@@ -81,6 +82,26 @@ def test_retention_env_overrides(monkeypatch):
     assert c.PROBE_RESULT_RETENTION_DAYS == 60
     assert c.RETENTION_WAL_CHECKPOINT is True
     assert c.RETENTION_VACUUM_AFTER_ROWS == 1000
+
+
+def test_auto_update_setup_mode_normalizes_aliases(monkeypatch):
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_AUTO_UPDATE_SETUP": "dry-run"},
+    )
+    assert c.AUTO_UPDATE_SETUP == "check"
+
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_AUTO_UPDATE_SETUP": "1"},
+    )
+    assert c.AUTO_UPDATE_SETUP == "apply"
+
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_AUTO_UPDATE_SETUP": "off"},
+    )
+    assert c.AUTO_UPDATE_SETUP == "skip"
 
 
 def test_unknown_threadkeeper_env_key_warns(monkeypatch, caplog):
@@ -149,6 +170,7 @@ def test_all_exported_names_present(monkeypatch):
         "AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW",
         "AUTO_UPDATE_PYPI_BASE_URL",
         "AUTO_UPDATE_RESTART",
+        "AUTO_UPDATE_SETUP",
         "AUTO_UPDATE_TIMEOUT_S",
         "AUTO_UPDATE_VERIFY_PROVENANCE",
         "BACKGROUND_DAEMONS_ALLOWED",

@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     auto_update_interval_s: float = 86400.0
     auto_update_restart: bool = True
     auto_update_timeout_s: int = 600
+    # Post-update setup mode:
+    #   check (default) -> run thread-keeper-setup --dry-run and record whether
+    #                      CLI config rewrites would be needed, but do not write
+    #   apply           -> run the full installer after updates
+    #   skip            -> do not run setup from auto-update at all
+    auto_update_setup: str = "check"
     auto_update_verify_provenance: bool = True
     auto_update_pypi_base_url: str = "https://pypi.org"
     auto_update_expected_publisher_repository: str = "po4erk91/thread-keeper"
@@ -432,6 +438,30 @@ class Settings(BaseSettings):
         # vocabulary has a single owner and config stays import-cycle free.
         return v.strip().lower()
 
+    @field_validator("auto_update_setup", mode="after")
+    @classmethod
+    def _normalize_auto_update_setup(cls, v: str) -> str:
+        value = str(v).strip().lower()
+        aliases = {
+            "1": "apply",
+            "true": "apply",
+            "yes": "apply",
+            "on": "apply",
+            "0": "skip",
+            "false": "skip",
+            "no": "skip",
+            "off": "skip",
+            "disabled": "skip",
+            "dry-run": "check",
+            "dry_run": "check",
+        }
+        value = aliases.get(value, value)
+        if value not in {"check", "apply", "skip"}:
+            raise ValueError(
+                "auto_update_setup must be one of: check, apply, skip"
+            )
+        return value
+
     @field_validator("panel_roles", mode="before")
     @classmethod
     def _parse_panel_roles(cls, v):
@@ -596,6 +626,7 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
         "AUTO_UPDATE_RESTART": s.auto_update_restart,
         "AUTO_UPDATE_TIMEOUT_S": s.auto_update_timeout_s,
+        "AUTO_UPDATE_SETUP": s.auto_update_setup,
         "AUTO_UPDATE_VERIFY_PROVENANCE": s.auto_update_verify_provenance,
         "AUTO_UPDATE_PYPI_BASE_URL": s.auto_update_pypi_base_url,
         "AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY": (
