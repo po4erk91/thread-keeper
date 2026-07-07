@@ -14,18 +14,11 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
-# These evolve tests run ~30 s each and dominate the suite's wall-clock
-# (measured via --durations). Marked `slow` so `pytest -m "not slow"` gives a
-# fast local inner loop; CI still runs the full suite.
-pytestmark = pytest.mark.slow
-
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
 
-def _bootstrap(tmp_path, monkeypatch, interval="0"):
+def _bootstrap(tmp_path, monkeypatch, interval="0", pin_repo=True):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
@@ -115,6 +108,17 @@ def _bootstrap(tmp_path, monkeypatch, interval="0"):
     import threadkeeper.config as _cfg
     monkeypatch.setattr(_cfg, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
     monkeypatch.setattr(evolve_applier, "ROADMAP_CLAIM_RACE_WINDOW_S", 0.0)
+    # Isolation default (#164/#214) resolves to the UNprovisioned managed
+    # checkout (~/.threadkeeper/evolve-repo); left as-is the apply/spawn path
+    # calls _ensure_repo_ready() -> a real `git clone` + venv + `pip install`
+    # (~40 s/test) against a shared real dir. Pin a ready tmp checkout by
+    # default so every dispatch test runs without a real clone and stays
+    # isolated. Tests exercising the resolution/provisioning logic itself pass
+    # pin_repo=False and set up their own repo mocks.
+    if pin_repo:
+        _repo = tmp_path / "evolve-repo"
+        monkeypatch.setattr(evolve_applier, "_resolve_repo_root", lambda: _repo)
+        monkeypatch.setattr(evolve_applier, "_is_git_repo", lambda p: True)
     return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier,
             "identity": identity, "orig": orig}
 
@@ -1912,7 +1916,7 @@ def test_repo_root_prefers_env_override(tmp_path, monkeypatch):
     external = tmp_path / "external_repo"
     external.mkdir()
     monkeypatch.setenv("THREADKEEPER_EVOLVE_REPO_ROOT", str(external))
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     assert pkg["ea"]._repo_root() == external
 
 
@@ -1928,7 +1932,7 @@ def test_repo_root_defaults_to_managed_checkout(tmp_path, monkeypatch):
 def test_repo_root_falls_back_in_place_when_autoclone_off(tmp_path, monkeypatch):
     """The escape hatch: THREADKEEPER_EVOLVE_AUTO_CLONE=0 keeps the pre-isolation
     in-place behaviour, resolving to the editable package-parent checkout."""
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTO_CLONE", False)
     from pathlib import Path as _P
     pkg_parent = _P(pkg["ea"].__file__).resolve().parent.parent
@@ -2003,7 +2007,7 @@ def test_ensure_repo_ready_disabled_flag_blocks_auto_clone(tmp_path, monkeypatch
 def test_ensure_repo_ready_override_not_checkout_errors(tmp_path, monkeypatch):
     """An explicit override that isn't a checkout is never auto-cloned into —
     the user is told to fix the path."""
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     bad = tmp_path / "not-a-repo"
     bad.mkdir()
     monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_ROOT", str(bad))

@@ -9,13 +9,18 @@ version bumps follow semver per the policy in
 
 ### Changed
 
-- **Faster local test loop + opt-in parallel runs.** The heaviest test files
-  (`test_evolve_applier.py`, `test_evolve_daemon.py`) are now marked
-  `pytest.mark.slow` (joining `test_onnx_embeddings.py`), so `pytest -m "not
-  slow"` skips the ~30 s-per-test evolve suite for a fast local inner loop.
-  Added `pytest-xdist` to the `dev` extra as an opt-in local accelerator
+- **Evolve tests no longer provision a real checkout — ~850 s off the suite.**
+  The evolve applier/reviewer resolve their repo to an UNprovisioned managed
+  checkout by default (#164/#214); the test bootstraps left that unpinned, so
+  every dispatch test ran a real `git clone` + venv + `pip install` against a
+  shared dir (`test_apply_evolve_builds_spawn_call` alone was 42 s). The evolve
+  test bootstraps and the shared `fresh_mp` fixture now pin a ready tmp checkout
+  so those tests run without a real clone and stay isolated:
+  `test_evolve_applier.py` 80 tests ~900 s → 9.5 s, `test_evolve_daemon.py`
+  ~145 s → 2.7 s, the evolve `test_tool_smoke` params ~26 s each → <0.1 s.
+  Also added `pytest-xdist` to the `dev` extra as an opt-in local accelerator
   (`-n auto`); CI stays serial `--forked` because the suite is not yet
-  parallel-safe (tracked in #217). CONTRIBUTING documents both.
+  parallel-safe (tracked in #217). CONTRIBUTING documents the runners.
 - **Hot-config reload now watches the universal `~/.threadkeeper/.env` layer,
   not just Claude's `settings.json` (#133).** The `config_watcher` previously
   hardcoded `~/.claude/settings.json` — the lowest-priority layer for Claude
