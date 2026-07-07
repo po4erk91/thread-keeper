@@ -6,7 +6,10 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 from . import config
@@ -110,6 +113,40 @@ def _heartbeat() -> None:
         identity._ensure_session(get_db(), client="daemon-host")
     except Exception:
         logger.debug("host: heartbeat failed", exc_info=True)
+
+
+def ensure_host_running() -> bool:
+    """Called by a thin server at session start. If no live host, spawn one
+    detached and return True; else False. Idempotent under the host lock."""
+    if config.PROCESS_ROLE == "host":
+        return False
+    if _host_alive():
+        return False
+    with single_flight_lock("daemon-host-spawn") as locked:
+        if not locked or _host_alive():
+            return False
+        log = open(config.HOST_LOCK_PATH.parent / "host.log", "ab", buffering=0)
+        subprocess.Popen(
+            [sys.executable, "-m", "threadkeeper.host"],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            start_new_session=True, close_fds=True,
+        )
+        return True
+
+
+def _host_alive() -> bool:
+    """A live host heartbeat within the TTL."""
+    from .db import get_db
+    try:
+        row = get_db().execute(
+            "SELECT heartbeat_at FROM presence WHERE client='daemon-host' "
+            "ORDER BY heartbeat_at DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        return False
+    if not row or row["heartbeat_at"] is None:
+        return False
+    return (time.time() - int(row["heartbeat_at"])) < config.HOST_HEARTBEAT_TTL_S
 
 
 if __name__ == "__main__":

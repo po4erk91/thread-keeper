@@ -125,96 +125,28 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             ingest._start_background_ingester()
         except Exception:
             pass
-        try:
-            from . import retention
-            retention.start_retention_daemon()
-        except Exception:
-            pass
-        try:
-            from . import search_proxy
-            search_proxy.start_search_proxy()
-        except Exception:
-            pass
-        try:
-            from . import spawn_budget
-            spawn_budget.start_budget_daemon()
-        except Exception:
-            pass
-        try:
-            from . import memory_guard
-            memory_guard.start_memory_guard_daemon()
-        except Exception:
-            pass
-        try:
-            from . import auto_update
-            auto_update.start_auto_update_daemon()
-        except Exception:
-            pass
-        try:
-            from . import skill_watcher
-            skill_watcher.start_skill_watcher()
-        except Exception:
-            pass
-        try:
-            from . import skill_updater
-            skill_updater.start_skill_update_daemon()
-        except Exception:
-            pass
-        try:
-            from . import config_watcher
-            config_watcher.start_config_watcher()
-        except Exception:
-            pass
-        try:
-            from . import shadow_review
-            shadow_review.start_shadow_daemon()
-        except Exception:
-            pass
-        try:
-            from . import curator
-            curator.start_curator_daemon()
-        except Exception:
-            pass
-        try:
-            from . import extract_daemon
-            extract_daemon.start_extract_daemon()
-        except Exception:
-            pass
-        try:
-            from . import candidate_reviewer
-            candidate_reviewer.start_candidate_reviewer_daemon()
-        except Exception:
-            pass
-        try:
-            from . import probe_daemon
-            probe_daemon.start_probe_daemon()
-        except Exception:
-            pass
-        try:
-            from . import evolve_daemon
-            evolve_daemon.start_evolve_daemon()
-        except Exception:
-            pass
-        try:
-            from . import evolve_applier
-            evolve_applier.start_evolve_applier_daemon()
-        except Exception:
-            pass
-        try:
-            from . import thread_janitor
-            thread_janitor.start_thread_janitor()
-        except Exception:
-            pass
-        try:
-            from . import dialectic_miner
-            dialectic_miner.start_dialectic_miner_daemon()
-        except Exception:
-            pass
-        try:
-            from . import dialectic_validator
-            dialectic_validator.start_dialectic_validator_daemon()
-        except Exception:
-            pass
+        # Phase 1 (daemon-host): who actually runs the loops depends on the
+        # flag + this process's role. `host.start_daemons()` (Task 4) starts
+        # the ingester + all 18 daemon starters that used to be in-lined here
+        # — in WHATEVER process calls it — so the flag-off branch below is
+        # the same behavior as before, just centralized in one function.
+        from . import config as _cfg
+        from . import host
+        if not _cfg.DAEMON_HOST_ENABLED:
+            # legacy (flag off): run every loop in THIS process, as before.
+            try:
+                host.start_daemons()
+            except Exception:
+                pass
+        elif _cfg.PROCESS_ROLE == "server":
+            # thin server: delegate the loops to the shared host.
+            try:
+                host.ensure_host_running()
+            except Exception:
+                pass  # a thin server must never fail to start on host trouble
+        # else: flag on + role == "host" — host.main() already started the
+        # loops; a re-entrant _ensure_session (e.g. the host heartbeat) must
+        # NOT restart them. Do nothing.
         try:
             # One-shot self-heal: claims seeded before the tier machinery
             # never got their tier recomputed (see recompute_all_tiers). Cheap
