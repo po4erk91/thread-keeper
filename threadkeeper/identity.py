@@ -120,11 +120,6 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
             ingest._backfill_dialog_fts_if_empty(conn)
         except Exception:
             pass  # FTS unavailable shouldn't block session start
-        try:
-            from . import ingest
-            ingest._start_background_ingester()
-        except Exception:
-            pass
         # Phase 1 (daemon-host): who actually runs the loops depends on the
         # flag + this process's role. `host.start_daemons()` (Task 4) starts
         # the ingester + all 18 daemon starters that used to be in-lined here

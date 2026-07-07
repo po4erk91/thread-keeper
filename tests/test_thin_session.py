@@ -27,9 +27,16 @@ def test_thin_session_starts_no_daemons_and_ensures_host(monkeypatch, tmp_path):
     # spy: no daemon starter should be invoked from a thin session
     import threadkeeper.shadow_review as sr
     monkeypatch.setattr(sr, "start_shadow_daemon", lambda: started.append("shadow"))
+    # spy: the periodic background ingester (a daemon thread, not a one-shot
+    # read) must also not be started locally by a thin session — it belongs
+    # solely to host.start_daemons().
+    from threadkeeper import ingest
+    ing_calls = []
+    monkeypatch.setattr(ingest, "_start_background_ingester", lambda *a, **k: ing_calls.append(1))
     from threadkeeper.db import get_db
     identity._ensure_session(get_db())
     assert "shadow" not in started        # thin server started no daemon
+    assert ing_calls == []                # thin server started no background ingester
     assert ensured["n"] >= 1              # but ensured a host
 
 
