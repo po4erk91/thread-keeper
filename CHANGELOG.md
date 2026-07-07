@@ -60,6 +60,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Spawn-budget daemon stays out of spawned children (#92).** The
+  `spawn_budget` RSS/watchdog polling thread now honors
+  `BACKGROUND_DAEMONS_ALLOWED`, matching `memory_guard`, so slim children do
+  not each start their own perpetual `ps` loop.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

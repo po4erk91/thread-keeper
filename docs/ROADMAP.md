@@ -772,10 +772,9 @@ deduplicated against the issues above):
   loop writers (shadow / candidate / auto-review / foreground) last-writer-win
   and silently clobber each other's edits — the new curator single-flight only
   serializes curators against each other (#91).
-- `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
-  lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
-  every slim child runs a perpetual `ps`-polling thread it was explicitly
-  designed not to run (#92).
+- ✅ DONE (#92): `spawn_budget.start_budget_daemon` now honors the same
+  `BACKGROUND_DAEMONS_ALLOWED` gate as `memory_guard`, so spawned children do
+  not start their own perpetual `ps`-polling budget thread.
 - Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
   needed retire/kill, or freeing in-use budget), and the liveness refresh caps
   at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
