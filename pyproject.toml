@@ -53,11 +53,15 @@ semantic-st = [
 # Test runner + coverage. pytest-forked isolates each test in its own
 # process: the per-test package re-import (tests/conftest.py) accumulates
 # native ONNX/tokenizer thread pools that can deadlock sqlite finalize in a
-# single long-lived process, so CI runs `pytest --forked`.
+# single long-lived process, so CI runs `pytest --forked`. pytest-xdist is an
+# opt-in LOCAL accelerator (`-n auto`); it is NOT used in CI because it does
+# not compose with --forked (collides on the xdist worker tmp dir) and a few
+# tests still race under it. See CONTRIBUTING → Running tests.
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-forked>=1.6",
+    "pytest-xdist>=3.5",
 ]
 
 [project.urls]

@@ -114,6 +114,18 @@ def _bootstrap_mp(tmp_path, monkeypatch, force_cid: str = ""):
     import threadkeeper.server  # noqa: F401
     from threadkeeper import _mcp, identity, db, brief, config
 
+    # Mechanical invariant: no test ever provisions the real evolve checkout.
+    # The isolation default (#164/#214) resolves the evolve repo to an
+    # UNprovisioned managed checkout (~/.threadkeeper/evolve-repo); any tool
+    # that runs the apply/reviewer path (e.g. the evolve_apply* tools in the
+    # tool-smoke sweep) would then do a real `git clone` + venv + `pip install`
+    # (~25 s/call) against a shared dir. Pin a ready tmp checkout instead.
+    # Tests that exercise repo resolution itself use their own bootstrap.
+    from threadkeeper import evolve_applier as _ea
+    _repo = tmp_path / "evolve-repo"
+    monkeypatch.setattr(_ea, "_resolve_repo_root", lambda: _repo)
+    monkeypatch.setattr(_ea, "_is_git_repo", lambda p: True)
+
     return {
         "mcp": _mcp.mcp,
         "identity": identity,

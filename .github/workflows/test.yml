@@ -50,4 +50,9 @@ jobs:
           # per-test package re-import (tests/conftest.py) otherwise piles up
           # native ONNX/tokenizer thread pools that can deadlock sqlite
           # connection finalize in a single long-lived interpreter.
+          # NB: kept serial on purpose. `-n auto` (pytest-xdist) does not
+          # compose here — with --forked it collides on the xdist worker tmp
+          # dir, and without --forked a few tests race on shared state. Fixing
+          # the suite for parallel runs is tracked separately; xdist is shipped
+          # as an opt-in local accelerator (see CONTRIBUTING).
           python -m pytest -q --forked --tb=short
