@@ -294,3 +294,146 @@ def test_config_watch_status_tool(tmp_path, monkeypatch):
     out = mcp._tool_manager._tools["config_watch_status"].fn()
     assert "interval_s=" in out
     assert "settings.json" in out
+
+
+# ── #133: universal env-file + per-CLI resolution + precedence guard ───────
+
+def _bootstrap_hybrid(tmp_path, monkeypatch, *, env_file, active_cli="codex",
+                      watch_interval="2", extra_env=None):
+    """Re-import threadkeeper in HYBRID mode: no CONFIG_WATCH_PATH override, so
+    the watcher watches the universal env-file (THREADKEEPER_ENV_FILE -> a tmp
+    .env) plus the host-CLI file resolved from THREADKEEPER_ACTIVE_CLI."""
+    env = {
+        "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
+        "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
+        "THREADKEEPER_DISABLE_BG_DAEMONS": "1",
+        "THREADKEEPER_INGEST_INTERVAL_S": "0",
+        "THREADKEEPER_INGEST_CAP": "0",
+        "THREADKEEPER_SKILL_WATCH_INTERVAL_S": "0",
+        "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
+        "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
+        "THREADKEEPER_MEMORY_GUARD_POLL_S": "0",
+        "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": "0",
+        "THREADKEEPER_CONFIG_WATCH_INTERVAL_S": watch_interval,
+        "THREADKEEPER_ENV_FILE": str(env_file),
+        "THREADKEEPER_ACTIVE_CLI": active_cli,
+        "THREADKEEPER_CLIENT": "pytest",
+        "THREADKEEPER_FORCE_CID": "aaaa1111-2222-3333-4444-555566667777",
+    }
+    if extra_env:
+        env.update(extra_env)
+    # Isolate: let the tmp .env (not the runner's own environment) own these.
+    for k in ("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S",
+              "THREADKEEPER_RETENTION_INTERVAL_S"):
+        if k not in env:
+            monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+    import threadkeeper.server  # noqa: F401  (registers tools)
+    from threadkeeper import config, config_watcher
+    return {"config": config, "watcher": config_watcher}
+
+
+def _bump(path: Path) -> None:
+    """Nudge mtime forward so the watcher sees the change (coarse-fs safe)."""
+    import os
+    st = path.stat()
+    os.utime(path, (st.st_atime, st.st_mtime + 1))
+
+
+def test_env_file_change_hot_reloads_for_any_host(tmp_path, monkeypatch):
+    """The universal env-file hot-reloads for EVERY host — here a non-Claude
+    host (codex) with no CLI env-block file: only the env-file target fires.
+    This is the cross-CLI gap #133 closes (retention-class bug)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S=111\n")
+    pkg = _bootstrap_hybrid(tmp_path, monkeypatch, env_file=env_file,
+                            active_cli="codex")
+    w = pkg["watcher"]
+    assert pkg["config"].SHADOW_REVIEW_INTERVAL_S == 111.0
+    out = w.run_config_watch_pass()  # init
+    assert "env=initialized" in out
+    assert "cli=" not in out  # codex has no parseable env-block file here
+    env_file.write_text("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S=222\n")
+    _bump(env_file)
+    out = w.run_config_watch_pass()
+    assert "env=reloaded" in out
+    assert pkg["config"].SHADOW_REVIEW_INTERVAL_S == 222.0
+
+
+def test_env_file_does_not_override_real_spawn_env(tmp_path, monkeypatch):
+    """Native .env re-read keeps precedence: a real spawn-time env var wins
+    over the .env file, and editing .env never inverts that (the mirroring
+    trap #133 flags for settings.json does not exist for the env-file path)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S=111\n")
+    pkg = _bootstrap_hybrid(
+        tmp_path, monkeypatch, env_file=env_file, active_cli="codex",
+        extra_env={"THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "777"},
+    )
+    w = pkg["watcher"]
+    assert pkg["config"].SHADOW_REVIEW_INTERVAL_S == 777.0  # env wins over .env
+    w.run_config_watch_pass()  # init
+    env_file.write_text("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S=222\n")
+    _bump(env_file)
+    w.run_config_watch_pass()
+    assert pkg["config"].SHADOW_REVIEW_INTERVAL_S == 777.0  # still env, not .env
+
+
+def test_higher_scope_pin_not_overridden_by_user_file(tmp_path, monkeypatch):
+    """Issue #133 problem 1: a key a higher scope pinned at spawn (os.environ
+    disagrees with the lowest-priority user settings file) is NOT mirrored
+    over by the user-level value."""
+    pkg = _bootstrap(tmp_path, monkeypatch, shadow="0")  # env + file both 0
+    w = pkg["watcher"]
+    # A higher-priority scope pins 999; the user file still says 0.
+    monkeypatch.setenv("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S", "999")
+    w.run_config_watch_pass()  # init: detects the divergence -> shadowed
+    assert "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S" in w._shadowed_keys
+    # User edits the (lowest-priority) user file; it must NOT win.
+    _write_env(pkg["settings_json"],
+               {"THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "123"})
+    w.run_config_watch_pass()
+    assert "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S" not in w._applied_keys
+    assert pkg["config"].SHADOW_REVIEW_INTERVAL_S == 999.0  # higher scope wins
+
+
+def test_cli_settings_path_resolves_via_identity(tmp_path, monkeypatch):
+    """The host CLI file is resolved from active-CLI identity, not hardcoded:
+    Claude -> ~/.claude/settings.json; a host with no env-block file -> None
+    (it hot-reloads via the universal env-file instead)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    pkg = _bootstrap_hybrid(tmp_path, monkeypatch, env_file=env_file,
+                            active_cli="claude")
+    w = pkg["watcher"]
+    from threadkeeper import identity
+    assert w._cli_settings_path() == Path("~/.claude/settings.json").expanduser()
+    # Switch host identity to a CLI with no env-block file -> None.
+    identity._active_cli = None
+    monkeypatch.setenv("THREADKEEPER_ACTIVE_CLI", "codex")
+    assert w._cli_settings_path() is None
+
+
+def test_hybrid_status_reports_both_files(tmp_path, monkeypatch):
+    """config_watch_status surfaces BOTH watched files in hybrid mode."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("THREADKEEPER_SHADOW_REVIEW_INTERVAL_S=111\n")
+    settings_json = tmp_path / "settings.json"
+    settings_json.write_text(json.dumps({"env": {}}))
+    pkg = _bootstrap_hybrid(tmp_path, monkeypatch, env_file=env_file,
+                            active_cli="claude")
+    # Redirect the claude env-block file to a tmp file (never touch ~/.claude).
+    monkeypatch.setitem(pkg["watcher"]._CLI_SETTINGS_FILE, "claude",
+                        str(settings_json))
+    pkg["watcher"].run_config_watch_pass()
+    from threadkeeper._mcp import mcp
+    out = mcp._tool_manager._tools["config_watch_status"].fn()
+    assert "mode=hybrid" in out
+    assert "env_file=" in out
+    assert str(env_file) in out
+    assert "cli_file=" in out
+    assert str(settings_json) in out
