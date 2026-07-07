@@ -16,6 +16,20 @@ version bumps follow semver per the policy in
   Added `pytest-xdist` to the `dev` extra as an opt-in local accelerator
   (`-n auto`); CI stays serial `--forked` because the suite is not yet
   parallel-safe (tracked in #217). CONTRIBUTING documents both.
+- **Hot-config reload now watches the universal `~/.threadkeeper/.env` layer,
+  not just Claude's `settings.json` (#133).** The `config_watcher` previously
+  hardcoded `~/.claude/settings.json` — the lowest-priority layer for Claude
+  Code and the wrong file (or a no-op) for the other six CLIs, so an edited
+  knob never hot-reloaded on Codex / Desktop / Antigravity / Gemini / Copilot
+  (observed this session: `retention` set in `.env` only took effect on the
+  Claude-spawned server). The watcher now polls two targets: the universal
+  `.env` (read by every host's `Settings()`; reloaded natively with no
+  `os.environ` mirroring, so real spawn-time env keeps precedence — no
+  inversion) plus the host CLI's own env-block file resolved via
+  `identity.active_cli()`. A key a higher scope pinned at spawn is no longer
+  silently overridden by the lowest-priority user file (#133 problem 1).
+  `THREADKEEPER_CONFIG_WATCH_PATH` becomes a single-file escape hatch;
+  `config_watch_status()` reports both watched files.
 - **Evolve loops run in a dedicated managed checkout by default (#164
   isolation).** The reviewer and applier resolve their working checkout to
   `~/.threadkeeper/evolve-repo` even on an editable install, instead of the

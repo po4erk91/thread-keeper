@@ -938,8 +938,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SKILL_UPDATE_SOURCES` | `openai/skills@main:skills/.curated` | comma-separated GitHub source roots (`owner/repo@ref:path`) used to infer upstream skill updates |
 | `THREADKEEPER_SKILL_UPDATE_INFER_SOURCES` | true | infer upstream source by skill name from configured source roots |
 | `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
-| `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll `~/.claude/settings.json` and re-apply changed env knobs in-process (no Claude Code restart); 0 disables |
-| `THREADKEEPER_CONFIG_WATCH_PATH` | "" (`~/.claude/settings.json`) | override the watched settings file |
+| `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll the universal `~/.threadkeeper/.env` (every host) + the host CLI's env-block file and re-apply changed env knobs in-process (no CLI restart); 0 disables |
+| `THREADKEEPER_CONFIG_WATCH_PATH` | "" | escape hatch: pin ONE settings file to watch (single-file mode); when unset, hybrid mode watches `.env` + the CLI file resolved via host identity |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
@@ -1005,11 +1005,16 @@ to three local presets, and request a ThreadKeeper restart after saving.
 At startup and hot-reload, unknown `THREADKEEPER_*` keys present in the process
 environment are logged as warnings so mistyped host env-block overrides do not
 fail silently.
-Hot-config reload for the watched `settings.json` env block is implemented
-(shipped in #2): the `config_watcher` daemon re-applies changed `THREADKEEPER_*`
-knobs in-process within ~2 s, with no Claude Code restart — toggle it via
+Hot-config reload is implemented (shipped in #2, generalized cross-CLI in
+#133): the `config_watcher` daemon re-applies changed `THREADKEEPER_*` knobs
+in-process within ~2 s, with no CLI restart. It watches two layers — the
+universal `~/.threadkeeper/.env` (read by every host's `Settings()`, so an edit
+hot-reloads on all seven CLIs and stays precedence-correct: real env > `.env` >
+default) and the host CLI's own env-block file (Claude Code →
+`~/.claude/settings.json`, resolved via host identity; a key a higher scope
+pinned at spawn is never overridden by the lower-priority user file). Toggle via
 `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` (above; `0` disables) and inspect with
-`config_watch_status()`.
+`config_watch_status()`, which reports both watched files.
 
 ### Per-loop agent dispatch
 

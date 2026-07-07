@@ -286,27 +286,43 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   skills are backed up under the state dir, and source-tracked local edits after
   the last upstream hash are skipped rather than overwritten.
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
-  `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats
-  `~/.claude/settings.json` (override: `THREADKEEPER_CONFIG_WATCH_PATH`) and,
-  when its mtime moves, re-reads the file's `env` block, mirrors the
-  threadkeeper-relevant keys (`THREADKEEPER_*` plus the unprefixed
-  `CLAUDE_SKILLS_DIR`/`CLAUDE_PROJECTS_DIR`) into `os.environ` (applying new
-  values, dropping deleted ones), and calls `config.reload_settings()`. That
-  re-instantiates `Settings`, re-publishes the UPPER_CASE module constants,
-  and `_propagate`s each changed value into every loaded `threadkeeper.*`
-  module that did `from .config import X` — which works because a function
-  resolves a module-global name at call time, so the next daemon tick / tool
-  call sees the new value with no restart (the issue-#2 acceptance test:
-  change the shadow interval, `shadow_review_status()` reflects it within
-  ~1 s). A daemon whose interval crossed 0 → >0 is started here; the rest
-  self-adjust (and `daemon_sleep` keeps a hot-disabled loop from busy-spinning
-  on `time.sleep(0)`, and jitters every sleep by ±15% so concurrent MCP
-  instances on one host don't fire their `ps`/notify work in lockstep — #86).
-  Cold start records only a baseline (the env is already
+  `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats **two** targets, each
+  with its own mtime cursor (#2, generalized cross-CLI in #133):
+  1. the **universal env-file** `~/.threadkeeper/.env` (`config._ENV_FILE`,
+     overridable via `THREADKEEPER_ENV_FILE`). Every host's `Settings()` reads
+     this file, so it is the one layer that hot-reloads config for all seven
+     CLIs — not just Claude. On change it calls `config.reload_settings()` with
+     **no** `os.environ` mirroring: pydantic re-reads the file natively and
+     real spawn-time env vars keep precedence (env var > `.env` > default), so
+     there is no precedence inversion.
+  2. the **host CLI's own env-block file**, resolved from the active-CLI
+     identity (`identity.active_cli()`; Claude Code → `~/.claude/settings.json`).
+     Its `env` block's threadkeeper-relevant keys (`THREADKEEPER_*` plus the
+     unprefixed `CLAUDE_SKILLS_DIR`/`CLAUDE_PROJECTS_DIR`) are mirrored into
+     `os.environ` (applying new values, dropping deleted ones) — **minus** any
+     key a higher-priority scope pinned at spawn (detected at first sighting
+     when `os.environ` disagrees with the file's value), so the lowest-priority
+     user file never silently overrides a project/local/managed value (#133
+     problem 1). CLIs whose env block is not a flat JSON map rely on target 1.
+
+  `THREADKEEPER_CONFIG_WATCH_PATH` is an escape hatch / test seam: it pins ONE
+  file (watched as a CLI-settings target) and disables the universal env-file
+  target — legacy single-file mode. Either target's change calls
+  `config.reload_settings()`, which re-instantiates `Settings`, re-publishes
+  the UPPER_CASE module constants, and `_propagate`s each changed value into
+  every loaded `threadkeeper.*` module that did `from .config import X` — which
+  works because a function resolves a module-global name at call time, so the
+  next daemon tick / tool call sees the new value with no restart (the issue-#2
+  acceptance test: change the shadow interval, `shadow_review_status()` reflects
+  it within ~1 s). A daemon whose interval crossed 0 → >0 is started here; the
+  rest self-adjust (and `daemon_sleep` keeps a hot-disabled loop from
+  busy-spinning on `time.sleep(0)`, and jitters every sleep by ±15% so
+  concurrent MCP instances on one host don't fire their `ps`/notify work in
+  lockstep — #86). Cold start records only a baseline (the env is already
   applied at spawn); a half-written file is skipped via the mtime-cursor +
   JSON-parse guard and retried. Manual trigger `config_reload()`; diagnostics
-  `config_watch_status()`. Embedding-backend / process-identity flags are
-  intentionally not hot-reloaded.
+  `config_watch_status()` (reports both watched files). Embedding-backend /
+  process-identity flags are intentionally not hot-reloaded.
 
 Spawning daemons that enforce single-flight share one non-blocking
 `helpers.single_flight_lock(name)` primitive around their local
