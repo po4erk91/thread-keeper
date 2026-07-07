@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Spawn-budget and memory-guard RSS samples no longer fail open to zero
+  (#93).** Failed or garbled `ps` RSS reads now preserve the prior child RSS
+  instead of writing 0 into `tasks.rss_kb`, memory reclaim reports unknown RSS
+  instead of fake freed memory when before/after sampling fails, and the
+  spawn-budget liveness sweep covers every open task row instead of only the
+  newest 100.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

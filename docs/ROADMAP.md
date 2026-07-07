@@ -776,10 +776,10 @@ deduplicated against the issues above):
   lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
   every slim child runs a perpetual `ps`-polling thread it was explicitly
   designed not to run (#92).
-- Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
-  needed retire/kill, or freeing in-use budget), and the liveness refresh caps
-  at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
-  of unrefreshed rows pins the budget. Complements #64/#66 (#93).
+- ✅ DONE (#93): Budget/guard **RSS accounting** no longer reads failed `ps`
+  RSS samples as 0 MB. Spawn-budget refresh preserves last-known child RSS on
+  measurement failure and sweeps every open task row for liveness, so a >100-row
+  stale tail cannot pin the budget.
 - Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
   with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
   create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
