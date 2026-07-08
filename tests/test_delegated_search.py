@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -153,6 +154,20 @@ def test_search_proxy_handles_empty_query(mp_with_cid):
     ).fetchone()
     body = json.loads(resp["content"])
     assert body.get("error") == "empty_query"
+
+
+def test_start_search_proxy_respects_disable_bg_daemons(mp_with_cid, monkeypatch):
+    """BACKGROUND_DAEMONS_ALLOWED=False must block the daemon thread even
+    when SEMANTIC_AVAILABLE and the poll interval would otherwise allow it."""
+    mp_with_cid(_PARENT_CID)
+    from threadkeeper import search_proxy
+    monkeypatch.setattr(search_proxy, "SEMANTIC_AVAILABLE", True)
+    monkeypatch.setattr(search_proxy, "_POLL_INTERVAL_S", 0.5)
+
+    before = {t.name for t in threading.enumerate()}
+    search_proxy.start_search_proxy()
+    after = {t.name for t in threading.enumerate()}
+    assert "search_proxy" not in (after - before)
 
 
 # ─────────────────────────────────────────────────────────────────────
