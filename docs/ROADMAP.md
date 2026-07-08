@@ -768,11 +768,14 @@ deduplicated against the issues above):
   session start), and the skip guard compares only mtime — never the stored
   `last_size` — so same-second appends are dropped. Distinct from the global
   out-of-order cursor #69 (#89).
-- Two learning daemons **drop dialog windows**: `shadow_review` records its
+- ✅ DONE (#90). Two learning daemons **dropped dialog windows**:
+  `shadow_review` recorded its
   high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string
   (a value, not an exception, so the `try/except` misses it), and the `extract`
   daemon scans a fixed wall-clock window with a dead cursor, leaving an
-  uncovered gap whenever `interval > window` (#90).
+  uncovered gap whenever `interval > window`. `shadow_review` now keeps the old
+  cursor on spawn `ERR`/exception outcomes, and `extract_daemon` extends daemon
+  scans back to the previous successful `extract_pass` cursor when needed.
 - ✅ DONE (#91): `lessons.md` append/remove/restore read-modify-write sections
   are guarded by a per-file blocking flock, so concurrent loop writers
   serialize on the store itself instead of last-writer-winning.

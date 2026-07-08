@@ -559,7 +559,11 @@ clusters via cosine ≥ 0.80. Each match enqueues a row in
 `extract_candidates.status='pending'`. Same self-pollution filter as
 shadow_review (autonomous child lineage excluded) plus message-level noise
 filter (compaction summaries, SKILL.md
-injections, subagent role prompts, test-runner log dumps).
+injections, subagent role prompts, test-runner log dumps). The manual
+`extract_recent()` tool uses the configured sliding window directly; the daemon
+also keeps an `extract_pass` cursor and extends a pass back to the previous
+successful tick when `THREADKEEPER_EXTRACT_INTERVAL_S` is longer than
+`THREADKEEPER_EXTRACT_WINDOW_MIN`, so no dialog falls between ticks.
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests
 PER-INCIDENT decision-shaped utterances. Heuristic, not LLM —
@@ -947,8 +951,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" | escape hatch: pin ONE settings file to watch (single-file mode); when unset, hybrid mode watches `.env` + the CLI file resolved via host identity |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
-| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
-| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
+| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
+| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
