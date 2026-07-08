@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Transcript ingest no longer loses capped or same-second messages (#89).**
+  `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
+  pass before the transcript is fully consumed, so later passes reread and drain
+  the remaining messages through UUID dedup. The skip guard also compares file
+  size in addition to integer mtime, picking up appends written in the same
+  wall-clock second.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

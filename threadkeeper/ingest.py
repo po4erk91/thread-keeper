@@ -384,9 +384,11 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     When `adapter` is None (legacy callers), the Claude Code adapter is
     used so the function's old contract still holds.
 
-    Strategy: skip the file entirely if mtime hasn't advanced past
-    ingest_state.last_mtime. Otherwise use `adapter.iter_messages(fp)`
+    Strategy: skip the file entirely if neither its mtime nor size has
+    advanced past ingest_state. Otherwise use `adapter.iter_messages(fp)`
     to enumerate normalized messages and dedup via dialog_messages.uuid.
+    If max_msgs is hit, preserve the prior cursor so the next pass rereads
+    the file and drains more messages instead of losing the tail.
     """
     if adapter is None:
         from .adapters import _CLAUDE_CODE as _claude_default  # type: ignore
@@ -396,15 +398,19 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     stat = fp.stat()
     mtime = int(stat.st_mtime)
     state = conn.execute(
-        "SELECT last_mtime FROM ingest_state WHERE file_path=?", (str(fp),)
+        "SELECT last_size, last_mtime FROM ingest_state WHERE file_path=?",
+        (str(fp),)
     ).fetchone()
     last_mtime = state["last_mtime"] if state else 0
-    if mtime <= last_mtime:
+    last_size = state["last_size"] if state else 0
+    if mtime <= last_mtime and stat.st_size <= last_size:
         return 0
     added = 0
+    hit_cap = False
     try:
         for nm in adapter.iter_messages(fp):
             if added >= max_msgs:
+                hit_cap = True
                 break
             if not nm.uuid:
                 continue
@@ -447,13 +453,15 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
             added += 1
     except OSError:
         return added
+    next_size = last_size if hit_cap else stat.st_size
+    next_mtime = last_mtime if hit_cap else mtime
     conn.execute(
         "INSERT INTO ingest_state (file_path, last_size, last_mtime, ingested_at, msg_count) "
         "VALUES (?,?,?,?,?) "
         "ON CONFLICT(file_path) DO UPDATE SET "
         "  last_size=excluded.last_size, last_mtime=excluded.last_mtime, "
         "  ingested_at=excluded.ingested_at, msg_count=ingest_state.msg_count+excluded.msg_count",
-        (str(fp), stat.st_size, mtime, int(time.time()), added)
+        (str(fp), next_size, next_mtime, int(time.time()), added)
     )
     return added
 
