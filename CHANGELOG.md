@@ -67,6 +67,13 @@ version bumps follow semver per the policy in
   `extract_pass` cursor to extend scans when the configured interval is longer
   than the base window, avoiding uncovered gaps between ticks.
 
+- **Lesson-store writes now serialize on `lessons.md.lock` (#91).**
+  `append_lesson`, `remove_lesson`, and lesson restore now hold a blocking
+  `fcntl.flock` across file creation/read/mutate/write, so foreground,
+  shadow-review, candidate-reviewer, auto-review, and curator children cannot
+  silently clobber each other's `lessons.md` edits. Added a multiprocessing
+  append/remove regression test that preserves every distinct section.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

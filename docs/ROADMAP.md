@@ -337,11 +337,16 @@ a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
 Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); a write lock for the unlocked
-`lessons.md` read-modify-write now that the curator and shadow_review both
-mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
-full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
-landed but the argv bound has not (#24). Scope: S–M each.
+plus trash safety net (#52); bounding the curator/candidate_reviewer prompt
+argv so the full inventory dump can't hit `E2BIG` — the single-flight half of
+#24 has landed but the argv bound has not (#24). Scope: S–M each.
+
+✅ DONE (#91): lesson-store append/remove/restore mutations now serialize on a
+blocking `lessons.md.lock` flock around the file creation/read/mutate/write
+critical section. This closes the cross-loop last-writer-wins race between
+foreground `lesson_append`, shadow-review, candidate-reviewer, auto-review, and
+curator children; the curator's own single-flight remains only its dispatch
+guard.
 
 ✅ DONE (#35): curator wake-ups now hash the stable lessons / lesson_usage /
 skills / concepts inventory before spawning. If the hash matches the last
@@ -771,10 +776,9 @@ deduplicated against the issues above):
   uncovered gap whenever `interval > window`. `shadow_review` now keeps the old
   cursor on spawn `ERR`/exception outcomes, and `extract_daemon` extends daemon
   scans back to the previous successful `extract_pass` cursor when needed.
-- `lessons.md` append/remove is an **unlocked read-modify-write**, so concurrent
-  loop writers (shadow / candidate / auto-review / foreground) last-writer-win
-  and silently clobber each other's edits — the new curator single-flight only
-  serializes curators against each other (#91).
+- ✅ DONE (#91): `lessons.md` append/remove/restore read-modify-write sections
+  are guarded by a per-file blocking flock, so concurrent loop writers
+  serialize on the store itself instead of last-writer-winning.
 - `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
   lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
   every slim child runs a perpetual `ps`-polling thread it was explicitly
