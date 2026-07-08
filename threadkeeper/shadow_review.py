@@ -594,11 +594,19 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 ),
             )
         except Exception as e:
-            _record_shadow_pass(conn, high_water, f"spawn_error: {e}")
+            # No evaluator processed this window. Keep the old cursor so the
+            # next tick can retry the same dialog instead of dropping it.
+            _record_shadow_pass(conn, floor, f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
-        _record_shadow_pass(conn, high_water, str(result)[:200])
-        return str(result)
+        result_s = str(result)
+        if result_s.startswith("ERR"):
+            # spawn() returns ERR strings for admission/budget rejections.
+            # Treat those like a running child: no child processed the window.
+            _record_shadow_pass(conn, floor, result_s[:200])
+        else:
+            _record_shadow_pass(conn, high_water, result_s[:200])
+        return result_s
 
 
 def _serve_loop() -> None:

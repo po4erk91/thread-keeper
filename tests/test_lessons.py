@@ -6,11 +6,53 @@ see issue #7.
 """
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
+
+
+def _lessons_rmw_worker(
+    lessons_path: str,
+    action: str,
+    title: str,
+    errors: mp.Queue,
+) -> None:
+    os.environ["THREADKEEPER_LESSONS"] = lessons_path
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+
+    original_read_text = Path.read_text
+    target = Path(lessons_path)
+
+    def slow_lesson_read(path: Path, *args, **kwargs):
+        body = original_read_text(path, *args, **kwargs)
+        if path == target:
+            time.sleep(0.1)
+        return body
+
+    Path.read_text = slow_lesson_read
+    try:
+        from threadkeeper import lessons
+
+        if action == "append":
+            lessons.append_lesson(
+                title=title,
+                body=f"{title} body",
+                summary=f"{title} summary",
+                source="shadow",
+            )
+        elif action == "remove":
+            lessons.remove_lesson(title)
+        else:  # pragma: no cover - test helper guard.
+            raise AssertionError(f"unknown action: {action}")
+    except BaseException as e:  # pragma: no cover - surfaced in parent.
+        errors.put(repr(e))
+        raise
 
 
 def _bootstrap(tmp_path, monkeypatch):
@@ -92,6 +134,52 @@ def test_iter_lessons_returns_in_file_order(tmp_path, monkeypatch):
     items = list(pkg["lessons"].iter_lessons())
     assert [i["slug"] for i in items] == ["first", "second", "third"]
     assert items[2]["source"] == "shadow"
+
+
+def test_concurrent_append_remove_preserves_distinct_edits(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons"].append_lesson(
+        title="keep me", body="still here", source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="remove me", body="delete me", source="shadow",
+    )
+
+    ctx = mp.get_context("spawn")
+    errors = ctx.Queue()
+    jobs = [
+        ctx.Process(
+            target=_lessons_rmw_worker,
+            args=(str(pkg["path"]), "remove", "remove-me", errors),
+        )
+    ]
+    titles = [f"concurrent lesson {i}" for i in range(8)]
+    jobs.extend(
+        ctx.Process(
+            target=_lessons_rmw_worker,
+            args=(str(pkg["path"]), "append", title, errors),
+        )
+        for title in titles
+    )
+
+    for job in jobs:
+        job.start()
+    for job in jobs:
+        job.join(timeout=10)
+        if job.is_alive():
+            job.terminate()
+            job.join(timeout=2)
+            pytest.fail("lesson writer process did not exit")
+
+    assert [job.exitcode for job in jobs] == [0] * len(jobs)
+    assert errors.empty()
+    body = pkg["path"].read_text()
+    assert "slug=keep-me" in body
+    assert "slug=remove-me" not in body
+    for title in titles:
+        assert f"slug={title.replace(' ', '-')}" in body
 
 
 def test_count_zero_when_no_file(tmp_path, monkeypatch):
