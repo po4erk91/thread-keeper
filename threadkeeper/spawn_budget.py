@@ -39,6 +39,7 @@ import time
 from typing import Optional, Tuple
 
 from .config import (
+    BACKGROUND_DAEMONS_ALLOWED,
     SPAWN_BUDGET_MB,
     SPAWN_ESTIMATE_SLIM_MB,
     SPAWN_ESTIMATE_FULL_MB,
@@ -633,6 +634,8 @@ def start_budget_daemon() -> None:
         return
     if SPAWN_BUDGET_MB <= 0 and SPAWN_MAX_RUNTIME_S <= 0:
         return  # both RSS budget and wall-clock watchdog (#80) off — nothing to do
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     t = threading.Thread(
         target=_daemon_loop, name="spawn_budget", daemon=True,
     )

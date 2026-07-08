@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (
+    BACKGROUND_DAEMONS_ALLOWED,
     INGEST_CAP_PER_CALL,
     INGEST_INTERVAL_S,
     INGEST_RECENT_WINDOW_S,
@@ -674,6 +675,8 @@ def _start_background_ingester() -> None:
         return
     if _ingest_interval_s <= 0:
         return  # disabled via env
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
 
     def _loop() -> None:
         while True:
