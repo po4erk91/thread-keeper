@@ -19,6 +19,18 @@ version bumps follow semver per the policy in
   by memory_guard. Off by default; no CLI config change. Removes the
   per-session RAM multiplier and the reclaim-thrash root.
 
+### Fixed
+
+- **All background daemon starters now honor `BACKGROUND_DAEMONS_ALLOWED`.**
+  `search_proxy`, `skill_watcher`, `spawn_budget`, and the background ingester
+  started unconditionally, ignoring the spawned-child / `DISABLE_BG_DAEMONS`
+  gate the other daemons respect — so a spawned review child (or a
+  `DISABLE_BG_DAEMONS` run) still spun up those loops. They now self-gate like
+  the rest, which also lets the daemon-host cleanly own them.
+- **`probe_daemon` no longer crashes on its first tick.** It called
+  `daemon_sleep()` without importing it from `.helpers`, so the probe loop died
+  with a `NameError` after one iteration. Added the missing import.
+
 ### Changed
 
 - **Evolve tests no longer provision a real checkout — ~850 s off the suite.**
