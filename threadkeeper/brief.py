@@ -17,7 +17,10 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .config import SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN, DB_PATH
+from .config import (
+    SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN, DB_PATH,
+    PICKUP_CLAIM_TTL_S,
+)
 from .helpers import fmt_age, q
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
@@ -841,10 +844,11 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         if active_count < 3 and not eff_lean:
             top = conn.execute(
                 "SELECT id, question, last_touched_at FROM threads "
-                "WHERE state IN ('active','idle') AND claimed_at IS NULL "
+                "WHERE state IN ('active','idle') "
+                "AND (claimed_at IS NULL OR claimed_at <= ?) "
                 "AND last_touched_at <= ? "
                 "ORDER BY last_touched_at ASC LIMIT 1",
-                (now - 3 * 86400,),
+                (now - PICKUP_CLAIM_TTL_S, now - 3 * 86400),
             ).fetchone()
             if top:
                 out.append("")

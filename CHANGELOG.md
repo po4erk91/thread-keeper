@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Pickup claims stop pinning stale threads forever (#96).** Thread pickup
+  claims now expire after the same 24h lease used by roadmap issue claims:
+  `pickup_candidates` shows stale-claimed threads again, `claim_pickup` clears
+  expired leases before taking one, and auto-spawn pickup children are told to
+  call `release_pickup` as their final step. A spawned child can release its
+  parent's claim through the recorded `tasks` parent/child link.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

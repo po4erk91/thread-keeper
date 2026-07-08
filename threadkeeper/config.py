@@ -588,6 +588,10 @@ def _warn_unknown_threadkeeper_env_keys() -> None:
 settings = Settings()
 _warn_unknown_threadkeeper_env_keys()
 
+# Pickup-thread claims mirror roadmap issue claims: abandoned work should stop
+# excluding a thread from self-initiated pickup after one day.
+PICKUP_CLAIM_TTL_S = 24 * 60 * 60
+
 
 # ── Compat shim: re-export all prior module-level names ──────────────────────
 # Every name listed here is imported by ≥1 call site in the package. They are

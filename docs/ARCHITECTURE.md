@@ -157,7 +157,10 @@ version left unchanged for a retry.
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
    `close_thread` records the outcome; `idle_thread` freezes it, and the next
-   note automatically reactivates it.
+   note automatically reactivates it. `claim_pickup` uses `threads.claimed_at`
+   / `claimed_by_cid` as a 24h lease: stale claims are eligible again in
+   `pickup_candidates`, and a spawned pickup child can release its parent's
+   lease when it finishes.
 
 2. **core_memory** — Letta-style RAM tier. High-priority lines that ALWAYS
    appear in the brief regardless of relevance. Flat key/priority/content;

@@ -147,6 +147,12 @@ remains a live question.
   for another migrator, and records `CURRENT_SCHEMA_VERSION` on success.
   Duplicate-column `ALTER TABLE` errors remain the only swallowed migration
   no-op; other migration `OperationalError`s are logged and raised.
+- Pickup claim TTL + auto-spawn release (#96): self-initiated pickup claims now
+  mirror the roadmap issue 24h lease. `pickup_candidates` treats stale thread
+  claims as eligible again, `claim_pickup` reaps stale leases before claiming,
+  and auto-spawn pickup prompts finish by calling `release_pickup`; spawned
+  children are allowed to release the parent claim through their `tasks`
+  parent/child link.
 
 ---
 
@@ -787,9 +793,6 @@ deduplicated against the issues above):
 - Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
   `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
   can produce a torn/corrupt DB at the new path (#95).
-- **Pickup claims leak**: `threads.claimed_at` has no TTL/reaper and the
-  `auto_spawn` child is never told to `release_pickup`, so even a successful
-  pickup pins the thread out of the candidate pool forever (#96).
 - Codex adapter: the fallback message **UUID** has no per-line offset, so
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
