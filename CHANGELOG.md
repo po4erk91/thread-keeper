@@ -60,6 +60,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Spawn-budget daemon stays out of spawned children (#92).** The
+  `spawn_budget` RSS/watchdog polling thread now honors
+  `BACKGROUND_DAEMONS_ALLOWED`, matching `memory_guard`, so slim children do
+  not each start their own perpetual `ps` loop.
+
 - **Learning daemons no longer drop unprocessed dialog windows (#90).**
   `shadow_review` now keeps its old cursor when spawn admission returns
   `ERR ...` or raises before an observer child launches, so budget-cap

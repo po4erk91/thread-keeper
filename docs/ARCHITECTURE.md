@@ -254,9 +254,11 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `VACUUM` plus `PRAGMA wal_checkpoint(TRUNCATE)`.
 - **search_proxy** — serves `search_via_parent` from slim children via
   signals (see below).
-- **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
-  the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
-  closes dead ones. The same sweep is the **wall-clock watchdog** (#80): a
+- **spawn_budget** — in foreground parent processes only, once per
+  `SPAWN_BUDGET_POLL_S` (default 10 s) walks the subtree of each `running`
+  task via `ps`, updates `tasks.rss_kb` and closes dead ones. Spawned children
+  do not start their own budget polling daemon. The same sweep is the
+  **wall-clock watchdog** (#80): a
   pid>0 child whose row outlives `SPAWN_MAX_RUNTIME_S` (1 h default; 0
   disables) is `SIGTERM`'d, then `SIGKILL`'d after `SPAWN_KILL_GRACE_S`, and
   its row is closed with `return_code` 124 so the spawning loop's single-flight
@@ -684,7 +686,8 @@ optional 24h spawned-child token and dollar ceilings when
   the row still has wall-time for cost/benefit triage. Captured `.log` files
   in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
   stdin prompt spool.
-- Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
+- Daemon ticks run only in foreground parent processes, update real RSS via
+  `ps`, and set dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
   the same subtree RSS, so they contribute real memory, not the estimate. A

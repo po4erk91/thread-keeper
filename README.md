@@ -255,7 +255,8 @@ parent: N≥2 modular independent units of ≥5 min each = spawn signal.
 Spawn also marks children with `THREADKEEPER_SPAWNED_CHILD=1`, so
 autonomous learning daemons cannot recursively start inside review forks.
 
-A daemon measures combined child RSS every 10 s; admission control
+A daemon in the foreground parent measures combined child RSS every 10 s;
+spawned children do not start their own `ps` polling loop. Admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the
 parent via `search_via_parent` — no per-child copy of the embedding model.
