@@ -45,6 +45,10 @@ remains a live question.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
+- Per-file ingest cursor safety (#89): capped ingest passes now preserve the
+  previous file cursor until the transcript is fully drained, and same-second
+  appends are detected by comparing file size as well as integer mtime. Re-reading
+  remains idempotent through `dialog_messages.uuid` dedup.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
   creates/updates roadmap issues; Evolve applier drains one open issue at a
@@ -769,11 +773,11 @@ even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
 Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
 read-only subsystem audits, each finding re-verified at the cited file:line and
 deduplicated against the issues above):
-- Per-file **ingest cursor loses messages**: `_ingest_file` advances
-  `last_mtime` even when the `max_msgs` cap truncates the read (default 50 at
-  session start), and the skip guard compares only mtime — never the stored
-  `last_size` — so same-second appends are dropped. Distinct from the global
-  out-of-order cursor #69 (#89).
+- ✅ DONE (#89): Per-file **ingest cursor** no longer loses messages when
+  `max_msgs` caps a pass or a transcript is appended within the same integer
+  mtime second. `_ingest_file` now preserves the previous file cursor until the
+  transcript is fully drained and uses stored file size alongside mtime for the
+  skip guard. Distinct from the global out-of-order cursor #69.
 - ✅ DONE (#90). Two learning daemons **dropped dialog windows**:
   `shadow_review` recorded its
   high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string

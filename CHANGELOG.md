@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Transcript ingest no longer loses capped or same-second messages (#89).**
+  `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
+  pass before the transcript is fully consumed, so later passes reread and drain
+  the remaining messages through UUID dedup. The skip guard also compares file
+  size in addition to integer mtime, picking up appends written in the same
+  wall-clock second.
+
 - **Pickup claims stop pinning stale threads forever (#96).** Thread pickup
   claims now expire after the same 24h lease used by roadmap issue claims:
   `pickup_candidates` shows stale-claimed threads again, `claim_pickup` clears
