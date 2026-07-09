@@ -60,6 +60,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Legacy DB migration no longer copies live WAL sidecars (#95).** Startup
+  migration from `~/.memory_partner/db.sqlite` to `~/.threadkeeper/db.sqlite`
+  now uses SQLite's online backup API, producing a consistent destination main
+  DB from dirty-WAL sources without copying machine-local `-shm` files.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain

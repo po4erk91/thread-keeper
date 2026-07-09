@@ -5,6 +5,7 @@ Uses importlib.reload so each test can set/clear env before re-importing.
 import importlib
 import logging
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -150,6 +151,45 @@ def test_dotenv_read_and_env_wins(monkeypatch):
 def test_claude_dir_bare_alias(monkeypatch):
     c = _fresh_config(monkeypatch, env={"CLAUDE_SKILLS_DIR": "/tmp/x"})
     assert str(c.CLAUDE_SKILLS_DIR) == "/tmp/x"
+
+
+def test_legacy_db_migration_uses_online_backup_for_dirty_wal(
+    tmp_path, monkeypatch
+):
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_DB": str(tmp_path / "unused.sqlite")},
+    )
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    legacy_db = legacy_dir / "db.sqlite"
+    migrated_db = tmp_path / "new" / "db.sqlite"
+
+    writer = sqlite3.connect(str(legacy_db))
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, body TEXT)")
+        writer.execute("INSERT INTO memories (body) VALUES ('committed in wal')")
+        writer.commit()
+
+        assert legacy_db.with_name(legacy_db.name + "-wal").exists()
+        assert legacy_db.with_name(legacy_db.name + "-shm").exists()
+
+        c._migrate_legacy_db(legacy_db, migrated_db)
+    finally:
+        writer.close()
+
+    migrated_wal = migrated_db.with_name(migrated_db.name + "-wal")
+    migrated_shm = migrated_db.with_name(migrated_db.name + "-shm")
+    assert migrated_db.exists()
+    assert not migrated_wal.exists()
+    assert not migrated_shm.exists()
+
+    with sqlite3.connect(str(migrated_db)) as migrated:
+        assert migrated.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        row = migrated.execute("SELECT body FROM memories").fetchone()
+    assert row == ("committed in wal",)
 
 
 def test_bad_type_raises(monkeypatch):
