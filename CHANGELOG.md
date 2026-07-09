@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Pickup claims stop pinning stale threads forever (#96).** Thread pickup
+  claims now expire after the same 24h lease used by roadmap issue claims:
+  `pickup_candidates` shows stale-claimed threads again, `claim_pickup` clears
+  expired leases before taking one, and auto-spawn pickup children are told to
+  call `release_pickup` as their final step. A spawned child can release its
+  parent's claim through the recorded `tasks` parent/child link.
+
 - **Spawn-budget and memory-guard RSS samples no longer fail open to zero
   (#93).** Failed or garbled `ps` RSS reads now preserve the prior child RSS
   instead of writing 0 into `tasks.rss_kb`, memory reclaim reports unknown RSS
