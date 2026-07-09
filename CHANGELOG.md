@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Autonomous skill creation is capped server-side (#98).**
+  `skill_manage(action="create")` now enforces
+  `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` (default 2) per child session
+  for `candidate_review`, `shadow_review`, and `background_review` origins, so
+  prompt-only "max 2 new skills" guidance cannot be bypassed by a confused or
+  injected learning-loop child. Foreground skill creation is unchanged.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain

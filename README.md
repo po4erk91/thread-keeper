@@ -588,8 +588,10 @@ cluster:
 - **VERBATIM** — user quote worth preserving in `brief()`
 - **REJECT** — false positive that slipped past extract's filters
 
-Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
-foreground-authored) skills off-limits. Closes the gap between
+Hard limits: max 2 new skills per pass enforced inside
+`skill_manage(action="create")` for candidate-reviewer, shadow-review, and
+auto-review children; `[PROTECTED]` (pinned + foreground-authored) skills are
+off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
 `accept_candidate()` manually. The loop is machine-wide single-flight:
@@ -958,6 +960,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |

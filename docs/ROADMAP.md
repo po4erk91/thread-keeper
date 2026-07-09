@@ -27,6 +27,11 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Learning-loop skill-create cap (#98): `skill_manage(action='create')`
+  enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
+  `candidate_review`, `shadow_review`, and `background_review` origins, so a
+  prompt-injected autonomous reviewer cannot mass-create skills in one pass;
+  foreground skill creation is unaffected.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
@@ -807,9 +812,9 @@ deduplicated against the issues above):
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
   pass (#97).
-- The candidate-reviewer's "max 2 new skills per pass" cap is **prompt-only**;
-  `skill_manage(create)` has no server-side per-pass counter, so an injected or
-  confused (injection-prone) child can mass-create skills in one pass (#98).
+- ✅ DONE (#98): The candidate-reviewer's "max 2 new skills per pass" cap is
+  enforced server-side in `skill_manage(create)` for autonomous learning-loop
+  child origins, not only stated in the reviewer prompt.
 
 Also extended existing issues with verified file:line detail rather than filing
 anew: the `get_db` per-call migration issue was closed by schema versioning

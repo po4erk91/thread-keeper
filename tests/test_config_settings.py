@@ -55,6 +55,7 @@ def test_defaults_match(monkeypatch):
     assert c.SKILL_UPDATE_INTERVAL_S == 302400
     assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert c.CURATOR_SNAPSHOT_RETENTION == 10
+    assert c.LEARNING_LOOP_SKILL_CREATE_LIMIT == 2
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
 
 
@@ -178,6 +179,7 @@ def test_all_exported_names_present(monkeypatch):
         "BRIEF_NO_THREAD_NUDGE",
         "CANDIDATE_REVIEW_INTERVAL_S",
         "CANDIDATE_REVIEW_MIN",
+        "LEARNING_LOOP_SKILL_CREATE_LIMIT",
         "CLIENT_LABEL",
         "CLAUDE_PROJECTS_DIR",
         "CLAUDE_SKILLS_DIR",

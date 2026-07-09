@@ -36,7 +36,11 @@ from typing import Optional
 import yaml
 
 from .._mcp import read_tool, write_tool
-from ..config import CLAUDE_SKILLS_DIR, WRITE_ORIGIN
+from ..config import (
+    CLAUDE_SKILLS_DIR,
+    LEARNING_LOOP_SKILL_CREATE_LIMIT,
+    WRITE_ORIGIN,
+)
 from ..curator_snapshots import (
     capture_skill_tombstone,
     record_curator_action,
@@ -409,6 +413,11 @@ def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
 # TARGET loop-authored skills without touching foreground ones.
 # ──────────────────────────────────────────────────────────────────────
 FOREGROUND_ORIGIN = "foreground"
+SKILL_CREATE_LIMITED_ORIGINS = {
+    "background_review",
+    "candidate_review",
+    "shadow_review",
+}
 
 # WRITE_ORIGIN values that screen synthesized bodies for inbound injection
 # markers (issue #76). Foreground (human) writes are never screened.
@@ -419,6 +428,39 @@ def is_loop_authored_origin(origin: Optional[str]) -> bool:
     """True when created_by_origin marks a skill as loop-synthesized (any
     non-empty origin other than a genuine foreground session)."""
     return bool(origin) and origin != FOREGROUND_ORIGIN
+
+
+def _skill_create_limit_error(conn: sqlite3.Connection) -> Optional[str]:
+    """Refuse reason when an autonomous review child exhausted its pass cap."""
+    origin = WRITE_ORIGIN.strip()
+    if origin not in SKILL_CREATE_LIMITED_ORIGINS:
+        return None
+    limit = max(0, int(LEARNING_LOOP_SKILL_CREATE_LIMIT))
+    try:
+        session_id = _ensure_session(conn)
+        row = conn.execute(
+            "SELECT started_at FROM sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        started_at = int(row["started_at"] or 0) if row else 0
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM events "
+            "WHERE session_id=? AND kind='skill_create' "
+            "AND created_at>=?",
+            (session_id, started_at),
+        ).fetchone()
+    except sqlite3.OperationalError as e:
+        return (
+            "skill_create_limit_unavailable "
+            f"origin={origin}: {e}"
+        )
+    created = int(count_row["n"] if count_row else 0)
+    if created >= limit:
+        return (
+            "autonomous_skill_create_limit_exceeded "
+            f"origin={origin} limit={limit} created={created}"
+        )
+    return None
 
 
 def skill_provenance(conn: sqlite3.Connection, name: str) -> dict:
@@ -667,10 +709,12 @@ def _action_create(name: str, content: str, description: str) -> str:
         return f"ERR validate_failed: {err}"
     if reason := _screen_synthesized_body(body):
         return f"ERR {reason}"
+    conn = get_db()
+    if reason := _skill_create_limit_error(conn):
+        return f"ERR {reason}"
     sdir.mkdir(parents=True, exist_ok=True)
     md.write_text(body, encoding="utf-8")
     _record_event(name, "create")
-    conn = get_db()
     _ensure_session(conn)
     _emit(conn, "skill_create", target=name, summary=str(md))
     if WRITE_ORIGIN == "curator":
