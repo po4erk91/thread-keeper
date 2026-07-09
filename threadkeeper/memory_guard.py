@@ -60,21 +60,26 @@ def _rss_mb(p: dict) -> int:
     return int(p.get("rss_kb") or 0) // 1024
 
 
-def _pid_rss_mb(pid: int) -> int:
+def _pid_rss_mb(pid: int) -> int | None:
+    """Return pid RSS in MB, or None when `ps` could not measure it."""
     try:
         r = subprocess.run(
             ["ps", "-o", "rss=", "-p", str(pid)],
             capture_output=True, text=True, timeout=3,
         )
     except (subprocess.SubprocessError, OSError):
-        return 0
+        return None
     txt = (r.stdout or "").strip()
     if not txt:
-        return 0
+        return None
     try:
         return int(txt.split()[0]) // 1024
     except (ValueError, IndexError):
-        return 0
+        return None
+
+
+def _fmt_rss_mb(value: int | None) -> str:
+    return "unknown" if value is None else f"{value}MB"
 
 
 def _log_line(line: str) -> None:
@@ -255,7 +260,8 @@ def reclaim_memory(reason: str = "manual", force: bool = False) -> dict:
         if skip:
             rss = _pid_rss_mb(os.getpid())
             _log_line(
-                f"{int(now)} reclaim_skip pid={os.getpid()} rss={rss}MB "
+                f"{int(now)} reclaim_skip pid={os.getpid()} "
+                f"rss={_fmt_rss_mb(rss)} "
                 f"reason={reason} skip={skip}"
             )
             return {
@@ -291,8 +297,14 @@ def reclaim_memory(reason: str = "manual", force: bool = False) -> dict:
     actions.append(f"gc.collect={collected}")
     actions.extend(_allocator_pressure_relief())
     after = _pid_rss_mb(os.getpid())
-    freed = before - after
-    if freed <= 0 and before > 0:
+    if before is None or after is None:
+        freed = 0
+        actions.append("rss_measurement_unavailable")
+    else:
+        freed = before - after
+    if before is None or after is None:
+        pass
+    elif freed <= 0 and before > 0:
         _reclaim_fail_streak += 1
         backoff = min(
             _RECLAIM_BACKOFF_MAX_S,
@@ -313,11 +325,13 @@ def reclaim_memory(reason: str = "manual", force: bool = False) -> dict:
     }
     _log_line(
         f"{int(time.time())} reclaim pid={os.getpid()} "
-        f"before={before}MB after={after}MB freed={freed}MB reason={reason}"
+        f"before={_fmt_rss_mb(before)} after={_fmt_rss_mb(after)} "
+        f"freed={freed}MB reason={reason}"
     )
     _emit_event(
         "memory_reclaim", os.getpid(),
-        f"before={before}MB after={after}MB freed={freed}MB reason={reason}",
+        f"before={_fmt_rss_mb(before)} after={_fmt_rss_mb(after)} "
+        f"freed={freed}MB reason={reason}",
     )
     return result
 
@@ -382,7 +396,8 @@ def handle_resource_controls() -> list[dict]:
             continue
         result = reclaim_memory(reason=f"control:{r['reason'] or 'trim'}")
         summary = (
-            f"before={result['before_mb']}MB after={result['after_mb']}MB "
+            f"before={_fmt_rss_mb(result['before_mb'])} "
+            f"after={_fmt_rss_mb(result['after_mb'])} "
             f"freed={result['freed_mb']}MB"
         )
         conn.execute(

@@ -157,7 +157,10 @@ version left unchanged for a retry.
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
    `close_thread` records the outcome; `idle_thread` freezes it, and the next
-   note automatically reactivates it.
+   note automatically reactivates it. `claim_pickup` uses `threads.claimed_at`
+   / `claimed_by_cid` as a 24h lease: stale claims are eligible again in
+   `pickup_candidates`, and a spawned pickup child can release its parent's
+   lease when it finishes.
 
 2. **core_memory** — Letta-style RAM tier. High-priority lines that ALWAYS
    appear in the brief regardless of relevance. Flat key/priority/content;
@@ -254,9 +257,11 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   `VACUUM` plus `PRAGMA wal_checkpoint(TRUNCATE)`.
 - **search_proxy** — serves `search_via_parent` from slim children via
   signals (see below).
-- **spawn_budget** — once per `SPAWN_BUDGET_POLL_S` (default 10 s) walks
-  the subtree of each `running` task via `ps`, updates `tasks.rss_kb` and
-  closes dead ones. The same sweep is the **wall-clock watchdog** (#80): a
+- **spawn_budget** — in foreground parent processes only, once per
+  `SPAWN_BUDGET_POLL_S` (default 10 s) walks the subtree of each `running`
+  task via `ps`, updates `tasks.rss_kb` and closes dead ones. Spawned children
+  do not start their own budget polling daemon. The same sweep is the
+  **wall-clock watchdog** (#80): a
   pid>0 child whose row outlives `SPAWN_MAX_RUNTIME_S` (1 h default; 0
   disables) is `SIGTERM`'d, then `SIGKILL`'d after `SPAWN_KILL_GRACE_S`, and
   its row is closed with `return_code` 124 so the spawning loop's single-flight
@@ -743,7 +748,9 @@ optional 24h spawned-child token and dollar ceilings when
   the row still has wall-time for cost/benefit triage. Captured `.log` files
   in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
   stdin prompt spool.
-- Daemon ticks update real RSS via `ps`; dead root pids → `ended_at`.
+- Daemon ticks run only in foreground parent processes and update real RSS via
+  `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
+  row is swept for dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
   the same subtree RSS, so they contribute real memory, not the estimate. A
@@ -930,6 +937,11 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   swept on new trash writes. Protected refusal behavior is unchanged:
   user/foreground lessons still require `force`, and pinned skills still refuse
   deletion. `mp_dashboard()` renders destructive action counts by window.
+  The lesson file itself is a separate serialization boundary:
+  `append_lesson`, `lesson_remove`, and `lesson_restore` hold a blocking
+  `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
+  foreground writes and every learning-loop child serialize on the shared
+  store instead of relying on per-daemon dispatch locks.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review`) is written to

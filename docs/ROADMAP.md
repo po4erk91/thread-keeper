@@ -45,6 +45,10 @@ remains a live question.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
+- Per-file ingest cursor safety (#89): capped ingest passes now preserve the
+  previous file cursor until the transcript is fully drained, and same-second
+  appends are detected by comparing file size as well as integer mtime. Re-reading
+  remains idempotent through `dialog_messages.uuid` dedup.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
   creates/updates roadmap issues; Evolve applier drains one open issue at a
@@ -147,6 +151,12 @@ remains a live question.
   for another migrator, and records `CURRENT_SCHEMA_VERSION` on success.
   Duplicate-column `ALTER TABLE` errors remain the only swallowed migration
   no-op; other migration `OperationalError`s are logged and raised.
+- Pickup claim TTL + auto-spawn release (#96): self-initiated pickup claims now
+  mirror the roadmap issue 24h lease. `pickup_candidates` treats stale thread
+  claims as eligible again, `claim_pickup` reaps stale leases before claiming,
+  and auto-spawn pickup prompts finish by calling `release_pickup`; spawned
+  children are allowed to release the parent claim through their `tasks`
+  parent/child link.
 
 ---
 
@@ -337,11 +347,16 @@ a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
 Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); a write lock for the unlocked
-`lessons.md` read-modify-write now that the curator and shadow_review both
-mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
-full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
-landed but the argv bound has not (#24). Scope: S–M each.
+plus trash safety net (#52); bounding the curator/candidate_reviewer prompt
+argv so the full inventory dump can't hit `E2BIG` — the single-flight half of
+#24 has landed but the argv bound has not (#24). Scope: S–M each.
+
+✅ DONE (#91): lesson-store append/remove/restore mutations now serialize on a
+blocking `lessons.md.lock` flock around the file creation/read/mutate/write
+critical section. This closes the cross-loop last-writer-wins race between
+foreground `lesson_append`, shadow-review, candidate-reviewer, auto-review, and
+curator children; the curator's own single-flight remains only its dispatch
+guard.
 
 ✅ DONE (#35): curator wake-ups now hash the stable lessons / lesson_usage /
 skills / concepts inventory before spawning. If the hash matches the last
@@ -758,11 +773,11 @@ even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
 Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
 read-only subsystem audits, each finding re-verified at the cited file:line and
 deduplicated against the issues above):
-- Per-file **ingest cursor loses messages**: `_ingest_file` advances
-  `last_mtime` even when the `max_msgs` cap truncates the read (default 50 at
-  session start), and the skip guard compares only mtime — never the stored
-  `last_size` — so same-second appends are dropped. Distinct from the global
-  out-of-order cursor #69 (#89).
+- ✅ DONE (#89): Per-file **ingest cursor** no longer loses messages when
+  `max_msgs` caps a pass or a transcript is appended within the same integer
+  mtime second. `_ingest_file` now preserves the previous file cursor until the
+  transcript is fully drained and uses stored file size alongside mtime for the
+  skip guard. Distinct from the global out-of-order cursor #69.
 - ✅ DONE (#90). Two learning daemons **dropped dialog windows**:
   `shadow_review` recorded its
   high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string
@@ -771,18 +786,16 @@ deduplicated against the issues above):
   uncovered gap whenever `interval > window`. `shadow_review` now keeps the old
   cursor on spawn `ERR`/exception outcomes, and `extract_daemon` extends daemon
   scans back to the previous successful `extract_pass` cursor when needed.
-- `lessons.md` append/remove is an **unlocked read-modify-write**, so concurrent
-  loop writers (shadow / candidate / auto-review / foreground) last-writer-win
-  and silently clobber each other's edits — the new curator single-flight only
-  serializes curators against each other (#91).
-- `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
-  lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
-  every slim child runs a perpetual `ps`-polling thread it was explicitly
-  designed not to run (#92).
-- Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
-  needed retire/kill, or freeing in-use budget), and the liveness refresh caps
-  at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
-  of unrefreshed rows pins the budget. Complements #64/#66 (#93).
+- ✅ DONE (#91): `lessons.md` append/remove/restore read-modify-write sections
+  are guarded by a per-file blocking flock, so concurrent loop writers
+  serialize on the store itself instead of last-writer-winning.
+- ✅ DONE (#92): `spawn_budget.start_budget_daemon` now honors the same
+  `BACKGROUND_DAEMONS_ALLOWED` gate as `memory_guard`, so spawned children do
+  not start their own perpetual `ps`-polling budget thread.
+- ✅ DONE (#93): Budget/guard **RSS accounting** no longer reads failed `ps`
+  RSS samples as 0 MB. Spawn-budget refresh preserves last-known child RSS on
+  measurement failure and sweeps every open task row for liveness, so a >100-row
+  stale tail cannot pin the budget.
 - Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
   with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
   create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
@@ -790,9 +803,6 @@ deduplicated against the issues above):
 - Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
   `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
   can produce a torn/corrupt DB at the new path (#95).
-- **Pickup claims leak**: `threads.claimed_at` has no TTL/reaper and the
-  `auto_spawn` child is never told to `release_pickup`, so even a successful
-  pickup pins the thread out of the candidate pool forever (#96).
 - Codex adapter: the fallback message **UUID** has no per-line offset, so
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
