@@ -6,6 +6,7 @@ status logic exercises the budget module directly against a temp DB.
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 
@@ -35,6 +36,8 @@ def _insert_task(
     ended=False,
     tokens_total=None,
     cost_usd=None,
+    pid=None,
+    started_at=None,
 ):
     """Insert a fake task. Uses the test process's own pid so
     _refresh_tasks (alive() check) doesn't mark it ended on a brief()
@@ -45,8 +48,10 @@ def _insert_task(
         "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
         "started_at, ended_at, rss_kb, rss_updated_at, tokens_total, cost_usd) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (task_id, os.getpid(), _FAKE_CID, f"child-{task_id}", "/tmp",
-         "test", now, (now if ended else None), rss_kb, now, tokens_total,
+        (task_id, (os.getpid() if pid is None else pid), _FAKE_CID,
+         f"child-{task_id}", "/tmp", "test",
+         (now if started_at is None else started_at), (now if ended else None),
+         rss_kb, now, tokens_total,
          cost_usd),
     )
     conn.commit()
@@ -181,6 +186,43 @@ def test_check_budget_refuses_when_cost_budget_reached(mp_with_cid, monkeypatch)
     ok, msg = check_budget(conn, 1)
     assert ok is False
     assert "cost_budget_exceeded" in msg
+
+
+@pytest.mark.parametrize(
+    ("background_allowed", "expected_started"),
+    [(False, False), (True, True)],
+)
+def test_start_budget_daemon_respects_background_daemons_allowed(
+    mp_with_cid, monkeypatch, background_allowed, expected_started
+):
+    mp_with_cid(_FAKE_CID)
+    import threadkeeper.spawn_budget as sb
+
+    calls: list[tuple[str, str | None, bool | None]] = []
+
+    class _Thread:
+        def __init__(self, *, target, name, daemon):
+            assert target is sb._daemon_loop
+            calls.append(("init", name, daemon))
+
+        def start(self):
+            calls.append(("start", None, None))
+
+    monkeypatch.setattr(sb, "_started", False)
+    monkeypatch.setattr(sb, "BACKGROUND_DAEMONS_ALLOWED", background_allowed)
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_POLL_S", 60.0)
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_MB", 3072)
+    monkeypatch.setattr(sb, "SPAWN_MAX_RUNTIME_S", 3600.0)
+    monkeypatch.setattr(sb.threading, "Thread", _Thread)
+
+    sb.start_budget_daemon()
+
+    assert sb._started is expected_started
+    assert calls == (
+        [("init", "spawn_budget", True), ("start", None, None)]
+        if expected_started
+        else []
+    )
 
 
 def test_spawn_reserves_rss_budget_before_popen(mp_with_cid, monkeypatch):
@@ -422,6 +464,76 @@ def test_visible_within_ttl_not_reaped(mp_with_cid, monkeypatch):
         "SELECT ended_at FROM tasks WHERE id='tk_young'"
     ).fetchone()
     assert row["ended_at"] is None  # still within TTL → keeps counting
+
+
+def test_refresh_keeps_last_rss_when_ps_rss_sample_fails(mp_with_cid, monkeypatch):
+    """A transient `ps` failure while reading RSS must not write 0 over the
+    last known child RSS; admission control should keep using the prior value."""
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    pkg = mp_with_cid(_FAKE_CID)
+    pid = 4242
+    _insert_task(pkg, "tk_ps_fail", pid=pid, rss_kb=700 * 1024)
+
+    import threadkeeper.spawn_budget as sb
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(args, **kwargs):
+        if args == ["ps", "-ax", "-o", "pid=,ppid="]:
+            return _Result(f"{pid} 1\n")
+        if args == ["ps", "-o", "pid=,rss=", "-p", str(pid)]:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout", 3))
+        raise AssertionError(args)
+
+    monkeypatch.setattr(sb, "alive", lambda p: p == pid)
+    monkeypatch.setattr(sb.subprocess, "run", fake_run)
+
+    conn = pkg["db"].get_db()
+    before = conn.execute(
+        "SELECT rss_kb, rss_updated_at FROM tasks WHERE id='tk_ps_fail'"
+    ).fetchone()
+    assert sb._refresh_all_running(conn) == 0
+    after = conn.execute(
+        "SELECT rss_kb, rss_updated_at, ended_at "
+        "FROM tasks WHERE id='tk_ps_fail'"
+    ).fetchone()
+
+    assert after["rss_kb"] == before["rss_kb"] == 700 * 1024
+    assert after["rss_updated_at"] == before["rss_updated_at"]
+    assert after["ended_at"] is None
+
+
+def test_refresh_reaps_dead_tail_beyond_first_100_open_rows(mp_with_cid, monkeypatch):
+    """The liveness sweep must cover every open task, not only the newest
+    100 rows, because budget accounting sums every `ended_at IS NULL` row."""
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    pkg = mp_with_cid(_FAKE_CID)
+    base = int(time.time()) - 1000
+    dead_pid = 5000
+    for i in range(101):
+        _insert_task(
+            pkg,
+            f"tk_tail_{i:03d}",
+            pid=dead_pid + i,
+            rss_kb=10 * 1024,
+            started_at=base + i,
+        )
+
+    import threadkeeper.spawn_budget as sb
+
+    monkeypatch.setattr(sb, "alive", lambda pid: pid != dead_pid)
+    monkeypatch.setattr(sb, "measure_tree_rss_kb", lambda pid: None)
+
+    conn = pkg["db"].get_db()
+    sb._refresh_all_running(conn)
+
+    oldest = conn.execute(
+        "SELECT ended_at FROM tasks WHERE id='tk_tail_000'"
+    ).fetchone()
+    assert oldest["ended_at"] is not None
+    assert sb._running_tasks_rss(conn) == 100 * 10 * 1024
 
 
 # ─────────────────────────────────────────────────────────────────────

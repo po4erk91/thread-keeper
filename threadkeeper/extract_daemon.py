@@ -4,9 +4,9 @@ from dialog_messages into the extract_candidates queue.
 Architecture mirror of shadow_review:
 
   1. Daemon thread wakes every EXTRACT_INTERVAL_S seconds (0 = off).
-  2. Calls extract_recent(window_min=EXTRACT_WINDOW_MIN) — same logic as
-     the MCP tool, just invoked automatically instead of waiting for the
-     agent to remember to call it.
+  2. Runs the same extraction logic as extract_recent(), but floors the scan
+     at the previous successful pass when the interval is wider than the base
+     window so dialog cannot fall between ticks.
   3. Records events.kind='extract_pass' with the per-pass counters so
      `extract_review_status()` can show health at a glance.
 
@@ -40,7 +40,7 @@ _started = False
 
 
 def _last_extract_ts(conn: sqlite3.Connection) -> int:
-    """High-water timestamp of the most recent extract pass, or 0."""
+    """Timestamp cursor from the most recent extract pass, or 0."""
     try:
         row = conn.execute(
             "SELECT target FROM events WHERE kind='extract_pass' "
@@ -71,6 +71,19 @@ def _record_extract_pass(conn: sqlite3.Connection,
         logger.debug("extract_daemon: failed to record pass", exc_info=True)
 
 
+def _extract_scan_cutoff(now: int, last_cursor: int) -> int:
+    """Earliest dialog timestamp this pass must scan.
+
+    The MCP tool keeps its simple sliding wall-clock window. The daemon adds a
+    cursor so interval > window does not leave an uncovered gap between the
+    previous pass end and the next pass's window start.
+    """
+    window_cutoff = int(now) - max(1, int(EXTRACT_WINDOW_MIN)) * 60
+    if int(last_cursor) <= 0:
+        return window_cutoff
+    return min(window_cutoff, int(last_cursor))
+
+
 def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one extract pass synchronously. Used by the daemon AND by
     the MCP tool for manual triggering.
@@ -87,17 +100,22 @@ def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
         "extract", EXTRACT_INTERVAL_S, scheduled=scheduled,
     ):
         return "not_due"
+    conn = get_db()
+    started_at = int(time.time())
+    last_cursor = _last_extract_ts(conn)
+    cutoff = _extract_scan_cutoff(started_at, last_cursor)
     # Late import — tools.extract registers MCP tools at import time, and
     # the daemon module loads before all tools are registered.
-    from .tools.extract import extract_recent
+    from .tools.extract import _extract_recent_from_cutoff
     try:
-        result = extract_recent(window_min=EXTRACT_WINDOW_MIN)
+        result = _extract_recent_from_cutoff(
+            cutoff, window_min=EXTRACT_WINDOW_MIN,
+        )
     except Exception as e:
         logger.debug("extract_daemon: pass failed", exc_info=True)
-        _record_extract_pass(get_db(), int(time.time()),
-                             f"error: {e}")
+        _record_extract_pass(conn, last_cursor, f"error: {e}")
         return f"error: {e}"
-    _record_extract_pass(get_db(), int(time.time()), str(result)[:200])
+    _record_extract_pass(conn, started_at, str(result)[:200])
     return str(result)
 
 
