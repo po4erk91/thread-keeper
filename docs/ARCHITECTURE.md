@@ -686,8 +686,9 @@ optional 24h spawned-child token and dollar ceilings when
   the row still has wall-time for cost/benefit triage. Captured `.log` files
   in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
   stdin prompt spool.
-- Daemon ticks run only in foreground parent processes, update real RSS via
-  `ps`, and set dead root pids → `ended_at`.
+- Daemon ticks run only in foreground parent processes and update real RSS via
+  `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
+  row is swept for dead root pids → `ended_at`.
 - Visible spawns (Terminal.app) persist `pid=0`; the daemon resolves their live
   pid from the `--session-id <cid>` the child carries in `ps` argv and measures
   the same subtree RSS, so they contribute real memory, not the estimate. A

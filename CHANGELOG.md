@@ -60,6 +60,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Spawn-budget and memory-guard RSS samples no longer fail open to zero
+  (#93).** Failed or garbled `ps` RSS reads now preserve the prior child RSS
+  instead of writing 0 into `tasks.rss_kb`, memory reclaim reports unknown RSS
+  instead of fake freed memory when before/after sampling fails, and the
+  spawn-budget liveness sweep covers every open task row instead of only the
+  newest 100.
+
 - **Spawn-budget daemon stays out of spawned children (#92).** The
   `spawn_budget` RSS/watchdog polling thread now honors
   `BACKGROUND_DAEMONS_ALLOWED`, matching `memory_guard`, so slim children do
