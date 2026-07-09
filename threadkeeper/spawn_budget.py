@@ -39,6 +39,7 @@ import time
 from typing import Optional, Tuple
 
 from .config import (
+    BACKGROUND_DAEMONS_ALLOWED,
     SPAWN_BUDGET_MB,
     SPAWN_ESTIMATE_SLIM_MB,
     SPAWN_ESTIMATE_FULL_MB,
@@ -112,8 +113,13 @@ def _ps_pairs() -> list[tuple[int, int]]:
     return out
 
 
-def _rss_for_pids(pids: list[int]) -> int:
-    """Sum RSS (KB) for the given pids via `ps`. Missing pids contribute 0."""
+def _rss_for_pids(pids: list[int]) -> int | None:
+    """Sum RSS (KB) for the given pids via `ps`.
+
+    Missing pids contribute 0, but a failed or garbled `ps` sample returns
+    None so callers keep the last known RSS instead of treating the process as
+    freed.
+    """
     if not pids:
         return 0
     try:
@@ -122,22 +128,24 @@ def _rss_for_pids(pids: list[int]) -> int:
             capture_output=True, text=True, timeout=3,
         )
     except (subprocess.SubprocessError, OSError):
-        return 0
+        return None
     total = 0
+    saw_row = False
     for line in (r.stdout or "").splitlines():
         parts = line.split()
         if len(parts) < 2:
-            continue
+            return None
         try:
             total += int(parts[1])
         except ValueError:
-            continue
-    return total
+            return None
+        saw_row = True
+    return total if saw_row else None
 
 
 def measure_tree_rss_kb(root_pid: int) -> Optional[int]:
     """Walk descendants of root_pid and return summed RSS in KB.
-    Returns None when the root is gone (so caller can leave the row alone)."""
+    Returns None when the root is gone or RSS is unreadable this tick."""
     if root_pid is None or root_pid <= 0:
         return None
     pairs = _ps_pairs()
@@ -562,7 +570,7 @@ def _refresh_all_running(conn) -> int:
     refreshed."""
     rows = conn.execute(
         "SELECT * FROM tasks "
-        "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 100"
+        "WHERE ended_at IS NULL ORDER BY started_at DESC"
     ).fetchall()
     now = int(time.time())
     updated = 0
@@ -625,7 +633,7 @@ def _daemon_loop() -> None:
 
 
 def start_budget_daemon() -> None:
-    """Idempotent — call from _ensure_session lazily."""
+    """Idempotent daemon starter. Runs only in foreground parent processes."""
     global _started
     if _started:
         return
@@ -633,6 +641,8 @@ def start_budget_daemon() -> None:
         return
     if SPAWN_BUDGET_MB <= 0 and SPAWN_MAX_RUNTIME_S <= 0:
         return  # both RSS budget and wall-clock watchdog (#80) off — nothing to do
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     t = threading.Thread(
         target=_daemon_loop, name="spawn_budget", daemon=True,
     )

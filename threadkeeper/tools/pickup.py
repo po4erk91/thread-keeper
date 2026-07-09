@@ -10,12 +10,44 @@ import time
 from typing import Optional
 
 from .._mcp import read_tool, write_tool
+from ..config import PICKUP_CLAIM_TTL_S
 from ..db import get_db
 from ..helpers import fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, embed_tag
 from .spawn import spawn
+
+
+def _stale_claim_cutoff(now_t: int) -> int:
+    return now_t - PICKUP_CLAIM_TTL_S
+
+
+def _reap_stale_pickup_claims(conn: sqlite3.Connection, now_t: int) -> int:
+    cur = conn.execute(
+        "UPDATE threads SET claimed_at=NULL, claimed_by_cid=NULL "
+        "WHERE claimed_at IS NOT NULL AND claimed_at <= ?",
+        (_stale_claim_cutoff(now_t),),
+    )
+    count = max(0, cur.rowcount or 0)
+    if count:
+        _emit(
+            conn,
+            "pickup_claim_reaped",
+            summary=f"stale={count} ttl_s={PICKUP_CLAIM_TTL_S}",
+        )
+    return count
+
+
+def _claim_release_cids(conn: sqlite3.Connection, self_cid: str) -> set[str]:
+    allowed = {self_cid}
+    rows = conn.execute(
+        "SELECT parent_cid FROM tasks "
+        "WHERE spawned_cid=? AND parent_cid IS NOT NULL",
+        (self_cid,),
+    ).fetchall()
+    allowed.update(r["parent_cid"] for r in rows if r["parent_cid"])
+    return allowed
 
 
 @read_tool()
@@ -29,16 +61,21 @@ def pickup_candidates(min_idle_days: int = 3, max_n: int = 5) -> str:
     _ensure_session(conn)
     now_t = int(time.time())
     cutoff = now_t - max(0, int(min_idle_days)) * 86400
+    claim_cutoff = _stale_claim_cutoff(now_t)
     rows = conn.execute(
         "SELECT id, question, state, last_touched_at, last_move "
         "FROM threads "
         "WHERE state IN ('active','idle') "
-        "AND last_touched_at <= ? AND claimed_at IS NULL "
+        "AND last_touched_at <= ? "
+        "AND (claimed_at IS NULL OR claimed_at <= ?) "
         "ORDER BY last_touched_at ASC LIMIT ?",
-        (cutoff, max(1, int(max_n))),
+        (cutoff, claim_cutoff, max(1, int(max_n))),
     ).fetchall()
     if not rows:
-        return f"no_candidates (no unclaimed thread idle >= {min_idle_days}d)"
+        return (
+            "no_candidates "
+            f"(no unclaimed or stale-claimed thread idle >= {min_idle_days}d)"
+        )
     lines = [f"candidates n={len(rows)} idle>={min_idle_days}d"]
     for t in rows:
         idle = fmt_age(now_t - t["last_touched_at"])
@@ -64,6 +101,7 @@ def claim_pickup(thread_id: str, plan: str = "",
     if not self_cid:
         return "ERR cannot_detect_self_cid"
     tid = thread_id.strip()
+    now_t = int(time.time())
     t = conn.execute(
         "SELECT id, question, state, claimed_at, claimed_by_cid "
         "FROM threads WHERE id=?",
@@ -71,12 +109,13 @@ def claim_pickup(thread_id: str, plan: str = "",
     ).fetchone()
     if not t:
         return f"ERR thread_not_found={tid}"
-    if t["claimed_at"] and t["claimed_by_cid"] != self_cid:
+    if t["claimed_at"] and t["claimed_at"] <= _stale_claim_cutoff(now_t):
+        _reap_stale_pickup_claims(conn, now_t)
+    elif t["claimed_at"] and t["claimed_by_cid"] != self_cid:
         return (
             f"ERR already_claimed by={(t['claimed_by_cid'] or '')[:8]} "
             f"at={fmt_age(int(time.time()) - t['claimed_at'])}_ago"
         )
-    now_t = int(time.time())
     conn.execute(
         "UPDATE threads SET claimed_at=?, claimed_by_cid=?, "
         "last_touched_at=? WHERE id=?",
@@ -111,7 +150,9 @@ def claim_pickup(thread_id: str, plan: str = "",
             f"Plan from caller: {plan or '(infer one and proceed)'}\n\n"
             f"Make ONE concrete advance. Add a note to the thread "
             f"(mcp__thread-keeper__note with thread_id={tid}, kind='move'). "
-            f"When done, broadcast 'pickup-{tid}: <one-line result>'."
+            f"Then broadcast 'pickup-{tid}: <one-line result>'. "
+            f"Final step: call mcp__thread-keeper__release_pickup "
+            f"with thread_id={tid} so this pickup claim is cleared."
         )
         result = spawn(
             prompt=child_prompt,
@@ -126,7 +167,7 @@ def claim_pickup(thread_id: str, plan: str = "",
 
 @write_tool(idempotent=True)
 def release_pickup(thread_id: str) -> str:
-    """Release a claim. Only the claimant can release."""
+    """Release a claim. The claimant or its spawned child can release."""
     conn = get_db()
     _ensure_session(conn)
     self_cid = _detect_self_cid()
@@ -138,7 +179,7 @@ def release_pickup(thread_id: str) -> str:
     ).fetchone()
     if not t or not t["claimed_by_cid"]:
         return "not_claimed"
-    if t["claimed_by_cid"] != self_cid:
+    if t["claimed_by_cid"] not in _claim_release_cids(conn, self_cid):
         return f"ERR not_my_claim by={t['claimed_by_cid'][:8]}"
     conn.execute(
         "UPDATE threads SET claimed_at=NULL, claimed_by_cid=NULL WHERE id=?",

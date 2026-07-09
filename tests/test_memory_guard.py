@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import signal as _sig
+import subprocess
 import threading
 
 
@@ -452,6 +453,53 @@ def test_maybe_notify_keeps_dict_bounded(monkeypatch):
         assert len(mg._last_notify_at) <= 1
     finally:
         mg._last_notify_at.clear()
+
+
+def test_pid_rss_mb_distinguishes_failed_sample_from_zero(monkeypatch):
+    from threadkeeper import memory_guard as mg
+
+    def fail_run(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout", 3))
+
+    monkeypatch.setattr(mg.subprocess, "run", fail_run)
+    assert mg._pid_rss_mb(1234) is None
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    monkeypatch.setattr(mg.subprocess, "run", lambda *a, **k: _Result("nope\n"))
+    assert mg._pid_rss_mb(1234) is None
+
+    monkeypatch.setattr(mg.subprocess, "run", lambda *a, **k: _Result("0\n"))
+    assert mg._pid_rss_mb(1234) == 0
+
+
+def test_reclaim_does_not_treat_failed_after_sample_as_freed_memory(
+    mp_with_cid, monkeypatch,
+):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper import embeddings, memory_guard as mg
+
+    monkeypatch.setattr(mg, "_reclaim_backoff_until", 123.0)
+    monkeypatch.setattr(mg, "_reclaim_fail_streak", 2)
+    monkeypatch.setattr(mg, "_log_line", lambda *a, **k: None)
+    monkeypatch.setattr(mg, "_emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(mg, "_empty_torch_caches", lambda: [])
+    monkeypatch.setattr(mg, "_allocator_pressure_relief", lambda: [])
+    monkeypatch.setattr(embeddings, "unload_model", lambda: False)
+    rss = iter([2000, None])
+    monkeypatch.setattr(mg, "_pid_rss_mb", lambda pid: next(rss))
+
+    out = mg.reclaim_memory(reason="aggregate_warn", force=True)
+
+    assert out["before_mb"] == 2000
+    assert out["after_mb"] is None
+    assert out["freed_mb"] == 0
+    assert "rss_measurement_unavailable" in out["actions"]
+    assert not any(a.startswith("backoff=") for a in out["actions"])
+    assert mg._reclaim_backoff_until == 123.0
+    assert mg._reclaim_fail_streak == 2
 
 
 # ──────────────────────────────────────────────────────────────────────

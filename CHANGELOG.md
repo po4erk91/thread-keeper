@@ -67,6 +67,39 @@ version bumps follow semver per the policy in
   size in addition to integer mtime, picking up appends written in the same
   wall-clock second.
 
+- **Pickup claims stop pinning stale threads forever (#96).** Thread pickup
+  claims now expire after the same 24h lease used by roadmap issue claims:
+  `pickup_candidates` shows stale-claimed threads again, `claim_pickup` clears
+  expired leases before taking one, and auto-spawn pickup children are told to
+  call `release_pickup` as their final step. A spawned child can release its
+  parent's claim through the recorded `tasks` parent/child link.
+
+- **Spawn-budget and memory-guard RSS samples no longer fail open to zero
+  (#93).** Failed or garbled `ps` RSS reads now preserve the prior child RSS
+  instead of writing 0 into `tasks.rss_kb`, memory reclaim reports unknown RSS
+  instead of fake freed memory when before/after sampling fails, and the
+  spawn-budget liveness sweep covers every open task row instead of only the
+  newest 100.
+
+- **Spawn-budget daemon stays out of spawned children (#92).** The
+  `spawn_budget` RSS/watchdog polling thread now honors
+  `BACKGROUND_DAEMONS_ALLOWED`, matching `memory_guard`, so slim children do
+  not each start their own perpetual `ps` loop.
+
+- **Learning daemons no longer drop unprocessed dialog windows (#90).**
+  `shadow_review` now keeps its old cursor when spawn admission returns
+  `ERR ...` or raises before an observer child launches, so budget-cap
+  rejections are retried on the next tick. `extract_daemon` now uses its
+  `extract_pass` cursor to extend scans when the configured interval is longer
+  than the base window, avoiding uncovered gaps between ticks.
+
+- **Lesson-store writes now serialize on `lessons.md.lock` (#91).**
+  `append_lesson`, `remove_lesson`, and lesson restore now hold a blocking
+  `fcntl.flock` across file creation/read/mutate/write, so foreground,
+  shadow-review, candidate-reviewer, auto-review, and curator children cannot
+  silently clobber each other's `lessons.md` edits. Added a multiprocessing
+  append/remove regression test that preserves every distinct section.
+
 - **Auto-update no longer silently rewrites CLI setup config (#87).**
   Post-update setup now defaults to a dry-run check
   (`THREADKEEPER_AUTO_UPDATE_SETUP=check`) that records unchanged vs pending

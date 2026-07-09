@@ -6,6 +6,10 @@ from ..db import get_db
 from ..identity import _ensure_session
 
 
+def _fmt_mb(value) -> str:
+    return "unknown" if value is None else f"{value}MB"
+
+
 def _fmt_proc(p: dict, prefix: str) -> str:
     return (
         f"  {prefix} pid={p['pid']} rss={p['rss_mb']}MB "
@@ -95,8 +99,8 @@ def memory_guard_check(dry_run: bool = True, notify: bool = False) -> str:
         if result.get("local_reclaim"):
             r = result["local_reclaim"]
             out.append(
-                f"  reclaim self before={r['before_mb']}MB "
-                f"after={r['after_mb']}MB freed={r['freed_mb']}MB"
+                f"  reclaim self before={_fmt_mb(r['before_mb'])} "
+                f"after={_fmt_mb(r['after_mb'])} freed={r['freed_mb']}MB"
             )
         for f in result["failed"]:
             out.append(f"  ERR pid={f['pid']} {f['err']}")
@@ -120,8 +124,8 @@ def memory_guard_reclaim(scope: str = "self") -> str:
         return "ERR bad_scope (use self|all)"
     result = memory_guard.reclaim_memory(reason=f"manual:{scope}", force=True)
     out = [
-        f"self pid={result['pid']} before={result['before_mb']}MB "
-        f"after={result['after_mb']}MB freed={result['freed_mb']}MB",
+        f"self pid={result['pid']} before={_fmt_mb(result['before_mb'])} "
+        f"after={_fmt_mb(result['after_mb'])} freed={result['freed_mb']}MB",
         "actions=" + ",".join(result["actions"]),
     ]
     if scope == "all":
