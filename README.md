@@ -255,15 +255,16 @@ parent: N≥2 modular independent units of ≥5 min each = spawn signal.
 Spawn also marks children with `THREADKEEPER_SPAWNED_CHILD=1`, so
 autonomous learning daemons cannot recursively start inside review forks.
 
-A daemon measures combined child RSS every 10 s; failed `ps` RSS samples keep
-the last-known value, and the liveness sweep covers every open task row so dead
-children stop counting against the cap. Admission control refuses a new spawn
-that would exceed `THREADKEEPER_SPAWN_BUDGET_MB` (3 GB default). Slim children
-that need semantic search delegate to the parent via `search_via_parent` — no
-per-child copy of the embedding model. Admission uses a SQLite
-`BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and inserts the
-child task row with its RSS estimate before `Popen`, so two concurrent spawns
-cannot both squeeze through the cap.
+A daemon in the foreground parent measures combined child RSS every 10 s;
+spawned children do not start their own `ps` polling loop, failed `ps` RSS
+samples keep the last-known value, and the liveness sweep covers every open
+task row so dead children stop counting against the cap. Admission control
+refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
+(3 GB default). Slim children that need semantic search delegate to the parent
+via `search_via_parent` — no per-child copy of the embedding model. Admission
+uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
+inserts the child task row with its RSS estimate before `Popen`, so two
+concurrent spawns cannot both squeeze through the cap.
 
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
@@ -561,7 +562,11 @@ clusters via cosine ≥ 0.80. Each match enqueues a row in
 `extract_candidates.status='pending'`. Same self-pollution filter as
 shadow_review (autonomous child lineage excluded) plus message-level noise
 filter (compaction summaries, SKILL.md
-injections, subagent role prompts, test-runner log dumps).
+injections, subagent role prompts, test-runner log dumps). The manual
+`extract_recent()` tool uses the configured sliding window directly; the daemon
+also keeps an `extract_pass` cursor and extends a pass back to the previous
+successful tick when `THREADKEEPER_EXTRACT_INTERVAL_S` is longer than
+`THREADKEEPER_EXTRACT_WINDOW_MIN`, so no dialog falls between ticks.
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests
 PER-INCIDENT decision-shaped utterances. Heuristic, not LLM —
@@ -654,6 +659,11 @@ still-current memory maintenance through `lesson_append` / `lesson_remove` /
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
 the same report.
+
+The shared lesson file has its own write serialization: `lesson_append`,
+`lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
+`lessons.md.lock` around file creation/read/mutate/write, so foreground calls
+and learning-loop children cannot last-writer-win over each other's sections.
 
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
@@ -944,8 +954,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" | escape hatch: pin ONE settings file to watch (single-file mode); when unset, hybrid mode watches `.env` + the CLI file resolved via host identity |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
-| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
-| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
+| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
+| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |

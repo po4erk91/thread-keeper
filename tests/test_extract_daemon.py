@@ -127,6 +127,37 @@ def test_run_extract_pass_picks_up_user_want_pattern(tmp_path, monkeypatch):
     assert "verbatim" in kinds, f"got kinds: {kinds}"
 
 
+def test_run_extract_pass_covers_interval_window_gap(tmp_path, monkeypatch):
+    """When interval > window, the daemon must scan back to its cursor so a
+    message after the previous tick but before the next sliding window is kept."""
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600", window_min="1")
+    conn = pkg["db"].get_db()
+    first_tick = 1_800_000_000
+    next_tick = first_tick + 3600
+    pkg["extract_daemon"]._record_extract_pass(
+        conn, first_tick, "ok window=1m scanned=0",
+    )
+    _seed_dialog(
+        conn, "user",
+        "I want you to always preserve dialog that lands between daemon "
+        "ticks, even when the extract interval is longer than the window.",
+        first_tick + 120, session_id="gap-sess",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(pkg["extract_daemon"].time, "time", lambda: next_tick)
+    out = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out
+    rows = conn.execute(
+        "SELECT source_cid, content FROM extract_candidates WHERE status='pending'"
+    ).fetchall()
+    assert any(
+        r["source_cid"] == "gap-sess"
+        and "between daemon ticks" in r["content"]
+        for r in rows
+    )
+
+
 def test_extract_filters_noise_content_prefixes(tmp_path, monkeypatch):
     """Message-level noise filter — even within a valid session,
     individual messages matching known noise prefixes (compaction

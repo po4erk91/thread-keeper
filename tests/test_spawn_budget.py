@@ -188,6 +188,43 @@ def test_check_budget_refuses_when_cost_budget_reached(mp_with_cid, monkeypatch)
     assert "cost_budget_exceeded" in msg
 
 
+@pytest.mark.parametrize(
+    ("background_allowed", "expected_started"),
+    [(False, False), (True, True)],
+)
+def test_start_budget_daemon_respects_background_daemons_allowed(
+    mp_with_cid, monkeypatch, background_allowed, expected_started
+):
+    mp_with_cid(_FAKE_CID)
+    import threadkeeper.spawn_budget as sb
+
+    calls: list[tuple[str, str | None, bool | None]] = []
+
+    class _Thread:
+        def __init__(self, *, target, name, daemon):
+            assert target is sb._daemon_loop
+            calls.append(("init", name, daemon))
+
+        def start(self):
+            calls.append(("start", None, None))
+
+    monkeypatch.setattr(sb, "_started", False)
+    monkeypatch.setattr(sb, "BACKGROUND_DAEMONS_ALLOWED", background_allowed)
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_POLL_S", 60.0)
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_MB", 3072)
+    monkeypatch.setattr(sb, "SPAWN_MAX_RUNTIME_S", 3600.0)
+    monkeypatch.setattr(sb.threading, "Thread", _Thread)
+
+    sb.start_budget_daemon()
+
+    assert sb._started is expected_started
+    assert calls == (
+        [("init", "spawn_budget", True), ("start", None, None)]
+        if expected_started
+        else []
+    )
+
+
 def test_spawn_reserves_rss_budget_before_popen(mp_with_cid, monkeypatch):
     """Two concurrent spawns against a cap that admits one must serialize at
     reservation time, so only one subprocess launch is attempted."""
