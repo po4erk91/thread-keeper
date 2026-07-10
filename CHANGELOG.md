@@ -60,6 +60,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Curator and candidate-reviewer honor restart intervals (#99).** Both
+  dispatchers now consult their recorded pass high-water before taking the
+  single-flight lock, so a fresh MCP server inside the configured interval
+  returns `not_due` and spawns no child. Forced runs still bypass the due gate.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain
