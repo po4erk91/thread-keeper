@@ -60,6 +60,14 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Single-flight prompt-prefix drift now fails tests (#101).** Curator,
+  shadow_review, dialectic_validator, evolve_reviewer, evolve_applier, and
+  candidate_reviewer build their spawned-child prompts from the same prefix
+  constants used by their running-child detectors. The shadow and dialectic
+  detectors no longer embed duplicated `LIKE 'You are ...%'` SQL literals, and a
+  parametrized regression test catches both prompt-opening drift and detector
+  rewrites that stop reading the shared prefix.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain

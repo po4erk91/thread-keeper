@@ -601,7 +601,10 @@ All spawning learning-loop daemons that enforce single-flight use the same
 non-blocking `helpers.single_flight_lock()` helper around the
 check-running-then-spawn section. The local `fcntl.flock` closes the same-host
 TOCTOU window; the tasks-table running-child check remains as the second layer
-for stale-pid cleanup and status visibility. The helper is also used by the
+for stale-pid cleanup and status visibility. That running-child check is keyed
+by each child's prompt prefix, so daemon prompts are composed from the same
+prefix constants their detectors query, with a consistency test guarding future
+prompt-opening edits. The helper is also used by the
 side-effecting auto-update, skill-update, and menu-bar autolaunch dispatch
 locks.
 

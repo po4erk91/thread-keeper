@@ -85,8 +85,7 @@ _started = False
 EVOLVE_APPLY_PROMPT_PREFIX = "You are an EVOLVE APPLIER"
 EVOLVE_REVIEW_AUDIT_PROMPT_PREFIX = "You are an EVOLVE REVIEWER (audit phase)"
 
-EVOLVE_APPLY_PROMPT = """\
-You are an EVOLVE APPLIER for thread-keeper. A past session filed a suggestion
+EVOLVE_APPLY_PROMPT = EVOLVE_APPLY_PROMPT_PREFIX + """ for thread-keeper. A past session filed a suggestion
 to improve thread-keeper's OWN brief format — the session-start memory snapshot
 rendered by render_brief() in threadkeeper/brief.py. The evolve reviewer
 PROMOTED it. Your job: IMPLEMENT it in code, VALIDATE with the test suite, and
@@ -213,8 +212,7 @@ def _fence_untrusted_data(tag: str, text: str, limit: int = 20000) -> str:
     safe = safe.replace(f"<{tag}>", f"<{tag}_escaped>")
     return f"<{tag}>\n{safe[:limit]}\n</{tag}>"
 
-CURATOR_REPORT_APPLY_PROMPT = """\
-You are an EVOLVE APPLIER for thread-keeper. This work item is NOT a brief-code
+CURATOR_REPORT_APPLY_PROMPT = EVOLVE_APPLY_PROMPT_PREFIX + """ for thread-keeper. This work item is NOT a brief-code
 evolve suggestion. It is a Curator REPORT: an advisory audit of existing
 lessons, skills, and concepts. Your job is to apply ONLY the safe, still-valid
 memory maintenance recommendations, then mark the report applied.
@@ -293,8 +291,7 @@ or:
   CURATOR_REPORT_APPLY_ABORTED reason=<why>
 """
 
-ROADMAP_ISSUE_APPLY_PROMPT = """\
-You are an EVOLVE APPLIER for thread-keeper. This work item is a GitHub issue
+ROADMAP_ISSUE_APPLY_PROMPT = EVOLVE_APPLY_PROMPT_PREFIX + """ for thread-keeper. This work item is a GitHub issue
 from the project roadmap/backlog. Your job is to implement exactly ONE issue,
 validate it, open a pull request, then mark the issue work as handed off.
 
@@ -375,8 +372,7 @@ or:
 """
 
 
-PR_CONFLICT_REPAIR_PROMPT = """\
-You are an EVOLVE APPLIER for thread-keeper. This work item is NOT a new
+PR_CONFLICT_REPAIR_PROMPT = EVOLVE_APPLY_PROMPT_PREFIX + """ for thread-keeper. This work item is NOT a new
 roadmap issue. Your job is to repair merge conflicts in an already-open
 same-repository applier pull request, validate it, push the fix back to that
 SAME PR branch, and then land that PR into main through GitHub's protected PR

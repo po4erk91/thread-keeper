@@ -82,8 +82,12 @@ _INVENTORY_FINGERPRINT_RE = re.compile(
 )
 
 
-CURATOR_PROMPT = """\
-You are an autonomous CURATOR for thread-keeper's lessons + skills
+# Stable leading substring used to find running curator children in the tasks
+# table for the single-flight guard. The prompt is built from this fragment so
+# edits to the opening line cannot silently drift away from the detector.
+CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
+
+CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
 library. You read the inventory below — every lesson slug, every
 recently-touched skill, usage telemetry — and decide what to keep,
 patch, consolidate, or prune.
@@ -564,12 +568,6 @@ def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
 # ──────────────────────────────────────────────────────────────────────
 # Single-flight: one curator pass at a time across ALL processes
 # ──────────────────────────────────────────────────────────────────────
-
-# Stable leading substring of CURATOR_PROMPT — used to find running curator
-# children in the tasks table for the single-flight guard. Keep in sync with
-# the opening line of CURATOR_PROMPT above.
-CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
-
 
 def _running_curator_children(conn: sqlite3.Connection) -> list[str]:
     """Running curator task ids, reaping dead rows.

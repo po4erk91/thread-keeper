@@ -333,7 +333,11 @@ Spawning daemons that enforce single-flight share one non-blocking
 `helpers.single_flight_lock(name)` primitive around their local
 check-running-then-spawn critical section. The `fcntl.flock` pidfile under
 the DB directory closes the same-host TOCTOU window; the tasks-table
-running-child check remains for stale-pid cleanup and status visibility.
+running-child check remains for stale-pid cleanup and status visibility. That
+DB check is prompt-prefix-keyed (`prompt LIKE '<prefix>%'`), so each daemon's
+prompt is built from the same prefix constant its detector uses; the
+`test_single_flight_prompt_prefixes` consistency test fails if a prompt opening
+drifts away from the detector.
 
 Orthogonal to concurrency, **cadence** is persisted in the `daemon_state`
 table (`daemon_state.claim_pass`): each scheduled tick claims its slot with

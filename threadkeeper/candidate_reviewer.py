@@ -54,8 +54,9 @@ _started = False
 
 CANDIDATE_REVIEW_PROMPT_PREFIX = "You are a CANDIDATE REVIEWER"
 
-CANDIDATE_REVIEW_PROMPT = """\
-You are a CANDIDATE REVIEWER for thread-keeper's extract queue.
+CANDIDATE_REVIEW_PROMPT = (
+    CANDIDATE_REVIEW_PROMPT_PREFIX
+    + """ for thread-keeper's extract queue.
 
 The extract daemon harvests heuristic candidates from agent dialog
 into the `extract_candidates` table (status='pending'). Your job is to
@@ -135,6 +136,7 @@ OUTPUT — write a one-paragraph summary at the end of your run:
    created skill: ..."
 
 """
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
