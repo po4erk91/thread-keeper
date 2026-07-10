@@ -583,6 +583,65 @@ shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
 + many readers without blocking.
 
+### Daemon-host + thin servers (Phase 1)
+
+Behind `THREADKEEPER_DAEMON_HOST` (`0` by default — dark; no CLI config
+change), the daemon block above moves out of the per-session server and into
+one always-on headless process per machine:
+
+- **Election** — `python -m threadkeeper.host` (`host.main()`) takes
+  `HOST_LOCK_PATH` (`<db dir>/host.lock`) via `single_flight_lock`. A second
+  host racing for the same lock exits 0 immediately (idempotent spawn), so
+  there is never more than one host per machine.
+- **The moved daemon block** — `host.start_daemons()` centralizes exactly the
+  background ingester plus the 18 daemon starters that otherwise run inline in
+  `identity._ensure_session`'s foreground branch (above), starting each once
+  in the host process instead of once per session. With the flag off,
+  `_ensure_session` calls `host.start_daemons()` itself in-process — byte-for-
+  byte the pre-Phase-1 behavior, just centralized in one function.
+- **Embed socket + FTS fallback** — the host binds a narrow embed-only unix
+  socket (`host_embed.serve_embed_socket`, path `THREADKEEPER_HOST_SOCK`,
+  default `<db dir>/host.sock`; newline-delimited versioned JSON —
+  `{"v":1,"op":"embed","texts":[...]}` in, `{"v":1,"vectors":[...]}` or
+  `{"v":1,"error":...}` out). In a thin server (`THREADKEEPER_ROLE=server`,
+  the default under the flag), `embeddings._encode()` tries
+  `embed_via_host(...)` first for any text it needs to embed — query or the
+  session-start catch-up ingest pass below — instead of loading the model
+  itself. `embed_via_host` returns `None` on any failure (no host, timeout,
+  malformed reply), and `_encode` then honors
+  `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) propagates that `None` so
+  the caller degrades to FTS-only, keeping the thin server model-free even
+  when the host is down; `local` instead falls through to lazily loading the ONNX
+  model in-process, trading the RAM savings for keeping semantic search fully
+  available. The ongoing content-embedding work (new dialog rows) is produced
+  by the host's own background ingest daemon; a thin server's session start
+  still runs the pre-existing bounded catch-up ingest pass
+  (`THREADKEEPER_INGEST_CAP`, unchanged by Phase 1), and any embedding it
+  needs goes through this same host-then-fallback path.
+- **`memory_guard` supervision** — thin servers are cheap (no ONNX, no
+  daemon threads) and are excluded from aggregate idle-retire while the flag
+  is on (`_idle_retire_candidates`); instead `supervise_host()` calls
+  `host.ensure_host_running()` once the host's presence heartbeat has gone
+  stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S`. That respawn only takes
+  effect when no live host still holds the election lock (`host.main()`
+  exits 0 immediately otherwise), so end-to-end this recovers a fully-dead
+  host; a thin session's own `ensure_host_running()` call at session start
+  (below) is the primary recovery path. Recovering a wedged-but-alive host
+  (stale heartbeat, process still up, lock still held) via SIGTERM-by-pid is
+  not yet implemented — tracked as a pre-enable follow-up.
+- **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`
+  calls `host.ensure_host_running()` on every session start: a no-op if a
+  live heartbeat already exists, otherwise a **detached** spawn
+  (`subprocess.Popen(..., start_new_session=True)`, redirected stdio) so the
+  host outlives the session that spawned it and a closing CLI can never HUP
+  it. The host then runs forever — no idle-exit — because the loops (daily
+  retention, weekly curator, probe, …) must keep ticking with no active
+  session; it exits only on SIGTERM (sent manually today — see the
+  supervision caveat above) or failing to acquire the host lock at startup.
+
+Flag off ⇒ zero behavior change: every session starts its own daemons and
+embeds locally, exactly as before Phase 1.
+
 ## Spawn architecture
 
 `spawn(prompt, slim=True, role=…, visible=False, …)` brings up a child agent

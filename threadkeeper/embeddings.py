@@ -27,6 +27,7 @@ from .config import (
     FASTEMBED_MODEL_ID,
 )
 from . import db as _db
+from . import host_embed
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,21 @@ def _encode(texts: list[str]):
     whether the backend already normalizes.
     """
     global _last_used_at
+    from . import config as _cfg  # read live (hot-reloadable flag)
+    if _cfg.DAEMON_HOST_ENABLED and _cfg.PROCESS_ROLE == "server":
+        vecs = host_embed.embed_via_host(list(texts), _cfg.HOST_SOCK_PATH)
+        if vecs is None:
+            if _cfg.THIN_EMBED_FALLBACK == "local":
+                pass  # fall through to the local model below
+            else:
+                return None  # fts fallback: caller degrades to FTS
+        else:
+            import numpy as np  # type: ignore
+            arr = np.asarray(vecs, dtype="float32")
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            _last_used_at = time.time()
+            return (arr / norms).astype("float32")
     with _model_lock:
         m = _get_model()
         if m is None:

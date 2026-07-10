@@ -180,6 +180,19 @@ def test_start_skill_watcher_disabled_when_interval_zero(tmp_path, monkeypatch):
     assert not any(n == "skill_watcher" for n in new_threads)
 
 
+def test_start_skill_watcher_respects_disable_bg_daemons(tmp_path, monkeypatch):
+    """BACKGROUND_DAEMONS_ALLOWED=False must block the daemon thread even
+    when the poll interval is positive."""
+    monkeypatch.setenv("THREADKEEPER_DISABLE_BG_DAEMONS", "1")
+    pkg = _bootstrap(tmp_path, monkeypatch, interval_s="10")
+    sw = pkg["skill_watcher"]
+    import threading
+    before = {t.name for t in threading.enumerate()}
+    sw.start_skill_watcher()
+    after = {t.name for t in threading.enumerate()}
+    assert not any(n == "skill_watcher" for n in (after - before))
+
+
 def test_scan_once_preserves_existing_origin(tmp_path, monkeypatch):
     """If a skill already has an agent-created provenance row, the watcher
     must NOT overwrite created_by_origin — INSERT … ON CONFLICT DO NOTHING."""

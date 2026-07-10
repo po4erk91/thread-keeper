@@ -7,6 +7,30 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Daemon-host + thin per-session servers (dark, `THREADKEEPER_DAEMON_HOST`).**
+  One headless host per machine owns the background loops (18 daemon starters
+  + the ingester) + the warm ONNX model + a narrow embed unix-socket;
+  per-session servers go thin (stdio MCP + direct SQLite, no daemons, no ONNX)
+  and route the embeddings they need (a search query, and content ingested
+  during the session) to the host, falling back to FTS when it is unreachable.
+  Elected via a flock, spawned detached by the first thin server, supervised
+  by memory_guard. Off by default; no CLI config change. Removes the
+  per-session RAM multiplier and the reclaim-thrash root.
+
+### Fixed
+
+- **All background daemon starters now honor `BACKGROUND_DAEMONS_ALLOWED`.**
+  `search_proxy`, `skill_watcher`, `spawn_budget`, and the background ingester
+  started unconditionally, ignoring the spawned-child / `DISABLE_BG_DAEMONS`
+  gate the other daemons respect — so a spawned review child (or a
+  `DISABLE_BG_DAEMONS` run) still spun up those loops. They now self-gate like
+  the rest, which also lets the daemon-host cleanly own them.
+- **`probe_daemon` no longer crashes on its first tick.** It called
+  `daemon_sleep()` without importing it from `.helpers`, so the probe loop died
+  with a `NameError` after one iteration. Added the missing import.
+
 ### Changed
 
 - **Evolve tests no longer provision a real checkout — ~850 s off the suite.**

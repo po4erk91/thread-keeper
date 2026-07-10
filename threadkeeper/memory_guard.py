@@ -451,6 +451,14 @@ def is_global_guard_coordinator(procs: list[dict]) -> bool:
 
 
 def _idle_retire_candidates(procs: list[dict]) -> list[dict]:
+    from . import config as _cfg
+
+    if _cfg.DAEMON_HOST_ENABLED:
+        # Under daemon-host mode, thin servers are cheap and are never
+        # idle-retired; the single host is supervised separately via
+        # supervise_host(), not this path.
+        return []
+
     candidates: list[dict] = []
     for p in procs:
         if p.get("is_self"):
@@ -489,6 +497,32 @@ def _retire_plan(procs: list[dict], aggregate: dict) -> list[dict]:
         total -= int(p.get("rss_mb") or 0)
         count -= 1
     return plan
+
+
+def _host_alive() -> bool:
+    from . import host
+    return host._host_alive()
+
+
+def supervise_host() -> None:
+    """Respawn the daemon-host if its heartbeat is stale (flag on only).
+
+    Phase 1: with THREADKEEPER_DAEMON_HOST on, thin per-session servers are
+    never idle-retire targets (see `_idle_retire_candidates`), so the guard
+    against a wedged/crashed host is this: if the host's presence heartbeat
+    has gone stale, spawn a replacement. No-op when the flag is off or the
+    host is already alive.
+    """
+    from . import config as _cfg
+    if not _cfg.DAEMON_HOST_ENABLED:
+        return
+    if _host_alive():
+        return
+    try:
+        from . import host
+        host.ensure_host_running()
+    except Exception:
+        pass
 
 
 def scan_over_limit() -> dict:
@@ -663,6 +697,10 @@ def check_once(*, dry_run: bool = True, notify: bool = True) -> dict:
 
 def _daemon_loop() -> None:
     while True:
+        try:
+            supervise_host()
+        except Exception:
+            logger.debug("memory_guard: supervise_host failed", exc_info=True)
         try:
             check_once(dry_run=False, notify=True)
         except Exception:
