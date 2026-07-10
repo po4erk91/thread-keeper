@@ -77,7 +77,7 @@ class Settings(BaseSettings):
             "claude_projects_dir",
         ),
     )
-    task_log_dir: Path = Field(default=Path("/tmp/thread-keeper-tasks"))
+    task_log_dir: Path = Field(default=Path("~/.threadkeeper/tasks"))
 
     # ── Embeddings ───────────────────────────────────────────────────────────
     # env: THREADKEEPER_EMBED_MODEL (field name: embed_model → EMBED_MODEL_NAME)

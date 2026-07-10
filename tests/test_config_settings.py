@@ -6,6 +6,7 @@ import importlib
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,7 @@ def test_defaults_match(monkeypatch):
     assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert c.CURATOR_SNAPSHOT_RETENTION == 10
     assert str(c.DB_PATH).endswith("/.threadkeeper/db.sqlite")
+    assert c.TASK_LOG_DIR == Path.home() / ".threadkeeper" / "tasks"
 
 
 def test_env_overrides_default(monkeypatch):
@@ -266,7 +268,6 @@ def test_all_exported_names_present(monkeypatch):
 
 def test_db_path_type(monkeypatch):
     """DB_PATH must be a pathlib.Path, not a string."""
-    from pathlib import Path
     c = _fresh_config(monkeypatch)
     assert isinstance(c.DB_PATH, Path)
 

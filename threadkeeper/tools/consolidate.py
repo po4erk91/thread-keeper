@@ -12,6 +12,7 @@ reports (and optionally applies) several kinds of cleanup:
 """
 
 import sqlite3
+import stat
 import time
 
 from .._mcp import read_tool, write_tool
@@ -25,6 +26,7 @@ from ..config import (
 from ..helpers import fmt_age, q, normalize_text
 from ..identity import _ensure_session, _emit
 from ..embeddings import _get_model, _encode, _vec_delete_note
+from ..task_spool import ensure_task_spool_dir
 
 
 CONSOLIDATE_NOTE_COSINE = 0.95
@@ -104,6 +106,7 @@ def _task_spool_gc_candidates(
         r["id"] for r in conn.execute("SELECT id FROM tasks").fetchall()
     } - pruned_task_ids
     try:
+        ensure_task_spool_dir(TASK_LOG_DIR)
         entries = sorted(TASK_LOG_DIR.iterdir(), key=lambda p: p.name)
     except (FileNotFoundError, OSError):
         return []
@@ -111,10 +114,10 @@ def _task_spool_gc_candidates(
     out = []
     for p in entries:
         try:
-            is_file = p.is_file()
+            st = p.lstat()
         except OSError:
             continue
-        if not is_file:
+        if not stat.S_ISREG(st.st_mode):
             continue
         parsed = _spool_task_id(p.name)
         if parsed is None:
