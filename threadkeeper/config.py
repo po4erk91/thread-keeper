@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     auto_update_expected_publisher_workflow: str = "publish.yml"
     auto_update_expected_publisher_environment: str = "pypi"
 
+    # ── Phase 1: daemon-host + thin servers (dark by default) ──
+    daemon_host: bool = False              # THREADKEEPER_DAEMON_HOST
+    role: str = "server"                   # THREADKEEPER_ROLE: server | host
+    host_sock: str = ""                    # "" -> <db dir>/host.sock
+    host_heartbeat_ttl_s: float = 120.0
+    thin_embed_fallback: str = "fts"       # fts | local
+
     # ── Skill update daemon ─────────────────────────────────────────────────
     # Twice weekly by default. It syncs installed skills across known CLI roots
     # and can update GitHub-backed skills from configured source roots.
@@ -642,6 +649,10 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
             s.auto_update_expected_publisher_environment
         ),
+        "DAEMON_HOST_ENABLED": bool(s.daemon_host),
+        "PROCESS_ROLE": (s.role or "server").strip().lower(),
+        "HOST_HEARTBEAT_TTL_S": float(s.host_heartbeat_ttl_s),
+        "THIN_EMBED_FALLBACK": (s.thin_embed_fallback or "fts").strip().lower(),
         "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
         "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
         "SKILL_UPDATE_SOURCES": s.skill_update_sources,
@@ -748,6 +759,18 @@ def _derive_constants(s: "Settings") -> dict:
 
 # Publish the initial constants into this module's namespace.
 globals().update(_derive_constants(settings))
+
+# Phase 1: daemon-host socket/lock paths. Module-scope, computed once from
+# DB_PATH right after it is published above — like FASTEMBED_MODEL_ID/EMBED_DIM
+# below, these are intentionally NOT part of _derive_constants (not
+# hot-reloaded): moving a running host's socket/lock path mid-process would
+# desync it from servers already connected to the old path.
+_HOST_SOCK_OVERRIDE = (settings.host_sock or "").strip()
+HOST_SOCK_PATH: Path = (
+    Path(_HOST_SOCK_OVERRIDE).expanduser() if _HOST_SOCK_OVERRIDE
+    else DB_PATH.parent / "host.sock"
+)
+HOST_LOCK_PATH: Path = DB_PATH.parent / "host.lock"
 
 
 def _harden_current_storage() -> None:

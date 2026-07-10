@@ -36,7 +36,7 @@ from .config import PROBE_INTERVAL_S, PROBE_COOLDOWN_S, TASK_LOG_DIR
 from .db import get_db
 from . import daemon_state, identity
 from .identity import _detect_self_cid, _emit
-from .helpers import alive, single_flight_lock
+from .helpers import alive, daemon_sleep, single_flight_lock
 
 logger = logging.getLogger(__name__)
 
