@@ -1012,6 +1012,11 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` bypasses the cap, but the default skip-label gate still refuses the `blocked` label until it is removed or reconfigured |
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
+| `THREADKEEPER_DAEMON_HOST` | `0` (off) | Phase 1 rollout flag (dark by default; no CLI config change). `1` = one headless host (`python -m threadkeeper.host`) owns the background loops + the warm embedding model + the embed socket, and per-session servers go thin (no daemons, no ONNX). See [Embeddings](#embeddings) below |
+| `THREADKEEPER_ROLE` | `server` | process role: `server` (default; per-session MCP server) or `host`. Set to `host` only by `python -m threadkeeper.host` — do not set this by hand |
+| `THREADKEEPER_HOST_SOCK` | (auto) | embed-only unix socket the thin servers dial and the host binds; empty resolves to `<db dir>/host.sock` |
+| `THREADKEEPER_HOST_HEARTBEAT_TTL_S` | 120 | host liveness window (s): how stale the host's presence heartbeat may get before `memory_guard`/a thin server treats it as dead and spawns a replacement |
+| `THREADKEEPER_THIN_EMBED_FALLBACK` | `fts` | how a thin server embeds a query when the host is unreachable: `fts` (default) falls back to FTS-only search; `local` lazily loads the ONNX model in-process instead |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
@@ -1230,6 +1235,22 @@ otherwise every vec0 insert mismatches the schema and the fast KNN path goes
 dead (semantic search still works via the legacy BLOB cosine path). thread-keeper
 logs a one-line warning naming both dimensions and this knob when it detects the
 mismatch, rather than failing silently.
+
+**Daemon-host + thin servers (Phase 1, dark by default).** Behind
+`THREADKEEPER_DAEMON_HOST` (`0` by default; no CLI config change), one headless
+host process per machine (`python -m threadkeeper.host`) owns the warm
+embedding model, the background loops, and a narrow embed-only unix socket
+(`THREADKEEPER_HOST_SOCK`, default `<db dir>/host.sock`). Per-session servers
+run thin instead — no ONNX, no daemon threads — and send any text needing a
+vector to the host over that socket instead of loading a model locally; the
+host's own background ingest daemon does the ongoing content-embedding work.
+If the host is unreachable a query embedding returns nothing and the caller
+falls back per `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) runs
+FTS-only search, `local` lazily loads the model in-process instead. The
+host is elected via a flock and spawned detached by the first thin server that
+needs one; `memory_guard` supervises it — respawning it if its heartbeat goes
+stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S` — instead of idle-retiring it
+the way a thin server would be. See `docs/ARCHITECTURE.md` for the full design.
 
 ---
 

@@ -13,7 +13,7 @@ import os
 import threading
 from typing import Optional
 
-from .config import CLAUDE_SKILLS_DIR
+from .config import BACKGROUND_DAEMONS_ALLOWED, CLAUDE_SKILLS_DIR
 from .db import get_db
 from .helpers import daemon_sleep
 
@@ -88,6 +88,8 @@ def start_skill_watcher() -> None:
     if _started:
         return
     if _tick_interval_s <= 0:
+        return
+    if not BACKGROUND_DAEMONS_ALLOWED:
         return
     t = threading.Thread(
         target=_watch_loop, name='skill_watcher', daemon=True,

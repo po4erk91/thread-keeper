@@ -262,3 +262,12 @@ def test_run_probe_pass_single_flight_lock_race(tmp_path, monkeypatch):
         results.count("graded=0 probe_child_running n=1 (single-flight lock)")
         == 1
     )
+
+
+# ── daemon loop tick (regression: silent thread death) ─────────────────
+
+def test_daemon_sleep_is_importable(tmp_path, monkeypatch):
+    # _serve_loop calls daemon_sleep() outside run_probe_pass's try/except;
+    # a missing import kills the daemon thread via NameError on tick 1.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["pd"].daemon_sleep(0.01)
