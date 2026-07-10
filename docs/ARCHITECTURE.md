@@ -26,6 +26,7 @@ threadkeeper/
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
+├── backup.py          tk-backup VACUUM INTO snapshot/restore command
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -142,6 +143,19 @@ startup and `get_db()` best-effort harden the default store:
 `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
 sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
 `0600`. Logically six levels:
+
+Backups use the `tk-backup` console command, not raw file copies. `tk-backup
+create <dest.sqlite>` opens the live store through SQLite and runs
+`VACUUM INTO` into a temporary database beside the requested destination, runs
+`PRAGMA integrity_check`, then atomically moves the single-file result into
+place. Because the source is a SQLite connection, committed WAL frames are part
+of the snapshot even while ingest, shadow-review, curator, dialectic, retention,
+or other writer loops keep running. `tk-backup restore <backup.sqlite> --yes`
+verifies the backup, copies it next to the target DB, removes stale target
+`-wal`/`-shm` sidecars, atomically replaces the main file, removes sidecars
+again, and re-runs integrity_check. Restore still requires stopping live
+thread-keeper servers first; replacing a database under an open SQLite
+connection can strand that process on the old unlinked file.
 
 `get_db()` gates baseline schema setup and legacy column migrations with
 SQLite `PRAGMA user_version`. Databases at the current version skip the

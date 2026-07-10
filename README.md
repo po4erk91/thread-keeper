@@ -1168,7 +1168,30 @@ best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
 `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
 files, and headless spawn logs are owner-only (`0600`).
 
-One file. Backup = `cp`. Wipe memory = `rm`.
+Use `tk-backup` for disaster recovery. It uses SQLite `VACUUM INTO`, so
+committed frames still living in the live `-wal` sidecar are included in a
+compacted snapshot without quiescing background writers:
+
+```bash
+tk-backup create ~/threadkeeper-backup.sqlite
+THREADKEEPER_DB=/path/to/db.sqlite tk-backup create ./backup.sqlite
+```
+
+Restore is intentionally explicit because it replaces the store. Stop
+thread-keeper servers and CLI sessions first, then swap in the verified
+single-file backup; the command removes stale `db.sqlite-wal` and
+`db.sqlite-shm` sidecars around the swap.
+
+```bash
+tk-backup restore ~/threadkeeper-backup.sqlite --yes
+```
+
+A raw `cp ~/.threadkeeper/db.sqlite backup.sqlite` is not a safe live backup in
+WAL mode because recent committed transactions may exist only in
+`db.sqlite-wal`. If you insist on raw filesystem copies, stop every writer
+first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
+wipe memory, also stop thread-keeper first, then remove the main DB and both
+sidecars.
 
 ### Retention
 
