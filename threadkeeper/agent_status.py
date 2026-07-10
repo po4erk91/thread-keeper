@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from .config import TASK_LOG_DIR
+from .task_spool import open_spool_binary_read
 from .db import get_db
 from .github_budget import format_github_budget, github_budget_state
 from .helpers import alive, fmt_age
@@ -626,7 +627,7 @@ def _role_to_loop() -> dict[str, dict[str, str]]:
 def _read_log_sample(task_id: str, max_head: int = 16_384, max_tail: int = 65_536) -> str:
     path = TASK_LOG_DIR / f"{task_id}.log"
     try:
-        with path.open("rb") as f:
+        with open_spool_binary_read(path) as f:
             head = f.read(max_head)
             try:
                 f.seek(0, 2)

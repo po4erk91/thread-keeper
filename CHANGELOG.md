@@ -60,6 +60,12 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Task spool no longer defaults to a predictable shared `/tmp` directory
+  (#94).** `THREADKEEPER_TASK_LOG_DIR` now defaults to
+  `~/.threadkeeper/tasks`, the spool directory is verified as a non-symlink
+  owned by the current user and created `0700`, and predictable spawn files are
+  opened through no-follow owner-only helpers instead of create-then-`chmod`.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain

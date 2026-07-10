@@ -796,10 +796,11 @@ deduplicated against the issues above):
   RSS samples as 0 MB. Spawn-budget refresh preserves last-known child RSS on
   measurement failure and sweeps every open task row for liveness, so a >100-row
   stale tail cannot pin the budget.
-- Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
-  with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
-  create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
-  content on shared hosts. Distinct from #21 (`~/.threadkeeper`) and #68 (#94).
+- ✅ DONE (#94). The task spool now defaults to `~/.threadkeeper/tasks` inside
+  the hardened user-owned perimeter, verifies configured spool directories with
+  `lstat`/current-user ownership before use, creates them `0700`, and opens
+  predictable task files with no-follow owner-only helpers instead of
+  create-then-`chmod`.
 - Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
   `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
   can produce a torn/corrupt DB at the new path (#95).
