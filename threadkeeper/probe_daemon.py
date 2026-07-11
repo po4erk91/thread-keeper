@@ -35,8 +35,9 @@ from pathlib import Path
 from .config import PROBE_INTERVAL_S, PROBE_COOLDOWN_S, TASK_LOG_DIR
 from .db import get_db
 from . import daemon_state, identity
-from .identity import _detect_self_cid, _emit
+from .identity import _detect_self_cid
 from .helpers import alive, daemon_sleep, single_flight_lock
+from .task_spool import ensure_task_spool_dir
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,7 @@ PROBE_PROMPT_PREFIX = "You are a PROBE RUNNER"
 
 def _answer_dir() -> Path:
     d = TASK_LOG_DIR / "probe-answers"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return ensure_task_spool_dir(d)
 
 
 def _last_probe_ts(conn: sqlite3.Connection) -> int:
