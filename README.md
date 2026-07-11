@@ -926,6 +926,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` rows older than this many days; 0 keeps forever |
@@ -1192,9 +1193,12 @@ becomes a problem.
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 
 Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
-`/tmp/thread-keeper-tasks`). `spawn()` creates captured headless `.log` files
-with mode `0600`, matching stdin prompt spools. `consolidate()` garbage-collects
-task spool files once their task row is no longer retained.
+`~/.threadkeeper/tasks`). The directory is created owner-only (`0700`) inside
+the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
+refused when the configured directory is a symlink or is not owned by the
+current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
+and visible `.command` files with no-follow owner-only opens. `consolidate()`
+garbage-collects task spool files once their task row is no longer retained.
 
 ---
 

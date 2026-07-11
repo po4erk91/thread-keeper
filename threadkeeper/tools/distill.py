@@ -17,6 +17,7 @@ from ..db import get_db
 from ..config import TASK_LOG_DIR
 from ..helpers import fmt_age, q, gen_distill_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..task_spool import append_spool_text
 
 
 DISTILL_KINDS = ("insight", "pattern", "anti-pattern", "fix",
@@ -143,11 +144,13 @@ def export_distillates(min_vote: float = 1.0,
                        output_path: str = "") -> str:
     """Write distillates with vote_sum >= min_vote to a jsonl bucket.
     Marks them exported_at so the same item isn't re-exported next call.
-    Default output: /tmp/thread-keeper-tasks/distillates.jsonl."""
-    out_path = Path(output_path.strip()) if output_path.strip() else (
+    Default output: ~/.threadkeeper/tasks/distillates.jsonl."""
+    custom_output = bool(output_path.strip())
+    out_path = Path(output_path.strip()) if custom_output else (
         TASK_LOG_DIR / "distillates.jsonl"
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if custom_output:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_db()
     rows = conn.execute(
         "SELECT id, kind, confidence, content, vote_sum, vote_count, "
@@ -160,20 +163,26 @@ def export_distillates(min_vote: float = 1.0,
         return f"nothing_to_export min_vote={min_vote}"
     now_t = int(time.time())
     written = 0
-    with out_path.open("a", encoding="utf-8") as fp:
-        for r in rows:
-            obj = {
-                "id": r["id"], "kind": r["kind"],
-                "confidence": r["confidence"],
-                "content": r["content"],
-                "vote_sum": r["vote_sum"], "vote_count": r["vote_count"],
-                "source_thread": r["source_thread"],
-                "source_cid": r["source_cid"],
-                "created_at": r["created_at"],
-                "exported_at": now_t,
-            }
-            fp.write(_json.dumps(obj, ensure_ascii=False) + "\n")
-            written += 1
+    lines = []
+    for r in rows:
+        obj = {
+            "id": r["id"], "kind": r["kind"],
+            "confidence": r["confidence"],
+            "content": r["content"],
+            "vote_sum": r["vote_sum"], "vote_count": r["vote_count"],
+            "source_thread": r["source_thread"],
+            "source_cid": r["source_cid"],
+            "created_at": r["created_at"],
+            "exported_at": now_t,
+        }
+        lines.append(_json.dumps(obj, ensure_ascii=False) + "\n")
+        written += 1
+    payload = "".join(lines)
+    if custom_output:
+        with out_path.open("a", encoding="utf-8") as fp:
+            fp.write(payload)
+    else:
+        append_spool_text(out_path, payload)
     ids = [r["id"] for r in rows]
     conn.execute(
         f"UPDATE distill SET exported_at=? WHERE id IN "

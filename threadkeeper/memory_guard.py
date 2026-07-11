@@ -37,6 +37,7 @@ from .config import (
 from .db import get_db
 from .helpers import daemon_sleep
 from . import process_health
+from .task_spool import append_spool_text
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,8 @@ def _fmt_rss_mb(value: int | None) -> str:
 
 def _log_line(line: str) -> None:
     try:
-        TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
         fp = TASK_LOG_DIR / "memory-guard.log"
-        with fp.open("a", encoding="utf-8") as f:
-            f.write(line.rstrip() + "\n")
+        append_spool_text(fp, line.rstrip() + "\n")
     except OSError:
         logger.debug("memory_guard: failed to append log", exc_info=True)
 
