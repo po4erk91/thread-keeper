@@ -386,11 +386,12 @@ def _read_verdict(log_path: Path) -> str:
 
     The child's contract is a final line `MATERIALIZED: <slug>` or
     `SKIP: <reason>`; we take the LAST such line since tool output can
-    follow earlier prose. Missing/unreadable logs → 'unknown' (the task
-    log dir defaults to ephemeral /tmp, so older children legitimately
-    have no log left to read)."""
+    follow earlier prose. Missing/unreadable logs → 'unknown'."""
+    from .task_spool import open_spool_binary_read
+
     try:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
+        with open_spool_binary_read(log_path) as fp:
+            text = fp.read().decode("utf-8", errors="replace")
     except (OSError, ValueError):
         return "unknown"
     verdict = "unknown"

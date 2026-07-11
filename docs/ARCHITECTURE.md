@@ -366,8 +366,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   queue is machine-wide single-flight through the shared helper's
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
-  pending candidates. The last `candidate_review_pass` timestamp is also an
-  interval high-water, so restarts inside the interval return `not_due`.
+  pending candidates. New skill creation is also capped server-side in
+  `skill_manage(action="create")`: `candidate_review`, `shadow_review`, and
+  `background_review` children may create at most
+  `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their own session, while
+  foreground sessions bypass that autonomous-write cap. The last
+  `candidate_review_pass` timestamp is also an interval high-water, so restarts
+  inside the interval return `not_due`.
 - **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
   finished probe answers, then spawns at most one due objective probe runner
   behind `probe-daemon.lock` plus the running probe-child check. A busy lock
@@ -757,8 +762,10 @@ optional 24h spawned-child token and dollar ceilings when
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
   stores `duration_s` from the task timestamps. If no usage trailer is emitted,
   the row still has wall-time for cost/benefit triage. Captured `.log` files
-  in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
-  stdin prompt spool.
+  in `THREADKEEPER_TASK_LOG_DIR` are created with no-follow owner-only opens
+  (`0600`), matching the stdin prompt spool. The task spool defaults to
+  `~/.threadkeeper/tasks` (`0700`) and configured directories are refused when
+  symlinked or owned by another user.
 - Daemon ticks run only in foreground parent processes and update real RSS via
   `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
   row is swept for dead root pids → `ended_at`.
@@ -1468,6 +1475,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` older than this many days; 0 keeps forever |

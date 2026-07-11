@@ -588,8 +588,10 @@ cluster:
 - **VERBATIM** — user quote worth preserving in `brief()`
 - **REJECT** — false positive that slipped past extract's filters
 
-Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
-foreground-authored) skills off-limits. Closes the gap between
+Hard limits: max 2 new skills per pass enforced inside
+`skill_manage(action="create")` for candidate-reviewer, shadow-review, and
+auto-review children; `[PROTECTED]` (pinned + foreground-authored) skills are
+off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
 `accept_candidate()` manually. The loop is machine-wide single-flight:
@@ -934,6 +936,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` rows older than this many days; 0 keeps forever |
@@ -966,6 +969,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s), restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
@@ -1200,9 +1204,12 @@ becomes a problem.
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 
 Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
-`/tmp/thread-keeper-tasks`). `spawn()` creates captured headless `.log` files
-with mode `0600`, matching stdin prompt spools. `consolidate()` garbage-collects
-task spool files once their task row is no longer retained.
+`~/.threadkeeper/tasks`). The directory is created owner-only (`0700`) inside
+the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
+refused when the configured directory is a symlink or is not owned by the
+current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
+and visible `.command` files with no-follow owner-only opens. `consolidate()`
+garbage-collects task spool files once their task row is no longer retained.
 
 ---
 
