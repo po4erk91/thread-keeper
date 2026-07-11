@@ -84,6 +84,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Curator and candidate-reviewer honor restart intervals (#99).** Both
+  dispatchers now consult their recorded pass high-water before taking the
+  single-flight lock, so a fresh MCP server inside the configured interval
+  returns `not_due` and spawns no child. Forced runs still bypass the due gate.
+
 - **Autonomous skill creation is capped server-side (#98).**
   `skill_manage(action="create")` now enforces
   `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` (default 2) per child session

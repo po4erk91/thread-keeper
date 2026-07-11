@@ -371,6 +371,12 @@ dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
 
+✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
+high-water before spawning. A recent `curator_pass` or
+`candidate_review_pass` makes fresh MCP-server restarts and non-forced direct
+checks return `not_due` without launching another destructive/expensive child;
+`force=True` still bypasses the interval.
+
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a
 ranked `STALE LESSONS` advisory section using
