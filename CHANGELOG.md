@@ -84,6 +84,11 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Legacy DB migration no longer copies live WAL sidecars (#95).** Startup
+  migration from `~/.memory_partner/db.sqlite` to `~/.threadkeeper/db.sqlite`
+  now uses SQLite's online backup API, producing a consistent destination main
+  DB from dirty-WAL sources without copying machine-local `-shm` files.
+
 - **Task spool no longer defaults to a predictable shared `/tmp` directory
   (#94).** `THREADKEEPER_TASK_LOG_DIR` now defaults to
   `~/.threadkeeper/tasks`, the spool directory is verified as a non-symlink

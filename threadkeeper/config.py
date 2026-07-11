@@ -898,8 +898,9 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _harden_current_storage()
 
 # One-shot migration from the historical name `memory_partner`. If the new
-# DB doesn't exist yet but the legacy one does, copy it (including the WAL
-# sidecars) so users can rename mid-life without losing memory. After this
+# DB doesn't exist yet but the legacy one does, take a SQLite online backup so
+# uncheckpointed WAL frames are copied into a consistent destination database
+# without copying machine-local `-shm` state or racing sidecar files. After this
 # import the legacy directory is left in place — caller can `rm -rf` once
 # they've verified the new path is working.
 #
@@ -909,14 +910,49 @@ _harden_current_storage()
 _DEFAULT_DB = Path("~/.threadkeeper/db.sqlite").expanduser()
 _LEGACY_DIR = Path("~/.memory_partner").expanduser()
 _LEGACY_DB = _LEGACY_DIR / "db.sqlite"
+
+
+def _remove_sqlite_files(db_path: Path) -> None:
+    for path in (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _migrate_legacy_db(legacy_db: Path, db_path: Path) -> None:
+    import sqlite3
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_db = db_path.with_name(f".{db_path.name}.migrating-{os.getpid()}")
+    _remove_sqlite_files(tmp_db)
+
+    try:
+        with sqlite3.connect(str(legacy_db), timeout=10.0) as src:
+            src.execute("PRAGMA busy_timeout=10000")
+            with sqlite3.connect(str(tmp_db), timeout=10.0) as dst:
+                dst.execute("PRAGMA busy_timeout=10000")
+                src.backup(dst)
+                integrity = dst.execute("PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise RuntimeError(
+                        "legacy DB migration integrity_check failed: "
+                        f"{integrity[0] if integrity else 'no result'}"
+                    )
+        os.replace(tmp_db, db_path)
+    except Exception:
+        _remove_sqlite_files(tmp_db)
+        raise
+
+
 if (
     DB_PATH == _DEFAULT_DB
     and not DB_PATH.exists()
     and _LEGACY_DB.exists()
 ):
-    import shutil
-    for fname in ("db.sqlite", "db.sqlite-wal", "db.sqlite-shm"):
-        src = _LEGACY_DIR / fname
-        if src.exists():
-            shutil.copy2(src, DB_PATH.parent / fname)
+    _migrate_legacy_db(_LEGACY_DB, DB_PATH)
     _harden_current_storage()

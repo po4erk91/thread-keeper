@@ -801,9 +801,10 @@ deduplicated against the issues above):
   `lstat`/current-user ownership before use, creates them `0700`, and opens
   predictable task files with no-follow owner-only helpers instead of
   create-then-`chmod`.
-- Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
-  `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
-  can produce a torn/corrupt DB at the new path (#95).
+- ✅ DONE (#95): Legacy **DB migration** now uses SQLite's online backup API
+  instead of copying live `-wal`/`-shm` sidecars, so dirty-WAL source databases
+  migrate into a consistent main DB and machine-local `-shm` state is never
+  imported.
 - Codex adapter: the fallback message **UUID** has no per-line offset, so
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
