@@ -358,7 +358,11 @@ pre-existing due gates.
   queue is machine-wide single-flight through the shared helper's
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
-  pending candidates.
+  pending candidates. New skill creation is also capped server-side in
+  `skill_manage(action="create")`: `candidate_review`, `shadow_review`, and
+  `background_review` children may create at most
+  `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their own session, while
+  foreground sessions bypass that autonomous-write cap.
 - **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
   finished probe answers, then spawns at most one due objective probe runner
   behind `probe-daemon.lock` plus the running probe-child check. A busy lock

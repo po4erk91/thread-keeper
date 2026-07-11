@@ -314,6 +314,7 @@ class Settings(BaseSettings):
     # ── Candidate reviewer daemon ─────────────────────────────────────────────
     candidate_review_interval_s: float = 0.0
     candidate_review_min: int = 3
+    learning_loop_skill_create_limit: int = 2
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
     probe_interval_s: float = 0.0
@@ -724,6 +725,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
         "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
+        "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,
         "PANEL_SIZE": s.panel_size,

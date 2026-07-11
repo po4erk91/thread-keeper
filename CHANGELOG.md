@@ -84,6 +84,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Autonomous skill creation is capped server-side (#98).**
+  `skill_manage(action="create")` now enforces
+  `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` (default 2) per child session
+  for `candidate_review`, `shadow_review`, and `background_review` origins, so
+  prompt-only "max 2 new skills" guidance cannot be bypassed by a confused or
+  injected learning-loop child. Foreground skill creation is unchanged.
+
 - **Legacy DB migration no longer copies live WAL sidecars (#95).** Startup
   migration from `~/.memory_partner/db.sqlite` to `~/.threadkeeper/db.sqlite`
   now uses SQLite's online backup API, producing a consistent destination main
