@@ -250,6 +250,12 @@ sentence-transformers similarity scorer plus a classifier, bootstrap from
 the current ledger. But: review_candidates is not actively used yet,
 first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 
+**Rule-enforcement escalation.** Repeatedly re-broken class-level rules
+should stop living only as passive memory. When the same lesson keeps
+getting violated despite an existing entry, mark it `memory-insufficient`
+and surface a recommendation to escalate the rule into an active hard
+guard such as a `PreToolUse` hook. Scope: M. Tracked in issue #228.
+
 **ACL (former Phase 4).** Folded into the "Multi-user / remote
 deployment" item above — see the ACL sub-bullet there.
 
