@@ -179,6 +179,13 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Consistent SQLite backup/restore command (#102).** `tk-backup create`
+  now uses SQLite `VACUUM INTO` to write an integrity-checked single-file
+  snapshot of the live WAL store, including committed frames still in
+  `db.sqlite-wal` while background writers keep running. `tk-backup restore
+  --yes` verifies the snapshot, atomically replaces the target DB after the user
+  stops thread-keeper, and removes stale `-wal`/`-shm` sidecars around the swap.
+
 - **Reserve-before-spawn admission and dialectic leases (#58).** `spawn()` now
   reserves the `tasks` row with its RSS estimate inside a `BEGIN IMMEDIATE`
   admission transaction before `Popen`, so concurrent spawns serialize against
