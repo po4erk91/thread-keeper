@@ -84,6 +84,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Single-flight prompt-prefix drift now fails tests (#101).** Curator,
+  shadow_review, dialectic_validator, evolve_reviewer, evolve_applier, and
+  candidate_reviewer build their spawned-child prompts from the same prefix
+  constants used by their running-child detectors. The shadow and dialectic
+  detectors no longer embed duplicated `LIKE 'You are ...%'` SQL literals, and a
+  parametrized regression test catches both prompt-opening drift and detector
+  rewrites that stop reading the shared prefix.
 - **Curator and candidate-reviewer honor restart intervals (#99).** Both
   dispatchers now consult their recorded pass high-water before taking the
   single-flight lock, so a fresh MCP server inside the configured interval

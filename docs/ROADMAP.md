@@ -671,6 +671,12 @@ verified at the cited file:line, deduplicated against the issues above):
   is on. Timed-out children are surfaced (`tasks_timed_out` in `mp_dashboard`,
   `timed_out` in `agent_status`). Complements #25 (aggregate cost, no kill), #66
   (kill-path liveness correctness), and #64 (visible/pid=0 RSS measurement).
+- ✅ DONE (#101). Single-flight running-child detection is prompt-prefix keyed,
+  so prefix drift could silently disable duplicate-spawn prevention. The
+  spawning daemon prompts now compose their opening line from the same prefix
+  constants used by the detectors, the remaining inline SQL prefix literals were
+  replaced with parameterized constants, and a parametrized consistency test
+  fails if any prompt opening or detector drifts.
 - ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
   `chmod` and embedded the host server `env` block, while the stdin prompt file
   is correctly `0600` and the `.command` script was `0755`. Now: slim config
