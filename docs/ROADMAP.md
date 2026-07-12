@@ -113,6 +113,11 @@ remains a live question.
   completed `tasks`, handled/ephemeral `signals`, old `events`, and old
   `probe_results`; optional WAL checkpoint and VACUUM maintenance are wired,
   and `mp_dashboard()` reports DB size plus high-volume row counts.
+- Data-lifecycle backup/restore safety (#102): `tk-backup create` uses
+  SQLite `VACUUM INTO` to produce an integrity-checked single-file snapshot of
+  the live WAL store while writer loops continue, and `tk-backup restore --yes`
+  verifies the snapshot, atomically swaps the DB, and clears stale
+  `-wal`/`-shm` sidecars after the user stops thread-keeper.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
