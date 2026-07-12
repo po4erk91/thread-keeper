@@ -18,7 +18,13 @@ import pytest
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
 
-def _bootstrap(tmp_path, monkeypatch, *, interval_s: str = "10"):
+def _bootstrap(
+    tmp_path,
+    monkeypatch,
+    *,
+    interval_s: str = "10",
+    disable_bg_daemons: str = "0",
+):
     """Same import shape as test_skills.skills_pkg but lets us tweak the
     skill-watch interval (e.g. "0" to disable the daemon)."""
     skills_root = tmp_path / "claude_skills"
@@ -31,9 +37,11 @@ def _bootstrap(tmp_path, monkeypatch, *, interval_s: str = "10"):
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
+        "THREADKEEPER_SPAWNED_CHILD": "0",
         "CLAUDE_SKILLS_DIR": str(skills_root),
         "THREADKEEPER_WRITE_ORIGIN": "foreground",
         "THREADKEEPER_SKILL_WATCH_INTERVAL_S": interval_s,
+        "THREADKEEPER_DISABLE_BG_DAEMONS": disable_bg_daemons,
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -183,8 +191,12 @@ def test_start_skill_watcher_disabled_when_interval_zero(tmp_path, monkeypatch):
 def test_start_skill_watcher_respects_disable_bg_daemons(tmp_path, monkeypatch):
     """BACKGROUND_DAEMONS_ALLOWED=False must block the daemon thread even
     when the poll interval is positive."""
-    monkeypatch.setenv("THREADKEEPER_DISABLE_BG_DAEMONS", "1")
-    pkg = _bootstrap(tmp_path, monkeypatch, interval_s="10")
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        interval_s="10",
+        disable_bg_daemons="1",
+    )
     sw = pkg["skill_watcher"]
     import threading
     before = {t.name for t in threading.enumerate()}

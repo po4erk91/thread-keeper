@@ -16,6 +16,12 @@ from ..config import TASK_LOG_DIR, DIALOG_LOG, SEMANTIC_AVAILABLE
 from ..db import get_db
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session
+from ..task_spool import (
+    TASK_SPOOL_EXEC_MODE,
+    ensure_task_spool_dir,
+    touch_spool_file,
+    write_spool_text,
+)
 from ..embeddings import _dialog_cosine_search, _fts_search, _rrf_combine
 from ..ingest import _ingest_all
 
@@ -28,8 +34,11 @@ def open_dialog_window() -> str:
     time; this lets the user see the dialog between concurrent claude
     sessions as it happens. The window stays open until you close it (it's
     a `tail -F`, no exit). Title: 'thread-keeper-dialog'."""
-    TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    DIALOG_LOG.touch(exist_ok=True)
+    try:
+        ensure_task_spool_dir(TASK_LOG_DIR)
+        touch_spool_file(DIALOG_LOG)
+    except OSError as e:
+        return f"ERR task_spool_unavailable={e}"
     script_path = TASK_LOG_DIR / "dialog-tail.command"
     tag = "thread-keeper-dialog"
     script = (
@@ -41,8 +50,14 @@ def open_dialog_window() -> str:
         "echo\n"
         f"exec tail -n 50 -F {shlex.quote(str(DIALOG_LOG))}\n"
     )
-    script_path.write_text(script)
-    script_path.chmod(0o755)
+    try:
+        write_spool_text(
+            script_path,
+            script,
+            file_mode=TASK_SPOOL_EXEC_MODE,
+        )
+    except OSError as e:
+        return f"ERR write_failed={e}"
     try:
         subprocess.Popen(["open", "-a", "Terminal", str(script_path)])
     except (FileNotFoundError, OSError) as e:

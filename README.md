@@ -588,14 +588,21 @@ cluster:
 - **VERBATIM** — user quote worth preserving in `brief()`
 - **REJECT** — false positive that slipped past extract's filters
 
-Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
-foreground-authored) skills off-limits. Closes the gap between
+Hard limits: max 2 new skills per pass enforced inside
+`skill_manage(action="create")` for candidate-reviewer, shadow-review, and
+auto-review children; `[PROTECTED]` (pinned + foreground-authored) skills are
+off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
 `accept_candidate()` manually. The loop is machine-wide single-flight:
 while one reviewer child is running, or while another process holds the shared
 dispatch lock, other foreground servers/ticks report `candidate_review_running`
 instead of spawning another child for the same queue.
+Before that lock, the pass also checks the last recorded
+`candidate_review_pass` high-water. A fresh MCP server restart, or a
+non-forced direct `candidate_review_run()`, returns `not_due` inside the
+configured interval and records that status without spawning; use
+`candidate_review_run(force=True)` for an immediate one-shot.
 
 All spawning learning-loop daemons that enforce single-flight use the same
 non-blocking `helpers.single_flight_lock()` helper around the
@@ -617,8 +624,11 @@ never proposes destructive changes against them. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
-against the same store. A manual `curator_run(force=True)` bypasses the
-interval but still respects the lock.
+against the same store. Before that lock, the pass also checks the last
+recorded `curator_pass` high-water, so fresh MCP server restarts and
+non-forced direct `curator_review()` calls return `not_due` inside the
+configured interval and record that status without spawning. A manual
+`curator_review(force=True)` bypasses the interval but still respects the lock.
 
 Before spawning, the scheduler hashes the stable inventory state (lessons,
 lesson usage, active/stale skills, and concepts). If the hash matches the last
@@ -926,6 +936,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` rows older than this many days; 0 keeps forever |
@@ -956,9 +967,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
-| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
+| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s), restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
@@ -1215,9 +1227,12 @@ becomes a problem.
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 
 Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
-`/tmp/thread-keeper-tasks`). `spawn()` creates captured headless `.log` files
-with mode `0600`, matching stdin prompt spools. `consolidate()` garbage-collects
-task spool files once their task row is no longer retained.
+`~/.threadkeeper/tasks`). The directory is created owner-only (`0700`) inside
+the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
+refused when the configured directory is a symlink or is not owned by the
+current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
+and visible `.command` files with no-follow owner-only opens. `consolidate()`
+garbage-collects task spool files once their task row is no longer retained.
 
 ---
 

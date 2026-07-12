@@ -356,11 +356,19 @@ not treat every interval daemon as overdue and refire it (pre-fix, every new
 CLI session ran its own "overdue" curator/probe/shadow pass — the flock only
 stops *concurrent* passes, not *frequent sequential* ones). Scheduled ticks
 that lose the claim return `not_due`; manual / tool-invoked passes bypass
-the gate but still record the run, pushing the next scheduled fire a full
-interval out. Applies to shadow_review, curator, candidate_reviewer,
+this `daemon_state` claim gate but still record the run, pushing the next
+scheduled fire a full interval out. Applies to shadow_review, curator,
+candidate_reviewer,
 extract, dialectic miner/validator, probe, thread_janitor, and retention;
 evolve reviewer/applier, skill_updater, and auto_update keep their own
 pre-existing due gates.
+
+The destructive/expensive curator and candidate-reviewer dispatchers also
+consult their recorded pass high-water (`curator_pass` /
+`candidate_review_pass`) before taking the single-flight lock, matching the
+evolve reviewer/applier contract. A recent pass makes a fresh MCP server or
+non-forced direct tool call return `not_due` and record that status without
+moving the high-water forward; `force=True` bypasses this due gate.
 
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator behind
@@ -372,7 +380,13 @@ pre-existing due gates.
   queue is machine-wide single-flight through the shared helper's
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
-  pending candidates.
+  pending candidates. New skill creation is also capped server-side in
+  `skill_manage(action="create")`: `candidate_review`, `shadow_review`, and
+  `background_review` children may create at most
+  `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their own session, while
+  foreground sessions bypass that autonomous-write cap. The last
+  `candidate_review_pass` timestamp is also an interval high-water, so restarts
+  inside the interval return `not_due`.
 - **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
   finished probe answers, then spawns at most one due objective probe runner
   behind `probe-daemon.lock` plus the running probe-child check. A busy lock
@@ -388,6 +402,8 @@ pre-existing due gates.
   spawning, it hashes the stable inventory state and compares it to the last
   recorded complete/endorsed pass; unchanged snapshots record an
   `unchanged_inventory` no-op event instead of re-deriving the same report.
+  The last `curator_pass` timestamp is also an interval high-water, so restarts
+  inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
   `curator.lock` plus the running curator-task check, so multiple foreground
   servers do not re-read and spawn against the same snapshot.
@@ -760,8 +776,10 @@ optional 24h spawned-child token and dollar ceilings when
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
   stores `duration_s` from the task timestamps. If no usage trailer is emitted,
   the row still has wall-time for cost/benefit triage. Captured `.log` files
-  in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
-  stdin prompt spool.
+  in `THREADKEEPER_TASK_LOG_DIR` are created with no-follow owner-only opens
+  (`0600`), matching the stdin prompt spool. The task spool defaults to
+  `~/.threadkeeper/tasks` (`0700`) and configured directories are refused when
+  symlinked or owned by another user.
 - Daemon ticks run only in foreground parent processes and update real RSS via
   `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
   row is swept for dead root pids → `ended_at`.
@@ -1471,6 +1489,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` older than this many days; 0 keeps forever |
@@ -1530,7 +1549,9 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick; 604800 = 7d recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick, restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |

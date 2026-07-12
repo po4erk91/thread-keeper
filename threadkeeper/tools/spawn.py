@@ -22,7 +22,13 @@ from typing import Optional
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
-from ..permissions import open_private_binary_write
+from ..task_spool import (
+    TASK_SPOOL_EXEC_MODE,
+    ensure_task_spool_dir,
+    open_new_spool_binary,
+    open_spool_binary_read,
+    write_spool_text,
+)
 from ..tool_schemas import (
     SpawnBudgetStatus,
     SpawnTaskRss,
@@ -65,15 +71,16 @@ def _install_gh_safety_wrapper(task_id: str) -> tuple[Optional[Path], str]:
     real_gh = shutil.which("gh") or ""
     wrapper_dir = TASK_LOG_DIR / f"gh-safe-{task_id}"
     try:
-        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        ensure_task_spool_dir(wrapper_dir)
         script = wrapper_dir / "gh"
-        script.write_text(
+        write_spool_text(
+            script,
             "#!/bin/sh\n"
             f"exec {shlex.quote(sys.executable)} -m "
             "threadkeeper.github_safety \"$@\"\n",
+            file_mode=TASK_SPOOL_EXEC_MODE,
             encoding="utf-8",
         )
-        script.chmod(0o700)
     except OSError as e:
         return None, f"gh_safety_wrapper_failed={e}"
     return wrapper_dir, real_gh
@@ -329,8 +336,10 @@ def _build_slim_mcp_config(
     Returns the path to the slim config file, or None if neither path
     can produce a valid entry (caller should fall back to full config).
     """
-    slim_dir = TASK_LOG_DIR
-    slim_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        slim_dir = ensure_task_spool_dir(TASK_LOG_DIR)
+    except OSError:
+        return None
     slim_path = slim_dir / f"slim-mcp-{task_id}.json"
     mp_entry = None
     claude_json = Path.home() / ".claude.json"
@@ -371,15 +380,13 @@ def _build_slim_mcp_config(
         env.update(env_overrides)
     mp_entry["env"] = env
     try:
-        slim_path.write_text(
+        write_spool_text(
+            slim_path,
             _json.dumps({"mcpServers": {"thread-keeper": mp_entry}},
                         indent=2),
+            exclusive=True,
             encoding="utf-8",
         )
-        # This file embeds the MCP server env — lock it down to owner-only,
-        # parity with the 0600 stdin spool file (#68). Not group/other
-        # readable.
-        slim_path.chmod(0o600)
     except OSError:
         return None
     return slim_path
@@ -711,16 +718,23 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 cmd += ["--mcp-config", str(slim_cfg),
                         "--strict-mcp-config"]
     log_path: Optional[Path] = None
-    TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        task_log_dir = ensure_task_spool_dir(TASK_LOG_DIR)
+    except OSError as e:
+        return f"ERR task_spool_unavailable={e}"
     if stdin_text is not None:
-        stdin_path = TASK_LOG_DIR / f"{task_id}.stdin.txt"
+        stdin_path = task_log_dir / f"{task_id}.stdin.txt"
         try:
-            stdin_path.write_text(stdin_text, encoding="utf-8")
-            stdin_path.chmod(0o600)
+            write_spool_text(
+                stdin_path,
+                stdin_text,
+                exclusive=True,
+                encoding="utf-8",
+            )
         except OSError as e:
             return f"ERR prompt_stdin_write_failed={e}"
     if capture_output and not visible:
-        log_path = TASK_LOG_DIR / f"{task_id}.log"
+        log_path = task_log_dir / f"{task_id}.log"
     proc_pid = 0
     now_t = int(time.time())
     conn = get_db()
@@ -755,7 +769,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             # Build a self-contained .command shell script that Terminal.app
             # will execute in a fresh window. We export env, cd, exec claude,
             # then `read` so the window stays open for inspection.
-            script_path = TASK_LOG_DIR / f"{task_id}.command"
+            script_path = task_log_dir / f"{task_id}.command"
             cmd_line = " \\\n    ".join(shlex.quote(a) for a in cmd)
             if stdin_path is not None:
                 cmd_line = f"{cmd_line} < {shlex.quote(str(stdin_path))}"
@@ -849,12 +863,17 @@ OSA
 )
 exit $rc
 """
-            script_path.write_text(script)
             # The script `export`s the child's env (FORCE_CID, write-origin,
             # etc.) and is run by Terminal.app as the current user, so it
-            # only needs owner rwx — not the world-readable/executable 0755
-            # it used to get. Parity with the 0600 stdin file (#68).
-            script_path.chmod(0o700)
+            # only needs owner rwx. Create it with no-follow/exclusive
+            # semantics because the task id is externally guessable enough to
+            # treat pre-planted spool entries as hostile.
+            write_spool_text(
+                script_path,
+                script,
+                file_mode=TASK_SPOOL_EXEC_MODE,
+                exclusive=True,
+            )
             try:
                 subprocess.Popen(
                     ["open", "-a", "Terminal", str(script_path)],
@@ -882,7 +901,7 @@ exit $rc
             if stdin_path is not None:
                 stdin_f = stdin_path.open("rb")
             if log_path is not None:
-                log_f = open_private_binary_write(log_path)
+                log_f = open_new_spool_binary(log_path)
                 proc = subprocess.Popen(
                     launch_cmd,
                     cwd=cwd,
@@ -1134,11 +1153,11 @@ def task_logs(task_id: str, tail_lines: int = 80) -> str:
     Returns the last `tail_lines` lines or 'no_log' if the task ran with
     capture_output=False or the log file is missing."""
     log_path = TASK_LOG_DIR / f"{task_id}.log"
-    if not log_path.exists():
-        return f"no_log path={log_path}"
     try:
-        with log_path.open("rb") as f:
+        with open_spool_binary_read(log_path) as f:
             data = f.read()
+    except FileNotFoundError:
+        return f"no_log path={log_path}"
     except OSError as e:
         return f"ERR read_failed={e}"
     text = data.decode("utf-8", errors="replace")
