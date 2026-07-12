@@ -77,7 +77,7 @@ class Settings(BaseSettings):
             "claude_projects_dir",
         ),
     )
-    task_log_dir: Path = Field(default=Path("/tmp/thread-keeper-tasks"))
+    task_log_dir: Path = Field(default=Path("~/.threadkeeper/tasks"))
 
     # ── Embeddings ───────────────────────────────────────────────────────────
     # env: THREADKEEPER_EMBED_MODEL (field name: embed_model → EMBED_MODEL_NAME)
@@ -129,6 +129,13 @@ class Settings(BaseSettings):
     auto_update_expected_publisher_repository: str = "po4erk91/thread-keeper"
     auto_update_expected_publisher_workflow: str = "publish.yml"
     auto_update_expected_publisher_environment: str = "pypi"
+
+    # ── Phase 1: daemon-host + thin servers (dark by default) ──
+    daemon_host: bool = False              # THREADKEEPER_DAEMON_HOST
+    role: str = "server"                   # THREADKEEPER_ROLE: server | host
+    host_sock: str = ""                    # "" -> <db dir>/host.sock
+    host_heartbeat_ttl_s: float = 120.0
+    thin_embed_fallback: str = "fts"       # fts | local
 
     # ── Skill update daemon ─────────────────────────────────────────────────
     # Twice weekly by default. It syncs installed skills across known CLI roots
@@ -307,6 +314,7 @@ class Settings(BaseSettings):
     # ── Candidate reviewer daemon ─────────────────────────────────────────────
     candidate_review_interval_s: float = 0.0
     candidate_review_min: int = 3
+    learning_loop_skill_create_limit: int = 2
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
     probe_interval_s: float = 0.0
@@ -642,6 +650,10 @@ def _derive_constants(s: "Settings") -> dict:
         "AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT": (
             s.auto_update_expected_publisher_environment
         ),
+        "DAEMON_HOST_ENABLED": bool(s.daemon_host),
+        "PROCESS_ROLE": (s.role or "server").strip().lower(),
+        "HOST_HEARTBEAT_TTL_S": float(s.host_heartbeat_ttl_s),
+        "THIN_EMBED_FALLBACK": (s.thin_embed_fallback or "fts").strip().lower(),
         "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
         "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,
         "SKILL_UPDATE_SOURCES": s.skill_update_sources,
@@ -713,6 +725,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
         "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
+        "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,
         "PANEL_SIZE": s.panel_size,
@@ -748,6 +761,18 @@ def _derive_constants(s: "Settings") -> dict:
 
 # Publish the initial constants into this module's namespace.
 globals().update(_derive_constants(settings))
+
+# Phase 1: daemon-host socket/lock paths. Module-scope, computed once from
+# DB_PATH right after it is published above — like FASTEMBED_MODEL_ID/EMBED_DIM
+# below, these are intentionally NOT part of _derive_constants (not
+# hot-reloaded): moving a running host's socket/lock path mid-process would
+# desync it from servers already connected to the old path.
+_HOST_SOCK_OVERRIDE = (settings.host_sock or "").strip()
+HOST_SOCK_PATH: Path = (
+    Path(_HOST_SOCK_OVERRIDE).expanduser() if _HOST_SOCK_OVERRIDE
+    else DB_PATH.parent / "host.sock"
+)
+HOST_LOCK_PATH: Path = DB_PATH.parent / "host.lock"
 
 
 def _harden_current_storage() -> None:
@@ -875,8 +900,9 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _harden_current_storage()
 
 # One-shot migration from the historical name `memory_partner`. If the new
-# DB doesn't exist yet but the legacy one does, copy it (including the WAL
-# sidecars) so users can rename mid-life without losing memory. After this
+# DB doesn't exist yet but the legacy one does, take a SQLite online backup so
+# uncheckpointed WAL frames are copied into a consistent destination database
+# without copying machine-local `-shm` state or racing sidecar files. After this
 # import the legacy directory is left in place — caller can `rm -rf` once
 # they've verified the new path is working.
 #
@@ -886,14 +912,49 @@ _harden_current_storage()
 _DEFAULT_DB = Path("~/.threadkeeper/db.sqlite").expanduser()
 _LEGACY_DIR = Path("~/.memory_partner").expanduser()
 _LEGACY_DB = _LEGACY_DIR / "db.sqlite"
+
+
+def _remove_sqlite_files(db_path: Path) -> None:
+    for path in (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _migrate_legacy_db(legacy_db: Path, db_path: Path) -> None:
+    import sqlite3
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_db = db_path.with_name(f".{db_path.name}.migrating-{os.getpid()}")
+    _remove_sqlite_files(tmp_db)
+
+    try:
+        with sqlite3.connect(str(legacy_db), timeout=10.0) as src:
+            src.execute("PRAGMA busy_timeout=10000")
+            with sqlite3.connect(str(tmp_db), timeout=10.0) as dst:
+                dst.execute("PRAGMA busy_timeout=10000")
+                src.backup(dst)
+                integrity = dst.execute("PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise RuntimeError(
+                        "legacy DB migration integrity_check failed: "
+                        f"{integrity[0] if integrity else 'no result'}"
+                    )
+        os.replace(tmp_db, db_path)
+    except Exception:
+        _remove_sqlite_files(tmp_db)
+        raise
+
+
 if (
     DB_PATH == _DEFAULT_DB
     and not DB_PATH.exists()
     and _LEGACY_DB.exists()
 ):
-    import shutil
-    for fname in ("db.sqlite", "db.sqlite-wal", "db.sqlite-shm"):
-        src = _LEGACY_DIR / fname
-        if src.exists():
-            shutil.copy2(src, DB_PATH.parent / fname)
+    _migrate_legacy_db(_LEGACY_DB, DB_PATH)
     _harden_current_storage()

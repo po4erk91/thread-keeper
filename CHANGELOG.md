@@ -7,6 +7,30 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Added
+
+- **Daemon-host + thin per-session servers (dark, `THREADKEEPER_DAEMON_HOST`).**
+  One headless host per machine owns the background loops (18 daemon starters
+  + the ingester) + the warm ONNX model + a narrow embed unix-socket;
+  per-session servers go thin (stdio MCP + direct SQLite, no daemons, no ONNX)
+  and route the embeddings they need (a search query, and content ingested
+  during the session) to the host, falling back to FTS when it is unreachable.
+  Elected via a flock, spawned detached by the first thin server, supervised
+  by memory_guard. Off by default; no CLI config change. Removes the
+  per-session RAM multiplier and the reclaim-thrash root.
+
+### Fixed
+
+- **All background daemon starters now honor `BACKGROUND_DAEMONS_ALLOWED`.**
+  `search_proxy`, `skill_watcher`, `spawn_budget`, and the background ingester
+  started unconditionally, ignoring the spawned-child / `DISABLE_BG_DAEMONS`
+  gate the other daemons respect — so a spawned review child (or a
+  `DISABLE_BG_DAEMONS` run) still spun up those loops. They now self-gate like
+  the rest, which also lets the daemon-host cleanly own them.
+- **`probe_daemon` no longer crashes on its first tick.** It called
+  `daemon_sleep()` without importing it from `.helpers`, so the probe loop died
+  with a `NameError` after one iteration. Added the missing import.
+
 ### Changed
 
 - **Evolve tests no longer provision a real checkout — ~850 s off the suite.**
@@ -67,6 +91,28 @@ version bumps follow semver per the policy in
   detectors no longer embed duplicated `LIKE 'You are ...%'` SQL literals, and a
   parametrized regression test catches both prompt-opening drift and detector
   rewrites that stop reading the shared prefix.
+- **Curator and candidate-reviewer honor restart intervals (#99).** Both
+  dispatchers now consult their recorded pass high-water before taking the
+  single-flight lock, so a fresh MCP server inside the configured interval
+  returns `not_due` and spawns no child. Forced runs still bypass the due gate.
+
+- **Autonomous skill creation is capped server-side (#98).**
+  `skill_manage(action="create")` now enforces
+  `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` (default 2) per child session
+  for `candidate_review`, `shadow_review`, and `background_review` origins, so
+  prompt-only "max 2 new skills" guidance cannot be bypassed by a confused or
+  injected learning-loop child. Foreground skill creation is unchanged.
+
+- **Legacy DB migration no longer copies live WAL sidecars (#95).** Startup
+  migration from `~/.memory_partner/db.sqlite` to `~/.threadkeeper/db.sqlite`
+  now uses SQLite's online backup API, producing a consistent destination main
+  DB from dirty-WAL sources without copying machine-local `-shm` files.
+
+- **Task spool no longer defaults to a predictable shared `/tmp` directory
+  (#94).** `THREADKEEPER_TASK_LOG_DIR` now defaults to
+  `~/.threadkeeper/tasks`, the spool directory is verified as a non-symlink
+  owned by the current user and created `0700`, and predictable spawn files are
+  opened through no-follow owner-only helpers instead of create-then-`chmod`.
 
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a

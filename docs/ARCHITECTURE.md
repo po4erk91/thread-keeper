@@ -346,11 +346,19 @@ not treat every interval daemon as overdue and refire it (pre-fix, every new
 CLI session ran its own "overdue" curator/probe/shadow pass — the flock only
 stops *concurrent* passes, not *frequent sequential* ones). Scheduled ticks
 that lose the claim return `not_due`; manual / tool-invoked passes bypass
-the gate but still record the run, pushing the next scheduled fire a full
-interval out. Applies to shadow_review, curator, candidate_reviewer,
+this `daemon_state` claim gate but still record the run, pushing the next
+scheduled fire a full interval out. Applies to shadow_review, curator,
+candidate_reviewer,
 extract, dialectic miner/validator, probe, thread_janitor, and retention;
 evolve reviewer/applier, skill_updater, and auto_update keep their own
 pre-existing due gates.
+
+The destructive/expensive curator and candidate-reviewer dispatchers also
+consult their recorded pass high-water (`curator_pass` /
+`candidate_review_pass`) before taking the single-flight lock, matching the
+evolve reviewer/applier contract. A recent pass makes a fresh MCP server or
+non-forced direct tool call return `not_due` and record that status without
+moving the high-water forward; `force=True` bypasses this due gate.
 
 - **shadow_review** — once per `SHADOW_REVIEW_INTERVAL_S` (default 0 = off),
   scans a dialog window and, if needed, spawns a slim-child evaluator behind
@@ -362,7 +370,13 @@ pre-existing due gates.
   queue is machine-wide single-flight through the shared helper's
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
-  pending candidates.
+  pending candidates. New skill creation is also capped server-side in
+  `skill_manage(action="create")`: `candidate_review`, `shadow_review`, and
+  `background_review` children may create at most
+  `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their own session, while
+  foreground sessions bypass that autonomous-write cap. The last
+  `candidate_review_pass` timestamp is also an interval high-water, so restarts
+  inside the interval return `not_due`.
 - **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
   finished probe answers, then spawns at most one due objective probe runner
   behind `probe-daemon.lock` plus the running probe-child check. A busy lock
@@ -378,6 +392,8 @@ pre-existing due gates.
   spawning, it hashes the stable inventory state and compares it to the last
   recorded complete/endorsed pass; unchanged snapshots record an
   `unchanged_inventory` no-op event instead of re-deriving the same report.
+  The last `curator_pass` timestamp is also an interval high-water, so restarts
+  inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
   `curator.lock` plus the running curator-task check, so multiple foreground
   servers do not re-read and spawn against the same snapshot.
@@ -587,6 +603,65 @@ shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
 + many readers without blocking.
 
+### Daemon-host + thin servers (Phase 1)
+
+Behind `THREADKEEPER_DAEMON_HOST` (`0` by default — dark; no CLI config
+change), the daemon block above moves out of the per-session server and into
+one always-on headless process per machine:
+
+- **Election** — `python -m threadkeeper.host` (`host.main()`) takes
+  `HOST_LOCK_PATH` (`<db dir>/host.lock`) via `single_flight_lock`. A second
+  host racing for the same lock exits 0 immediately (idempotent spawn), so
+  there is never more than one host per machine.
+- **The moved daemon block** — `host.start_daemons()` centralizes exactly the
+  background ingester plus the 18 daemon starters that otherwise run inline in
+  `identity._ensure_session`'s foreground branch (above), starting each once
+  in the host process instead of once per session. With the flag off,
+  `_ensure_session` calls `host.start_daemons()` itself in-process — byte-for-
+  byte the pre-Phase-1 behavior, just centralized in one function.
+- **Embed socket + FTS fallback** — the host binds a narrow embed-only unix
+  socket (`host_embed.serve_embed_socket`, path `THREADKEEPER_HOST_SOCK`,
+  default `<db dir>/host.sock`; newline-delimited versioned JSON —
+  `{"v":1,"op":"embed","texts":[...]}` in, `{"v":1,"vectors":[...]}` or
+  `{"v":1,"error":...}` out). In a thin server (`THREADKEEPER_ROLE=server`,
+  the default under the flag), `embeddings._encode()` tries
+  `embed_via_host(...)` first for any text it needs to embed — query or the
+  session-start catch-up ingest pass below — instead of loading the model
+  itself. `embed_via_host` returns `None` on any failure (no host, timeout,
+  malformed reply), and `_encode` then honors
+  `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) propagates that `None` so
+  the caller degrades to FTS-only, keeping the thin server model-free even
+  when the host is down; `local` instead falls through to lazily loading the ONNX
+  model in-process, trading the RAM savings for keeping semantic search fully
+  available. The ongoing content-embedding work (new dialog rows) is produced
+  by the host's own background ingest daemon; a thin server's session start
+  still runs the pre-existing bounded catch-up ingest pass
+  (`THREADKEEPER_INGEST_CAP`, unchanged by Phase 1), and any embedding it
+  needs goes through this same host-then-fallback path.
+- **`memory_guard` supervision** — thin servers are cheap (no ONNX, no
+  daemon threads) and are excluded from aggregate idle-retire while the flag
+  is on (`_idle_retire_candidates`); instead `supervise_host()` calls
+  `host.ensure_host_running()` once the host's presence heartbeat has gone
+  stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S`. That respawn only takes
+  effect when no live host still holds the election lock (`host.main()`
+  exits 0 immediately otherwise), so end-to-end this recovers a fully-dead
+  host; a thin session's own `ensure_host_running()` call at session start
+  (below) is the primary recovery path. Recovering a wedged-but-alive host
+  (stale heartbeat, process still up, lock still held) via SIGTERM-by-pid is
+  not yet implemented — tracked as a pre-enable follow-up.
+- **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`
+  calls `host.ensure_host_running()` on every session start: a no-op if a
+  live heartbeat already exists, otherwise a **detached** spawn
+  (`subprocess.Popen(..., start_new_session=True)`, redirected stdio) so the
+  host outlives the session that spawned it and a closing CLI can never HUP
+  it. The host then runs forever — no idle-exit — because the loops (daily
+  retention, weekly curator, probe, …) must keep ticking with no active
+  session; it exits only on SIGTERM (sent manually today — see the
+  supervision caveat above) or failing to acquire the host lock at startup.
+
+Flag off ⇒ zero behavior change: every session starts its own daemons and
+embeds locally, exactly as before Phase 1.
+
 ## Spawn architecture
 
 `spawn(prompt, slim=True, role=…, visible=False, …)` brings up a child agent
@@ -691,8 +766,10 @@ optional 24h spawned-child token and dollar ceilings when
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always
   stores `duration_s` from the task timestamps. If no usage trailer is emitted,
   the row still has wall-time for cost/benefit triage. Captured `.log` files
-  in `THREADKEEPER_TASK_LOG_DIR` are created owner-only (`0600`), matching the
-  stdin prompt spool.
+  in `THREADKEEPER_TASK_LOG_DIR` are created with no-follow owner-only opens
+  (`0600`), matching the stdin prompt spool. The task spool defaults to
+  `~/.threadkeeper/tasks` (`0700`) and configured directories are refused when
+  symlinked or owned by another user.
 - Daemon ticks run only in foreground parent processes and update real RSS via
   `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
   row is swept for dead root pids → `ended_at`.
@@ -1402,6 +1479,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` older than this many days; 0 keeps forever |
@@ -1461,7 +1539,9 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick; 604800 = 7d recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
+| `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick, restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |

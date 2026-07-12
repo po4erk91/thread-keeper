@@ -564,3 +564,21 @@ def test_spawn_budget_set_rejects_negative(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     r = _tool(pkg, "spawn_budget_set")(limit_mb=-1)
     assert r.startswith("ERR")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# start_budget_daemon — background-daemon kill switch
+# ─────────────────────────────────────────────────────────────────────
+
+def test_start_budget_daemon_respects_disable_bg_daemons(mp_with_cid, monkeypatch):
+    """BACKGROUND_DAEMONS_ALLOWED=False must block the daemon thread even
+    when the poll interval and budget would otherwise allow it."""
+    mp_with_cid(_FAKE_CID)
+    import threadkeeper.spawn_budget as sb
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_POLL_S", 10.0)
+    monkeypatch.setattr(sb, "SPAWN_BUDGET_MB", 3072)
+
+    before = {t.name for t in threading.enumerate()}
+    sb.start_budget_daemon()
+    after = {t.name for t in threading.enumerate()}
+    assert "spawn_budget" not in (after - before)

@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Optional
 
-from .config import SEMANTIC_AVAILABLE
+from .config import BACKGROUND_DAEMONS_ALLOWED, SEMANTIC_AVAILABLE
 from .db import get_db
 from . import identity
 
@@ -153,6 +153,8 @@ def start_search_proxy() -> None:
         return
     if _POLL_INTERVAL_S <= 0:
         return  # disabled via env (test environments, or explicit opt-out)
+    if not BACKGROUND_DAEMONS_ALLOWED:
+        return
     t = threading.Thread(
         target=_serve_loop, name="search_proxy", daemon=True,
     )

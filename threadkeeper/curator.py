@@ -255,6 +255,11 @@ def _record_curator_pass(conn: sqlite3.Connection,
         logger.debug("curator: failed to record pass", exc_info=True)
 
 
+def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
+    last = _last_curator_ts(conn)
+    return last <= 0 or now_t >= last + int(CURATOR_INTERVAL_S)
+
+
 def _stable_int(value) -> int | None:
     if value is None:
         return None
@@ -628,8 +633,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
     Returns a short status string for observability:
       - 'disabled'        — env knob off and not forced
-      - 'not_due'         — scheduled tick, but another server already ran
-                            this loop within the interval (daemon_state)
+      - 'not_due'         — checked recently; interval high-water not due
       - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
       - 'unchanged_inventory' — latest complete inventory already reviewed
@@ -638,9 +642,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """
     if CURATOR_INTERVAL_S <= 0 and not force:
         return "disabled"
+    conn = get_db()
+    now = int(time.time())
+    if not force and not _pass_due(conn, now):
+        _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
+        return "not_due"
     if not daemon_state.claim_pass(
-        "curator", CURATOR_INTERVAL_S, scheduled=scheduled,
+        "curator", CURATOR_INTERVAL_S, scheduled=scheduled, conn=conn,
+        now=now,
     ):
+        _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
         return "not_due"
 
     # Single-flight: the flock makes the running-children check + spawn atomic
@@ -651,8 +662,6 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         if not locked:
             return "curator_running n=1 (single-flight lock)"
 
-        conn = get_db()
-        now = int(time.time())
         running = _running_curator_children(conn)
         if running:
             out = f"curator_running n={len(running)} (single-flight)"

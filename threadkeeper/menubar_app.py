@@ -24,6 +24,7 @@ from .config import (
     WRITE_ORIGIN,
 )
 from .helpers import single_flight_lock
+from .task_spool import append_spool_text, ensure_task_spool_dir
 
 
 APP_NAME = "ThreadKeeperAgentStatus"
@@ -58,7 +59,7 @@ def _prepare_build_source(src: Path) -> Path:
     build_src = TASK_LOG_DIR / "menubar-build" / "source"
     if build_src.exists():
         shutil.rmtree(build_src)
-    build_src.mkdir(parents=True, exist_ok=True)
+    ensure_task_spool_dir(build_src)
     for name in SOURCE_FILES:
         shutil.copy2(src / name, build_src / name)
     return build_src
@@ -78,10 +79,8 @@ def _log_path() -> Path:
 
 def _log(message: str) -> None:
     try:
-        TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with _log_path().open("a", encoding="utf-8") as f:
-            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            f.write(f"{ts} {message}\n")
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        append_spool_text(_log_path(), f"{ts} {message}\n")
     except OSError:
         pass
 
@@ -332,7 +331,10 @@ def ensure_menubar_app() -> None:
         _log(f"source_missing path={src}")
         return
 
-    TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        ensure_task_spool_dir(TASK_LOG_DIR)
+    except OSError:
+        return
     try:
         with single_flight_lock(
             "menubar-autolaunch", lock_dir=DB_PATH.parent
