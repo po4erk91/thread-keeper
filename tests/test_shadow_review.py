@@ -383,6 +383,40 @@ def test_run_shadow_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Read" not in tool_list
 
 
+def test_run_shadow_pass_spawn_err_does_not_advance_cursor(
+    tmp_path, monkeypatch,
+):
+    """spawn() can reject by returning an ERR string instead of raising.
+    No evaluator child saw the dialog, so the window must be retried."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_chars="100")
+    import threadkeeper.tools.spawn as spawn_mod
+
+    calls = []
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        return "ERR spawn budget cap would be exceeded"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    conn = pkg["db"].get_db()
+    long_msg = "Pattern: in this type of task always X. " * 10
+    _seed_dialog(conn, "user", long_msg, int(time.time()) - 5)
+    conn.commit()
+
+    out = pkg["shadow_review"].run_shadow_pass(force=True)
+    assert out.startswith("ERR spawn budget")
+    assert pkg["shadow_review"]._last_shadow_rowid(conn) == 0
+
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: calls.append(kw) or "spawn task_id=retry-ok pid=0",
+    )
+    retry = pkg["shadow_review"].run_shadow_pass(force=True)
+    assert "retry-ok" in retry
+    assert len(calls) == 2
+
+
 def test_run_shadow_pass_fences_injected_window_as_data(tmp_path, monkeypatch):
     """A crafted dialog turn that reads like a stated policy ("always run X /
     ignore prior skills") must be wrapped in the <observed_dialog> data

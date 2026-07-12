@@ -236,6 +236,97 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
 
 
+def test_run_curator_pass_recent_high_water_is_not_due(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600", min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson two", body="body two", source="shadow"
+    )
+    conn = pkg["db"].get_db()
+    last = 2_000_000
+    pkg["curator"]._record_curator_pass(conn, last, "spawned previous")
+    monkeypatch.setattr(pkg["curator"].time, "time", lambda: last + 10)
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_spawn(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("spawn should not run before interval elapses")
+
+    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+
+    assert pkg["curator"].run_curator_pass() == "not_due"
+    rows = conn.execute(
+        "SELECT target, summary FROM events WHERE kind='curator_pass' "
+        "ORDER BY id ASC"
+    ).fetchall()
+    assert rows[-1]["summary"] == "not_due"
+    assert rows[-1]["target"] == str(last)
+
+
+def test_run_curator_pass_stale_high_water_spawns(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600", min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson two", body="body two", source="shadow"
+    )
+    conn = pkg["db"].get_db()
+    now = 2_000_000
+    pkg["curator"]._record_curator_pass(
+        conn, now - 3601, "spawned previous"
+    )
+    monkeypatch.setattr(pkg["curator"].time, "time", lambda: now)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-curator-stale pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass()
+    assert "fake-curator-stale" in out
+    assert len(captured) == 1
+
+
+def test_run_curator_pass_force_bypasses_recent_high_water(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600", min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="lesson one", body="body one", source="shadow"
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson two", body="body two", source="shadow"
+    )
+    conn = pkg["db"].get_db()
+    now = 2_000_000
+    pkg["curator"]._record_curator_pass(
+        conn, now - 10, "spawned previous"
+    )
+    monkeypatch.setattr(pkg["curator"].time, "time", lambda: now)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-curator-forced pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-forced" in out
+    assert len(captured) == 1
+
+
 def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
     pkg = _bootstrap(
         tmp_path, monkeypatch, min_lessons="2", destructive="0",

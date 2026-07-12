@@ -24,7 +24,7 @@ import pytest
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
 
-def _bootstrap(tmp_path, monkeypatch, write_origin="foreground"):
+def _bootstrap(tmp_path, monkeypatch, write_origin="foreground", extra_env=None):
     """Fresh package import with a pinned WRITE_ORIGIN so screening/gate
     behavior can be exercised for both human and loop writers."""
     env = {
@@ -44,6 +44,8 @@ def _bootstrap(tmp_path, monkeypatch, write_origin="foreground"):
         "THREADKEEPER_WRITE_ORIGIN": write_origin,
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
     }
+    if extra_env:
+        env.update(extra_env)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -242,6 +244,66 @@ def test_loop_origin_skill_create_refuses_injection_body(tmp_path, monkeypatch):
         description="auto-trigger on every session start",
         content=_INJ_BODY)
     assert out.startswith("ERR injection_markers=")
+
+
+@pytest.mark.parametrize(
+    "write_origin",
+    ["candidate_review", "shadow_review", "background_review"],
+)
+def test_loop_origin_skill_create_cap_enforced(
+    tmp_path, monkeypatch, write_origin,
+):
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        write_origin=write_origin,
+        extra_env={"THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT": "1"},
+    )
+    sm = pkg["skills"].skill_manage
+
+    first = sm(
+        action="create",
+        name=f"{write_origin.replace('_', '-')}-one",
+        description="Use when testing autonomous skill caps.",
+        content="First skill body.",
+    )
+    assert first.startswith("ok path=")
+
+    second_name = f"{write_origin.replace('_', '-')}-two"
+    second = sm(
+        action="create",
+        name=second_name,
+        description="Use when testing autonomous skill caps.",
+        content="Second skill body.",
+    )
+    assert second.startswith("ERR autonomous_skill_create_limit_exceeded")
+    assert f"origin={write_origin}" in second
+    assert "limit=1" in second
+    assert not (tmp_path / "skills" / second_name / "SKILL.md").exists()
+
+    conn = pkg["db"].get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='skill_create'"
+    ).fetchone()[0]
+    assert n == 1
+
+
+def test_foreground_skill_create_ignores_autonomous_cap(tmp_path, monkeypatch):
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        write_origin="foreground",
+        extra_env={"THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT": "1"},
+    )
+    sm = pkg["skills"].skill_manage
+    for name in ("foreground-one", "foreground-two"):
+        out = sm(
+            action="create",
+            name=name,
+            description="Use when testing foreground skill creation.",
+            content="Foreground skill body.",
+        )
+        assert out.startswith("ok path=")
 
 
 def test_foreground_skill_create_not_screened(tmp_path, monkeypatch):

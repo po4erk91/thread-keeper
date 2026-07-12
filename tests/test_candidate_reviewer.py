@@ -212,6 +212,94 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Edit" not in tool_list
 
 
+def test_run_recent_high_water_is_not_due(tmp_path, monkeypatch):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, interval="3600", min_n="3",
+    )
+    conn = pkg["db"].get_db()
+    for i in range(3):
+        _seed_pending(conn, "verbatim", f"candidate {i}", age_s=60 + i)
+    conn.commit()
+    last = 2_000_000
+    pkg["candidate_reviewer"]._record_review_pass(
+        conn, last, "spawned previous",
+    )
+    monkeypatch.setattr(
+        pkg["candidate_reviewer"].time, "time", lambda: last + 10,
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_spawn(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("spawn should not run before interval elapses")
+
+    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+
+    assert pkg["candidate_reviewer"].run_review_pass() == "not_due"
+    rows = conn.execute(
+        "SELECT target, summary FROM events "
+        "WHERE kind='candidate_review_pass' ORDER BY id ASC"
+    ).fetchall()
+    assert rows[-1]["summary"] == "not_due"
+    assert rows[-1]["target"] == str(last)
+
+
+def test_run_stale_high_water_spawns(tmp_path, monkeypatch):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, interval="3600", min_n="3",
+    )
+    conn = pkg["db"].get_db()
+    for i in range(3):
+        _seed_pending(conn, "verbatim", f"candidate {i}", age_s=60 + i)
+    conn.commit()
+    now = 2_000_000
+    pkg["candidate_reviewer"]._record_review_pass(
+        conn, now - 3601, "spawned previous",
+    )
+    monkeypatch.setattr(pkg["candidate_reviewer"].time, "time", lambda: now)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-reviewer-stale pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["candidate_reviewer"].run_review_pass()
+    assert "fake-reviewer-stale" in out
+    assert len(captured) == 1
+
+
+def test_run_force_bypasses_recent_high_water(tmp_path, monkeypatch):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, interval="3600", min_n="3",
+    )
+    conn = pkg["db"].get_db()
+    for i in range(3):
+        _seed_pending(conn, "verbatim", f"candidate {i}", age_s=60 + i)
+    conn.commit()
+    now = 2_000_000
+    pkg["candidate_reviewer"]._record_review_pass(
+        conn, now - 10, "spawned previous",
+    )
+    monkeypatch.setattr(pkg["candidate_reviewer"].time, "time", lambda: now)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-reviewer-forced pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+    assert "fake-reviewer-forced" in out
+    assert len(captured) == 1
+
+
 def test_injected_candidate_is_fenced_as_data(tmp_path, monkeypatch):
     """A crafted candidate whose `content` reads like a stated policy
     ("always run X / ignore prior skills") must land INSIDE the

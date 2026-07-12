@@ -255,13 +255,16 @@ parent: N≥2 modular independent units of ≥5 min each = spawn signal.
 Spawn also marks children with `THREADKEEPER_SPAWNED_CHILD=1`, so
 autonomous learning daemons cannot recursively start inside review forks.
 
-A daemon measures combined child RSS every 10 s; admission control
+A daemon in the foreground parent measures combined child RSS every 10 s;
+spawned children do not start their own `ps` polling loop, failed `ps` RSS
+samples keep the last-known value, and the liveness sweep covers every open
+task row so dead children stop counting against the cap. Admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
-(3 GB default). Slim children that need semantic search delegate to the
-parent via `search_via_parent` — no per-child copy of the embedding model.
-Admission uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the
-budget and inserts the child task row with its RSS estimate before `Popen`, so
-two concurrent spawns cannot both squeeze through the cap.
+(3 GB default). Slim children that need semantic search delegate to the parent
+via `search_via_parent` — no per-child copy of the embedding model. Admission
+uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
+inserts the child task row with its RSS estimate before `Popen`, so two
+concurrent spawns cannot both squeeze through the cap.
 
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
@@ -559,7 +562,11 @@ clusters via cosine ≥ 0.80. Each match enqueues a row in
 `extract_candidates.status='pending'`. Same self-pollution filter as
 shadow_review (autonomous child lineage excluded) plus message-level noise
 filter (compaction summaries, SKILL.md
-injections, subagent role prompts, test-runner log dumps).
+injections, subagent role prompts, test-runner log dumps). The manual
+`extract_recent()` tool uses the configured sliding window directly; the daemon
+also keeps an `extract_pass` cursor and extends a pass back to the previous
+successful tick when `THREADKEEPER_EXTRACT_INTERVAL_S` is longer than
+`THREADKEEPER_EXTRACT_WINDOW_MIN`, so no dialog falls between ticks.
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests
 PER-INCIDENT decision-shaped utterances. Heuristic, not LLM —
@@ -581,20 +588,30 @@ cluster:
 - **VERBATIM** — user quote worth preserving in `brief()`
 - **REJECT** — false positive that slipped past extract's filters
 
-Hard limits: max 2 new skills per pass, `[PROTECTED]` (pinned +
-foreground-authored) skills off-limits. Closes the gap between
+Hard limits: max 2 new skills per pass enforced inside
+`skill_manage(action="create")` for candidate-reviewer, shadow-review, and
+auto-review children; `[PROTECTED]` (pinned + foreground-authored) skills are
+off-limits. Closes the gap between
 heuristic harvest and SKILL.md materialization — previously pending
 candidates accumulated indefinitely waiting for an agent to call
 `accept_candidate()` manually. The loop is machine-wide single-flight:
 while one reviewer child is running, or while another process holds the shared
 dispatch lock, other foreground servers/ticks report `candidate_review_running`
 instead of spawning another child for the same queue.
+Before that lock, the pass also checks the last recorded
+`candidate_review_pass` high-water. A fresh MCP server restart, or a
+non-forced direct `candidate_review_run()`, returns `not_due` inside the
+configured interval and records that status without spawning; use
+`candidate_review_run(force=True)` for an immediate one-shot.
 
 All spawning learning-loop daemons that enforce single-flight use the same
 non-blocking `helpers.single_flight_lock()` helper around the
 check-running-then-spawn section. The local `fcntl.flock` closes the same-host
 TOCTOU window; the tasks-table running-child check remains as the second layer
-for stale-pid cleanup and status visibility. The helper is also used by the
+for stale-pid cleanup and status visibility. That running-child check is keyed
+by each child's prompt prefix, so daemon prompts are composed from the same
+prefix constants their detectors query, with a consistency test guarding future
+prompt-opening edits. The helper is also used by the
 side-effecting auto-update, skill-update, and menu-bar autolaunch dispatch
 locks.
 
@@ -610,8 +627,11 @@ never proposes destructive changes against them. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
-against the same store. A manual `curator_run(force=True)` bypasses the
-interval but still respects the lock.
+against the same store. Before that lock, the pass also checks the last
+recorded `curator_pass` high-water, so fresh MCP server restarts and
+non-forced direct `curator_review()` calls return `not_due` inside the
+configured interval and record that status without spawning. A manual
+`curator_review(force=True)` bypasses the interval but still respects the lock.
 
 Before spawning, the scheduler hashes the stable inventory state (lessons,
 lesson usage, active/stale skills, and concepts). If the hash matches the last
@@ -652,6 +672,11 @@ still-current memory maintenance through `lesson_append` / `lesson_remove` /
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
 the same report.
+
+The shared lesson file has its own write serialization: `lesson_append`,
+`lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
+`lessons.md.lock` around file creation/read/mutate/write, so foreground calls
+and learning-loop children cannot last-writer-win over each other's sections.
 
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
@@ -914,6 +939,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | Knob | Default | Purpose |
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
+| `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
 | `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` rows older than this many days; 0 keeps forever |
@@ -942,11 +968,12 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" | escape hatch: pin ONE settings file to watch (single-file mode); when unset, hybrid mode watches `.env` + the CLI file resolved via host identity |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
-| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended |
-| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | sliding dialog window per extract pass (min) |
-| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s); 3600 = 1h recommended |
+| `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
+| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
+| `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s); 604800 = 7d recommended |
+| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s), restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
@@ -997,6 +1024,11 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` bypasses the cap, but the default skip-label gate still refuses the `blocked` label until it is removed or reconfigured |
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
+| `THREADKEEPER_DAEMON_HOST` | `0` (off) | Phase 1 rollout flag (dark by default; no CLI config change). `1` = one headless host (`python -m threadkeeper.host`) owns the background loops + the warm embedding model + the embed socket, and per-session servers go thin (no daemons, no ONNX). See [Embeddings](#embeddings) below |
+| `THREADKEEPER_ROLE` | `server` | process role: `server` (default; per-session MCP server) or `host`. Set to `host` only by `python -m threadkeeper.host` — do not set this by hand |
+| `THREADKEEPER_HOST_SOCK` | (auto) | embed-only unix socket the thin servers dial and the host binds; empty resolves to `<db dir>/host.sock` |
+| `THREADKEEPER_HOST_HEARTBEAT_TTL_S` | 120 | host liveness window (s): how stale the host's presence heartbeat may get before `memory_guard`/a thin server treats it as dead and spawns a replacement |
+| `THREADKEEPER_THIN_EMBED_FALLBACK` | `fts` | how a thin server embeds a query when the host is unreachable: `fts` (default) falls back to FTS-only search; `local` lazily loads the ONNX model in-process instead |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
 read via pydantic-settings; real environment variables still override it. On
@@ -1156,7 +1188,30 @@ best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
 `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
 files, and headless spawn logs are owner-only (`0600`).
 
-One file. Backup = `cp`. Wipe memory = `rm`.
+Use `tk-backup` for disaster recovery. It uses SQLite `VACUUM INTO`, so
+committed frames still living in the live `-wal` sidecar are included in a
+compacted snapshot without quiescing background writers:
+
+```bash
+tk-backup create ~/threadkeeper-backup.sqlite
+THREADKEEPER_DB=/path/to/db.sqlite tk-backup create ./backup.sqlite
+```
+
+Restore is intentionally explicit because it replaces the store. Stop
+thread-keeper servers and CLI sessions first, then swap in the verified
+single-file backup; the command removes stale `db.sqlite-wal` and
+`db.sqlite-shm` sidecars around the swap.
+
+```bash
+tk-backup restore ~/threadkeeper-backup.sqlite --yes
+```
+
+A raw `cp ~/.threadkeeper/db.sqlite backup.sqlite` is not a safe live backup in
+WAL mode because recent committed transactions may exist only in
+`db.sqlite-wal`. If you insist on raw filesystem copies, stop every writer
+first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
+wipe memory, also stop thread-keeper first, then remove the main DB and both
+sidecars.
 
 ### Retention
 
@@ -1175,9 +1230,12 @@ becomes a problem.
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 
 Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
-`/tmp/thread-keeper-tasks`). `spawn()` creates captured headless `.log` files
-with mode `0600`, matching stdin prompt spools. `consolidate()` garbage-collects
-task spool files once their task row is no longer retained.
+`~/.threadkeeper/tasks`). The directory is created owner-only (`0700`) inside
+the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
+refused when the configured directory is a symlink or is not owned by the
+current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
+and visible `.command` files with no-follow owner-only opens. `consolidate()`
+garbage-collects task spool files once their task row is no longer retained.
 
 ---
 
@@ -1215,6 +1273,22 @@ otherwise every vec0 insert mismatches the schema and the fast KNN path goes
 dead (semantic search still works via the legacy BLOB cosine path). thread-keeper
 logs a one-line warning naming both dimensions and this knob when it detects the
 mismatch, rather than failing silently.
+
+**Daemon-host + thin servers (Phase 1, dark by default).** Behind
+`THREADKEEPER_DAEMON_HOST` (`0` by default; no CLI config change), one headless
+host process per machine (`python -m threadkeeper.host`) owns the warm
+embedding model, the background loops, and a narrow embed-only unix socket
+(`THREADKEEPER_HOST_SOCK`, default `<db dir>/host.sock`). Per-session servers
+run thin instead — no ONNX, no daemon threads — and send any text needing a
+vector to the host over that socket instead of loading a model locally; the
+host's own background ingest daemon does the ongoing content-embedding work.
+If the host is unreachable a query embedding returns nothing and the caller
+falls back per `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) runs
+FTS-only search, `local` lazily loads the model in-process instead. The
+host is elected via a flock and spawned detached by the first thin server that
+needs one; `memory_guard` supervises it — respawning it if its heartbeat goes
+stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S` — instead of idle-retiring it
+the way a thin server would be. See `docs/ARCHITECTURE.md` for the full design.
 
 ---
 

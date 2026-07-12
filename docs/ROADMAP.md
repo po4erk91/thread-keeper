@@ -27,6 +27,11 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Learning-loop skill-create cap (#98): `skill_manage(action='create')`
+  enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
+  `candidate_review`, `shadow_review`, and `background_review` origins, so a
+  prompt-injected autonomous reviewer cannot mass-create skills in one pass;
+  foreground skill creation is unaffected.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
@@ -45,6 +50,10 @@ remains a live question.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
+- Per-file ingest cursor safety (#89): capped ingest passes now preserve the
+  previous file cursor until the transcript is fully drained, and same-second
+  appends are detected by comparing file size as well as integer mtime. Re-reading
+  remains idempotent through `dialog_messages.uuid` dedup.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
   creates/updates roadmap issues; Evolve applier drains one open issue at a
@@ -104,6 +113,11 @@ remains a live question.
   completed `tasks`, handled/ephemeral `signals`, old `events`, and old
   `probe_results`; optional WAL checkpoint and VACUUM maintenance are wired,
   and `mp_dashboard()` reports DB size plus high-volume row counts.
+- Data-lifecycle backup/restore safety (#102): `tk-backup create` uses
+  SQLite `VACUUM INTO` to produce an integrity-checked single-file snapshot of
+  the live WAL store while writer loops continue, and `tk-backup restore --yes`
+  verifies the snapshot, atomically swaps the DB, and clears stale
+  `-wal`/`-shm` sidecars after the user stops thread-keeper.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
@@ -147,6 +161,12 @@ remains a live question.
   for another migrator, and records `CURRENT_SCHEMA_VERSION` on success.
   Duplicate-column `ALTER TABLE` errors remain the only swallowed migration
   no-op; other migration `OperationalError`s are logged and raised.
+- Pickup claim TTL + auto-spawn release (#96): self-initiated pickup claims now
+  mirror the roadmap issue 24h lease. `pickup_candidates` treats stale thread
+  claims as eligible again, `claim_pickup` reaps stale leases before claiming,
+  and auto-spawn pickup prompts finish by calling `release_pickup`; spawned
+  children are allowed to release the parent claim through their `tasks`
+  parent/child link.
 
 ---
 
@@ -343,11 +363,16 @@ a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
 Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); a write lock for the unlocked
-`lessons.md` read-modify-write now that the curator and shadow_review both
-mutate it (#91); bounding the curator/candidate_reviewer prompt argv so the
-full inventory dump can't hit `E2BIG` — the single-flight half of #24 has
-landed but the argv bound has not (#24). Scope: S–M each.
+plus trash safety net (#52); bounding the curator/candidate_reviewer prompt
+argv so the full inventory dump can't hit `E2BIG` — the single-flight half of
+#24 has landed but the argv bound has not (#24). Scope: S–M each.
+
+✅ DONE (#91): lesson-store append/remove/restore mutations now serialize on a
+blocking `lessons.md.lock` flock around the file creation/read/mutate/write
+critical section. This closes the cross-loop last-writer-wins race between
+foreground `lesson_append`, shadow-review, candidate-reviewer, auto-review, and
+curator children; the curator's own single-flight remains only its dispatch
+guard.
 
 ✅ DONE (#35): curator wake-ups now hash the stable lessons / lesson_usage /
 skills / concepts inventory before spawning. If the hash matches the last
@@ -356,6 +381,12 @@ instead of asking another curator child to re-grade the same snapshot. The same
 dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
+
+✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
+high-water before spawning. A recent `curator_pass` or
+`candidate_review_pass` makes fresh MCP-server restarts and non-forced direct
+checks return `not_due` without launching another destructive/expensive child;
+`force=True` still bypasses the interval.
 
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a
@@ -646,6 +677,12 @@ verified at the cited file:line, deduplicated against the issues above):
   is on. Timed-out children are surfaced (`tasks_timed_out` in `mp_dashboard`,
   `timed_out` in `agent_status`). Complements #25 (aggregate cost, no kill), #66
   (kill-path liveness correctness), and #64 (visible/pid=0 RSS measurement).
+- ✅ DONE (#101). Single-flight running-child detection is prompt-prefix keyed,
+  so prefix drift could silently disable duplicate-spawn prevention. The
+  spawning daemon prompts now compose their opening line from the same prefix
+  constants used by the detectors, the remaining inline SQL prefix literals were
+  replaced with parameterized constants, and a parametrized consistency test
+  fails if any prompt opening or detector drifts.
 - ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
   `chmod` and embedded the host server `env` block, while the stdin prompt file
   is correctly `0600` and the `.command` script was `0755`. Now: slim config
@@ -764,45 +801,45 @@ even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
 Deep code-audit pass (2026-06-17, evolve_reviewer third pass; five parallel
 read-only subsystem audits, each finding re-verified at the cited file:line and
 deduplicated against the issues above):
-- Per-file **ingest cursor loses messages**: `_ingest_file` advances
-  `last_mtime` even when the `max_msgs` cap truncates the read (default 50 at
-  session start), and the skip guard compares only mtime — never the stored
-  `last_size` — so same-second appends are dropped. Distinct from the global
-  out-of-order cursor #69 (#89).
-- Two learning daemons **drop dialog windows**: `shadow_review` records its
+- ✅ DONE (#89): Per-file **ingest cursor** no longer loses messages when
+  `max_msgs` caps a pass or a transcript is appended within the same integer
+  mtime second. `_ingest_file` now preserves the previous file cursor until the
+  transcript is fully drained and uses stored file size alongside mtime for the
+  skip guard. Distinct from the global out-of-order cursor #69.
+- ✅ DONE (#90). Two learning daemons **dropped dialog windows**:
+  `shadow_review` recorded its
   high-water cursor even when `spawn()` returns an `ERR ...` budget-cap string
   (a value, not an exception, so the `try/except` misses it), and the `extract`
   daemon scans a fixed wall-clock window with a dead cursor, leaving an
-  uncovered gap whenever `interval > window` (#90).
-- `lessons.md` append/remove is an **unlocked read-modify-write**, so concurrent
-  loop writers (shadow / candidate / auto-review / foreground) last-writer-win
-  and silently clobber each other's edits — the new curator single-flight only
-  serializes curators against each other (#91).
-- `spawn_budget` daemon **starts inside spawned children**: `start_budget_daemon`
-  lacks the `BACKGROUND_DAEMONS_ALLOWED` gate `memory_guard` already has, so
-  every slim child runs a perpetual `ps`-polling thread it was explicitly
-  designed not to run (#92).
-- Budget/guard **RSS accounting**: `ps` failures are read as 0 MB (suppressing a
-  needed retire/kill, or freeing in-use budget), and the liveness refresh caps
-  at 100 rows while the budget sums over *all* un-ended rows, so a >100-row tail
-  of unrefreshed rows pins the budget. Complements #64/#66 (#93).
-- Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
-  with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
-  create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
-  content on shared hosts. Distinct from #21 (`~/.threadkeeper`) and #68 (#94).
-- Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
-  `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
-  can produce a torn/corrupt DB at the new path (#95).
-- **Pickup claims leak**: `threads.claimed_at` has no TTL/reaper and the
-  `auto_spawn` child is never told to `release_pickup`, so even a successful
-  pickup pins the thread out of the candidate pool forever (#96).
+  uncovered gap whenever `interval > window`. `shadow_review` now keeps the old
+  cursor on spawn `ERR`/exception outcomes, and `extract_daemon` extends daemon
+  scans back to the previous successful `extract_pass` cursor when needed.
+- ✅ DONE (#91): `lessons.md` append/remove/restore read-modify-write sections
+  are guarded by a per-file blocking flock, so concurrent loop writers
+  serialize on the store itself instead of last-writer-winning.
+- ✅ DONE (#92): `spawn_budget.start_budget_daemon` now honors the same
+  `BACKGROUND_DAEMONS_ALLOWED` gate as `memory_guard`, so spawned children do
+  not start their own perpetual `ps`-polling budget thread.
+- ✅ DONE (#93): Budget/guard **RSS accounting** no longer reads failed `ps`
+  RSS samples as 0 MB. Spawn-budget refresh preserves last-known child RSS on
+  measurement failure and sweeps every open task row for liveness, so a >100-row
+  stale tail cannot pin the budget.
+- ✅ DONE (#94). The task spool now defaults to `~/.threadkeeper/tasks` inside
+  the hardened user-owned perimeter, verifies configured spool directories with
+  `lstat`/current-user ownership before use, creates them `0700`, and opens
+  predictable task files with no-follow owner-only helpers instead of
+  create-then-`chmod`.
+- ✅ DONE (#95): Legacy **DB migration** now uses SQLite's online backup API
+  instead of copying live `-wal`/`-shm` sidecars, so dirty-WAL source databases
+  migrate into a consistent main DB and machine-local `-shm` state is never
+  imported.
 - Codex adapter: the fallback message **UUID** has no per-line offset, so
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
   pass (#97).
-- The candidate-reviewer's "max 2 new skills per pass" cap is **prompt-only**;
-  `skill_manage(create)` has no server-side per-pass counter, so an injected or
-  confused (injection-prone) child can mass-create skills in one pass (#98).
+- ✅ DONE (#98): The candidate-reviewer's "max 2 new skills per pass" cap is
+  enforced server-side in `skill_manage(create)` for autonomous learning-loop
+  child origins, not only stated in the reviewer prompt.
 
 Also extended existing issues with verified file:line detail rather than filing
 anew: the `get_db` per-call migration issue was closed by schema versioning
