@@ -362,16 +362,17 @@ def _fts_search(conn: sqlite3.Connection, query: str,
                 k: int) -> list[dict]:
     """FTS5 search over dialog_fts joined to dialog_messages. FTS5 ranks
     by BM25 (lower = better); we keep insertion order from the result for
-    RRF (already ranked best-first by FTS5)."""
+    RRF (already ranked best-first by FTS5). dialog_fts is external-content
+    (schema v2): rows map back via dialog_fts.rowid == dialog_messages.rowid."""
     from .helpers import _fts_query
     fq = _fts_query(query)
     if not fq:
         return []
     try:
         rows = conn.execute(
-            "SELECT f.uuid, d.role, d.session_id, d.content, d.created_at "
+            "SELECT d.uuid, d.role, d.session_id, d.content, d.created_at "
             "FROM dialog_fts f "
-            "JOIN dialog_messages d ON d.uuid = f.uuid "
+            "JOIN dialog_messages d ON d.rowid = f.rowid "
             "WHERE dialog_fts MATCH ? ORDER BY rank LIMIT ?",
             (fq, max(1, int(k))),
         ).fetchall()

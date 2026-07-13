@@ -61,7 +61,8 @@ def _dialog_with_secrets() -> tuple[str, dict[str, str]]:
     return text, values
 
 
-def _ingest_one(pkg: dict, tmp_path: Path, content: str) -> str:
+def _ingest_one(pkg: dict, tmp_path: Path, content: str,
+                expect_scrubbed: bool = True) -> str:
     from threadkeeper import ingest
 
     ingest.SEMANTIC_AVAILABLE = False
@@ -86,12 +87,20 @@ def _ingest_one(pkg: dict, tmp_path: Path, content: str) -> str:
     row = conn.execute(
         "SELECT content FROM dialog_messages WHERE uuid='msg-secret-1'"
     ).fetchone()
-    fts = conn.execute(
-        "SELECT content FROM dialog_fts WHERE uuid='msg-secret-1'"
-    ).fetchone()
     assert row is not None
-    assert fts is not None
-    assert row["content"] == fts["content"]
+    # external-content FTS (schema v2): the index reads dialog_messages
+    # directly. Scrubbed ⇒ raw token not MATCH-able; unscrubbed ⇒ it is.
+    raw_token_hit = conn.execute(
+        "SELECT 1 FROM dialog_fts WHERE dialog_fts MATCH ?",
+        ('"' + "c" * 24 + '"',),   # ghp_ token body from _secret_values()
+    ).fetchone()
+    if expect_scrubbed:
+        assert raw_token_hit is None
+        assert conn.execute(
+            "SELECT 1 FROM dialog_fts WHERE dialog_fts MATCH 'REDACTED'"
+        ).fetchone() is not None
+    else:
+        assert raw_token_hit is not None
     return row["content"]
 
 
@@ -121,33 +130,7 @@ def test_ingest_secret_redaction_can_be_disabled(fresh_mp, tmp_path, monkeypatch
     monkeypatch.setenv("THREADKEEPER_REDACT_DIALOG_SECRETS", "0")
     fresh_mp["config"].reload_settings()
 
-    persisted = _ingest_one(fresh_mp, tmp_path, content)
+    persisted = _ingest_one(fresh_mp, tmp_path, content, expect_scrubbed=False)
 
     for raw in values.values():
         assert raw in persisted
-
-
-def test_fts_backfill_scrubs_legacy_dialog_rows(fresh_mp):
-    from threadkeeper import ingest
-
-    conn = fresh_mp["db"].get_db()
-    content, values = _dialog_with_secrets()
-    for idx in range(6):
-        body = content if idx == 0 else f"ordinary message {idx}"
-        conn.execute(
-            "INSERT INTO dialog_messages "
-            "(uuid, source, project, session_id, role, content, model, created_at) "
-            "VALUES (?, 'fake-cli', 'fake-project', 'sess', 'user', ?, '', ?)",
-            (f"legacy-{idx}", body, 1_800_000_000 + idx),
-        )
-    conn.commit()
-
-    ingest._backfill_dialog_fts_if_empty(conn)
-
-    fts = conn.execute(
-        "SELECT content FROM dialog_fts WHERE uuid='legacy-0'"
-    ).fetchone()["content"]
-    for raw in values.values():
-        assert raw not in fts
-    assert "Authorization: Bearer [REDACTED:AUTHORIZATION]" in fts
-    assert "_authToken=[REDACTED:NPMRC_CREDENTIAL]" in fts

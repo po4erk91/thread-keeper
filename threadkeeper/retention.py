@@ -61,10 +61,10 @@ def _delete_dialog_sidecars(conn: sqlite3.Connection, uuids: list[str]) -> None:
     if not uuids:
         return
     ph = _placeholders(len(uuids))
-    try:
-        conn.execute(f"DELETE FROM dialog_fts WHERE uuid IN ({ph})", uuids)
-    except sqlite3.OperationalError:
-        pass
+    # dialog_fts is external-content and trigger-synced (schema v2): the
+    # AFTER DELETE trigger on dialog_messages removes the FTS entry when
+    # _prune_dialog deletes the row itself. Only vec sidecars need manual
+    # cleanup here (vectors have no trigger).
 
     if not _table_exists(conn, "dialog_vec_map"):
         return
