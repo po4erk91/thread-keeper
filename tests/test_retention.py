@@ -28,10 +28,7 @@ def _insert_dialog(conn, uuid: str, created_at: int) -> None:
         "VALUES (?, 'pytest', 'proj', 'sess', 'user', ?, NULL, ?)",
         (uuid, f"content {uuid}", created_at),
     )
-    conn.execute(
-        "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
-        (uuid, f"content {uuid}"),
-    )
+    # dialog_fts is populated by the AFTER INSERT trigger (schema v2)
 
 
 def _maybe_vec_upsert(conn, uuid: str) -> bool:
@@ -56,6 +53,20 @@ def _count(conn, table: str, where: str = "1=1", params: tuple = ()) -> int:
     return int(row[0] or 0)
 
 
+def _fts_has(conn, uuid: str) -> bool:
+    """True when the FTS *index* has an entry mapping back to uuid. Must go
+    through MATCH: a full scan of an external-content FTS5 table just
+    enumerates dialog_messages rowids, indexed or not."""
+    phrase = '"' + uuid.replace("-", " ") + '"'
+    rows = conn.execute(
+        "SELECT d.uuid FROM dialog_fts f "
+        "JOIN dialog_messages d ON d.rowid = f.rowid "
+        "WHERE dialog_fts MATCH ?",
+        (phrase,),
+    ).fetchall()
+    return any(r[0] == uuid for r in rows)
+
+
 def test_retention_disabled_by_default_keeps_rows(fresh_mp, monkeypatch):
     from threadkeeper import retention
 
@@ -69,7 +80,7 @@ def test_retention_disabled_by_default_keeps_rows(fresh_mp, monkeypatch):
 
     assert "total=0" in out, out
     assert _count(conn, "dialog_messages", "uuid='old-default'") == 1
-    assert _count(conn, "dialog_fts", "uuid='old-default'") == 1
+    assert _fts_has(conn, "old-default")
 
 
 def test_dialog_retention_prunes_fts_and_vec_mirrors(fresh_mp, monkeypatch):
@@ -91,8 +102,8 @@ def test_dialog_retention_prunes_fts_and_vec_mirrors(fresh_mp, monkeypatch):
     assert "dialog=2" in out, out
     assert _count(conn, "dialog_messages") == 1
     assert _count(conn, "dialog_messages", "uuid='new-a'") == 1
-    assert _count(conn, "dialog_fts") == 1
-    assert _count(conn, "dialog_fts", "uuid='new-a'") == 1
+    assert _count(conn, "dialog_fts_docsize") == 1
+    assert _fts_has(conn, "new-a")
     if vec_checked:
         assert _count(conn, "dialog_vec_map") == 1
         assert _count(conn, "dialog_vec_map", "uuid='new-a'") == 1
@@ -106,7 +117,7 @@ def test_dialog_retention_prunes_fts_and_vec_mirrors(fresh_mp, monkeypatch):
     again = retention.run_retention_pass(force=True)
     assert "total=0" in again, again
     assert _count(conn, "dialog_messages") == 1
-    assert _count(conn, "dialog_fts") == 1
+    assert _count(conn, "dialog_fts_docsize") == 1
 
 
 def test_tasks_signals_and_events_retention(fresh_mp, monkeypatch):

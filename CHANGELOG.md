@@ -9,6 +9,21 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **`dialog_fts` deduplicated: external-content FTS5 (schema v2).** The FTS
+  index now reads text straight from `dialog_messages` instead of storing
+  its own ~465 MB copy; three triggers own the sync (ingest and retention
+  no longer write FTS rows manually). One-time startup migration drops the
+  old table, scrubs legacy pre-redaction secret rows in place, and rebuilds
+  the index; concurrent sessions wait for the migration instead of dying on
+  the busy timeout. New opt-in `db_compact()` tool reclaims the freed pages
+  (`VACUUM` + mandatory FTS rebuild — `VACUUM` is permitted to renumber
+  the implicit rowids the index is keyed on). Search results and ranking
+  are unchanged.
+  Index emptiness/size checks (migration, backfill, `mp_dashboard`'s
+  `dialog_fts=` metric) read the `dialog_fts_docsize` shadow table — an
+  unconstrained `COUNT(*)` on an external-content FTS5 table proxies to the
+  content table and cannot detect an empty or desynced index.
+
 - **Daemon-host + thin per-session servers (dark, `THREADKEEPER_DAEMON_HOST`).**
   One headless host per machine owns the background loops (18 daemon starters
   + the ingester) + the warm ONNX model + a narrow embed unix-socket;

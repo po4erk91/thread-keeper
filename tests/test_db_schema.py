@@ -71,6 +71,8 @@ def _subprocess_env(tmp_path: Path) -> dict[str, str]:
 
 
 def test_concurrent_get_db_schema_migration_is_safe(tmp_path):
+    from threadkeeper import db as tk_db
+
     code = """
 import os
 import time
@@ -124,6 +126,8 @@ print(f"version={version} retry_attempt={retry_col}")
     assert "retry_attempt=1" in second_out
 
     raw = sqlite3.connect(env["THREADKEEPER_DB"])
-    assert raw.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == (
+        tk_db.CURRENT_SCHEMA_VERSION
+    )
     assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     raw.close()

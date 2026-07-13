@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 import logging
 import sqlite3
+import time
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
@@ -25,7 +26,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -393,13 +394,36 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
     claimed_by_task TEXT
 );
 
--- Reciprocal-rank-fusion-friendly FTS over dialog content. Mirror table
--- (not content='dialog_messages') because dialog_messages PK is TEXT and
--- FTS5 content tables expect INTEGER rowid alignment.
+-- Reciprocal-rank-fusion-friendly FTS over dialog content. External-content
+-- FTS5 (schema v2): the index reads text straight from dialog_messages by
+-- rowid — no stored duplicate (v1's content-storing mirror duplicated
+-- ~465MB). Result→message mapping is dialog_fts.rowid ==
+-- dialog_messages.rowid (implicit rowid; PK is TEXT uuid). That rowid is
+-- not guaranteed stable across VACUUM (SQLite may renumber implicit
+-- rowids) — any VACUUM must be followed by an FTS rebuild
+-- (db_compact() does both; see also _rebuild_dialog_fts_if_needed).
 CREATE VIRTUAL TABLE IF NOT EXISTS dialog_fts USING fts5(
-    uuid UNINDEXED,
-    content
+    content,
+    content='dialog_messages',
+    content_rowid='rowid'
 );
+
+-- External-content FTS5 does not auto-sync; these triggers own the index.
+-- No code path writes dialog_fts rows manually anymore (ingest/retention
+-- included) — only FTS5 special commands ('rebuild', 'delete-all') and
+-- these triggers may touch it.
+CREATE TRIGGER IF NOT EXISTS dialog_fts_ai AFTER INSERT ON dialog_messages BEGIN
+    INSERT INTO dialog_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS dialog_fts_ad AFTER DELETE ON dialog_messages BEGIN
+    INSERT INTO dialog_fts(dialog_fts, rowid, content)
+    VALUES('delete', old.rowid, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS dialog_fts_au AFTER UPDATE ON dialog_messages BEGIN
+    INSERT INTO dialog_fts(dialog_fts, rowid, content)
+    VALUES('delete', old.rowid, old.content);
+    INSERT INTO dialog_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
 
 -- Spawned background sessions. Tracks `claude -p` subprocesses started by an
 -- active conversation. spawned_cid is filled lazily once the child's jsonl
@@ -669,12 +693,92 @@ def _backfill_schema_data(conn: sqlite3.Connection) -> None:
     )
 
 
+def _drop_legacy_dialog_fts(conn: sqlite3.Connection) -> None:
+    """v1→v2: dialog_fts was a content-storing FTS5 mirror (uuid UNINDEXED,
+    content) whose shadow table duplicated ~465MB of dialog_messages.content.
+    Shape-driven, not version-driven: drop whatever dialog_fts exists unless
+    it is already external-content. DROP TABLE on an FTS5 table removes all
+    its shadow tables (_content/_data/_idx/_docsize/_config); the SCHEMA pass
+    then recreates the v2 table and _rebuild_dialog_fts_if_needed refills it."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='dialog_fts'"
+    ).fetchone()
+    if row is None:
+        return
+    if "content='dialog_messages'" in (row[0] or ""):
+        return
+    conn.execute("DROP TABLE dialog_fts")
+
+
+def _scrub_legacy_dialog_rows(conn: sqlite3.Connection) -> None:
+    """One-time v2 hygiene: rows ingested before secret redaction shipped
+    still hold raw credentials in dialog_messages.content. v1 scrubbed only
+    the FTS *copy*; with external-content FTS the index reads dialog_messages
+    directly, so the source rows themselves must be scrubbed or legacy
+    secrets become MATCH-able. Rewrites only rows whose scrubbed text
+    differs. No-op when THREADKEEPER_REDACT_DIALOG_SECRETS is off. Must run
+    BEFORE the dialog_fts triggers exist (no index side effects)."""
+    from .config import REDACT_DIALOG_SECRETS
+
+    if not REDACT_DIALOG_SECRETS:
+        return
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialog_messages'"
+    ).fetchone() is None:
+        return
+    from .ingest import _scrub_dialog_secrets  # lazy: avoids db↔ingest cycle
+
+    dirty: list[tuple[str, str]] = []
+    cur = conn.execute("SELECT uuid, content FROM dialog_messages")
+    while True:
+        rows = cur.fetchmany(1000)
+        if not rows:
+            break
+        for row in rows:
+            uuid_, content = row[0], row[1] or ""
+            scrubbed = _scrub_dialog_secrets(content)
+            if scrubbed != content:
+                dirty.append((scrubbed, uuid_))
+    if dirty:
+        conn.executemany(
+            "UPDATE dialog_messages SET content=? WHERE uuid=?", dirty
+        )
+        logger.info("schema v2: scrubbed %d legacy dialog rows", len(dirty))
+
+
+def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
+    """Populate the external-content index when it is empty while
+    dialog_messages has rows — i.e. right after the v1→v2 drop. No-op on
+    fresh DBs and on re-runs (index already populated). FTS5 'rebuild'
+    re-reads every dialog_messages row (one-time; ~285K rows on the live DB).
+
+    Counts against dialog_fts_docsize, not dialog_fts itself: an
+    unconstrained `SELECT COUNT(*) FROM dialog_fts` on an external-content
+    table is satisfied by scanning dialog_messages' rowids directly (FTS5
+    doesn't need its own index for that), so it reads as "populated" even
+    when the search index is completely empty. docsize has exactly one row
+    per rowid actually indexed, so it's the real signal."""
+    msg = conn.execute("SELECT COUNT(*) FROM dialog_messages").fetchone()[0]
+    if not msg:
+        return
+    fts = conn.execute("SELECT COUNT(*) FROM dialog_fts_docsize").fetchone()[0]
+    if fts:
+        return
+    conn.execute("INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild')")
+
+
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version != 0:
+    if from_version not in (0, 1):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
         )
+
+    # v2 (external-content dialog_fts): drop the old content-storing table
+    # and scrub legacy raw-secret rows BEFORE the SCHEMA pass creates the
+    # new table + its triggers, so the scrub UPDATEs fire no FTS triggers.
+    _drop_legacy_dialog_fts(conn)
+    _scrub_legacy_dialog_rows(conn)
 
     for statement in _iter_sql_statements(SCHEMA):
         conn.execute(statement)
@@ -683,20 +787,41 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     _backfill_schema_data(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
+    _rebuild_dialog_fts_if_needed(conn)
     _set_user_version(conn, CURRENT_SCHEMA_VERSION)
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    version = _user_version(conn)
-    if version == CURRENT_SCHEMA_VERSION:
-        return
-    if version > CURRENT_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"database schema version {version} is newer than this "
-            f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
-        )
+def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
+    """Bring the DB to CURRENT_SCHEMA_VERSION, exactly once across processes.
 
-    conn.execute("BEGIN IMMEDIATE")
+    Heavy migrations (the v1→v2 dialog_fts rebuild reads ~1GB of content)
+    hold the write lock for minutes; concurrent get_db() callers poll
+    user_version and wait up to wait_s for the migrating process to finish
+    instead of dying on the 10s busy timeout."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        version = _user_version(conn)
+        if version == CURRENT_SCHEMA_VERSION:
+            return
+        if version > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema version {version} is newer than this "
+                f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
+            )
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "timed out after %.0fs waiting for a concurrent schema "
+                    "migration to finish",
+                    wait_s,
+                )
+                raise
+            time.sleep(0.5)  # another process is likely migrating; re-poll
+            continue
+        break
+
     try:
         # Re-check after taking the writer lock. A concurrent process may have
         # completed the migration while this connection waited.

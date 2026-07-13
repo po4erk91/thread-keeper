@@ -941,7 +941,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
 | `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
-| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
+| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune aged `dialog_messages` (their FTS entries follow via trigger) plus `dialog_vec` sidecars; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` rows older than this many days; 0 keeps forever |
 | `THREADKEEPER_SIGNAL_RETENTION_DAYS` | 0 | prune handled old `signals` plus aged `search_request`/`search_response`; 0 keeps forever |
 | `THREADKEEPER_EVENTS_RETENTION_DAYS` | 0 | prune old `events` on the retention pass; 0 keeps forever |
@@ -1002,7 +1002,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | "" (off) | allow retiring parent-alive MCP servers; off protects live clients |
 | `THREADKEEPER_MEMORY_GUARD_NOTIFY` | "1" | send macOS desktop notification when possible |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
-| `THREADKEEPER_REDACT_DIALOG_SECRETS` | true | scrub common credential-shaped values before transcript text is persisted to `dialog_messages` / `dialog_fts`; set `0` only for rare local debugging where raw transcript fidelity is more important than durable secret protection |
+| `THREADKEEPER_REDACT_DIALOG_SECRETS` | true | scrub common credential-shaped values before transcript text is persisted to `dialog_messages` / `dialog_fts`; set `0` only for rare local debugging where raw transcript fidelity is more important than durable secret protection; the v2 schema migration also scrubs legacy pre-redaction rows in place |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable the embedding model (FTS5 + delegate only) |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
@@ -1148,6 +1148,9 @@ them with `dry_run=False` to apply:
   its outcomes stay flat, or a queue backing up. Complements the per-loop
   `*_status` tools
   (`mp_health`, `spawn_budget_status`, `shadow_review_status`).
+- **`db_compact()`** — one-shot maintenance: `VACUUM` the SQLite file and
+  rebuild `dialog_fts` (mandatory after VACUUM — rowid renumbering).
+  Single-flight; fails soft with a retry hint when the DB is busy.
 - **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
   often the daemon fired, the outcome mix (`no_window` / `too_short` /
@@ -1226,6 +1229,13 @@ keeps `dialog_fts`, `dialog_vec`, and `dialog_vec_map` consistent with
 the high-volume tables (`dialog_messages`, `dialog_fts`, `dialog_vec`,
 `signals`, `events`, `tasks`, `probe_results`) so growth is visible before it
 becomes a problem.
+
+`db_compact()` is the opt-in disk-reclaim tool: `VACUUM` + a mandatory
+`dialog_fts` rebuild (schema v2 keys the FTS index on `dialog_messages`
+rowids, which `VACUUM` is permitted to renumber — the rebuild is what
+keeps search correct). Run it once in a quiet window after upgrading to
+the v2 schema to shrink the DB file by roughly the old FTS shadow copy
+(~465 MB on a 2.7 GB DB); day-to-day it is never required.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 

@@ -139,64 +139,40 @@ def _record_ingest_pass(
 
 
 def _backfill_dialog_fts_if_empty(conn: sqlite3.Connection) -> None:
-    """Populate dialog_fts from dialog_messages on first start (or after a
-    schema add when most rows are already in dialog_messages but not in FTS).
+    """Safety net: repopulate the external-content dialog_fts index when it
+    is meaningfully behind dialog_messages (a restored DB, a wiped index).
+    Day-to-day sync is owned by the dialog_fts_* triggers; the v1→v2
+    migration does the initial rebuild. FTS5 'rebuild' re-reads every
+    dialog_messages.content row. Always refreshes the fts_backfilled style
+    key that brief() surfaces.
 
-    Compares row counts: if dialog_fts is meaningfully behind dialog_messages,
-    backfill the gap (uuids missing from fts). Idempotent — only inserts
-    rows whose uuid isn't already in dialog_fts. Roughly 5-10s for 100k
-    records on a laptop — one-time cost."""
+    Counts against dialog_fts_docsize, not dialog_fts itself: an
+    unconstrained `SELECT COUNT(*) FROM dialog_fts` on an external-content
+    table is satisfied by scanning dialog_messages' rowids directly, so it
+    reads as "populated" even when the search index is empty. docsize has
+    exactly one row per rowid actually indexed, so it's the real signal."""
     try:
         msg_cnt = conn.execute(
             "SELECT COUNT(*) c FROM dialog_messages"
         ).fetchone()["c"]
         fts_cnt = conn.execute(
-            "SELECT COUNT(*) c FROM dialog_fts"
+            "SELECT COUNT(*) c FROM dialog_fts_docsize"
         ).fetchone()["c"]
     except sqlite3.OperationalError:
         return
-    if fts_cnt >= msg_cnt - 5:
-        # close enough — newly-arrived rows fill via INSERT trigger in _ingest_file
-        conn.execute(
-            "INSERT INTO style (key, value, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-            "updated_at=excluded.updated_at",
-            ("fts_backfilled", str(fts_cnt), int(time.time())),
-        )
-        conn.commit()
-        return
-    # backfill rows present in dialog_messages but missing from dialog_fts
-    missing = conn.execute(
-        "SELECT d.uuid, d.content FROM dialog_messages d "
-        "LEFT JOIN dialog_fts f ON f.uuid = d.uuid "
-        "WHERE f.uuid IS NULL"
-    ).fetchall()
-    batch: list[tuple[str, str]] = []
-    added = 0
-    for r in missing:
-        batch.append((r["uuid"], _scrub_dialog_secrets(r["content"])))
-        if len(batch) >= 5000:
-            conn.executemany(
-                "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
-                batch,
-            )
-            conn.commit()
-            added += len(batch)
-            batch = []
-    if batch:
-        conn.executemany(
-            "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
-            batch,
-        )
-        added += len(batch)
-    final_cnt = conn.execute(
-        "SELECT COUNT(*) c FROM dialog_fts"
-    ).fetchone()["c"]
+    if fts_cnt < msg_cnt - 5:
+        try:
+            conn.execute("INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild')")
+        except sqlite3.OperationalError:
+            return
+        fts_cnt = conn.execute(
+            "SELECT COUNT(*) c FROM dialog_fts_docsize"
+        ).fetchone()["c"]
     conn.execute(
         "INSERT INTO style (key, value, updated_at) VALUES (?,?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
         "updated_at=excluded.updated_at",
-        ("fts_backfilled", f"{final_cnt}+{added}", int(time.time())),
+        ("fts_backfilled", str(fts_cnt), int(time.time())),
     )
     conn.commit()
 
@@ -438,13 +414,6 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                  nm.session_id, nm.role, text,
                  nm.model, nm.created_at, emb, embed_tag(emb))
             )
-            try:
-                conn.execute(
-                    "INSERT INTO dialog_fts (uuid, content) VALUES (?, ?)",
-                    (nm.uuid, text),
-                )
-            except sqlite3.OperationalError:
-                pass
             if emb is not None:
                 try:
                     from .embeddings import _vec_upsert_dialog

@@ -135,9 +135,9 @@ def _import_threadkeeper():
 def seed_corpus(conn, corpus: dict, now: int | None = None) -> None:
     """Insert the demo corpus into a fresh DB the way ingest()/note() would.
 
-    dialog_messages are mirrored into dialog_fts by hand (the ingest path does
-    this; there is no trigger). notes rely on the notes_fts AFTER INSERT
-    trigger defined in the schema."""
+    dialog_messages are mirrored into dialog_fts by the dialog_fts_ai AFTER
+    INSERT trigger (schema v2: external-content FTS5, no manual mirror).
+    notes rely on the notes_fts AFTER INSERT trigger defined in the schema."""
     now = now if now is not None else int(time.time())
     for t in corpus.get("threads", []):
         conn.execute(
@@ -153,10 +153,6 @@ def seed_corpus(conn, corpus: dict, now: int | None = None) -> None:
             "(uuid, source, project, session_id, role, content, model, created_at) "
             "VALUES (?, 'claude-code', 'memory-eval', ?, ?, ?, 'demo', ?)",
             (m["uuid"], m.get("session_id"), m["role"], m["content"], ts),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO dialog_fts (uuid, content) VALUES (?, ?)",
-            (m["uuid"], m["content"]),
         )
     for n in corpus.get("notes", []):
         ts = now + int(n.get("day_offset", 0)) * 86400
