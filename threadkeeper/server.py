@@ -58,6 +58,7 @@ from .tools import dialectic_feed  # noqa: F401
 from .tools import dashboard  # noqa: F401
 from .tools import agent_status  # noqa: F401
 from .tools import config_watch  # noqa: F401
+from .tools import db_maintenance  # noqa: F401
 
 # MCP Resources & Prompts (roadmap #78) — the other two MCP server primitives.
 # Importing these registers @mcp.resource / @mcp.prompt entries (NOT tools) on
