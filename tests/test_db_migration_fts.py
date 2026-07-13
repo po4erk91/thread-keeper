@@ -184,3 +184,51 @@ def test_pre_versioning_db_with_old_fts_migrates(tmp_path, monkeypatch):
     assert "content='dialog_messages'" in ddl
     assert set(_match_uuids(conn, "aardvark")) == {"v1-plain-1", "v1-plain-2"}
     conn.close()
+
+
+def test_ensure_schema_waits_for_concurrent_migration(tmp_path, monkeypatch):
+    """While another process holds the write lock mid-migration, get_db()'s
+    schema check must wait and succeed once user_version reaches CURRENT —
+    not die on the busy timeout."""
+    import threading
+    import time as _time
+
+    db_path = tmp_path / "wait.sqlite"
+    _seed_v1(db_path)
+    tk_db = _boot_db(monkeypatch, db_path)
+
+    # simulate the migrating process: hold BEGIN IMMEDIATE
+    holder = sqlite3.connect(str(db_path), timeout=1.0)
+    holder.execute("PRAGMA journal_mode=WAL")
+    holder.execute("BEGIN IMMEDIATE")
+
+    # check_same_thread=False: this connection is created here (main/test
+    # thread) but exercised inside the background thread below, simulating
+    # a concurrent get_db() caller on another connection.
+    waiter_conn = sqlite3.connect(
+        str(db_path), timeout=1.0, check_same_thread=False
+    )
+    waiter_conn.execute("PRAGMA busy_timeout=200")
+    waiter_conn.row_factory = sqlite3.Row
+    errors: list[BaseException] = []
+
+    def _wait():
+        try:
+            tk_db._ensure_schema(waiter_conn, wait_s=30.0)
+        except BaseException as e:  # noqa: BLE001 — surface into the test
+            errors.append(e)
+
+    t = threading.Thread(target=_wait, daemon=True)
+    t.start()
+    _time.sleep(1.0)
+    assert t.is_alive()  # still waiting, not crashed
+
+    # the "migrating" process finishes: version → CURRENT, lock released
+    holder.execute(f"PRAGMA user_version = {tk_db.CURRENT_SCHEMA_VERSION}")
+    holder.commit()
+    holder.close()
+
+    t.join(timeout=15.0)
+    assert not t.is_alive()
+    assert errors == []
+    waiter_conn.close()

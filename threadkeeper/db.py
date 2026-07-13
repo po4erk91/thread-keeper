@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 import logging
 import sqlite3
+import time
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
@@ -789,17 +790,37 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     _set_user_version(conn, CURRENT_SCHEMA_VERSION)
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    version = _user_version(conn)
-    if version == CURRENT_SCHEMA_VERSION:
-        return
-    if version > CURRENT_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"database schema version {version} is newer than this "
-            f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
-        )
+def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
+    """Bring the DB to CURRENT_SCHEMA_VERSION, exactly once across processes.
 
-    conn.execute("BEGIN IMMEDIATE")
+    Heavy migrations (the v1→v2 dialog_fts rebuild reads ~1GB of content)
+    hold the write lock for minutes; concurrent get_db() callers poll
+    user_version and wait up to wait_s for the migrating process to finish
+    instead of dying on the 10s busy timeout."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        version = _user_version(conn)
+        if version == CURRENT_SCHEMA_VERSION:
+            return
+        if version > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema version {version} is newer than this "
+                f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
+            )
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "timed out after %.0fs waiting for a concurrent schema "
+                    "migration to finish",
+                    wait_s,
+                )
+                raise
+            time.sleep(0.5)  # another process is likely migrating; re-poll
+            continue
+        break
+
     try:
         # Re-check after taking the writer lock. A concurrent process may have
         # completed the migration while this connection waited.
