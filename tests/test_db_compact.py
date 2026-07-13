@@ -53,7 +53,11 @@ def test_db_compact_survives_rowid_renumbering(fresh_mp):
     assert _match_uuids(conn, "toucan") == ["m-2"]
     assert _match_uuids(conn, "condor") == ["m-3"]
     assert _match_uuids(conn, "pelican") == []
-    assert conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0] == 2
+    # docsize = real index size; COUNT(*) on the external-content dialog_fts
+    # proxies to dialog_messages and would pass even with a broken rebuild
+    assert conn.execute(
+        "SELECT COUNT(*) FROM dialog_fts_docsize"
+    ).fetchone()[0] == 2
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
