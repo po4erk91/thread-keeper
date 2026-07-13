@@ -108,7 +108,10 @@ def create_backup(
 
     ``VACUUM INTO`` reads a consistent snapshot through a normal SQLite
     connection, so committed frames still living in the source WAL are included
-    without asking other thread-keeper writers to stop.
+    without asking other thread-keeper writers to stop. Because ``VACUUM INTO``
+    may renumber ``dialog_messages``' implicit rowids, the external-content
+    ``dialog_fts`` index (schema v2), which is keyed on them, is rebuilt in the
+    artifact before the integrity check.
     """
     src = _expand(source) if source is not None else _default_db_path()
     dst = _expand(destination)
@@ -128,6 +131,20 @@ def create_backup(
         dst_conn = sqlite3.connect(str(tmp), timeout=timeout)
         try:
             _single_file_mode(dst_conn)
+            # VACUUM INTO renumbered dialog_messages' implicit rowids; the
+            # external-content dialog_fts index (schema v2) is keyed on them
+            # and was copied verbatim, so it now maps to the wrong rows.
+            # integrity_check does NOT detect FTS↔content desync — rebuild
+            # unconditionally so the artifact is consistent on its own.
+            has_fts = dst_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='dialog_fts' AND sql LIKE \"%content='dialog_messages'%\""
+            ).fetchone()
+            if has_fts:
+                dst_conn.execute(
+                    "INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild')"
+                )
+                dst_conn.commit()
             row = dst_conn.execute("PRAGMA integrity_check").fetchone()
             integrity = "" if row is None else str(row[0])
             if integrity != "ok":

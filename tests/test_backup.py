@@ -111,3 +111,51 @@ def test_restore_replaces_store_and_removes_stale_sidecars(tmp_path):
         assert restored.execute("SELECT body FROM facts").fetchone()[0] == "restored"
     finally:
         restored.close()
+
+
+def test_backup_of_gappy_db_keeps_fts_consistent(fresh_mp, tmp_path):
+    """VACUUM INTO renumbers dialog_messages' implicit rowids; the backup
+    must rebuild the external-content dialog_fts index or MATCHes in the
+    artifact map to the wrong rows (integrity_check cannot see this)."""
+    import sqlite3 as _sqlite3
+
+    from threadkeeper.backup import create_backup
+
+    conn = fresh_mp["db"].get_db()
+    for uuid, content in [
+        ("m-1", "first pelican entry"),
+        ("m-2", "second toucan entry"),
+        ("m-3", "third condor entry"),
+    ]:
+        conn.execute(
+            "INSERT INTO dialog_messages "
+            "(uuid, source, project, session_id, role, content, model, created_at) "
+            "VALUES (?, 'pytest', 'proj', 'sess', 'user', ?, NULL, 1800000000)",
+            (uuid, content),
+        )
+    # rowid gap: VACUUM INTO will renumber m-2/m-3 in the artifact
+    conn.execute("DELETE FROM dialog_messages WHERE uuid='m-1'")
+    conn.commit()
+    conn.close()
+
+    dest = tmp_path / "artifact.sqlite"
+    create_backup(dest)
+
+    bconn = _sqlite3.connect(str(dest))
+    try:
+        def match(term):
+            return [
+                r[0]
+                for r in bconn.execute(
+                    "SELECT d.uuid FROM dialog_fts f "
+                    "JOIN dialog_messages d ON d.rowid = f.rowid "
+                    "WHERE dialog_fts MATCH ? ORDER BY rank",
+                    (term,),
+                ).fetchall()
+            ]
+
+        assert match("toucan") == ["m-2"]
+        assert match("condor") == ["m-3"]
+        assert match("pelican") == []
+    finally:
+        bconn.close()
