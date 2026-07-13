@@ -72,7 +72,11 @@ def test_trigger_delete_removes_from_index(fresh_mp):
     conn.execute("DELETE FROM dialog_messages WHERE uuid='m-del'")
     conn.commit()
     assert _match_uuids(conn, "walrus") == []
-    assert conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0] == 0
+    # dialog_fts_docsize, not dialog_fts: an unconstrained COUNT(*) on an
+    # external-content table proxies to dialog_messages' row count
+    assert conn.execute(
+        "SELECT COUNT(*) FROM dialog_fts_docsize"
+    ).fetchone()[0] == 0
 
 
 def test_backfill_rebuilds_empty_index(fresh_mp):
@@ -102,7 +106,13 @@ def test_backfill_noop_when_in_sync(fresh_mp):
     conn = fresh_mp["db"].get_db()
     _insert_msg(conn, "m-sync", "already indexed muskox")
     conn.commit()
-    before = conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0]
+    # real index size via docsize (COUNT(*) on dialog_fts would proxy to
+    # dialog_messages and pass even with a broken index)
+    before = conn.execute(
+        "SELECT COUNT(*) FROM dialog_fts_docsize"
+    ).fetchone()[0]
     ingest._backfill_dialog_fts_if_empty(conn)
-    after = conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0]
+    after = conn.execute(
+        "SELECT COUNT(*) FROM dialog_fts_docsize"
+    ).fetchone()[0]
     assert before == after == 1

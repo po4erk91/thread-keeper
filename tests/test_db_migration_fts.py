@@ -102,8 +102,11 @@ def test_migrates_v1_to_external_content(tmp_path, monkeypatch):
     ).fetchone() is None
     # search parity: same rows still match
     assert set(_match_uuids(conn, "aardvark")) == {"v1-plain-1", "v1-plain-2"}
-    # all three rows are indexed
-    assert conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0] == 3
+    # all three rows are indexed — count docsize (one row per rowid actually
+    # indexed); COUNT(*) on dialog_fts itself proxies to dialog_messages
+    assert conn.execute(
+        "SELECT COUNT(*) FROM dialog_fts_docsize"
+    ).fetchone()[0] == 3
     conn.close()
 
 
@@ -146,7 +149,9 @@ def test_migration_rerun_is_noop(tmp_path, monkeypatch):
     conn = tk_db.get_db()
     counts1 = (
         conn.execute("SELECT COUNT(*) FROM dialog_messages").fetchone()[0],
-        conn.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0],
+        # docsize = real index size (COUNT(*) on dialog_fts proxies to
+        # dialog_messages, so it can't detect a rebuild regression)
+        conn.execute("SELECT COUNT(*) FROM dialog_fts_docsize").fetchone()[0],
     )
     conn.close()
 
@@ -154,7 +159,7 @@ def test_migration_rerun_is_noop(tmp_path, monkeypatch):
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == 2
     counts2 = (
         conn2.execute("SELECT COUNT(*) FROM dialog_messages").fetchone()[0],
-        conn2.execute("SELECT COUNT(*) FROM dialog_fts").fetchone()[0],
+        conn2.execute("SELECT COUNT(*) FROM dialog_fts_docsize").fetchone()[0],
     )
     assert counts1 == counts2 == (3, 3)
     conn2.close()

@@ -323,7 +323,10 @@ def mp_dashboard(window_days: int = 7) -> str:
     out.append(
         "  high_volume: "
         f"dialog_messages={_scalar(conn, 'SELECT COUNT(*) FROM dialog_messages')} "
-        f"dialog_fts={_scalar(conn, 'SELECT COUNT(*) FROM dialog_fts')} "
+        # docsize = real FTS index size. COUNT(*) on the external-content
+        # dialog_fts table (schema v2) proxies to dialog_messages' rowids,
+        # which would always mirror the metric above and hide index desync.
+        f"dialog_fts={_scalar(conn, 'SELECT COUNT(*) FROM dialog_fts_docsize')} "
         f"dialog_vec={_scalar(conn, 'SELECT COUNT(*) FROM dialog_vec')} "
         f"dialog_vec_map={_scalar(conn, 'SELECT COUNT(*) FROM dialog_vec_map')} "
         f"events={_scalar(conn, 'SELECT COUNT(*) FROM events')} "
