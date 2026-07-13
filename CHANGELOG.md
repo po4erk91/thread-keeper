@@ -98,6 +98,36 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Single-flight prompt-prefix drift now fails tests (#101).** Curator,
+  shadow_review, dialectic_validator, evolve_reviewer, evolve_applier, and
+  candidate_reviewer build their spawned-child prompts from the same prefix
+  constants used by their running-child detectors. The shadow and dialectic
+  detectors no longer embed duplicated `LIKE 'You are ...%'` SQL literals, and a
+  parametrized regression test catches both prompt-opening drift and detector
+  rewrites that stop reading the shared prefix.
+- **Curator and candidate-reviewer honor restart intervals (#99).** Both
+  dispatchers now consult their recorded pass high-water before taking the
+  single-flight lock, so a fresh MCP server inside the configured interval
+  returns `not_due` and spawns no child. Forced runs still bypass the due gate.
+
+- **Autonomous skill creation is capped server-side (#98).**
+  `skill_manage(action="create")` now enforces
+  `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` (default 2) per child session
+  for `candidate_review`, `shadow_review`, and `background_review` origins, so
+  prompt-only "max 2 new skills" guidance cannot be bypassed by a confused or
+  injected learning-loop child. Foreground skill creation is unchanged.
+
+- **Legacy DB migration no longer copies live WAL sidecars (#95).** Startup
+  migration from `~/.memory_partner/db.sqlite` to `~/.threadkeeper/db.sqlite`
+  now uses SQLite's online backup API, producing a consistent destination main
+  DB from dirty-WAL sources without copying machine-local `-shm` files.
+
+- **Task spool no longer defaults to a predictable shared `/tmp` directory
+  (#94).** `THREADKEEPER_TASK_LOG_DIR` now defaults to
+  `~/.threadkeeper/tasks`, the spool directory is verified as a non-symlink
+  owned by the current user and created `0700`, and predictable spawn files are
+  opened through no-follow owner-only helpers instead of create-then-`chmod`.
+
 - **Transcript ingest no longer loses capped or same-second messages (#89).**
   `_ingest_file` now leaves the per-file cursor behind when `max_msgs` stops a
   pass before the transcript is fully consumed, so later passes reread and drain
@@ -162,6 +192,13 @@ version bumps follow semver per the policy in
   validation instead of runtime.
 
 ### Added
+
+- **Consistent SQLite backup/restore command (#102).** `tk-backup create`
+  now uses SQLite `VACUUM INTO` to write an integrity-checked single-file
+  snapshot of the live WAL store, including committed frames still in
+  `db.sqlite-wal` while background writers keep running. `tk-backup restore
+  --yes` verifies the snapshot, atomically replaces the target DB after the user
+  stops thread-keeper, and removes stale `-wal`/`-shm` sidecars around the swap.
 
 - **Reserve-before-spawn admission and dialectic leases (#58).** `spawn()` now
   reserves the `tasks` row with its RSS estimate inside a `BEGIN IMMEDIATE`

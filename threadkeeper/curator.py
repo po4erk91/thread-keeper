@@ -82,8 +82,12 @@ _INVENTORY_FINGERPRINT_RE = re.compile(
 )
 
 
-CURATOR_PROMPT = """\
-You are an autonomous CURATOR for thread-keeper's lessons + skills
+# Stable leading substring used to find running curator children in the tasks
+# table for the single-flight guard. The prompt is built from this fragment so
+# edits to the opening line cannot silently drift away from the detector.
+CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
+
+CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
 library. You read the inventory below — every lesson slug, every
 recently-touched skill, usage telemetry — and decide what to keep,
 patch, consolidate, or prune.
@@ -249,6 +253,11 @@ def _record_curator_pass(conn: sqlite3.Connection,
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("curator: failed to record pass", exc_info=True)
+
+
+def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
+    last = _last_curator_ts(conn)
+    return last <= 0 or now_t >= last + int(CURATOR_INTERVAL_S)
 
 
 def _stable_int(value) -> int | None:
@@ -565,12 +574,6 @@ def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
 # Single-flight: one curator pass at a time across ALL processes
 # ──────────────────────────────────────────────────────────────────────
 
-# Stable leading substring of CURATOR_PROMPT — used to find running curator
-# children in the tasks table for the single-flight guard. Keep in sync with
-# the opening line of CURATOR_PROMPT above.
-CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
-
-
 def _running_curator_children(conn: sqlite3.Connection) -> list[str]:
     """Running curator task ids, reaping dead rows.
 
@@ -630,8 +633,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
     Returns a short status string for observability:
       - 'disabled'        — env knob off and not forced
-      - 'not_due'         — scheduled tick, but another server already ran
-                            this loop within the interval (daemon_state)
+      - 'not_due'         — checked recently; interval high-water not due
       - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
       - 'unchanged_inventory' — latest complete inventory already reviewed
@@ -640,9 +642,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """
     if CURATOR_INTERVAL_S <= 0 and not force:
         return "disabled"
+    conn = get_db()
+    now = int(time.time())
+    if not force and not _pass_due(conn, now):
+        _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
+        return "not_due"
     if not daemon_state.claim_pass(
-        "curator", CURATOR_INTERVAL_S, scheduled=scheduled,
+        "curator", CURATOR_INTERVAL_S, scheduled=scheduled, conn=conn,
+        now=now,
     ):
+        _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
         return "not_due"
 
     # Single-flight: the flock makes the running-children check + spawn atomic
@@ -653,8 +662,6 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         if not locked:
             return "curator_running n=1 (single-flight lock)"
 
-        conn = get_db()
-        now = int(time.time())
         running = _running_curator_children(conn)
         if running:
             out = f"curator_running n={len(running)} (single-flight)"

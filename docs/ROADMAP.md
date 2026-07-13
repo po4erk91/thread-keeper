@@ -27,6 +27,11 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Learning-loop skill-create cap (#98): `skill_manage(action='create')`
+  enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
+  `candidate_review`, `shadow_review`, and `background_review` origins, so a
+  prompt-injected autonomous reviewer cannot mass-create skills in one pass;
+  foreground skill creation is unaffected.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
@@ -108,6 +113,11 @@ remains a live question.
   completed `tasks`, handled/ephemeral `signals`, old `events`, and old
   `probe_results`; optional WAL checkpoint and VACUUM maintenance are wired,
   and `mp_dashboard()` reports DB size plus high-volume row counts.
+- Data-lifecycle backup/restore safety (#102): `tk-backup create` uses
+  SQLite `VACUUM INTO` to produce an integrity-checked single-file snapshot of
+  the live WAL store while writer loops continue, and `tk-backup restore --yes`
+  verifies the snapshot, atomically swaps the DB, and clears stale
+  `-wal`/`-shm` sidecars after the user stops thread-keeper.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
@@ -240,6 +250,12 @@ sentence-transformers similarity scorer plus a classifier, bootstrap from
 the current ledger. But: review_candidates is not actively used yet,
 first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 
+**Rule-enforcement escalation.** Repeatedly re-broken class-level rules
+should stop living only as passive memory. When the same lesson keeps
+getting violated despite an existing entry, mark it `memory-insufficient`
+and surface a recommendation to escalate the rule into an active hard
+guard such as a `PreToolUse` hook. Scope: M. Tracked in issue #228.
+
 **ACL (former Phase 4).** Folded into the "Multi-user / remote
 deployment" item above — see the ACL sub-bullet there.
 
@@ -365,6 +381,12 @@ instead of asking another curator child to re-grade the same snapshot. The same
 dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
+
+✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
+high-water before spawning. A recent `curator_pass` or
+`candidate_review_pass` makes fresh MCP-server restarts and non-forced direct
+checks return `not_due` without launching another destructive/expensive child;
+`force=True` still bypasses the interval.
 
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a
@@ -655,6 +677,12 @@ verified at the cited file:line, deduplicated against the issues above):
   is on. Timed-out children are surfaced (`tasks_timed_out` in `mp_dashboard`,
   `timed_out` in `agent_status`). Complements #25 (aggregate cost, no kill), #66
   (kill-path liveness correctness), and #64 (visible/pid=0 RSS measurement).
+- ✅ DONE (#101). Single-flight running-child detection is prompt-prefix keyed,
+  so prefix drift could silently disable duplicate-spawn prevention. The
+  spawning daemon prompts now compose their opening line from the same prefix
+  constants used by the detectors, the remaining inline SQL prefix literals were
+  replaced with parameterized constants, and a parametrized consistency test
+  fails if any prompt opening or detector drifts.
 - ✅ DONE (#68). Spawn **slim MCP config** was written world-readable with no
   `chmod` and embedded the host server `env` block, while the stdin prompt file
   is correctly `0600` and the `.command` script was `0755`. Now: slim config
@@ -796,20 +824,22 @@ deduplicated against the issues above):
   RSS samples as 0 MB. Spawn-budget refresh preserves last-known child RSS on
   measurement failure and sweeps every open task row for liveness, so a >100-row
   stale tail cannot pin the budget.
-- Security: the `/tmp/thread-keeper-tasks` **spool dir** is created world-knowable
-  with `exist_ok=True` and no owner/`O_NOFOLLOW` check, then per-file
-  create-then-`chmod` — a symlink + brief-disclosure vector for spawn-prompt
-  content on shared hosts. Distinct from #21 (`~/.threadkeeper`) and #68 (#94).
-- Legacy **DB migration** copies the live `-wal`/`-shm` sidecars with non-atomic
-  `shutil.copy2` and no checkpoint — pairing a stale `-shm` with a copied `-wal`
-  can produce a torn/corrupt DB at the new path (#95).
+- ✅ DONE (#94). The task spool now defaults to `~/.threadkeeper/tasks` inside
+  the hardened user-owned perimeter, verifies configured spool directories with
+  `lstat`/current-user ownership before use, creates them `0700`, and opens
+  predictable task files with no-follow owner-only helpers instead of
+  create-then-`chmod`.
+- ✅ DONE (#95): Legacy **DB migration** now uses SQLite's online backup API
+  instead of copying live `-wal`/`-shm` sidecars, so dirty-WAL source databases
+  migrate into a consistent main DB and machine-local `-shm` state is never
+  imported.
 - Codex adapter: the fallback message **UUID** has no per-line offset, so
   timestamp-colliding messages collapse to one uuid and the later ones are
   deduped away; separately, each rollout file is fully scanned twice per ingest
   pass (#97).
-- The candidate-reviewer's "max 2 new skills per pass" cap is **prompt-only**;
-  `skill_manage(create)` has no server-side per-pass counter, so an injected or
-  confused (injection-prone) child can mass-create skills in one pass (#98).
+- ✅ DONE (#98): The candidate-reviewer's "max 2 new skills per pass" cap is
+  enforced server-side in `skill_manage(create)` for autonomous learning-loop
+  child origins, not only stated in the reviewer prompt.
 
 Also extended existing issues with verified file:line detail rather than filing
 anew: the `get_db` per-call migration issue was closed by schema versioning

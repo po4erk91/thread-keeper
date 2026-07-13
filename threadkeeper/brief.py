@@ -18,10 +18,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .config import (
-    SEMANTIC_AVAILABLE, DIALOG_LOG, TASK_LOG_DIR, BRIEF_LEAN, DB_PATH,
+    SEMANTIC_AVAILABLE, DIALOG_LOG, BRIEF_LEAN, DB_PATH,
     PICKUP_CLAIM_TTL_S,
 )
 from .helpers import fmt_age, q
+from .task_spool import append_spool_text
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
 from .embeddings import _cosine_search
@@ -939,7 +940,6 @@ def _append_dialog_log(from_cid: Optional[str], to_cid: Optional[str],
     """Single-line log of every cross-session signal. Tailed by
     open_dialog_window() so the user sees the live conversation."""
     try:
-        TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%H:%M:%S")
         f = (from_cid or "?")[:8]
         t = (to_cid or "*")[:8]
@@ -948,7 +948,6 @@ def _append_dialog_log(from_cid: Optional[str], to_cid: Optional[str],
         if len(body) > 280:
             body = body[:280] + "…"
         line = f"[{ts}] {f} → {t:<8} [{kind:<9}] {body}\n"
-        with DIALOG_LOG.open("a", encoding="utf-8") as fp:
-            fp.write(line)
+        append_spool_text(DIALOG_LOG, line)
     except OSError:
         pass

@@ -54,8 +54,9 @@ _started = False
 
 CANDIDATE_REVIEW_PROMPT_PREFIX = "You are a CANDIDATE REVIEWER"
 
-CANDIDATE_REVIEW_PROMPT = """\
-You are a CANDIDATE REVIEWER for thread-keeper's extract queue.
+CANDIDATE_REVIEW_PROMPT = (
+    CANDIDATE_REVIEW_PROMPT_PREFIX
+    + """ for thread-keeper's extract queue.
 
 The extract daemon harvests heuristic candidates from agent dialog
 into the `extract_candidates` table (status='pending'). Your job is to
@@ -135,6 +136,7 @@ OUTPUT — write a one-paragraph summary at the end of your run:
    created skill: ..."
 
 """
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -171,6 +173,11 @@ def _record_review_pass(conn: sqlite3.Connection, ts: int,
     except sqlite3.OperationalError:
         logger.debug("candidate_reviewer: record_pass failed",
                      exc_info=True)
+
+
+def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
+    last = _last_review_ts(conn)
+    return last <= 0 or now_t >= last + int(CANDIDATE_REVIEW_INTERVAL_S)
 
 
 def _format_candidate(row: dict) -> str:
@@ -300,8 +307,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
     Returns a short status string:
       - 'disabled'             — env knob off and not forced
-      - 'not_due'              — scheduled tick, but another server already
-                                 ran this loop within the interval
+      - 'not_due'              — checked recently; interval high-water not due
       - 'below_threshold n=X'  — fewer than CANDIDATE_REVIEW_MIN
                                  pending; skip the spawn
       - 'spawned task_id=…'    — reviewer child launched
@@ -309,16 +315,21 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """
     if CANDIDATE_REVIEW_INTERVAL_S <= 0 and not force:
         return "disabled"
+    conn = get_db()
+    now = int(time.time())
+    if not force and not _pass_due(conn, now):
+        _record_review_pass(conn, _last_review_ts(conn), "not_due")
+        return "not_due"
     if not daemon_state.claim_pass(
         "candidate_review", CANDIDATE_REVIEW_INTERVAL_S, scheduled=scheduled,
+        conn=conn, now=now,
     ):
+        _record_review_pass(conn, _last_review_ts(conn), "not_due")
         return "not_due"
     with _review_spawn_lock() as locked:
         if not locked:
             return "candidate_review_running n=1 (single-flight lock)"
 
-        conn = get_db()
-        now = int(time.time())
         running = _running_reviewer_children(conn)
         if running:
             out = f"candidate_review_running n={len(running)} (single-flight)"
