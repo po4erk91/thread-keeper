@@ -169,11 +169,13 @@ version left unchanged for a retry.
 3. **dialog_messages + dialog_fts (+ dialog_vec)** — full conversation
    transcripts, pulled live from `~/.claude/projects/**/*.jsonl`.
    Used by `peers()`, `brief()`, `search()`, `dialog_search()` and the
-   shadow-review daemon. The retention pass can prune aged dialog rows and
-   deletes their FTS/vec mirrors in the same pass. Before new transcript
-   content is written to
-   `dialog_messages`, mirrored into `dialog_fts`, embedded, or backfilled into
-   FTS, ingest masks common credential-shaped values such as authorization
+   shadow-review daemon. The retention pass can prune aged dialog rows;
+   `dialog_fts` follows automatically (external-content FTS5,
+   trigger-synced — schema v2), the vec sidecars are deleted in the same
+   pass. Before new transcript content is written to `dialog_messages`
+   (which the external-content `dialog_fts` indexes directly — no stored
+   copy), embedded, or rebuilt into FTS, ingest masks common
+   credential-shaped values such as authorization
    headers, bearer/OAuth tokens, AWS keys, `.npmrc` / `.netrc` credentials, and
    `*_TOKEN=` / `*_SECRET=` assignments. The redaction is default-on and can be
    disabled with `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for local debugging
@@ -1458,7 +1460,7 @@ unsupported CLI overrides still fall through to the next priority, and
 |---|---|---|
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | sqlite file |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 | retention/compaction daemon tick; 0 disables |
-| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows plus `dialog_fts` / `dialog_vec` mirrors; 0 keeps forever |
+| `THREADKEEPER_DIALOG_RETENTION_DAYS` | 0 | prune old dialog rows (FTS entries follow via trigger) plus `dialog_vec` sidecars; 0 keeps forever |
 | `THREADKEEPER_TASK_RETENTION_DAYS` | 30 | prune completed `tasks` older than this many days; 0 keeps forever |
 | `THREADKEEPER_SIGNAL_RETENTION_DAYS` | 0 | prune handled old `signals` and aged search proxy messages; 0 keeps forever |
 | `THREADKEEPER_EVENTS_RETENTION_DAYS` | 0 | prune old `events` during retention passes; 0 keeps forever |
