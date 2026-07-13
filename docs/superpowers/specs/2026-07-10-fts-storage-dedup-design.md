@@ -94,7 +94,7 @@ VACUUM;
 INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild');
 ```
 
-**The FTS rebuild after `VACUUM` is mandatory, not optional.** `VACUUM` renumbers the *implicit* rowids of `dialog_messages` (its PK is `uuid TEXT`, so the rowid is not stable across `VACUUM`). An external-content FTS keyed on `content_rowid='rowid'` would silently desync — searches would map to the wrong or missing rows — until the index is rebuilt against the new rowids. `db_compact()` does both atomically (single connection, `VACUUM` then `rebuild`), guarded by a single-flight lock so two compactions can't overlap. This is precisely why a *forced* `VACUUM` is unsafe here and reclaim is opt-in.
+**The FTS rebuild after `VACUUM` is mandatory, not optional.** `VACUUM` renumbers the *implicit* rowids of `dialog_messages` (its PK is `uuid TEXT`, so the rowid is not stable across `VACUUM`). (On the SQLite builds verified during implementation — 3.51/3.53 — rowids were preserved in practice; the rebuild is defensive per SQLite's documented contract.) An external-content FTS keyed on `content_rowid='rowid'` would silently desync — searches would map to the wrong or missing rows — until the index is rebuilt against the new rowids. `db_compact()` does both atomically (single connection, `VACUUM` then `rebuild`), guarded by a single-flight lock so two compactions can't overlap. This is precisely why a *forced* `VACUUM` is unsafe here and reclaim is opt-in.
 
 ### 5. Testing
 

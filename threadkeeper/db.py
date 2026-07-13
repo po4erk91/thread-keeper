@@ -399,7 +399,8 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
 -- rowid — no stored duplicate (v1's content-storing mirror duplicated
 -- ~465MB). Result→message mapping is dialog_fts.rowid ==
 -- dialog_messages.rowid (implicit rowid; PK is TEXT uuid). That rowid is
--- NOT stable across VACUUM — any VACUUM must be followed by an FTS rebuild
+-- not guaranteed stable across VACUUM (SQLite may renumber implicit
+-- rowids) — any VACUUM must be followed by an FTS rebuild
 -- (db_compact() does both; see also _rebuild_dialog_fts_if_needed).
 CREATE VIRTUAL TABLE IF NOT EXISTS dialog_fts USING fts5(
     content,

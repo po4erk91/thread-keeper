@@ -16,8 +16,9 @@ version bumps follow semver per the policy in
   old table, scrubs legacy pre-redaction secret rows in place, and rebuilds
   the index; concurrent sessions wait for the migration instead of dying on
   the busy timeout. New opt-in `db_compact()` tool reclaims the freed pages
-  (`VACUUM` + mandatory FTS rebuild — `VACUUM` renumbers the implicit
-  rowids the index is keyed on). Search results and ranking are unchanged.
+  (`VACUUM` + mandatory FTS rebuild — `VACUUM` is permitted to renumber
+  the implicit rowids the index is keyed on). Search results and ranking
+  are unchanged.
   Index emptiness/size checks (migration, backfill, `mp_dashboard`'s
   `dialog_fts=` metric) read the `dialog_fts_docsize` shadow table — an
   unconstrained `COUNT(*)` on an external-content FTS5 table proxies to the

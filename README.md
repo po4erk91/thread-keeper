@@ -1232,10 +1232,10 @@ becomes a problem.
 
 `db_compact()` is the opt-in disk-reclaim tool: `VACUUM` + a mandatory
 `dialog_fts` rebuild (schema v2 keys the FTS index on `dialog_messages`
-rowids, which `VACUUM` renumbers — the rebuild is what keeps search
-correct). Run it once in a quiet window after upgrading to the v2 schema
-to shrink the DB file by roughly the old FTS shadow copy (~465 MB on a
-2.7 GB DB); day-to-day it is never required.
+rowids, which `VACUUM` is permitted to renumber — the rebuild is what
+keeps search correct). Run it once in a quiet window after upgrading to
+the v2 schema to shrink the DB file by roughly the old FTS shadow copy
+(~465 MB on a 2.7 GB DB); day-to-day it is never required.
 
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 

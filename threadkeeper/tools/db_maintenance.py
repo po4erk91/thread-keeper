@@ -2,10 +2,11 @@
 
 Dropping v1's dialog_fts shadow copy freed ~465MB of pages INSIDE the file;
 the file itself shrinks only on VACUUM. VACUUM takes an exclusive lock and
-renumbers dialog_messages' implicit rowids — which desyncs the
+is permitted to renumber dialog_messages' implicit rowids (not guaranteed
+stable; preserved on the builds we tested) — which would desync the
 external-content dialog_fts index — so this is deliberately an explicit,
 operator-run tool (never an automatic pass) and the FTS rebuild after
-VACUUM is mandatory, not optional."""
+VACUUM is mandatory (defensive), not optional."""
 from __future__ import annotations
 
 import sqlite3
@@ -42,8 +43,10 @@ def db_compact() -> str:
                     f"vacuum skipped: {e} — DB busy; retry in a quiet window "
                     f"(no rowids were changed, index is still consistent)"
                 )
-            # MANDATORY: VACUUM renumbered dialog_messages' implicit rowids;
-            # the external-content index maps by rowid and is now stale.
+            # MANDATORY: VACUUM may have renumbered dialog_messages'
+            # implicit rowids (SQLite's contract permits it; preserved on
+            # the builds we tested); the external-content index maps by
+            # rowid and could now be stale — rebuild is defensive.
             conn.execute("INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild')")
             conn.commit()
             after = DB_PATH.stat().st_size
