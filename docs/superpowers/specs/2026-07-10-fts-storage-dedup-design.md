@@ -102,7 +102,7 @@ INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild');
 - **Search:** MATCH returns correct `uuid`s via the `d.rowid=f.rowid` join; ranking preserved.
 - **Triggers:** insert a `dialog_messages` row → searchable; update its content → old terms gone, new terms found; delete it → not searchable. (Direct trigger behavior, no ingest.)
 - **Fresh install:** a brand-new DB creates the external-content `dialog_fts` + triggers directly (schema v2), no `dialog_fts_content`.
-- **Post-VACUUM correctness:** after `db_compact()` (VACUUM renumbers rowids + rebuild), a MATCH still returns the correct uuids — the regression guard for the rowid-desync trap.
+- **Post-VACUUM correctness:** after `db_compact()` on a deliberately desynced index, a MATCH returns the correct uuids again — the regression guard for the rowid-desync trap. (Implemented with a simulated desync via direct index writes: the verified SQLite builds preserve implicit rowids across VACUUM, so a VACUUM-only test would pass vacuously.)
 - Existing FTS-dependent tests (`test_delegated_search`, `test_search_fts_punctuation`, `test_vec_search`) stay green.
 
 ## Risks
