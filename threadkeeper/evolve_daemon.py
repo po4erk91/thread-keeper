@@ -26,8 +26,10 @@ issues one at a time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import sqlite3
 import subprocess
 import threading
@@ -42,8 +44,9 @@ from .evolve_applier import (
     _base_ref,
     _ensure_repo_ready,
     _git_worktree_precondition,
+    _repo_root,
 )
-from .github_budget import run_gh
+from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .helpers import daemon_sleep, single_flight_lock
 from . import identity
 
@@ -70,6 +73,13 @@ ROADMAP_DOC_PATH = "docs/ROADMAP.md"
 ROADMAP_DOC_BRANCH_PREFIX = "docs/roadmap-audit-"
 ROADMAP_DOC_PR_MARKER = "<!-- thread-keeper:evolve-reviewer-roadmap-pr -->"
 ROADMAP_DOC_PR_FETCH_LIMIT = 100
+EVOLVE_ISSUE_FETCH_PAGE_SIZE = 100
+EVOLVE_ISSUE_FETCH_LIMIT = 1000
+EVOLVE_ISSUE_SKIPPED_KIND = "evolve_issue_skipped"
+EVOLVE_ISSUE_FILED_KIND = "evolve_issue_filed"
+EVOLVE_ISSUE_SIMILARITY_THRESHOLD = 0.72
+EVOLVE_ISSUE_JACCARD_THRESHOLD = 0.42
+EVOLVE_ISSUE_MIN_SHARED_TOKENS = 5
 
 # ── Phase 1: read-only web research ──────────────────────────────────────────
 # No shell, no bypassPermissions, no GitHub. WebSearch/WebFetch + read-only repo
@@ -136,23 +146,31 @@ Run from the repo root:
   - Read README.md, docs/ARCHITECTURE.md, docs/ROADMAP.md, CHANGELOG.md.
   - Inspect threadkeeper/evolve_daemon.py, threadkeeper/evolve_applier.py,
     threadkeeper/agent_status.py, threadkeeper/curator.py, and relevant tests.
-  - Inspect all open issues before filing duplicates, oldest-first and without
-    the old 50-item window. Use a paginated REST read, for example:
+  - Inspect all open and closed issues before filing duplicates, oldest-first
+    and without the old 50-item window. Closed issues whose `state_reason` is
+    `not_planned` are part of the duplicate set: do not re-file work the
+    maintainer already rejected. Use a paginated REST read, for example:
     `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)` then
-    `gh api --include --paginate "repos/$repo/issues?state=open&sort=created&direction=asc&per_page=100"`;
-    filter out entries with `pull_request`.
+    `gh api --include --paginate "repos/$repo/issues?state=all&sort=created&direction=asc&per_page=100"`;
+    filter out entries with `pull_request`, but keep both `state` and
+    `state_reason` for duplicate review.
   - Review pending legacy evolve suggestions below. For each clear suggestion,
     create or link a GitHub issue; then call evolve_decide(promote|dismiss) only
     when that helps keep the legacy queue honest.
 
 OUTPUTS
 -------
-1. Create/update GitHub issues for actionable roadmap work:
-     gh issue create --title "..." --label enhancement --label roadmap --body "..."
-   Use existing labels when possible. If the item is docs-only or i18n/adapter,
-   use fitting labels too. The issue body must contain: Problem, Proposed
-   direction, Acceptance criteria, Test/docs impact, and Sources if a finding
-   below informed it (cite its source URLs after verifying them).
+1. Create/update GitHub issues for actionable roadmap work through the
+   mechanical dedup gate only:
+     evolve_issue_create(title="...", body="...", labels="enhancement,roadmap")
+   Do not call `gh issue create` directly. The tool checks existing open and
+   closed GitHub issues (including closed `not_planned` issues), the local
+   reviewer issue ledger, and same-pass fingerprints before filing. It records
+   both filed issues and duplicate skips as telemetry. Use existing labels when
+   possible. If the item is docs-only or i18n/adapter, use fitting labels too.
+   The issue body must contain: Problem, Proposed direction, Acceptance
+   criteria, Test/docs impact, and Sources if a finding below informed it (cite
+   its source URLs after verifying them).
    A thread-keeper `gh` safety wrapper is prepended to PATH for this privileged
    child. It mechanically redacts home-directory paths and common token shapes
    from `gh issue create`, `gh issue comment`, and `gh pr create` bodies before
@@ -337,6 +355,520 @@ def _run_gh(
         check=False,
         runner=subprocess.run,
     )
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_ISSUE_NUMBER_RE = re.compile(r"/issues/(\d+)(?:\b|$)|#(\d+)")
+_ISSUE_STOPWORDS = {
+    "about", "acceptance", "across", "after", "against", "already", "also",
+    "and", "are", "body", "both", "but", "can", "candidate", "criteria",
+    "current", "daemon", "direction", "docs", "does", "doing", "done",
+    "each", "existing", "file", "filed", "filing", "for", "from", "gap",
+    "github", "have", "impact", "into", "issue", "issues", "its", "keep",
+    "label", "labels", "line", "lines", "loop", "make", "new", "not",
+    "only", "open", "path", "problem", "proposed", "repo", "review",
+    "reviewer", "roadmap", "same", "should", "source", "sources", "state",
+    "test", "tests", "that", "the", "their", "then", "there", "this",
+    "thread", "threadkeeper", "through", "to", "tool", "tools", "update",
+    "use", "used", "uses", "using", "when", "where", "with", "work",
+}
+_ISSUE_SYNONYMS = {
+    "dedupe": "dedup",
+    "deduped": "dedup",
+    "deduplicated": "dedup",
+    "deduplicates": "dedup",
+    "deduplication": "dedup",
+    "duplicate": "dedup",
+    "duplicates": "dedup",
+    "duplicated": "dedup",
+    "readonly": "readonly",
+    "readonlyhint": "readonly",
+    "destructivehint": "destructive",
+    "structuredcontent": "structured",
+    "notplanned": "not_planned",
+    "not_planned": "not_planned",
+    "uuid": "uuid",
+}
+
+
+def _ensure_evolve_issue_ledger(conn: sqlite3.Connection) -> None:
+    """Create the reviewer issue ledger on older schema-v2 databases.
+
+    `db.SCHEMA` covers fresh databases, but existing databases already at the
+    current schema version do not rerun the baseline schema. The reviewer gate
+    calls this before every ledger read/write so the new table is present
+    without a heavyweight schema bump.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS evolve_issues ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "issue_number INTEGER, "
+        "issue_url TEXT, "
+        "title TEXT NOT NULL, "
+        "fingerprint TEXT NOT NULL, "
+        "content_hash TEXT NOT NULL, "
+        "state TEXT, "
+        "source TEXT NOT NULL DEFAULT 'reviewer', "
+        "created_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_evolve_issues_fingerprint "
+        "ON evolve_issues(fingerprint)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evolve_issues_hash "
+        "ON evolve_issues(content_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evolve_issues_number "
+        "ON evolve_issues(issue_number)"
+    )
+
+
+def _issue_word(raw: str) -> str:
+    word = raw.lower()
+    word = _ISSUE_SYNONYMS.get(word, word)
+    if word.endswith("ies") and len(word) > 5:
+        word = word[:-3] + "y"
+    elif word.endswith("ing") and len(word) > 6:
+        word = word[:-3]
+    elif word.endswith("ed") and len(word) > 5:
+        word = word[:-2]
+    elif word.endswith("s") and len(word) > 4 and not word.endswith("ss"):
+        word = word[:-1]
+    return _ISSUE_SYNONYMS.get(word, word)
+
+
+def _issue_tokens(title: str, body: str = "") -> set[str]:
+    text = f"{title or ''}\n{body or ''}".lower()
+    text = re.sub(r"https?://\S+", " ", text)
+    tokens: set[str] = set()
+    for raw in _WORD_RE.findall(text):
+        word = _issue_word(raw)
+        if len(word) < 3 or word in _ISSUE_STOPWORDS:
+            continue
+        if word.isdigit():
+            continue
+        tokens.add(word)
+    return tokens
+
+
+def issue_content_hash(title: str, body: str = "") -> str:
+    """Short exact-ish hash for a candidate issue's public content."""
+    text = " ".join(_WORD_RE.findall(f"{title or ''} {body or ''}".lower()))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def issue_fingerprint(title: str, body: str = "") -> str:
+    """Stable keyword fingerprint used for reviewer issue idempotency."""
+    tokens = sorted(_issue_tokens(title, body))
+    material = " ".join(tokens)
+    if not material:
+        material = " ".join(_WORD_RE.findall(f"{title or ''} {body or ''}".lower()))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _issue_similarity(a: set[str], b: set[str]) -> tuple[float, float, int]:
+    if not a or not b:
+        return 0.0, 0.0, 0
+    shared = len(a & b)
+    overlap = shared / max(1, min(len(a), len(b)))
+    jaccard = shared / max(1, len(a | b))
+    return overlap, jaccard, shared
+
+
+def _issue_number_from_url(url: str) -> int | None:
+    match = _ISSUE_NUMBER_RE.search(str(url or ""))
+    if not match:
+        return None
+    raw = match.group(1) or match.group(2)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _label_names(labels: object) -> list[str]:
+    if not isinstance(labels, list):
+        return []
+    out: list[str] = []
+    for label in labels:
+        if isinstance(label, str):
+            out.append(label)
+        elif isinstance(label, dict):
+            name = label.get("name")
+            if name:
+                out.append(str(name))
+    return out
+
+
+def _issue_record(
+    issue: dict,
+    *,
+    source: str,
+    index: int | None = None,
+) -> dict:
+    title = str(issue.get("title") or "")
+    body = str(issue.get("body") or "")
+    number = issue.get("number")
+    try:
+        number = int(number) if number is not None else None
+    except (TypeError, ValueError):
+        number = None
+    url = str(issue.get("url") or issue.get("html_url") or "")
+    if number is None:
+        number = _issue_number_from_url(url)
+    state = str(issue.get("state") or "").lower()
+    state_reason = str(issue.get("state_reason") or issue.get("stateReason")
+                       or "").lower()
+    labels = _label_names(issue.get("labels"))
+    fp = str(issue.get("fingerprint") or issue_fingerprint(title, body))
+    content_hash = str(
+        issue.get("content_hash") or issue_content_hash(title, body)
+    )
+    return {
+        "source": source,
+        "index": index,
+        "number": number,
+        "title": title,
+        "body": body,
+        "url": url,
+        "state": state,
+        "state_reason": state_reason,
+        "labels": labels,
+        "fingerprint": fp,
+        "content_hash": content_hash,
+        "tokens": _issue_tokens(title, body),
+    }
+
+
+def _ledger_records(conn: sqlite3.Connection) -> list[dict]:
+    _ensure_evolve_issue_ledger(conn)
+    rows = conn.execute(
+        "SELECT issue_number, issue_url, title, fingerprint, content_hash, "
+        "state FROM evolve_issues ORDER BY id DESC"
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        out.append(_issue_record({
+            "number": row["issue_number"],
+            "url": row["issue_url"] or "",
+            "title": row["title"] or "",
+            "state": row["state"] or "filed",
+            "fingerprint": row["fingerprint"] or "",
+            "content_hash": row["content_hash"] or "",
+            "body": "",
+        }, source="ledger"))
+    return out
+
+
+def _duplicate_match(candidate: dict, existing: list[dict]) -> dict | None:
+    best: tuple[float, dict] | None = None
+    for item in existing:
+        if candidate["fingerprint"] and (
+            candidate["fingerprint"] == item["fingerprint"]
+        ):
+            return {"reason": "fingerprint", "match": item, "score": 1.0}
+        if candidate["content_hash"] and (
+            candidate["content_hash"] == item["content_hash"]
+        ):
+            return {"reason": "content_hash", "match": item, "score": 1.0}
+        overlap, jaccard, shared = _issue_similarity(
+            candidate["tokens"], item["tokens"]
+        )
+        if shared < EVOLVE_ISSUE_MIN_SHARED_TOKENS:
+            continue
+        score = max(overlap, jaccard)
+        if (
+            overlap >= EVOLVE_ISSUE_SIMILARITY_THRESHOLD
+            or jaccard >= EVOLVE_ISSUE_JACCARD_THRESHOLD
+        ):
+            if best is None or score > best[0]:
+                best = (score, item)
+    if best is None:
+        return None
+    return {"reason": "near_duplicate", "match": best[1], "score": best[0]}
+
+
+def dedupe_candidate_issues(
+    candidates: list[dict],
+    *,
+    existing_issues: list[dict] | None = None,
+    ledger_issues: list[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Return (accepted, skipped) after open+closed, ledger, and batch dedup.
+
+    Pure helper for tests and for the reviewer issue-create gate. `existing`
+    should include both open and closed GitHub issues; `ledger` contains
+    previously reviewer-filed issue fingerprints.
+    """
+    existing = [
+        _issue_record(issue, source="github")
+        for issue in (existing_issues or [])
+    ] + [
+        _issue_record(issue, source="ledger")
+        for issue in (ledger_issues or [])
+    ]
+    accepted: list[dict] = []
+    skipped: list[dict] = []
+    for idx, raw in enumerate(candidates):
+        candidate = _issue_record(raw, source="candidate", index=idx)
+        match = _duplicate_match(candidate, existing + accepted)
+        if match:
+            match_record = match["match"]
+            reason = match["reason"]
+            if match_record["source"] == "candidate":
+                reason = "within_pass"
+            skipped.append({
+                "candidate": candidate,
+                "reason": reason,
+                "match": match_record,
+                "score": match["score"],
+            })
+            continue
+        accepted.append(candidate)
+    return accepted, skipped
+
+
+def _fetch_github_issues_for_dedup(
+    repo_root: Path | str | None = None,
+) -> tuple[list[dict], str]:
+    """Fetch open and closed GitHub issues for reviewer duplicate checks."""
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "api", "--include", "--paginate",
+        "-H", "Accept: application/vnd.github+json",
+        (
+            "repos/{owner}/{repo}/issues"
+            "?state=all&sort=created&direction=asc"
+            f"&per_page={EVOLVE_ISSUE_FETCH_PAGE_SIZE}"
+        ),
+    ]
+    try:
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_issue_list_timeout"
+    except OSError as e:
+        return [], f"gh_issue_list_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_issue_list_failed: {msg[:180]}"
+    _responses, bodies = split_gh_api_output(proc.stdout or "")
+    if not bodies:
+        bodies = [strip_gh_api_headers(proc.stdout or "")]
+    pages: list[object] = []
+    try:
+        for body in bodies:
+            if body.strip():
+                pages.append(json.loads(body))
+    except json.JSONDecodeError as e:
+        return [], f"gh_issue_list_bad_json: {e}"
+    if not pages:
+        pages = [[]]
+    items: list[dict] = []
+    for page in pages:
+        if not isinstance(page, list):
+            return [], "gh_issue_list_bad_shape"
+        if page and all(isinstance(nested, list) for nested in page):
+            items.extend(
+                item
+                for nested in page
+                for item in nested
+                if isinstance(item, dict)
+            )
+        else:
+            items.extend(item for item in page if isinstance(item, dict))
+    issues = [item for item in items if not item.get("pull_request")]
+    total = len(issues)
+    if total > EVOLVE_ISSUE_FETCH_LIMIT:
+        skipped = total - EVOLVE_ISSUE_FETCH_LIMIT
+        logger.warning(
+            "evolve_daemon: %d GitHub issues exceeds reviewer dedup window "
+            "%d; %d newest issue(s) not considered",
+            total,
+            EVOLVE_ISSUE_FETCH_LIMIT,
+            skipped,
+        )
+        issues = issues[:EVOLVE_ISSUE_FETCH_LIMIT]
+    out: list[dict] = []
+    for item in issues:
+        out.append({
+            "number": item.get("number"),
+            "title": item.get("title") or "",
+            "labels": item.get("labels") or [],
+            "body": item.get("body") or "",
+            "url": item.get("html_url") or item.get("url") or "",
+            "state": item.get("state") or "",
+            "state_reason": item.get("state_reason") or "",
+        })
+    return out, ""
+
+
+def _record_issue_skip(
+    conn: sqlite3.Connection,
+    candidate: dict,
+    reason: str,
+    match: dict | None,
+    score: float,
+) -> None:
+    summary = f"skip {reason} fp={candidate['fingerprint']}"
+    if match:
+        if match.get("number"):
+            summary += f" match=#{match['number']}"
+        elif match.get("title"):
+            summary += f" match={match['title'][:80]}"
+        if match.get("state_reason") == "not_planned":
+            summary += " state_reason=not_planned"
+        elif match.get("state"):
+            summary += f" state={match['state']}"
+    summary += f" score={score:.2f}"
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            identity._session_id or "",
+            EVOLVE_ISSUE_SKIPPED_KIND,
+            candidate["title"][:120],
+            summary[:300],
+            int(time.time()),
+        ),
+    )
+
+
+def _record_issue_filed(
+    conn: sqlite3.Connection,
+    candidate: dict,
+    *,
+    issue_number: int | None,
+    issue_url: str,
+) -> None:
+    _ensure_evolve_issue_ledger(conn)
+    now = int(time.time())
+    conn.execute(
+        "INSERT OR IGNORE INTO evolve_issues "
+        "(issue_number, issue_url, title, fingerprint, content_hash, state, "
+        "source, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            issue_number,
+            issue_url,
+            candidate["title"],
+            candidate["fingerprint"],
+            candidate["content_hash"],
+            "filed",
+            "reviewer",
+            now,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            identity._session_id or "",
+            EVOLVE_ISSUE_FILED_KIND,
+            str(issue_number or ""),
+            f"filed fp={candidate['fingerprint']} {candidate['title']}"[:300],
+            now,
+        ),
+    )
+
+
+def _parse_created_issue(proc: subprocess.CompletedProcess) -> tuple[int | None, str]:
+    text = "\n".join(
+        s for s in [proc.stdout or "", proc.stderr or ""] if s
+    ).strip()
+    url = ""
+    for part in text.split():
+        if "/issues/" in part:
+            url = part.strip()
+            break
+    return _issue_number_from_url(url), url
+
+
+def create_reviewer_issue(
+    *,
+    title: str,
+    body: str,
+    labels: str = "enhancement,roadmap",
+    repo_root: Path | str | None = None,
+) -> str:
+    """Dedup, create a GitHub issue, and record reviewer issue telemetry."""
+    cleaned_title = title.strip()
+    cleaned_body = body.strip()
+    if not cleaned_title:
+        return "ERR title_required"
+    if not cleaned_body:
+        return "ERR body_required"
+    conn = get_db()
+    _ensure_evolve_issue_ledger(conn)
+    existing, err = _fetch_github_issues_for_dedup(repo_root)
+    if err:
+        return f"ERR issue_dedup_unavailable={err}"
+    ledger = _ledger_records(conn)
+    accepted, skipped = dedupe_candidate_issues(
+        [{"title": cleaned_title, "body": cleaned_body}],
+        existing_issues=existing,
+        ledger_issues=ledger,
+    )
+    if skipped:
+        skip = skipped[0]
+        _record_issue_skip(
+            conn,
+            skip["candidate"],
+            skip["reason"],
+            skip["match"],
+            float(skip["score"]),
+        )
+        conn.commit()
+        match = skip["match"]
+        if match.get("number"):
+            matched = f"#{match['number']}"
+        elif match.get("title"):
+            matched = match["title"][:80]
+        else:
+            matched = "ledger"
+        return (
+            "skipped duplicate "
+            f"reason={skip['reason']} match={matched} "
+            f"fingerprint={skip['candidate']['fingerprint']}"
+        )
+    candidate = accepted[0]
+    try:
+        from .github_safety import (
+            GithubBodySafetyError,
+            sanitize_public_github_body,
+        )
+        safe_title = sanitize_public_github_body(cleaned_title)
+        safe_body = sanitize_public_github_body(cleaned_body)
+    except (GithubBodySafetyError, OSError) as e:
+        return f"ERR gh_issue_body_unsafe: {e}"
+    repo = str(repo_root or _repo_root())
+    cmd = ["gh", "issue", "create", "--title", safe_title, "--body", safe_body]
+    label_values = [
+        label.strip() for label in labels.replace("\n", ",").split(",")
+        if label.strip()
+    ]
+    for label in label_values:
+        cmd.extend(["--label", label])
+    try:
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
+    except FileNotFoundError:
+        return "ERR gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "ERR gh_issue_create_timeout"
+    except OSError as e:
+        return f"ERR gh_issue_create_error: {e}"
+    if proc.returncode != 0:
+        err_text = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err_text[-1] if err_text else f"exit={proc.returncode}"
+        return f"ERR gh_issue_create_failed: {msg[:180]}"
+    number, url = _parse_created_issue(proc)
+    _record_issue_filed(conn, candidate, issue_number=number, issue_url=url)
+    conn.commit()
+    issue_ref = f"#{number}" if number else (url or "created")
+    return f"created {issue_ref} fingerprint={candidate['fingerprint']}"
 
 
 def _pr_file_path(item: object) -> str:
@@ -577,6 +1109,7 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
         extra_allowed_tools=(
             "Bash,Edit,Write,Read,Glob,Grep,"
             "mcp__thread-keeper__evolve_review,"
+            "mcp__thread-keeper__evolve_issue_create,"
             "mcp__thread-keeper__evolve_decide,"
             "mcp__thread-keeper__broadcast"
         ),

@@ -119,9 +119,15 @@ def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
 
     assert "gh issue list --state open --limit 50" not in prompt
     assert "gh api --include --paginate" in prompt
+    assert "state=all" in prompt
+    assert "state=open" not in prompt
     assert "sort=created" in prompt
     assert "direction=asc" in prompt
+    assert "not_planned" in prompt
+    assert "state_reason" in prompt
     assert "pull_request" in prompt
+    assert "evolve_issue_create" in prompt
+    assert "Do not call `gh issue create` directly" in prompt
     assert "git fetch origin {base_branch}" in prompt
     assert (
         "git fetch origin {roadmap_branch}:refs/remotes/origin/{roadmap_branch}"
@@ -131,6 +137,214 @@ def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
     assert "gh pr list --state open --json" in prompt
     assert "docs/ROADMAP.md" in prompt
     assert "append/skip" in prompt
+
+
+def test_issue_dedup_filters_existing_closed_and_within_pass(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    existing = [
+        {
+            "number": 67,
+            "title": (
+                "Adopt MCP tool annotations readOnly/destructive hints "
+                "and structured output"
+            ),
+            "state": "OPEN",
+            "body": (
+                "Expose readOnlyHint and destructiveHint metadata for every "
+                "MCP tool and return structuredContent where appropriate."
+            ),
+        },
+        {
+            "number": 73,
+            "title": (
+                "Fence untrusted ingested transcript content to prevent "
+                "memory poisoning in auto-loaded skills and lessons"
+            ),
+            "state": "CLOSED",
+            "state_reason": "not_planned",
+            "body": (
+                "Keep ingested transcript data from becoming instructions "
+                "inside auto-loaded skills, lessons, and review prompts."
+            ),
+        },
+    ]
+    candidates = [
+        {
+            "title": (
+                "Add MCP annotations for readOnly and destructive tool hints "
+                "with structured output"
+            ),
+            "body": (
+                "The MCP server should advertise readOnlyHint and "
+                "destructiveHint metadata and include structuredContent."
+            ),
+        },
+        {
+            "title": (
+                "Fence transcript data before it reaches auto loaded skills "
+                "or lessons"
+            ),
+            "body": (
+                "Untrusted ingested transcript content can poison prompts; "
+                "keep it fenced as data in skills, lessons, and reviewers."
+            ),
+        },
+        {
+            "title": "Persist reviewer issue fingerprints before filing",
+            "body": (
+                "Record normalized reviewer issue fingerprints in a local "
+                "ledger so the next reviewer pass skips repeated gaps."
+            ),
+        },
+        {
+            "title": "Persist reviewer issue fingerprints before filing",
+            "body": (
+                "Record normalized reviewer issue fingerprints in a local "
+                "ledger so the next reviewer pass skips repeated gaps."
+            ),
+        },
+    ]
+
+    accepted, skipped = pkg["ed"].dedupe_candidate_issues(
+        candidates, existing_issues=existing
+    )
+
+    assert [item["title"] for item in accepted] == [
+        "Persist reviewer issue fingerprints before filing"
+    ]
+    assert [item["reason"] for item in skipped] == [
+        "near_duplicate", "near_duplicate", "within_pass",
+    ]
+    assert skipped[0]["match"]["number"] == 67
+    assert skipped[1]["match"]["number"] == 73
+    assert skipped[1]["match"]["state_reason"] == "not_planned"
+
+
+def test_evolve_issue_create_skips_closed_not_planned_match(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    closed = [{
+        "number": 70,
+        "title": (
+            "Adopt MCP tool annotations readOnly destructive hints and "
+            "structured output"
+        ),
+        "state": "closed",
+        "state_reason": "not_planned",
+        "body": (
+            "Use MCP readOnlyHint destructiveHint and structuredContent "
+            "metadata for tools."
+        ),
+    }]
+    monkeypatch.setattr(
+        pkg["ed"], "_fetch_github_issues_for_dedup",
+        lambda repo_root=None: (closed, ""),
+    )
+
+    out = pkg["ed"].create_reviewer_issue(
+        title="Add MCP tool annotations with readOnly destructive hints",
+        body=(
+            "Expose readOnlyHint destructiveHint and structuredContent "
+            "metadata for every MCP tool."
+        ),
+        labels="enhancement,roadmap",
+        repo_root=tmp_path,
+    )
+
+    assert out.startswith("skipped duplicate")
+    assert "match=#70" in out
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind=?",
+        (pkg["ed"].EVOLVE_ISSUE_SKIPPED_KIND,),
+    ).fetchone()
+    assert row is not None
+    assert "state_reason=not_planned" in row["summary"]
+    assert conn.execute("SELECT COUNT(*) FROM evolve_issues").fetchone()[0] == 0
+
+
+def test_evolve_issue_create_records_ledger_and_second_pass_skips(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ed"], "_fetch_github_issues_for_dedup",
+        lambda repo_root=None: ([], ""),
+    )
+    calls = []
+
+    def fake_run_gh(cmd, *, cwd, timeout=30):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, "https://github.com/o/r/issues/123\n", ""
+        )
+
+    monkeypatch.setattr(pkg["ed"], "_run_gh", fake_run_gh)
+    title = "Persist reviewer issue fingerprints before filing"
+    body = (
+        "Record normalized reviewer issue fingerprints in a local ledger "
+        "so unchanged reviewer passes skip repeated gaps."
+    )
+
+    first = pkg["ed"].create_reviewer_issue(
+        title=title, body=body, labels="enhancement,roadmap", repo_root=tmp_path
+    )
+    second = pkg["ed"].create_reviewer_issue(
+        title=title, body=body, labels="enhancement,roadmap", repo_root=tmp_path
+    )
+
+    assert first.startswith("created #123")
+    assert second.startswith("skipped duplicate")
+    assert len(calls) == 1
+    assert conn.execute("SELECT COUNT(*) FROM evolve_issues").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind=?",
+        (pkg["ed"].EVOLVE_ISSUE_FILED_KIND,),
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind=?",
+        (pkg["ed"].EVOLVE_ISSUE_SKIPPED_KIND,),
+    ).fetchone()[0] == 1
+
+
+def test_evolve_issue_create_sanitizes_public_title_and_body(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ed"], "_fetch_github_issues_for_dedup",
+        lambda repo_root=None: ([], ""),
+    )
+    seen = {}
+
+    def fake_run_gh(cmd, *, cwd, timeout=30):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, "https://github.com/o/r/issues/124\n", ""
+        )
+
+    monkeypatch.setattr(pkg["ed"], "_run_gh", fake_run_gh)
+
+    out = pkg["ed"].create_reviewer_issue(
+        title="Do not leak /Users/alice/private in reviewer issues",
+        body="Token ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from /Users/alice/.env",
+        labels="enhancement,roadmap",
+        repo_root=tmp_path,
+    )
+
+    assert out.startswith("created #124")
+    title = seen["cmd"][seen["cmd"].index("--title") + 1]
+    body = seen["cmd"][seen["cmd"].index("--body") + 1]
+    assert "/Users/alice" not in title
+    assert "/Users/alice" not in body
+    assert "ghp_" not in body
+    assert "[REDACTED_HOME_PATH]" in title
+    assert "[REDACTED_HOME_PATH]" in body
+    assert "[REDACTED_SECRET]" in body
 
 
 def test_roadmap_doc_branch_name_reuses_same_daily_branch(

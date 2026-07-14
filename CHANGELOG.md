@@ -36,6 +36,12 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Evolve reviewer issue creation is mechanically deduped (#103).** Reviewer
+  candidates now go through `evolve_issue_create(...)`, which fetches GitHub
+  issues with `state=all`, treats closed `not_planned` issues as duplicate/
+  rejected work, records filed fingerprints in `evolve_issues`, and emits
+  `evolve_issue_skipped` telemetry when a candidate matches GitHub, the ledger,
+  or another candidate from the same pass.
 - **Protected memory is enforced server-side (#100).** New lesson sections now
   stamp `origin=<THREADKEEPER_WRITE_ORIGIN>` separately from the free-text
   `source`, and `lesson_remove` keys its refusal on that origin. Foreground,
