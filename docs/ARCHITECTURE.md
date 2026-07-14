@@ -589,7 +589,16 @@ moving the high-water forward; `force=True` bypasses this due gate.
   base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
   of arbitrary current `HEAD`; reviewer roadmap-doc prompts additionally reuse
   the daily `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open
-  roadmap-doc PR branch so repeated audits do not collide.
+  roadmap-doc PR branch so repeated audits do not collide. The running-writer
+  check precedes dirty-state recovery so active child WIP is never discarded.
+  For the default auto-managed checkout only, an in-progress merge on an
+  applier-owned branch is treated as recoverable when GitHub proves the exact
+  PR is already merged. The parent fetches the configured base, archives the
+  tracked diff as an owner-only (`0600`)
+  `DB_PATH.parent/evolve-recovery/stale-merge-pr-*.patch`, then
+  hard-resets the disposable checkout and switches it to fresh `origin/main`
+  (or the configured base). Unknown/open/closed-unmerged PR state and explicit
+  operator checkouts remain fail-closed with `skipped_dirty_worktree`.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   snapshot-first and report-first: destructive mode writes a recoverable
   snapshot before spawning the child, then the child writes its REPORT before

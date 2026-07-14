@@ -37,7 +37,11 @@ work applied without a real PR URL; the conflict-repair path is the only
 autoland exception and may merge an already-open same-repo applier PR after
 resolving conflicts and passing tests. Before any git-writing child is spawned,
 the parent refuses dirty tracked files and refuses to overlap reviewer/applier
-git writers in the shared checkout.
+git writers in the shared checkout. A stale interrupted merge in the dedicated
+managed checkout is recovered only after GitHub proves its applier PR is
+already merged; the tracked diff is archived before the checkout returns to
+the fresh configured origin base. Explicit operator checkouts are never
+auto-reset.
 """
 
 from __future__ import annotations
@@ -203,6 +207,7 @@ PR_METADATA_DATA_TAG = "github_pr_metadata_data"
 APPLIER_BRANCH_PREFIXES = ("roadmap/", "evolve/")
 CONFLICTING_PR_MERGE_STATES = {"DIRTY"}
 CONFLICTING_PR_MERGEABLE_STATES = {"CONFLICTING"}
+STALE_MERGE_BACKUP_MAX_BYTES = 10 * 1024 * 1024
 
 
 def _fence_untrusted_data(tag: str, text: str, limit: int = 20000) -> str:
@@ -606,6 +611,236 @@ def _tracked_worktree_status(repo_root: Path) -> tuple[str, str]:
     return (proc.stdout or "").strip(), ""
 
 
+def _managed_repo_auto_recovery_allowed(repo_root: Path) -> bool:
+    """True only for thread-keeper's disposable, auto-managed checkout.
+
+    An explicit ``THREADKEEPER_EVOLVE_REPO_ROOT`` may contain operator work,
+    even when it happens to point under the thread-keeper state directory. It
+    must retain the normal fail-closed dirty-worktree behavior.
+    """
+    if (EVOLVE_REPO_ROOT or "").strip() or not EVOLVE_AUTO_CLONE:
+        return False
+    try:
+        return repo_root.expanduser().resolve() == _managed_repo_dir().resolve()
+    except OSError:
+        return False
+
+
+def _merge_in_progress(repo_root: Path) -> tuple[bool, str]:
+    """Return whether ``repo_root`` has an unresolved/in-progress merge."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "-q", "--verify",
+             "MERGE_HEAD"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, "git_not_found"
+    except subprocess.TimeoutExpired:
+        return False, "git_merge_probe_timeout"
+    except OSError as e:
+        return False, f"git_merge_probe_error: {e}"
+    if proc.returncode == 0:
+        return True, ""
+    if proc.returncode == 1 and not (proc.stderr or proc.stdout or "").strip():
+        return False, ""
+    return False, _short(
+        proc.stderr or proc.stdout or f"exit={proc.returncode}"
+    )
+
+
+def _current_branch(repo_root: Path) -> tuple[str, str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "branch", "--show-current"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "", "git_not_found"
+    except subprocess.TimeoutExpired:
+        return "", "git_branch_timeout"
+    except OSError as e:
+        return "", f"git_branch_error: {e}"
+    if proc.returncode != 0:
+        return "", _short(
+            proc.stderr or proc.stdout or f"exit={proc.returncode}"
+        )
+    return (proc.stdout or "").strip(), ""
+
+
+def _prs_for_head_branch(
+    branch: str,
+    repo_root: Optional[Path] = None,
+) -> tuple[list[dict], str]:
+    """All same-repository PR states for one exact head branch."""
+    repo = str(repo_root or _repo_root())
+    cmd = [
+        "gh", "pr", "list",
+        "--state", "all",
+        "--head", branch,
+        "--json", "number,state,mergedAt,headRefName,url,isCrossRepository",
+        "--limit", "10",
+    ]
+    try:
+        proc = _run_gh(cmd, cwd=repo, timeout=30)
+    except FileNotFoundError:
+        return [], "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return [], "gh_pr_list_timeout"
+    except OSError as e:
+        return [], f"gh_pr_list_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return [], f"gh_pr_list_failed: {msg[:180]}"
+    try:
+        data = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as e:
+        return [], f"gh_pr_list_bad_json: {e}"
+    if not isinstance(data, list):
+        return [], "gh_pr_list_bad_shape"
+    return [
+        item for item in data
+        if isinstance(item, dict)
+        and str(item.get("headRefName") or "") == branch
+        and not bool(item.get("isCrossRepository"))
+    ], ""
+
+
+def _archive_stale_merge_diff(
+    repo_root: Path,
+    pr_number: int,
+) -> tuple[Optional[Path], str]:
+    """Persist the tracked stale-merge diff before resetting managed state."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "diff", "--binary", "HEAD", "--"],
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None, "git_not_found"
+    except subprocess.TimeoutExpired:
+        return None, "git_diff_timeout"
+    except OSError as e:
+        return None, f"git_diff_error: {e}"
+    if proc.returncode != 0:
+        return None, _short(
+            proc.stderr or proc.stdout or f"exit={proc.returncode}"
+        )
+    diff = proc.stdout or ""
+    if len(diff.encode("utf-8")) > STALE_MERGE_BACKUP_MAX_BYTES:
+        return None, "stale_merge_diff_too_large"
+    backup_dir = DB_PATH.parent / "evolve-recovery"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = backup_dir / f"stale-merge-pr-{int(pr_number)}-{stamp}.patch"
+    tmp = path.with_suffix(".patch.tmp")
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.chmod(0o700)
+        tmp.write_text(diff, encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(path)
+    except OSError as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None, f"stale_merge_backup_write_failed: {e}"
+    return path, ""
+
+
+def _recover_stale_managed_merge(
+    repo_root: Path,
+) -> tuple[bool, str]:
+    """Recover an orphaned merge only when its applier PR is already merged.
+
+    The managed checkout is shared across passes, so a killed conflict-repair
+    child can otherwise block every future backlog item. This recovery is
+    intentionally narrow: managed checkout, merge in progress, applier-owned
+    branch, exact GitHub PR proven merged, archived tracked diff. Any uncertain
+    state remains fail-closed for a human.
+    """
+    if not _managed_repo_auto_recovery_allowed(repo_root):
+        return False, ""
+    merging, merge_err = _merge_in_progress(repo_root)
+    if merge_err:
+        return False, f"stale_merge_probe_failed={_short(merge_err)}"
+    if not merging:
+        return False, ""
+    branch, branch_err = _current_branch(repo_root)
+    if branch_err:
+        return False, f"stale_merge_branch_failed={_short(branch_err)}"
+    if not branch.startswith(APPLIER_BRANCH_PREFIXES):
+        return False, f"stale_merge_non_applier_branch={_short(branch or '?')}"
+    prs, pr_err = _prs_for_head_branch(branch, repo_root)
+    if pr_err:
+        return False, f"stale_merge_pr_fetch_failed={_short(pr_err)}"
+    if not prs:
+        return False, "stale_merge_pr_not_found"
+    merged = next(
+        (
+            pr for pr in prs
+            if str(pr.get("state") or "").upper() == "MERGED"
+            or bool(pr.get("mergedAt"))
+        ),
+        None,
+    )
+    if merged is None:
+        state = str(prs[0].get("state") or "UNKNOWN").upper()
+        return False, (
+            f"stale_merge_pr_not_merged=#{int(prs[0].get('number') or 0)}"
+            f":{state}"
+        )
+    pr_number = int(merged.get("number") or 0)
+    if pr_number <= 0:
+        return False, "stale_merge_pr_number_invalid"
+
+    fetch_err = _run(
+        ["git", "fetch", "origin", _base_branch_name()],
+        timeout=60,
+        cwd=repo_root,
+    )
+    if fetch_err:
+        return False, f"stale_merge_fetch_failed={_short(fetch_err)}"
+    backup, backup_err = _archive_stale_merge_diff(repo_root, pr_number)
+    if backup_err or backup is None:
+        return False, f"stale_merge_backup_failed={_short(backup_err)}"
+
+    reset_err = _run(
+        ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
+    )
+    if reset_err:
+        return False, f"stale_merge_reset_failed={_short(reset_err)}"
+    checkout_err = _run(
+        [
+            "git", "checkout", "-f", "-B", _base_branch_name(),
+            _base_ref(),
+        ],
+        timeout=30,
+        cwd=repo_root,
+    )
+    if checkout_err:
+        return False, f"stale_merge_checkout_failed={_short(checkout_err)}"
+    dirty, status_err = _tracked_worktree_status(repo_root)
+    if status_err:
+        return False, f"stale_merge_recheck_failed={_short(status_err)}"
+    if dirty:
+        return False, "stale_merge_recovery_left_dirty"
+    return True, (
+        f"recovered_stale_merge pr=#{pr_number} branch={_short(branch, 80)} "
+        f"backup={backup.name}"
+    )
+
+
 def _record_git_safety_event(
     conn: sqlite3.Connection,
     actor: str,
@@ -671,18 +906,33 @@ def _git_worktree_precondition(
     Untracked scratch files intentionally do not block, matching auto_update's
     `git status --porcelain --untracked-files=no` safety contract.
     """
+    # Check durable/live writer state before inspecting dirty files: a current
+    # child owns its WIP and must never be mistaken for an orphan eligible for
+    # managed-checkout recovery.
+    running = _running_git_writer_children(conn)
+    if running:
+        outcome = f"evolve_git_writer_running n={len(running)}"
+        _record_git_safety_event(conn, actor, outcome)
+        return outcome
     dirty, err = _tracked_worktree_status(repo_root)
     if err:
         outcome = f"ERR git_status_failed mode=git err={err}"
         _record_git_safety_event(conn, actor, outcome)
         return outcome
     if dirty:
+        recovered, recovery = _recover_stale_managed_merge(repo_root)
+        if recovered:
+            _record_git_safety_event(conn, actor, recovery)
+            dirty, err = _tracked_worktree_status(repo_root)
+            if err:
+                outcome = f"ERR git_status_failed mode=git err={err}"
+                _record_git_safety_event(conn, actor, outcome)
+                return outcome
+            if not dirty:
+                return ""
         outcome = "skipped_dirty_worktree mode=git"
-        _record_git_safety_event(conn, actor, outcome)
-        return outcome
-    running = _running_git_writer_children(conn)
-    if running:
-        outcome = f"evolve_git_writer_running n={len(running)}"
+        if recovery:
+            outcome += f" reason={_short(recovery)}"
         _record_git_safety_event(conn, actor, outcome)
         return outcome
     return ""
