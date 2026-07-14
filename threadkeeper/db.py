@@ -497,6 +497,21 @@ CREATE TABLE IF NOT EXISTS github_rate_budget (
     updated_at       INTEGER NOT NULL
 );
 
+-- Evolve reviewer issue ledger. The reviewer-created issue path records every
+-- filed issue's stable fingerprint so later passes can skip it even when the
+-- GitHub issue has since been closed or rejected.
+CREATE TABLE IF NOT EXISTS evolve_issues (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_number  INTEGER,
+    issue_url     TEXT,
+    title         TEXT NOT NULL,
+    fingerprint   TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    state         TEXT,
+    source        TEXT NOT NULL DEFAULT 'reviewer',
+    created_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -519,6 +534,12 @@ CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
 CREATE INDEX IF NOT EXISTS idx_github_rate_budget_cooldown
     ON github_rate_budget(cooldown_until);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evolve_issues_fingerprint
+    ON evolve_issues(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_evolve_issues_hash
+    ON evolve_issues(content_hash);
+CREATE INDEX IF NOT EXISTS idx_evolve_issues_number
+    ON evolve_issues(issue_number);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
 CREATE INDEX IF NOT EXISTS idx_probes_enabled     ON probes(enabled) WHERE enabled=1;
 CREATE INDEX IF NOT EXISTS idx_probe_results_cat  ON probe_results(category, created_at DESC);
@@ -847,6 +868,30 @@ def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
         raise
 
 
+def _execute_startup_pragma(
+    conn: sqlite3.Connection,
+    sql: str,
+    *,
+    wait_s: float = 10.0,
+) -> None:
+    """Run startup PRAGMAs with the same lock patience as the connection.
+
+    `PRAGMA journal_mode=WAL` can briefly need the writer lock before
+    `_ensure_schema()` gets to its explicit migration wait loop. Retry locked
+    errors here so concurrent first-start processes serialize instead of one
+    failing before schema setup begins.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            conn.execute(sql)
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
 def get_db() -> sqlite3.Connection:
     global _VEC_AVAILABLE
     harden_storage_paths(
@@ -858,9 +903,9 @@ def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     # WAL = concurrent readers + one writer without blocking. Required for
     # running Desktop + CLI + VS Code against the same DB simultaneously.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
+    _execute_startup_pragma(conn, "PRAGMA synchronous=NORMAL")
     harden_storage_paths(
         DB_PATH,
         env_file=_ENV_FILE,

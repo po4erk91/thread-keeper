@@ -95,6 +95,7 @@ _THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
     "skill_manage",
     "evolve_review",
     "evolve_decide",
+    "evolve_issue_create",
     "evolve_apply",
     "evolve_apply_curator_report",
     "evolve_apply_roadmap_issue",

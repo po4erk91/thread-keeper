@@ -722,9 +722,13 @@ with problem statement, proposed direction, acceptance criteria, test/docs
 impact, and research sources when applicable. Legacy `evolve_format(...)`
 suggestions are still included as audit input, but durable implementation work
 should become GitHub issues.
-Before filing new issues, the privileged audit phase checks the open backlog via
-the same paginated, oldest-first GitHub REST issue view used by the applier, so
-deduplication is not limited to the newest 50 open issues.
+Before filing new issues, the privileged audit phase routes candidates through
+`evolve_issue_create(...)`, which checks a paginated oldest-first GitHub REST
+view of **open and closed** issues, treats closed `not_planned` issues as
+duplicate/rejected work, and records reviewer-filed issue fingerprints in the
+local `evolve_issues` ledger. Duplicate candidates are skipped with telemetry,
+so deduplication is not limited to the newest 50 open issues or to the current
+reviewer pass.
 
 To avoid completing the **lethal trifecta** — private-data access + untrusted
 web content + exfiltration — inside one privileged child (#79), the reviewer

@@ -75,6 +75,11 @@ remains a live question.
   50-item window. The applier still prioritizes `roadmap` labels then FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Evolve reviewer issue dedup gate (#103): reviewer-created GitHub issues now
+  go through `evolve_issue_create(...)`, which checks open and closed issues via
+  `state=all` (including closed `not_planned` issues), records filed
+  fingerprints in `evolve_issues`, skips matching ledger/GitHub/same-pass
+  duplicates, and records duplicate skips as telemetry.
 - Evolve roadmap automation git safety (#43): before a privileged reviewer
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
   with `skipped_dirty_worktree` (untracked scratch files do not block), refuses

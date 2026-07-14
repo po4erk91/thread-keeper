@@ -342,6 +342,20 @@ def evolve_decide(evolve_id: int, decision: str, reason: str = "") -> str:
 
 
 @write_tool()
+def evolve_issue_create(title: str, body: str,
+                        labels: str = "enhancement,roadmap") -> str:
+    """Create a reviewer roadmap issue through the mechanical dedup gate.
+
+    The gate checks open and closed GitHub issues, the local reviewer issue
+    ledger, and already-filed fingerprints before calling `gh issue create`.
+    Duplicate skips and successful files are recorded as events.
+    """
+    from ..evolve_daemon import create_reviewer_issue
+
+    return create_reviewer_issue(title=title, body=body, labels=labels)
+
+
+@write_tool()
 def auto_review_trigger(focus: str = "combined", force: bool = False) -> str:
     """Check current counters + close-thread state and, if conditions are
     met, fire review_thread(mode='auto') for the richest pending thread.

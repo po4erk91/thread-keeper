@@ -431,14 +431,17 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `Bash,Edit,Write` but **no** `WebSearch`/`WebFetch`) that audits the repo and
   does the GitHub/ROADMAP writes, consuming the digest inside an explicit
   `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` fence it must treat as data.
-  Its duplicate-issue check uses a paginated oldest-first REST issue listing,
-  not a newest-first 50-item `gh issue list` window, so older open issues remain
-  visible as the backlog grows. Before that child can create a roadmap-doc PR,
-  the parent also checks open PRs for automation-owned changes touching
-  `docs/ROADMAP.md` and embeds the result in the audit prompt. Existing
-  roadmap-doc PRs are appended to or skipped; new ones use/reuse the
-  deterministic daily `docs/roadmap-audit-YYYY-MM-DD` branch and carry a
-  PR-body marker for future passes.
+  GitHub issue creation goes through `evolve_issue_create(...)`: it fetches a
+  paginated oldest-first REST issue listing with `state=all`, includes closed
+  `not_planned` issues in the duplicate/rejected set, compares candidates
+  against the local `evolve_issues` fingerprint ledger, and records duplicate
+  skips as telemetry before any `gh issue create` call. Same-pass duplicates
+  hit the ledger after the first file, so repeated candidates file once. Before
+  that child can create a roadmap-doc PR, the parent also checks open PRs for
+  automation-owned changes touching `docs/ROADMAP.md` and embeds the result in
+  the audit prompt. Existing roadmap-doc PRs are appended to or skipped; new
+  ones use/reuse the deterministic daily `docs/roadmap-audit-YYYY-MM-DD` branch
+  and carry a PR-body marker for future passes.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the running-child check and shadow/extract exclusion cover both; dispatch is
   serialized by `evolve-reviewer.lock`. A full research → audit cycle spans two
