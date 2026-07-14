@@ -981,9 +981,13 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   restore trash artifacts with `lesson_restore(slug=...)` or
   `skill_manage(action='restore', name=...)`. Trash is bounded by
   `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30); expired artifacts are
-  swept on new trash writes. Protected refusal behavior is unchanged:
-  user/foreground lessons still require `force`, and pinned skills still refuse
-  deletion. `mp_dashboard()` renders destructive action counts by window.
+  swept on new trash writes. Protected refusal is server-side: lesson sections
+  carry an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker, and
+  foreground, legacy, empty, or unknown-origin lessons require a foreground
+  `force=True`; non-foreground force is ignored. Skill deletion similarly
+  refuses foreground or unknown `created_by_origin` without foreground force,
+  while pinned skills always refuse deletion. `mp_dashboard()` renders
+  destructive action counts by window.
   The lesson file itself is a separate serialization boundary:
   `append_lesson`, `lesson_remove`, and `lesson_restore` hold a blocking
   `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
@@ -991,8 +995,11 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   store instead of relying on per-daemon dispatch locks.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
-  (`foreground` default | `background_review` | `shadow_review`) is written to
-  `sessions.write_origin` and proxied into `skill_usage.created_by_origin`.
+  (`foreground` default | `background_review` | `shadow_review` | loop-specific
+  origins such as `curator` / `evolve_apply`) is written to
+  `sessions.write_origin`, proxied into `skill_usage.created_by_origin`, and
+  stamped into new lesson sections as `origin=<...>` for server-side protected
+  memory checks.
 
 - **curator_run(stale_after_days, archive_after_days, dry_run=True)** —
   background cleanup of stale agent-created skills. Never touches
@@ -1568,12 +1575,12 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick, restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_NO_EMBEDDINGS` | off | force-disable st model (slim children) |
-| `THREADKEEPER_WRITE_ORIGIN` | foreground | provenance tag for curator |
+| `THREADKEEPER_WRITE_ORIGIN` | foreground | provenance tag for sessions, skill rows, and lesson protected-memory markers |
 | `THREADKEEPER_SPAWNED_CHILD` | off | spawn-internal marker; disables autonomous child daemons |
 | `THREADKEEPER_FORCE_CID` | — | test-only / spawn-injected cid override |
 | `THREADKEEPER_SELF_CID_TTL_S` | 5 | mtime-fallback cache TTL |

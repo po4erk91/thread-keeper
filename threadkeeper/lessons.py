@@ -11,7 +11,7 @@ Format on disk:
     Procedural knowledge accumulated across sessions. Auto-managed by
     the learning loop — do not edit by hand; new entries are appended.
 
-    <!-- LESSON:BEGIN slug=<slug> ts=<unix> source=<thread_id|shadow> -->
+    <!-- LESSON:BEGIN slug=<slug> ts=<unix> source=<thread_id|shadow> origin=<write_origin> -->
     ## <slug>
     > <one-line summary>
 
@@ -36,6 +36,8 @@ import time
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .config import WRITE_ORIGIN
+
 
 _LESSONS_PATH = Path(
     os.environ.get("THREADKEEPER_LESSONS", "~/.threadkeeper/lessons.md")
@@ -52,6 +54,20 @@ learning loop — do not edit by hand; new entries are appended.
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
+
+FOREGROUND_LESSON_ORIGINS = {"foreground", "user"}
+CURATABLE_LESSON_ORIGINS = {
+    "background_review",
+    "candidate_review",
+    "curator",
+    "evolve",
+    "evolve_apply",
+    "panel_vote",
+    "probe",
+    "shadow",
+    "shadow_review",
+    "spawned",
+}
 
 
 def _slugify(title: str) -> str:
@@ -70,13 +86,22 @@ def _ensure_file(path: Path) -> None:
     path.write_text(_HEADER)
 
 
+def _normalize_origin(origin: str | None) -> str:
+    return (origin or "").strip().lower()
+
+
+def _current_origin() -> str:
+    return _normalize_origin(WRITE_ORIGIN) or "unknown"
+
+
 def _format_section(slug: str, summary: str, body: str,
-                    source: str, ts: int) -> str:
+                    source: str, ts: int, origin: str) -> str:
     """One LESSON-BEGIN…LESSON-END block with the sentinel markers."""
     summary_line = f"> {summary.strip()}" if summary.strip() else ""
     body_text = body.strip()
     return (
-        f"<!-- LESSON:BEGIN slug={slug} ts={ts} source={source} -->\n"
+        f"<!-- LESSON:BEGIN slug={slug} ts={ts} source={source} "
+        f"origin={origin} -->\n"
         f"## {slug}\n"
         + (f"{summary_line}\n\n" if summary_line else "\n")
         + body_text + "\n"
@@ -141,12 +166,15 @@ def append_lesson(
     `title` becomes the section header (sluggified for the sentinel).
     `body` is markdown; `summary` is a one-liner shown right after the
     header. `source` is a free-text provenance tag — typically a thread
-    id ("Tabc123") or "shadow" for shadow_review writes.
+    id ("Tabc123") or "shadow" for shadow_review writes. `origin` is
+    stamped from THREADKEEPER_WRITE_ORIGIN and is the protection boundary.
     """
     fp = path or _LESSONS_PATH
     slug = _slugify(title)
     ts = int(time.time())
-    new_section = _format_section(slug, summary, body, source or "", ts)
+    new_section = _format_section(
+        slug, summary, body, source or "", ts, _current_origin(),
+    )
 
     with _lessons_file_lock(fp):
         _ensure_file(fp)
@@ -213,6 +241,7 @@ def lesson_section(slug: str, path: Optional[Path] = None) -> Optional[dict]:
     begin_line = body_existing[start:marker_end].split("\n", 1)[0]
     ts_match = re.search(r"ts=(\d+)", begin_line)
     source_match = re.search(r"source=([^\s>]+)", begin_line)
+    origin_match = re.search(r"origin=([^\s>]+)", begin_line)
     return {
         "slug": slug,
         "section": body_existing[start:end],
@@ -220,6 +249,7 @@ def lesson_section(slug: str, path: Optional[Path] = None) -> Optional[dict]:
         "end": end,
         "ts": int(ts_match.group(1)) if ts_match else 0,
         "source": source_match.group(1) if source_match else "",
+        "origin": origin_match.group(1) if origin_match else "",
         "file_body": body_existing,
     }
 
@@ -248,7 +278,7 @@ def restore_lesson_section(
 
 def iter_lessons(path: Optional[Path] = None) -> Iterator[dict]:
     """Yield every lesson section as a dict with keys:
-       slug, body (raw markdown between BEGIN/END), ts, source.
+       slug, body (raw markdown between BEGIN/END), ts, source, origin.
 
     Order is file-order (chronological if writes are append-only)."""
     fp = path or _LESSONS_PATH
@@ -262,11 +292,13 @@ def iter_lessons(path: Optional[Path] = None) -> Iterator[dict]:
         begin_line = body[m.start():m.start() + 200].split("\n", 1)[0]
         ts_match = re.search(r"ts=(\d+)", begin_line)
         source_match = re.search(r"source=([^\s>]+)", begin_line)
+        origin_match = re.search(r"origin=([^\s>]+)", begin_line)
         yield {
             "slug": slug,
             "body": block_body,
             "ts": int(ts_match.group(1)) if ts_match else 0,
             "source": source_match.group(1) if source_match else "",
+            "origin": origin_match.group(1) if origin_match else "",
         }
 
 
@@ -352,15 +384,26 @@ def lesson_usage_map(conn: sqlite3.Connection) -> dict[str, dict]:
 
 
 def lesson_protection(item: dict, usage: Optional[dict] = None) -> tuple[bool, str]:
-    """Return (protected, reason) for curator decay handling."""
+    """Return (protected, reason) for curator decay/destructive handling.
+
+    The explicit lesson ``origin`` marker is the trust boundary. Missing or
+    unknown origins are protected so legacy lessons fail closed.
+    """
     usage = usage or {}
-    source = (usage.get("source") or item.get("source") or "").strip().lower()
-    if source in {"foreground", "user"}:
-        return True, source
     if int(usage.get("pinned") or 0):
         return True, "pinned"
     if (usage.get("tier") or "hypothesis") == "validated":
         return True, "validated"
+    origin = _normalize_origin(usage.get("origin") or item.get("origin"))
+    if origin in FOREGROUND_LESSON_ORIGINS:
+        return True, origin
+    if not origin:
+        source = (usage.get("source") or item.get("source") or "").strip().lower()
+        if source in FOREGROUND_LESSON_ORIGINS:
+            return True, source
+        return True, "unknown_origin"
+    if origin not in CURATABLE_LESSON_ORIGINS:
+        return True, f"unknown_origin:{origin}"
     return False, ""
 
 
@@ -398,6 +441,7 @@ def lesson_retention_score(
     return {
         "slug": item.get("slug") or usage.get("slug") or "",
         "source": usage.get("source") or item.get("source") or "",
+        "origin": usage.get("origin") or item.get("origin") or "",
         "created_at": created,
         "lesson_ts": lesson_ts,
         "last_used_at": last_used or None,

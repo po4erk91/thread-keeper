@@ -22,9 +22,9 @@ Design choices:
 
   • **Class-first / rubric-based output** — child uses an explicit
     decision matrix (see CURATOR_PROMPT) rather than free-form grading.
-  • **Defense-in-depth** — pinned lessons/skills and foreground-origin
-    entries are listed in the inventory as PROTECTED so the child knows
-    not to touch them.
+  • **Defense-in-depth** — protected lessons/skills are listed in the
+    inventory as PROTECTED and delete-class MCP tools refuse them
+    server-side unless a foreground writer explicitly forces the action.
   • **Scoped toolset** — child gets only lesson_*/skill_*/concept_*/
     Read/Write. No shell, no web, no spawn. Curator can't sprawl into
     anything else.
@@ -35,8 +35,9 @@ Design choices:
     CONSOLIDATE directly via lesson_append / lesson_remove / skill_manage, and
     its CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
     Set THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
-    [PROTECTED] entries are never mutated, and lesson_remove is always
-    called without force so it refuses user/foreground lessons by design.
+    [PROTECTED] entries are never mutated; lesson_remove and
+    skill_manage(action='delete') enforce that server-side, and
+    non-foreground children cannot elevate themselves with force.
     Concepts are all system-generated, so concept_manage needs no such
     guard — every concept is curatable.
 
@@ -80,6 +81,19 @@ INVENTORY_FINGERPRINT_KEY = "inventory_sha256"
 _INVENTORY_FINGERPRINT_RE = re.compile(
     rf"\b{INVENTORY_FINGERPRINT_KEY}=([0-9a-f]{{64}})\b"
 )
+
+_CURATABLE_SKILL_ORIGINS = {
+    "background_review",
+    "candidate_review",
+    "curator",
+    "evolve",
+    "evolve_apply",
+    "panel_vote",
+    "probe",
+    "shadow",
+    "shadow_review",
+    "spawned",
+}
 
 
 # Stable leading substring used to find running curator children in the tasks
@@ -292,6 +306,7 @@ def _curator_inventory_snapshot(conn: sqlite3.Connection) -> dict:
                 "body": item.get("body") or "",
                 "ts": _stable_int(item.get("ts")),
                 "source": item.get("source") or "",
+                "origin": item.get("origin") or "",
                 "usage": {
                     "created_at": _stable_int(u.get("created_at")),
                     "source": u.get("source") or "",
@@ -436,10 +451,15 @@ def _format_lesson(item: dict, usage: dict | None = None) -> str:
 
 def _format_skill(row: dict) -> str:
     """One inventory line per recently-touched skill row from
-    skill_usage. Foreground-origin and pinned skills are PROTECTED."""
+    skill_usage. Foreground/unknown-origin and pinned skills are PROTECTED."""
     origin = row.get("created_by_origin") or "?"
     protected = ""
-    if row.get("pinned") or origin == "foreground":
+    if (
+        row.get("pinned")
+        or origin == "foreground"
+        or origin == "?"
+        or origin not in _CURATABLE_SKILL_ORIGINS
+    ):
         protected = " [PROTECTED]"
     now = int(time.time())
     last_active = max(
@@ -746,10 +766,11 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "false-positive concept; concept_manage(action='set_confidence', "
                 "concept_id=<id>, confidence='low|medium|high') applies a "
                 "confidence review.\n"
-                "NEVER pass force=True to lesson_remove — it refuses "
-                "source=foreground/user lessons by design and that refusal is "
-                "your safety net. NEVER touch any entry marked [PROTECTED], even "
-                "in destructive mode. Apply changes ONLY after the REPORT.md is "
+                "NEVER pass force=True to lesson_remove or skill_manage — "
+                "protected foreground/legacy/unknown entries are refused "
+                "server-side, and non-foreground force is ignored. NEVER touch "
+                "any entry marked [PROTECTED], even in destructive mode. Apply "
+                "changes ONLY after the REPORT.md is "
                 "written (audit trail first, mutation second). A recovery "
                 f"snapshot for this pass already exists at {snapshot_dir}."
             )

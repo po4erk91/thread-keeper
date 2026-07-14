@@ -16,8 +16,7 @@ import pytest
 _FAKE_CID = "cccccccc-dddd-eeee-ffff-000011112222"
 
 
-@pytest.fixture()
-def skills_pkg(tmp_path, monkeypatch):
+def _bootstrap_skills(tmp_path, monkeypatch, write_origin="foreground"):
     """Like mp_with_cid but also points CLAUDE_SKILLS_DIR at a sandbox AND
     pins WRITE_ORIGIN='foreground' for predictable provenance assertions."""
     import importlib
@@ -51,7 +50,7 @@ def skills_pkg(tmp_path, monkeypatch):
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
         "CLAUDE_SKILLS_DIR": str(skills_root),
-        "THREADKEEPER_WRITE_ORIGIN": "foreground",
+        "THREADKEEPER_WRITE_ORIGIN": write_origin,
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -70,6 +69,11 @@ def skills_pkg(tmp_path, monkeypatch):
         "skills_root": skills_root,
         "tmp": tmp_path,
     }
+
+
+@pytest.fixture()
+def skills_pkg(tmp_path, monkeypatch):
+    return _bootstrap_skills(tmp_path, monkeypatch)
 
 
 def _tool(pkg, name):
@@ -176,6 +180,15 @@ def _seed_skill(pkg, name="seed-skill"):
     return pkg["skills_root"] / name / "SKILL.md"
 
 
+def _set_skill_origin(pkg, name, origin):
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET created_by_origin=? WHERE name=?",
+        (origin, name),
+    )
+    conn.commit()
+
+
 def test_patch_find_and_replace(skills_pkg):
     md = _seed_skill(skills_pkg)
     sm = _tool(skills_pkg, "skill_manage")
@@ -222,6 +235,7 @@ def test_patch_validates_after_replacement(skills_pkg):
 
 def test_delete_removes_skill_dir_and_usage_row(skills_pkg):
     _seed_skill(skills_pkg, name="goner")
+    _set_skill_origin(skills_pkg, "goner", "background_review")
     sm = _tool(skills_pkg, "skill_manage")
     sdir = skills_pkg["skills_root"] / "goner"
     assert sdir.exists()
@@ -241,6 +255,7 @@ def test_delete_restore_recreates_skill_tree_and_usage_row(skills_pkg):
     sm = _tool(skills_pkg, "skill_manage")
     rec = _tool(skills_pkg, "skill_record")
     _seed_skill(skills_pkg, name="recover-me")
+    _set_skill_origin(skills_pkg, "recover-me", "background_review")
     assert sm(
         action="write_file",
         name="recover-me",
@@ -278,6 +293,51 @@ def test_delete_refuses_pinned(skills_pkg):
     result = sm(action="delete", name="pinned-one")
     assert result.startswith("ERR pinned=")
     assert not (skills_pkg["tmp"] / "curator" / "trash").exists()
+
+
+def test_delete_refuses_foreground_without_force(skills_pkg):
+    _seed_skill(skills_pkg, name="user-owned")
+    sm = _tool(skills_pkg, "skill_manage")
+
+    result = sm(action="delete", name="user-owned")
+
+    assert result.startswith("ERR protected_skill")
+    assert "reason=foreground" in result
+    assert (skills_pkg["skills_root"] / "user-owned").exists()
+    assert not (skills_pkg["tmp"] / "curator" / "trash").exists()
+    assert sm(action="delete", name="user-owned", force=True) == "ok"
+
+
+def test_delete_refuses_unknown_origin_without_force(skills_pkg):
+    _seed_skill(skills_pkg, name="unknown-origin")
+    conn = skills_pkg["db"].get_db()
+    conn.execute("DELETE FROM skill_usage WHERE name='unknown-origin'")
+    conn.commit()
+    sm = _tool(skills_pkg, "skill_manage")
+
+    result = sm(action="delete", name="unknown-origin")
+
+    assert result.startswith("ERR protected_skill")
+    assert "reason=unknown_origin" in result
+    assert (skills_pkg["skills_root"] / "unknown-origin").exists()
+    assert sm(action="delete", name="unknown-origin", force=True) == "ok"
+
+
+@pytest.mark.parametrize("write_origin", ["curator", "spawned"])
+def test_loop_origin_cannot_force_delete_foreground_skill(
+    tmp_path, monkeypatch, write_origin,
+):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin=write_origin)
+    _seed_skill(pkg, name="human-skill")
+    _set_skill_origin(pkg, "human-skill", "foreground")
+    sm = _tool(pkg, "skill_manage")
+
+    result = sm(action="delete", name="human-skill", force=True)
+
+    assert result.startswith("ERR protected_skill")
+    assert f"force_ignored_origin={write_origin}" in result
+    assert (pkg["skills_root"] / "human-skill").exists()
+    assert not (pkg["tmp"] / "curator" / "trash").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -718,6 +778,7 @@ def test_skill_manage_delete_removes_mirrors(skills_pkg, monkeypatch):
     sm = _tool(skills_pkg, "skill_manage")
     sm(action="create", name="will-be-deleted",
        description="Use for the test.", content="# body")
+    _set_skill_origin(skills_pkg, "will-be-deleted", "background_review")
     assert (mirror_dir / "will-be-deleted" / "SKILL.md").exists()
     assert sm(action="delete", name="will-be-deleted") == "ok"
     assert not (mirror_dir / "will-be-deleted").exists()
