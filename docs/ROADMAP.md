@@ -360,10 +360,12 @@ heuristic. `curator_run` now spawns a slim child that grades every lesson +
 recently-active skill (and any concepts) against an explicit rubric
 (KEEP / PATCH / CONSOLIDATE / PRUNE), writes an auditable
 `REPORT-<isodate>.md`, and — **destructive-by-default** — applies its own
-PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove`
-(always without `force`, so user/foreground lessons are refused) /
-`skill_manage`. `[PROTECTED]` (pinned / foreground / user) entries are never
-mutated, and the pass is single-flight across processes (a non-blocking
+PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove` /
+`skill_manage`. `[PROTECTED]` entries are refused server-side:
+`lesson_append` stamps `origin=<THREADKEEPER_WRITE_ORIGIN>` into each lesson
+section, legacy/unknown-origin lessons fail closed, skill deletion refuses
+foreground/unknown provenance, and non-foreground children cannot escalate with
+`force`. The pass is single-flight across processes (a non-blocking
 `fcntl.flock` pidfile plus a running-children check). The "dry-run mode with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
@@ -393,6 +395,13 @@ high-water before spawning. A recent `curator_pass` or
 `candidate_review_pass` makes fresh MCP-server restarts and non-forced direct
 checks return `not_due` without launching another destructive/expensive child;
 `force=True` still bypasses the interval.
+
+✅ DONE (#100): protected memory is enforced server-side, not only in curator
+prompt text. New lesson sections carry `origin=<THREADKEEPER_WRITE_ORIGIN>`;
+`lesson_remove` keys protection on that origin and treats missing/legacy/unknown
+provenance as protected; `skill_manage(action='delete')` refuses foreground or
+unknown-origin skills; and `force=True` is effective only for foreground
+writers, so curator/spawned children cannot hard-delete protected memory.
 
 Lesson-store decay/eviction scoring is also in place (#27): `lesson_list` /
 `lesson_get` update `lesson_usage` counters, and curator dry runs include a

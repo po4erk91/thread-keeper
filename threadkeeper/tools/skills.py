@@ -413,6 +413,18 @@ def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
 # TARGET loop-authored skills without touching foreground ones.
 # ──────────────────────────────────────────────────────────────────────
 FOREGROUND_ORIGIN = "foreground"
+CURATABLE_SKILL_ORIGINS = {
+    "background_review",
+    "candidate_review",
+    "curator",
+    "evolve",
+    "evolve_apply",
+    "panel_vote",
+    "probe",
+    "shadow",
+    "shadow_review",
+    "spawned",
+}
 SKILL_CREATE_LIMITED_ORIGINS = {
     "background_review",
     "candidate_review",
@@ -635,7 +647,8 @@ def skill_manage(action: str,
                  old_string: str = "",
                  new_string: str = "",
                  sub_path: str = "",
-                 description: str = "") -> str:
+                 description: str = "",
+                 force: bool = False) -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -657,7 +670,8 @@ def skill_manage(action: str,
       remove_file — remove a support file under one of the allowed subdirs.
                     Requires `name`, `sub_path`.
       delete      — remove a skill entirely. Pinned skills (in skill_usage)
-                    are refused.
+                    are refused. Foreground/unknown-origin skills require
+                    force from a foreground writer.
       restore     — restore the latest trashed copy for `name`.
     """
     action = action.strip()
@@ -677,7 +691,7 @@ def skill_manage(action: str,
     if action == "delete":
         if err := _validate_name(name):
             return f"ERR {err}"
-        return _action_delete(name)
+        return _action_delete(name, force=force)
     if action == "restore":
         return _action_restore(name)
     return (
@@ -865,20 +879,38 @@ def _action_remove_file(name: str, sub_path: str) -> str:
     return "ok"
 
 
-def _action_delete(name: str) -> str:
+def _action_delete(name: str, *, force: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
         "SELECT * FROM skill_usage WHERE name=?", (name,)
     ).fetchone()
+    sdir = _skill_dir(name)
+    if not sdir.exists():
+        return f"ERR skill_not_found={name}"
     if row and row["pinned"]:
         return (
             f"ERR pinned={name} (unpin via UPDATE skill_usage SET pinned=0 "
             "first)"
         )
-    sdir = _skill_dir(name)
-    if not sdir.exists():
-        return f"ERR skill_not_found={name}"
+    origin = ((row["created_by_origin"] if row else "") or "").strip().lower()
+    protected_reason = ""
+    if origin == FOREGROUND_ORIGIN:
+        protected_reason = origin
+    elif not origin:
+        protected_reason = "unknown_origin"
+    elif origin not in CURATABLE_SKILL_ORIGINS:
+        protected_reason = f"unknown_origin:{origin}"
+    effective_force = bool(force and WRITE_ORIGIN == FOREGROUND_ORIGIN)
+    if protected_reason and not effective_force:
+        force_note = (
+            f" force_ignored_origin={WRITE_ORIGIN}"
+            if force and WRITE_ORIGIN != FOREGROUND_ORIGIN else ""
+        )
+        return (
+            f"ERR protected_skill name={name} reason={protected_reason}"
+            f"{force_note}"
+        )
     tombstone = ""
     if WRITE_ORIGIN == "curator":
         tombstone = capture_skill_tombstone("skill_deleted", name, sdir)

@@ -36,6 +36,14 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Protected memory is enforced server-side (#100).** New lesson sections now
+  stamp `origin=<THREADKEEPER_WRITE_ORIGIN>` separately from the free-text
+  `source`, and `lesson_remove` keys its refusal on that origin. Foreground,
+  legacy, empty, or unknown-origin lessons fail closed unless a foreground
+  writer explicitly passes `force=True`; curator/spawned force is ignored.
+  `skill_manage(action='delete')` now mirrors the same guard for foreground or
+  unknown `created_by_origin`, while pinned skills remain undeletable. Curator
+  inventory marks those entries `[PROTECTED]` using the same predicates.
 - **All background daemon starters now honor `BACKGROUND_DAEMONS_ALLOWED`.**
   `search_proxy`, `skill_watcher`, `spawn_budget`, and the background ingester
   started unconditionally, ignoring the spawned-child / `DISABLE_BG_DAEMONS`
@@ -981,8 +989,8 @@ version bumps follow semver per the policy in
   lessons (previously it could only delete skills and rewrite same-slug
   lessons, so lesson-level PRUNE/CONSOLIDATE recommendations were never
   applied). `[PROTECTED]` (foreground/user/pinned/validated) entries are never
-  mutated, and `lesson_remove` is always called without `force`, so it refuses
-  user/foreground-authored lessons by design.
+  mutated; as of #100, lesson and skill delete paths also enforce protected
+  provenance server-side.
 - **Destructive curator deletes now have a recovery path (#41).**
   `lesson_remove` captures the exact removed lesson section plus its usage row
   under `<db dir>/curator/trash/` before rewriting `lessons.md`, and

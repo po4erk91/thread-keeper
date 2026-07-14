@@ -105,15 +105,17 @@ def test_collect_inventory_empty(tmp_path, monkeypatch):
 
 def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["lessons"], "WRITE_ORIGIN", "shadow_review")
     pkg["lessons"].append_lesson(
         title="reset wifi proxy before WDA start",
         body="Always read networksetup; if 127.0.0.1, reset.",
         source="shadow",
     )
+    monkeypatch.setattr(pkg["lessons"], "WRITE_ORIGIN", "foreground")
     pkg["lessons"].append_lesson(
         title="testID drift detection",
         body="Before chasing logic, check fixture testIDs.",
-        source="foreground",
+        source="T123",
     )
     conn = pkg["db"].get_db()
     now = int(time.time())
@@ -146,6 +148,36 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
     assert "STALE LESSONS (dry-run decay ranking)" in dump
+
+
+def test_collect_inventory_marks_legacy_and_unknown_skills_protected(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons_path"].write_text(
+        "# thread-keeper lessons\n\n"
+        "<!-- LESSON:BEGIN slug=legacy-empty ts=123 source= -->\n"
+        "## legacy-empty\n\n"
+        "old body\n"
+        "<!-- LESSON:END slug=legacy-empty -->\n",
+        encoding="utf-8",
+    )
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, state) "
+        "VALUES ('unknown-skill', ?, '', 'active')",
+        (now,),
+    )
+    conn.commit()
+
+    dump, n_lessons, n_skills = pkg["curator"]._collect_inventory(conn)
+
+    assert n_lessons == 1
+    assert n_skills == 1
+    assert "legacy-empty [PROTECTED]" in dump
+    assert "SKILL unknown-skill [PROTECTED]" in dump
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -565,6 +597,7 @@ def test_curator_dry_run_ranks_stale_lessons_by_decay_score(
     now = 1_800_000_000
     old = now - 90 * 86400
     monkeypatch.setattr(pkg["lessons"].time, "time", lambda: old)
+    monkeypatch.setattr(pkg["lessons"], "WRITE_ORIGIN", "shadow_review")
     for title in [
         "never pulled",
         "one old pull",

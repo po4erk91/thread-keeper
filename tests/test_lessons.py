@@ -55,7 +55,7 @@ def _lessons_rmw_worker(
         raise
 
 
-def _bootstrap(tmp_path, monkeypatch):
+def _bootstrap(tmp_path, monkeypatch, write_origin="foreground"):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
@@ -65,7 +65,7 @@ def _bootstrap(tmp_path, monkeypatch):
         "THREADKEEPER_SPAWN_BUDGET_POLL_S": "0",
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
-        "THREADKEEPER_WRITE_ORIGIN": "foreground",
+        "THREADKEEPER_WRITE_ORIGIN": write_origin,
         "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
     }
@@ -102,6 +102,7 @@ def test_append_creates_file_with_header(tmp_path, monkeypatch):
     assert "## always-paginate" in body
     assert "Use offset+limit" in body
     assert "source=Tabc" in body
+    assert "origin=foreground" in body
 
 
 def test_slugify_handles_messy_titles(tmp_path, monkeypatch):
@@ -260,7 +261,7 @@ def test_foreground_lesson_append_allows_near_duplicate_slug(
 def test_shadow_lesson_append_semantic_duplicate_patches_incumbent(
     tmp_path, monkeypatch,
 ):
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
     la = _tool(pkg, "lesson_append")
 
     import threadkeeper.embeddings as embeddings
@@ -409,7 +410,7 @@ def test_mcp_lesson_get_returns_body(tmp_path, monkeypatch):
 def test_rank_stale_lessons_scores_and_skips_protected(
     tmp_path, monkeypatch,
 ):
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
     now = 1_800_000_000
     old = now - 90 * 86400
     monkeypatch.setattr(pkg["lessons"].time, "time", lambda: old)
@@ -452,7 +453,7 @@ def test_rank_stale_lessons_scores_and_skips_protected(
 
 
 def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
     la = _tool(pkg, "lesson_append")
     lr = _tool(pkg, "lesson_remove")
     lg = _tool(pkg, "lesson_get")
@@ -477,7 +478,7 @@ def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
 
 
 def test_mcp_lesson_restore_recreates_original_bytes(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
     la = _tool(pkg, "lesson_append")
     lr = _tool(pkg, "lesson_remove")
     restore = _tool(pkg, "lesson_restore")
@@ -510,7 +511,7 @@ def test_mcp_lesson_remove_refuses_protected_without_force(
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
     lr = _tool(pkg, "lesson_remove")
-    la(title="human policy", body="keep this", source="foreground")
+    la(title="human policy", body="keep this", source="T123")
 
     out = lr(slug="human-policy")
 
@@ -518,6 +519,49 @@ def test_mcp_lesson_remove_refuses_protected_without_force(
     assert "human-policy" in pkg["path"].read_text()
     assert not (tmp_path / "curator" / "trash").exists()
     assert lr(slug="human-policy", force=True) == "ok removed=human-policy"
+
+
+def test_mcp_lesson_remove_refuses_legacy_empty_source_without_force(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["path"].write_text(
+        "# thread-keeper lessons\n\n"
+        "<!-- LESSON:BEGIN slug=legacy-empty ts=123 source= -->\n"
+        "## legacy-empty\n\n"
+        "old body\n"
+        "<!-- LESSON:END slug=legacy-empty -->\n",
+        encoding="utf-8",
+    )
+    lr = _tool(pkg, "lesson_remove")
+
+    out = lr(slug="legacy-empty")
+
+    assert out.startswith("ERR protected_lesson")
+    assert "reason=unknown_origin" in out
+    assert "legacy-empty" in pkg["path"].read_text()
+
+
+def test_curator_origin_cannot_force_remove_foreground_lesson(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    pkg["path"].write_text(
+        "# thread-keeper lessons\n\n"
+        "<!-- LESSON:BEGIN slug=human-owned ts=123 source=T123 "
+        "origin=foreground -->\n"
+        "## human-owned\n\n"
+        "keep this\n"
+        "<!-- LESSON:END slug=human-owned -->\n",
+        encoding="utf-8",
+    )
+    lr = _tool(pkg, "lesson_remove")
+
+    out = lr(slug="human-owned", force=True)
+
+    assert out.startswith("ERR protected_lesson")
+    assert "force_ignored_origin=curator" in out
+    assert "human-owned" in pkg["path"].read_text()
 
 
 def test_curator_trash_sweep_removes_expired_artifacts(tmp_path, monkeypatch):

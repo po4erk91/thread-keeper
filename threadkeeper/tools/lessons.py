@@ -12,8 +12,9 @@
     Return the full body of a single lesson by slug.
 
   lesson_remove(slug, force=False)
-    Remove one lesson section by slug. Refuses foreground/user lessons unless
-    force=True, so autonomous cleanup cannot delete protected memory.
+    Remove one lesson section by slug. Refuses protected lessons unless
+    force=True from a foreground writer, so autonomous cleanup cannot delete
+    protected memory.
 
   lesson_restore(slug)
     Restore the latest trashed section for a removed lesson slug.
@@ -47,6 +48,7 @@ from ..lessons import (
     lesson_section,
     count_lessons,
     get_path,
+    lesson_protection,
     record_lesson_access,
     remove_lesson,
     restore_lesson_section,
@@ -321,13 +323,13 @@ def lesson_append(
         if semantic_duplicate:
             item, semantic_score = semantic_duplicate
             slug = item["slug"]
-            source_existing = (item.get("source") or "").strip().lower()
             if semantic_score >= LESSON_SEMANTIC_DUPLICATE_THRESHOLD:
-                if source_existing in {"foreground", "user"}:
+                protected, reason = lesson_protection(item)
+                if protected:
                     return (
                         f"ERR likely_duplicate_lesson slug={slug} "
                         f"score={semantic_score:.2f}; incumbent is protected "
-                        f"source={source_existing}; surface to curator or "
+                        f"reason={reason}; surface to curator or "
                         "patch existing memory explicitly"
                     )
                 merged_summary, merged_body, changed = _merge_duplicate_lesson_body(
@@ -461,9 +463,9 @@ def lesson_get(slug: str) -> str:
 def lesson_remove(slug: str, force: bool = False) -> str:
     """Remove one materialized lesson section by slug.
 
-    Refuses `source=foreground` / `source=user` lessons unless `force=True`.
-    Curator/evolve cleanup should never pass force; it exists only for an
-    explicit human-initiated correction.
+    Refuses protected lessons unless `force=True` is called from a foreground
+    writer. Curator/evolve cleanup may pass force accidentally or maliciously;
+    non-foreground force is ignored.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -477,18 +479,28 @@ def lesson_remove(slug: str, force: bool = False) -> str:
             break
     if not found:
         return f"ERR not_found slug={slug}"
+    usage_row = _row_to_dict(
+        conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
+    )
+    protected, reason = lesson_protection(found, usage_row)
+    effective_force = bool(force and WRITE_ORIGIN == "foreground")
+    if protected and not effective_force:
+        force_note = (
+            f" force_ignored_origin={WRITE_ORIGIN}"
+            if force and WRITE_ORIGIN != "foreground" else ""
+        )
+        return (
+            f"ERR protected_lesson slug={slug} reason={reason or 'protected'}"
+            f"{force_note}"
+        )
     source = (found.get("source") or "").strip().lower()
-    if source in {"foreground", "user"} and not force:
-        return f"ERR protected_lesson slug={slug} source={source}"
+    origin = (found.get("origin") or "").strip().lower()
     snapshot = lesson_section(slug)
     if not snapshot:
         return f"ERR remove_failed slug={slug}"
     post_remove = (
         snapshot["file_body"][:snapshot["start"]]
         + snapshot["file_body"][snapshot["end"]:]
-    )
-    usage_row = _row_to_dict(
-        conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
     )
     try:
         artifact = capture_removed_lesson(
@@ -523,7 +535,7 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         (
             identity._session_id or "",
             slug,
-            f"source={source or '?'} trash={artifact.name}"
+            f"source={source or '?'} origin={origin or '?'} trash={artifact.name}"
             + (f" tombstone={tombstone}" if tombstone else ""),
         ),
     )

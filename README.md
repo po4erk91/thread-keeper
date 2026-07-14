@@ -623,7 +623,8 @@ Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
 `~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
 CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
-never proposes destructive changes against them. The pass is
+never proposes destructive changes against them, and delete-class tools
+enforce the same boundary server-side. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
@@ -645,9 +646,13 @@ Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
 can actually prune and consolidate duplicate lessons). Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
-`[PROTECTED]` / foreground / user / pinned / validated entries, and
-`lesson_remove` is always called without `force` (so user/foreground lessons are
-refused by design). Before a destructive child is spawned, thread-keeper writes
+`[PROTECTED]` / foreground / user / pinned / validated entries. Lessons are
+stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
+appended; missing, legacy, or unknown lesson provenance is protected by
+default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
+foreground/unknown-origin entries unless `force=True` is called from a
+foreground writer; curator/spawned children cannot elevate themselves with
+`force`. Before a destructive child is spawned, thread-keeper writes
 a recoverable snapshot under
 `<reports_dir>/snapshots/<pass-id>/` (default
 `~/.threadkeeper/curator/snapshots/<pass-id>/`). The snapshot contains
@@ -685,7 +690,9 @@ ranked `STALE LESSONS (dry-run decay ranking)` section computed as
 `access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
 lessons with no recent access and low pull-count. That decay list is advisory
 only; it never becomes an automatic `lesson_remove` path by itself, and pinned
-or validated lessons are excluded.
+or validated lessons are excluded. A lesson is unprotected only when its
+explicit `origin` marker is a known loop origin; foreground, legacy, empty, and
+unknown-origin lessons fail closed.
 
 The curator also audits the `concepts` store (abstract regularities triangulated
 across paraphrase runs). Concepts are no longer write-only: `register_concept`
@@ -984,7 +991,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s), restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries never mutated |
+| `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
