@@ -788,7 +788,16 @@ base branch and create feature branches from `origin/main` (or the configured
 `THREADKEEPER_EVOLVE_REPO_BRANCH`), not from whatever `HEAD` the daemon happens
 to have checked out. A shared git-writer running-task check prevents the
 privileged reviewer audit and code/PR applier from overlapping in the same
-checkout.
+checkout. If a killed conflict-repair child leaves an unresolved merge in the
+default auto-managed checkout, the next code-applying pass can recover it — but
+only when the current branch is `roadmap/…`/`evolve/…` and GitHub confirms that
+exact PR is already merged. Before returning the managed tree to fresh
+`origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`, thread-keeper archives the tracked
+diff under
+`~/.threadkeeper/evolve-recovery/stale-merge-pr-*.patch` and records
+`recovered_stale_merge` telemetry. Open, closed-unmerged, missing, or
+unreadable PR state remains fail-closed. An explicit
+`THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
 
 **Skip-label gate.** Autonomous issue pickup refuses issues with labels listed
 in `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` (default

@@ -81,6 +81,12 @@ remains a live question.
   overlapping reviewer/applier git writers in the shared checkout, and prompts
   children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
   instead of arbitrary current `HEAD`.
+- Evolve managed-checkout stale-merge recovery: a killed conflict-repair child
+  no longer blocks the entire backlog after its PR was merged elsewhere. The
+  parent first excludes live git writers, requires the default managed checkout
+  plus an applier-owned branch and an exact GitHub `MERGED` state, archives the
+  tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
+  base. Explicit operator checkouts and uncertain PR states remain fail-closed.
 - Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
   audit child, the parent checks open PRs for automation-owned changes touching
   `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one

@@ -419,6 +419,9 @@ def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(
         pkg["ea"], "_running_git_writer_children",
         lambda conn: [],
     )
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: False,
+    )
 
     def _boom(**kw):
         raise AssertionError("must not spawn reviewer audit from dirty checkout")

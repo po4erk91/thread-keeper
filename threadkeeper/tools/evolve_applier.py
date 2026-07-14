@@ -28,7 +28,7 @@
 
   evolve_apply_status()
     Diagnostic: interval knob, promoted+unapplied queue, running applier, and
-    the last few apply passes.
+    the last few apply/recovery passes.
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def evolve_mark_curator_report_applied(report_path: str, summary: str) -> str:
 @read_tool()
 def evolve_apply_status() -> str:
     """Show evolve-applier config + curator/evolve queues + running applier
-    + the last 5 apply passes."""
+    + the last 5 apply/recovery passes."""
     conn = get_db()
     _ensure_session(conn)
     reports = _pending_curator_reports(conn)
@@ -253,6 +253,8 @@ def evolve_apply_status() -> str:
             "WHERE kind IN ('evolve_apply_pass', 'curator_report_applied', "
             "'evolve_applied', 'roadmap_issue_applied', "
             "'roadmap_issue_requeued', 'roadmap_issue_dead_letter') "
+            "OR (kind='evolve_git_safety' "
+            "AND summary LIKE 'recovered_stale_merge%') "
             "ORDER BY created_at DESC, id DESC LIMIT 5"
         ).fetchall()
     except Exception:

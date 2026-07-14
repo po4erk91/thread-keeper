@@ -390,6 +390,15 @@ version bumps follow semver per the policy in
   `origin/main` / configured base ref, and refuse to overlap reviewer/applier
   git writers in the shared checkout.
 
+- **Evolve managed-checkout stale-merge recovery.** An interrupted PR-conflict
+  repair can no longer leave every later backlog item permanently blocked by
+  `skipped_dirty_worktree` after that PR was merged elsewhere. For the default
+  auto-managed checkout only, the parent now verifies the exact applier branch
+  is `MERGED` on GitHub, archives its tracked diff under
+  `~/.threadkeeper/evolve-recovery/`, and restores the fresh configured origin
+  base before dispatch continues. Live writers, explicit checkouts, and
+  uncertain/open PR states remain fail-closed.
+
 - **Task retention and spool GC (#42).** `consolidate()` now reports and
   applies retention for ended `tasks` rows using
   `THREADKEEPER_TASK_RETENTION_DAYS` (30d default) and

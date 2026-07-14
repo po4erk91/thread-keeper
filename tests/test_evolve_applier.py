@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -923,7 +924,8 @@ def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
 
     assert err == ""
     assert [int(pr["number"]) for pr in prs] == [22]
-    joined = " ".join(calls[0])
+    gh_call = next(cmd for cmd in calls if cmd[:3] == ["gh", "pr", "list"])
+    joined = " ".join(gh_call)
     assert "mergeStateStatus" in joined
     assert "mergeable" in joined
     assert "isCrossRepository" in joined
@@ -1026,6 +1028,9 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
         lambda conn: [],
     )
     monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: False,
+    )
+    monkeypatch.setattr(
         pkg["ea"], "_fetch_open_issues",
         lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
     )
@@ -1051,6 +1056,228 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
     ).fetchone()
     assert row["target"] == "roadmap_issue"
     assert row["summary"] == "skipped_dirty_worktree mode=git"
+
+
+def test_managed_checkout_recovers_stale_merge_after_pr_merged(
+    tmp_path, monkeypatch,
+):
+    """A killed repair child must not leave the whole backlog blocked forever.
+
+    Recovery is restricted to the auto-managed checkout and archives the
+    tracked merge diff before returning the tree to the fresh configured base.
+    """
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    repo = pkg["ea"]._managed_repo_dir()
+    remote = tmp_path / "remote.git"
+
+    def git(*args, check=True):
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if check and proc.returncode != 0:
+            raise AssertionError(proc.stderr or proc.stdout)
+        return proc
+
+    repo.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (repo / "shared.txt").write_text("base\n", encoding="utf-8")
+    git("add", "shared.txt")
+    git("commit", "-m", "base")
+    git("remote", "add", "origin", str(remote))
+    git("push", "-u", "origin", "main")
+
+    branch = "roadmap/issue-7-stale-repair"
+    git("checkout", "-b", branch)
+    (repo / "shared.txt").write_text("issue\n", encoding="utf-8")
+    git("commit", "-am", "issue")
+    git("push", "-u", "origin", branch)
+    git("checkout", "main")
+    (repo / "shared.txt").write_text("main\n", encoding="utf-8")
+    git("commit", "-am", "main change")
+    git("push", "origin", "main")
+    git("checkout", branch)
+    conflicted = git("merge", "origin/main", check=False)
+    assert conflicted.returncode != 0
+    assert git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+
+    monkeypatch.setattr(
+        pkg["ea"], "_prs_for_head_branch",
+        lambda head, repo_root=None: ([{
+            "number": 7,
+            "state": "MERGED",
+            "mergedAt": "2026-07-12T10:28:56Z",
+            "headRefName": branch,
+            "url": "https://github.com/o/r/pull/7",
+        }], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children", lambda _conn: [],
+    )
+
+    out = pkg["ea"]._git_worktree_precondition(
+        conn, repo, "roadmap_issue"
+    )
+
+    assert out == ""
+    assert git("branch", "--show-current").stdout.strip() == "main"
+    assert git("status", "--porcelain", "--untracked-files=no").stdout == ""
+    assert git(
+        "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
+    ).returncode == 1
+    backups = list(
+        (tmp_path / "evolve-recovery").glob("stale-merge-pr-7-*.patch")
+    )
+    assert len(backups) == 1
+    assert "diff --git" in backups[0].read_text(encoding="utf-8")
+    assert backups[0].stat().st_mode & 0o777 == 0o600
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=? ORDER BY id DESC",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert row["target"] == "roadmap_issue"
+    assert "recovered_stale_merge pr=#7" in row["summary"]
+    assert backups[0].name in row["summary"]
+
+
+def test_explicit_checkout_never_auto_recovers_dirty_merge(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_ROOT", "/operator/repo")
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda repo_root: ("UU CHANGELOG.md", ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children", lambda _conn: [],
+    )
+
+    out = pkg["ea"]._git_worktree_precondition(
+        conn, Path("/operator/repo"), "roadmap_issue"
+    )
+
+    assert out == "skipped_dirty_worktree mode=git"
+
+
+def test_managed_checkout_keeps_open_pr_merge_fail_closed(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    branch = "roadmap/issue-7-still-open"
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
+    )
+    monkeypatch.setattr(pkg["ea"], "_merge_in_progress", lambda repo: (True, ""))
+    monkeypatch.setattr(pkg["ea"], "_current_branch", lambda repo: (branch, ""))
+    monkeypatch.setattr(
+        pkg["ea"], "_prs_for_head_branch",
+        lambda head, repo_root=None: ([{
+            "number": 7,
+            "state": "OPEN",
+            "mergedAt": None,
+            "headRefName": branch,
+        }], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_archive_stale_merge_diff",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("open PR state must never be reset")
+        ),
+    )
+
+    recovered, reason = pkg["ea"]._recover_stale_managed_merge(
+        tmp_path / "repo"
+    )
+
+    assert recovered is False
+    assert reason == "stale_merge_pr_not_merged=#7:OPEN"
+
+
+def test_prs_for_head_branch_filters_cross_repository_matches(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    branch = "roadmap/issue-7-stale-repair"
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps([
+            {
+                "number": 70,
+                "state": "MERGED",
+                "mergedAt": "2026-07-12T10:28:56Z",
+                "headRefName": branch,
+                "isCrossRepository": True,
+            },
+            {
+                "number": 7,
+                "state": "MERGED",
+                "mergedAt": "2026-07-12T10:28:56Z",
+                "headRefName": branch,
+                "isCrossRepository": False,
+            },
+        ])
+
+    seen = {}
+
+    def run_gh(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return _Proc()
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", run_gh)
+
+    prs, err = pkg["ea"]._prs_for_head_branch(branch, tmp_path)
+
+    assert err == ""
+    assert [pr["number"] for pr in prs] == [7]
+    assert seen["cmd"][seen["cmd"].index("--state") + 1] == "all"
+    assert seen["cmd"][seen["cmd"].index("--head") + 1] == branch
+
+
+def test_live_git_writer_wins_before_dirty_recovery(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children", lambda _conn: ["tk_live"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda repo_root: (_ for _ in ()).throw(
+            AssertionError("must not inspect/recover a live writer's WIP")
+        ),
+    )
+
+    out = pkg["ea"]._git_worktree_precondition(
+        conn, tmp_path / "repo", "roadmap_issue"
+    )
+
+    assert out == "evolve_git_writer_running n=1"
 
 
 def test_apply_roadmap_issue_blocks_during_reviewer_audit_git_writer(
@@ -2320,3 +2547,25 @@ def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
     assert "conflicted_prs=1" in out
     assert "conflicted PRs (next first):" in out
     assert "#44  roadmap/issue-44-conflict-aaaaaa" in out
+
+
+def test_evolve_apply_status_surfaces_stale_merge_recovery(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_git_safety', 'roadmap_issue', ?, ?)",
+        (
+            "s_test",
+            "recovered_stale_merge pr=#7 branch=roadmap/issue-7 "
+            "backup=stale-merge-pr-7.patch",
+            int(time.time()),
+        ),
+    )
+    conn.commit()
+
+    out = _tool(pkg, "evolve_apply_status")()
+
+    assert "evolve_git_safety: recovered_stale_merge pr=#7" in out
