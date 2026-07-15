@@ -334,6 +334,16 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"tasks={_scalar(conn, 'SELECT COUNT(*) FROM tasks')} "
         f"probe_results={_scalar(conn, 'SELECT COUNT(*) FROM probe_results')}"
     )
+    from ..embeddings import embedding_index_health
+    emb_health = embedding_index_health(conn)
+    out.append(
+        "  embedding_health: "
+        f"notes={emb_health['notes_current']}/{emb_health['notes_total']} "
+        f"notes_vec={emb_health['notes_vec']} "
+        f"dialog={emb_health['dialog_current']}/{emb_health['dialog_total']} "
+        f"dialog_vec={emb_health['dialog_vec']} "
+        f"generation={emb_health['generation']}"
+    )
 
     # ── loops ─────────────────────────────────────────────────────────
     # Per loop: fires in window, fires in 30d, age of last fire. A loop

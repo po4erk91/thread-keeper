@@ -65,9 +65,11 @@ def test_encode_is_cross_lingual(sem_pkg):
 
 def test_embed_tag(sem_pkg):
     from threadkeeper import embeddings as emb
-    active = sem_pkg["config"].EMBED_BACKEND
+    active = emb.embedding_fingerprint()
     assert emb.embed_tag(b"\x00\x01") == active
     assert emb.embed_tag(None) is None
+    assert sem_pkg["config"].EMBED_MODEL_NAME in active
+    assert f"dim={sem_pkg['config'].EMBED_DIM}" in active
 
 
 # ── write-path tagging ───────────────────────────────────────────────
@@ -78,7 +80,8 @@ def test_new_note_carries_backend_tag(sem_pkg):
                            content="tagged note about idempotency keys",
                            kind="insight")
     conn = sem_pkg["db"].get_db()
-    active = sem_pkg["config"].EMBED_BACKEND
+    from threadkeeper import embeddings as emb
+    active = emb.embedding_fingerprint()
     row = conn.execute(
         "SELECT embedding, embed_backend FROM notes "
         "WHERE thread_id=? ORDER BY id DESC LIMIT 1",
@@ -92,7 +95,8 @@ def test_new_note_carries_backend_tag(sem_pkg):
 
 def test_migration_recomputes_tags_and_is_idempotent(sem_pkg):
     from threadkeeper import migrate_embeddings as mig
-    active = sem_pkg["config"].EMBED_BACKEND
+    from threadkeeper import embeddings as emb
+    active = emb.embedding_fingerprint()
     conn = sem_pkg["db"].get_db()
     _seed_legacy_notes(conn, 3)
 
@@ -116,7 +120,8 @@ def test_migration_recomputes_tags_and_is_idempotent(sem_pkg):
 
 def test_migration_dry_run_writes_nothing(sem_pkg):
     from threadkeeper import migrate_embeddings as mig
-    active = sem_pkg["config"].EMBED_BACKEND
+    from threadkeeper import embeddings as emb
+    active = emb.embedding_fingerprint()
     conn = sem_pkg["db"].get_db()
     _seed_legacy_notes(conn, 2)
 

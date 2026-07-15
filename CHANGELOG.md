@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.15.0 — 2026-07-15
+
 ### Added
 
 - **Selective privacy erasure (`forget` / `tk-forget`) (#104).** A new
@@ -17,6 +19,25 @@ version bumps follow semver per the policy in
   signals, and session sidecars. Reports include per-store counts, residual
   FTS/vector orphan checks, and lessons/skills that cite the purged source for
   manual re-review instead of silently retaining derived guidance.
+
+- **Hybrid memory retrieval with embedding-generation safety.** `search()`,
+  `dialog_search()`, and the query section of `brief()` now share one candidate
+  engine: FTS always participates, dense retrieval adds candidates when a
+  current-generation index is available, and reciprocal-rank fusion preserves
+  lexical/dense provenance and scores. Embedding rows are fingerprinted by
+  backend, model, dimension, pooling contract, and runtime generation; stale
+  vectors are excluded until the resumable migration refreshes them. Low-score
+  dense noise is removed before fusion, and over-specific FTS AND queries get a
+  BM25-ranked OR fallback. The dashboard reports current BLOB and vec coverage,
+  and the memory eval reports
+  hybrid mode plus p50/p95 latency.
+
+- **Explicit SQLite runtime and contention harness.** Schema/WAL/vec bootstrap
+  is once per process; read connections are autocommit + `query_only`; short
+  foreground writes use fresh `BEGIN IMMEDIATE` transactions with bounded
+  retry only for `SQLITE_BUSY`/`SQLITE_LOCKED`. `scripts/db_stress.py` provides
+  a reproducible multi-process write/read check with exact write accounting and
+  `PRAGMA quick_check` validation.
 
 - **`dialog_fts` deduplicated: external-content FTS5 (schema v2).** The FTS
   index now reads text straight from `dialog_messages` instead of storing
@@ -44,6 +65,13 @@ version bumps follow semver per the policy in
   per-session RAM multiplier and the reclaim-thrash root.
 
 ### Fixed
+
+- **Session reads and transcript embedding no longer extend writer locks.**
+  `context()`, `search()`, and `dialog_search()` do not heartbeat on every read.
+  Initial transcript ingest is host-owned/asynchronous and single-flight; file
+  parsing, scrubbing, and embedding finish before DML, with commits bounded to
+  one transcript file. This removes the main `database is locked` path when
+  several MCP servers share the store.
 
 - **Evolve reviewer issue creation is mechanically deduped (#103).** Reviewer
   candidates now go through `evolve_issue_create(...)`, which fetches GitHub

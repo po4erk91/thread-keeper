@@ -5,6 +5,13 @@ from pathlib import Path
 
 
 def _reimport(monkeypatch, tmp_path, **env):
+    for key in (
+        "THREADKEEPER_DAEMON_HOST",
+        "THREADKEEPER_ROLE",
+        "THREADKEEPER_HOST_SOCK",
+        "THREADKEEPER_THIN_EMBED_FALLBACK",
+    ):
+        monkeypatch.delenv(key, raising=False)
     base = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "THREADKEEPER_DISABLE_BG_DAEMONS": "1",

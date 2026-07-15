@@ -8,8 +8,8 @@ are numerically *not identical* to sentence-transformers' for the same model
 stored corpus and fresh queries drift into slightly different spaces.
 
 This command re-encodes every stale row (those whose `embed_backend` differs
-from the active backend) with the active backend, rewriting both the BLOB
-column and the `vec0` mirror, and stamps the new tag. It is:
+from the active generation fingerprint) with the active backend, rewriting
+both the BLOB column and the `vec0` mirror, and stamps the new tag. It is:
 
   * resumable  — only rows still tagged stale are selected, so an interrupted
                  run picks up where it left off (each batch commits);
@@ -28,7 +28,7 @@ import sys
 import time
 from typing import Callable
 
-from .config import EMBED_BACKEND, SEMANTIC_AVAILABLE
+from .config import SEMANTIC_AVAILABLE
 from .db import get_db
 from . import embeddings as _emb
 
@@ -99,10 +99,11 @@ def run(*, do_notes: bool, do_dialog: bool, batch: int, dry_run: bool,
         log("ERROR: no embedding backend available. Install `.[semantic]` "
             "(ONNX/fastembed) or `.[semantic-st]` (sentence-transformers).")
         return 1
-    active = EMBED_BACKEND
+    active = _emb.embedding_fingerprint()
     conn = get_db()
     conn.row_factory = sqlite3.Row
-    log(f"active backend = {active}{'  (dry run)' if dry_run else ''}")
+    log(f"active embedding generation = {active}"
+        f"{'  (dry run)' if dry_run else ''}")
     # notes hold short text; the model caps at its own token limit, so no slice.
     if do_notes:
         _migrate_table(conn, table="notes", id_col="id", text_limit=None,

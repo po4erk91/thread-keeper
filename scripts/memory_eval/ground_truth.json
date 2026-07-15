@@ -590,6 +590,7 @@
       "abstain": true,
       "query": "Kubernetes migration",
       "question": "What did we decide in the approved Kubernetes migration plan?",
+      "abstain_evidence": ["stay on AWS ECS", "no Kubernetes"],
       "trap_substrings": [
         "kubernetes migration approved",
         "migrated to kubernetes",
@@ -606,6 +607,7 @@
       "abstain": true,
       "query": "GraphQL gateway",
       "question": "Which GraphQL gateway schema did we ship?",
+      "abstain_evidence": ["No GraphQL gateway", "REST-only"],
       "trap_substrings": [
         "graphql gateway shipped",
         "built the graphql gateway",
@@ -621,6 +623,7 @@
       "abstain": true,
       "query": "mobile app",
       "question": "What did we name the mobile app we launched?",
+      "abstain_evidence": ["no mobile app"],
       "trap_substrings": [
         "mobile app launched",
         "ios app",
@@ -652,6 +655,7 @@
       "abstain": true,
       "query": "Kafka topics",
       "question": "How did we configure the Kafka topics?",
+      "abstain_evidence": ["RabbitMQ"],
       "trap_substrings": [
         "kafka"
       ]
@@ -664,6 +668,7 @@
       "abstain": true,
       "query": "Oracle database",
       "question": "Why did we pick Oracle for billing?",
+      "abstain_evidence": ["PostgreSQL"],
       "trap_substrings": [
         "oracle"
       ]
@@ -676,6 +681,7 @@
       "abstain": true,
       "query": "PayPal integration",
       "question": "How did we integrate PayPal?",
+      "abstain_evidence": ["Stripe"],
       "trap_substrings": [
         "paypal"
       ]
@@ -688,6 +694,7 @@
       "abstain": true,
       "query": "GCP project",
       "question": "What is our GCP project id?",
+      "abstain_evidence": ["AWS ECS", "AWS Secrets Manager"],
       "trap_substrings": [
         "gcp",
         "google cloud"
@@ -701,6 +708,7 @@
       "abstain": true,
       "query": "MongoDB",
       "question": "Which MongoDB cluster do we use?",
+      "abstain_evidence": ["PostgreSQL"],
       "trap_substrings": [
         "mongodb",
         "mongo"
@@ -714,6 +722,7 @@
       "abstain": true,
       "query": "production region",
       "question": "When did we deploy to the APAC region?",
+      "abstain_evidence": ["eu-central-1", "us-east-1"],
       "trap_substrings": [
         "ap-southeast",
         "ap-northeast",
@@ -730,6 +739,7 @@
       "abstain": true,
       "query": "billing stack",
       "question": "What does the stack note say about Kafka?",
+      "abstain_evidence": ["RabbitMQ"],
       "trap_substrings": [
         "kafka"
       ]
@@ -742,6 +752,7 @@
       "abstain": true,
       "query": "kubernetes migration plan",
       "question": "What does the brief say about the approved Kubernetes migration?",
+      "abstain_evidence": ["no Kubernetes", "stay on ECS"],
       "trap_substrings": [
         "kubernetes migration approved",
         "migrated to kubernetes",

@@ -47,6 +47,7 @@ def start_daemons() -> list[str]:
     # periodic background ingester (moved from _ensure_session)
     try:
         from . import ingest
+        ingest._start_initial_ingest()
         ingest._start_background_ingester()
         started.append("ingest")
     except Exception:
@@ -103,13 +104,13 @@ def main() -> int:
 
 
 def _heartbeat() -> None:
-    from .db import get_db
+    from .db import run_write
     from . import identity
     try:
-        # `_ensure_session(conn, client=)` (identity.py:83) registers/refreshes
-        # a presence row under the given client label — used here to stamp the
-        # host's own row that `_host_alive()` (Task 5) reads back.
-        identity._ensure_session(get_db(), client="daemon-host")
+        identity.ensure_session_started(client="daemon-host")
+        # Session initialization and recurring heartbeat are intentionally
+        # separate: ordinary read tools no longer turn into writers.
+        run_write("host-heartbeat", identity._heartbeat, deadline_s=2.0)
     except Exception:
         logger.debug("host: heartbeat failed", exc_info=True)
 
@@ -152,12 +153,13 @@ def ensure_host_running() -> bool:
 
 def _host_alive() -> bool:
     """A live host heartbeat within the TTL."""
-    from .db import get_db
+    from .db import read_db
     try:
-        row = get_db().execute(
-            "SELECT heartbeat_at FROM presence WHERE client='daemon-host' "
-            "ORDER BY heartbeat_at DESC LIMIT 1"
-        ).fetchone()
+        with read_db() as conn:
+            row = conn.execute(
+                "SELECT heartbeat_at FROM presence WHERE client='daemon-host' "
+                "ORDER BY heartbeat_at DESC LIMIT 1"
+            ).fetchone()
     except Exception:
         return False
     if not row or row["heartbeat_at"] is None:

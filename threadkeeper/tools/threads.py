@@ -11,13 +11,13 @@ import time
 from typing import Optional
 
 from .._mcp import read_tool, write_tool, structured_result
-from ..config import SEMANTIC_AVAILABLE
 from ..tool_schemas import ContextStatus
-from ..db import get_db
-from ..helpers import gen_thread_id, fmt_age, q, _fts_query
+from ..db import get_db, read_db, run_write
+from ..helpers import gen_thread_id, fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
-from ..embeddings import _embed, _cosine_search, _vec_upsert_note, embed_tag
+from ..embeddings import _embed, _vec_upsert_note, embed_tag
+from ..retrieval import retrieve_notes
 from ..brief import render_brief, render_context
 
 
@@ -37,9 +37,11 @@ def brief(query: str = "", k: int = 6, scope: str = "full") -> str:
               hook already injected once. Use for MID-SESSION calls so
               brief(query=...) doesn't re-emit the whole blob each turn.
     """
-    conn = get_db()
-    _ensure_session(conn)
-    return render_brief(conn, query=query, k=k, scope=scope)
+    identity.ensure_session_started()
+    # Sparse "hint shown" telemetry uses its own short run_write transaction;
+    # the render connection stays query-only.
+    with read_db() as conn:
+        return render_brief(conn, query=query, k=k, scope=scope)
 
 
 @read_tool()
@@ -49,35 +51,39 @@ def context() -> ContextStatus:
     Returns structuredContent (ContextStatus) plus the legacy text block.
     The same snapshot is reachable read-only as the ``memory://context``
     resource — both render through ``brief.render_context``."""
-    conn = get_db()
-    _ensure_session(conn)
-    text, fields = render_context(conn)
-    return structured_result(text, ContextStatus(**fields))
+    identity.ensure_session_started()
+    with read_db() as conn:
+        text, fields = render_context(conn)
+        return structured_result(text, ContextStatus(**fields))
 
 
 @write_tool()
 def open_thread(question: str, parent_id: str = "") -> str:
     """Open a thread. `question` should be terse (5-15 words, the open question).
     `parent_id` optional — pass an existing ID like 'T7f3' for a child. Returns new ID."""
-    conn = get_db()
-    _ensure_session(conn)
-    now = int(time.time())
+    identity.ensure_session_started()
     parent = parent_id.strip() or None
-    depth = 0
-    if parent:
-        row = conn.execute("SELECT depth FROM threads WHERE id=?", (parent,)).fetchone()
-        if not row:
-            return f"ERR parent_not_found={parent}"
-        depth = row["depth"] + 1
-    tid = gen_thread_id(conn)
-    conn.execute(
-        "INSERT INTO threads (id, question, state, parent_id, opened_at, "
-        "last_touched_at, depth) VALUES (?,?,?,?,?,?,?)",
-        (tid, question, "active", parent, now, now, depth),
-    )
-    _emit(conn, "open_thread", target=tid, summary=question)
-    conn.commit()
-    return tid
+
+    def _write(conn: sqlite3.Connection) -> str:
+        now = int(time.time())
+        depth = 0
+        if parent:
+            row = conn.execute(
+                "SELECT depth FROM threads WHERE id=?", (parent,)
+            ).fetchone()
+            if not row:
+                return f"ERR parent_not_found={parent}"
+            depth = row["depth"] + 1
+        tid = gen_thread_id(conn)
+        conn.execute(
+            "INSERT INTO threads (id, question, state, parent_id, opened_at, "
+            "last_touched_at, depth) VALUES (?,?,?,?,?,?,?)",
+            (tid, question, "active", parent, now, now, depth),
+        )
+        _emit(conn, "open_thread", target=tid, summary=question)
+        return tid
+
+    return run_write("open_thread", _write)
 
 
 @write_tool()
@@ -92,56 +98,76 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
     brings it back. This is what makes aggressive auto-close safe: the
     thread-janitor can close idle threads to harvest skills, and you just
     note() to pick any of them back up."""
-    conn = get_db()
-    _ensure_session(conn)
-    if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():
-        return f"ERR thread_not_found={thread_id}"
-    now = int(time.time())
+    identity.ensure_session_started()
+    # Model inference must finish before BEGIN IMMEDIATE so it never extends
+    # the single-writer critical section.
     emb = _embed(content)
-    cur = conn.execute(
-        "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
-        "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
-        (thread_id, content, kind, now, identity._session_id, emb, embed_tag(emb)),
-    )
-    note_id = cur.lastrowid
-    _vec_upsert_note(conn, note_id, emb)
-    conn.execute(
-        "UPDATE threads SET last_touched_at=?, last_move=?, "
-        "state=CASE WHEN state IN ('idle','closed') THEN 'active' ELSE state END "
-        "WHERE id=?",
-        (now, content[:90], thread_id),
-    )
-    _emit(conn, f"note:{kind}", target=thread_id, summary=content)
-    conn.commit()
-    return f"ok id={note_id}"
+
+    def _write(conn: sqlite3.Connection) -> str:
+        if not conn.execute(
+            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
+        ).fetchone():
+            return f"ERR thread_not_found={thread_id}"
+        now = int(time.time())
+        cur = conn.execute(
+            "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
+            "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            (thread_id, content, kind, now, identity._session_id,
+             emb, embed_tag(emb)),
+        )
+        note_id = cur.lastrowid
+        _vec_upsert_note(conn, note_id, emb)
+        conn.execute(
+            "UPDATE threads SET last_touched_at=?, last_move=?, "
+            "state=CASE WHEN state IN ('idle','closed') THEN 'active' ELSE state END "
+            "WHERE id=?",
+            (now, content[:90], thread_id),
+        )
+        _emit(conn, f"note:{kind}", target=thread_id, summary=content)
+        return f"ok id={note_id}"
+
+    return run_write("note", _write)
 
 
 @write_tool(idempotent=True)
 def close_thread(thread_id: str, outcome: str) -> str:
     """Close a thread with a 5-15 word outcome."""
-    conn = get_db()
-    _ensure_session(conn)
-    if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():
-        return f"ERR thread_not_found={thread_id}"
-    now = int(time.time())
-    conn.execute(
-        "UPDATE threads SET state='closed', outcome=?, last_touched_at=? WHERE id=?",
-        (outcome, now, thread_id),
-    )
-    _emit(conn, "close_thread", target=thread_id, summary=outcome)
-    conn.commit()
+    identity.ensure_session_started()
+
+    def _write(conn: sqlite3.Connection) -> str:
+        if not conn.execute(
+            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
+        ).fetchone():
+            return f"ERR thread_not_found={thread_id}"
+        now = int(time.time())
+        conn.execute(
+            "UPDATE threads SET state='closed', outcome=?, last_touched_at=? "
+            "WHERE id=?",
+            (outcome, now, thread_id),
+        )
+        _emit(conn, "close_thread", target=thread_id, summary=outcome)
+        return "ok"
+
+    result = run_write("close_thread", _write)
+    if result != "ok":
+        return result
     # Auto-review hook: if AUTO_REVIEW_ENABLED and this is a rich thread,
     # fire background review immediately. Best-effort — never raise.
+    conn = None
     try:
         from ..nudges import auto_review_should_fire
         from ..config import AUTO_REVIEW_ENABLED
         if AUTO_REVIEW_ENABLED:
+            conn = get_db()
             rich_tid = auto_review_should_fire(conn, identity._session_id)
             if rich_tid == thread_id:
                 from .skills import review_thread
                 review_thread(thread_id=thread_id, focus='skills', mode='auto')
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
     return "ok"
 
 
@@ -159,11 +185,7 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     When a path is provided, thread-keeper also mirrors that skill directory
     into every configured native skills root (Claude, Codex, Antigravity,
     shared agents, and ~/.threadkeeper/skills) on a best-effort basis."""
-    conn = get_db()
-    _ensure_session(conn)
-    if not conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone():
-        return f"ERR thread_not_found={thread_id}"
-    now = int(time.time())
+    identity.ensure_session_started()
     path = skill_path.strip()
     if path:
         try:
@@ -172,76 +194,79 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
         except Exception:
             pass
     summary = path or "(no path recorded)"
-    conn.execute(
-        "INSERT INTO events (session_id, kind, target, summary, created_at) "
-        "VALUES (?,?,?,?,?)",
-        (identity._session_id or "", "skill_materialized",
-         thread_id, summary, now),
-    )
     note_body = (
         f"materialized into {path}" if path
         else "materialized into a skill (path not recorded)"
     )
     emb = _embed(note_body)
-    cur = conn.execute(
-        "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
-        "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
-        (thread_id, note_body, "move", now, identity._session_id, emb, embed_tag(emb)),
-    )
-    _vec_upsert_note(conn, cur.lastrowid, emb)
-    conn.execute(
-        "UPDATE threads SET last_touched_at=?, last_move=? WHERE id=?",
-        (now, note_body[:90], thread_id),
-    )
-    conn.commit()
-    return "ok"
+
+    def _write(conn: sqlite3.Connection) -> str:
+        if not conn.execute(
+            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
+        ).fetchone():
+            return f"ERR thread_not_found={thread_id}"
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (identity._session_id or "", "skill_materialized",
+             thread_id, summary, now),
+        )
+        cur = conn.execute(
+            "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
+            "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            (thread_id, note_body, "move", now, identity._session_id,
+             emb, embed_tag(emb)),
+        )
+        _vec_upsert_note(conn, cur.lastrowid, emb)
+        conn.execute(
+            "UPDATE threads SET last_touched_at=?, last_move=? WHERE id=?",
+            (now, note_body[:90], thread_id),
+        )
+        return "ok"
+
+    return run_write("mark_skill_materialized", _write)
 
 
 @write_tool(idempotent=True)
 def idle_thread(thread_id: str) -> str:
     """Mark thread idle (paused, may return). Auto-revives to active on next note()."""
-    conn = get_db()
-    _ensure_session(conn)
-    now = int(time.time())
-    conn.execute(
-        "UPDATE threads SET state='idle', last_touched_at=? WHERE id=?",
-        (now, thread_id),
-    )
-    _emit(conn, "idle_thread", target=thread_id)
-    conn.commit()
-    return "ok"
+    identity.ensure_session_started()
+
+    def _write(conn: sqlite3.Connection) -> str:
+        now = int(time.time())
+        conn.execute(
+            "UPDATE threads SET state='idle', last_touched_at=? WHERE id=?",
+            (now, thread_id),
+        )
+        _emit(conn, "idle_thread", target=thread_id)
+        return "ok"
+
+    return run_write("idle_thread", _write)
 
 
 @read_tool()
 def search(query: str, k: int = 5) -> str:
     """Semantic (or FTS) search over all notes."""
-    conn = get_db()
-    if SEMANTIC_AVAILABLE:
-        hits = _cosine_search(conn, query, k)
-        if not hits:
-            return "no_matches"
-        return "\n".join(
-            f"{r['thread_id'] or '-'} {r['kind']} s={r['score']:.2f} "
-            f"{q(r['content'][:200].replace(chr(10), ' '))}"
-            for r in hits
+    identity.ensure_session_started()
+    with read_db() as conn:
+        return _search_conn(conn, query=query, k=k)
+
+
+def _search_conn(conn: sqlite3.Connection, *, query: str, k: int) -> str:
+    """Connection-scoped implementation used by the read-only MCP wrapper."""
+    hits = retrieve_notes(conn, query, k=k, mode="hybrid")
+    if not hits:
+        return "no_matches"
+    lines = []
+    for hit in hits:
+        score = hit.display_score
+        score_part = f"s={score:.2f} " if score is not None else ""
+        lines.append(
+            f"{hit.thread_id or '-'} {hit.kind or '-'} {score_part}"
+            f"{q(hit.content[:200].replace(chr(10), ' '))}"
         )
-    fq = _fts_query(query)
-    if not fq:
-        return "no_matches"
-    try:
-        rows = conn.execute(
-            "SELECT n.thread_id, n.kind, n.content FROM notes_fts f "
-            "JOIN notes n ON f.rowid=n.id WHERE notes_fts MATCH ? LIMIT ?",
-            (fq, k),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return "fts_error"
-    if not rows:
-        return "no_matches"
-    return "\n".join(
-        f"{r['thread_id'] or '-'} {r['kind']} {q(r['content'][:200])}"
-        for r in rows
-    )
+    return "\n".join(lines)
 
 
 @read_tool()

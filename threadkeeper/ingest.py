@@ -24,6 +24,7 @@ from .db import get_db
 from .embeddings import _embed, embed_tag
 
 _ingest_thread: Optional[threading.Thread] = None
+_initial_ingest_thread: Optional[threading.Thread] = None
 _ingest_lock = threading.Lock()
 _ingest_interval_s = INGEST_INTERVAL_S
 _ingest_recent_window_s = INGEST_RECENT_WINDOW_S
@@ -382,11 +383,15 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     last_size = state["last_size"] if state else 0
     if mtime <= last_mtime and stat.st_size <= last_size:
         return 0
-    added = 0
+    # Phase 1/2: collect, scrub, and embed before the first DML statement. A
+    # SELECT does not start Python sqlite3's implicit write transaction; this
+    # keeps model inference entirely outside the single-writer critical path.
+    prepared: list[dict] = []
+    text_candidates = 0
     hit_cap = False
     try:
         for nm in adapter.iter_messages(fp):
-            if added >= max_msgs:
+            if text_candidates >= max_msgs:
                 hit_cap = True
                 break
             if not nm.uuid:
@@ -395,34 +400,66 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                 "SELECT 1 FROM dialog_messages WHERE uuid=?", (nm.uuid,)
             ).fetchone():
                 continue
-            # Skill scan first — runs even for tool-only assistant turns
-            # whose text body would fail the >=10 char filter below.
-            if nm.role == "assistant":
-                for skill_name in _scan_message_for_skill_use(nm.raw):
-                    _record_skill_use(
-                        conn, skill_name, nm.created_at, nm.session_id
-                    )
+            # Skill scan still includes tool-only assistant turns, but the
+            # resulting counter writes happen in phase 3 below.
+            skills = (
+                _scan_message_for_skill_use(nm.raw)
+                if nm.role == "assistant" else []
+            )
             text = _scrub_dialog_secrets(nm.content)
             if not text or len(text) < 10:
+                if skills:
+                    prepared.append({
+                        "message": nm,
+                        "skills": skills,
+                        "text": "",
+                        "embedding": None,
+                    })
                 continue
             emb = _embed(text[:2000]) if SEMANTIC_AVAILABLE else None
-            conn.execute(
+            prepared.append({
+                "message": nm,
+                "skills": skills,
+                "text": text,
+                "embedding": emb,
+            })
+            text_candidates += 1
+    except OSError:
+        # Preserve the cursor so the next pass rereads the file, while still
+        # committing any complete messages prepared before the read failed.
+        hit_cap = True
+
+    # Phase 3: only short SQLite mutations remain.
+    added = 0
+    for item in prepared:
+        nm = item["message"]
+        text = item["text"]
+        emb = item["embedding"]
+        inserted = False
+        if text:
+            cur = conn.execute(
                 "INSERT INTO dialog_messages (uuid, source, project, session_id, "
                 "role, content, model, created_at, embedding, embed_backend) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO NOTHING",
                 (nm.uuid, adapter.name, adapter.project_label(fp),
                  nm.session_id, nm.role, text,
                  nm.model, nm.created_at, emb, embed_tag(emb))
             )
-            if emb is not None:
+            inserted = cur.rowcount > 0
+            if inserted and emb is not None:
                 try:
                     from .embeddings import _vec_upsert_dialog
                     _vec_upsert_dialog(conn, nm.uuid, emb)
                 except Exception:
                     pass
-            added += 1
-    except OSError:
-        return added
+            if inserted:
+                added += 1
+        # For text messages, only the process that won INSERT owns passive
+        # skill accounting. Tool-only turns have no dialog row, so their
+        # timestamp guard inside _record_skill_use provides idempotency.
+        if inserted or not text:
+            for skill_name in item["skills"]:
+                _record_skill_use(conn, skill_name, nm.created_at, nm.session_id)
     next_size = last_size if hit_cap else stat.st_size
     next_mtime = last_mtime if hit_cap else mtime
     conn.execute(
@@ -453,7 +490,12 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
         for fp in files:
             if total >= max_msgs:
                 break
-            total += _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+            added = _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+            total += added
+            # Bound lock duration to one transcript file. Embedding for that
+            # file already completed before its first DML statement.
+            if conn.in_transaction:
+                conn.commit()
     _normalize_codex_spawned_session_ids(conn)
     conn.commit()
     _record_ingest_pass(conn, mode="all", new_msgs=total, files_seen=files_seen)
@@ -487,17 +529,19 @@ def _ingest_recent_only(conn: sqlite3.Connection,
             break
         added = _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
         total += added
-        if added:
+        if conn.in_transaction:
             try:
                 conn.commit()
             except sqlite3.OperationalError:
-                pass
+                conn.rollback()
+                raise
     normalized = _normalize_codex_spawned_session_ids(conn)
     if normalized:
         try:
             conn.commit()
         except sqlite3.OperationalError:
-            pass
+            conn.rollback()
+            raise
     _record_ingest_pass(conn, mode="recent", new_msgs=total, files_seen=len(fresh))
     return (total, len(fresh))
 
@@ -564,15 +608,17 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
         return 0
     if not rows:
         return 0
-    from .embeddings import _embed, _vec_upsert_note, embed_tag
+    from .embeddings import encode_many, _vec_upsert_note, embed_tag
+    try:
+        vectors = encode_many([r["content"] for r in rows])
+    except Exception:
+        return 0
+    if vectors is None:
+        return 0
     updated = 0
-    for r in rows:
-        try:
-            emb = _embed(r["content"])
-        except Exception:
-            continue
-        if emb is None:
-            continue
+    # All inference above completed before the first UPDATE below.
+    for idx, r in enumerate(rows):
+        emb = vectors[idx].astype("float32").tobytes()
         try:
             conn.execute(
                 "UPDATE notes SET embedding=?, embed_backend=? WHERE id=?",
@@ -690,3 +736,36 @@ def _start_background_ingester() -> None:
         target=_loop, name="thread-keeper-live-ingest", daemon=True
     )
     _ingest_thread.start()
+
+
+def _start_initial_ingest() -> None:
+    """Run the bounded startup catch-up asynchronously and single-flight.
+
+    Under daemon-host mode only the host calls this function. In legacy mode
+    each server may attempt it, but the machine-wide flock lets exactly one
+    process scan/write while the rest continue serving MCP requests.
+    """
+    global _initial_ingest_thread
+    if INGEST_CAP_PER_CALL <= 0 or not BACKGROUND_DAEMONS_ALLOWED:
+        return
+    if _initial_ingest_thread is not None and _initial_ingest_thread.is_alive():
+        return
+
+    def _run() -> None:
+        from .helpers import single_flight_lock
+        with single_flight_lock("initial-ingest") as locked:
+            if not locked:
+                return
+            conn = get_db()
+            try:
+                _ingest_all(conn, max_msgs=INGEST_CAP_PER_CALL)
+                _backfill_dialog_fts_if_empty(conn)
+            finally:
+                conn.close()
+
+    _initial_ingest_thread = threading.Thread(
+        target=_run,
+        name="thread-keeper-initial-ingest",
+        daemon=True,
+    )
+    _initial_ingest_thread.start()

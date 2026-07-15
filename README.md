@@ -1205,16 +1205,24 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
 
 ## Storage
 
-`~/.threadkeeper/db.sqlite` (overridable via `THREADKEEPER_DB`). WAL
-mode for multi-writer concurrency. Optional `notes_vec` / `dialog_vec`
-HNSW indexes through `sqlite-vec` for sub-linear semantic search;
-fallback to Python-side cosine when the extension is missing.
+`~/.threadkeeper/db.sqlite` (overridable via `THREADKEEPER_DB`). WAL lets many
+readers proceed alongside a writer; SQLite still serializes writers. Optional
+`notes_vec` / `dialog_vec` HNSW indexes through `sqlite-vec` provide sub-linear
+semantic search, with Python-side cosine as the extension-free fallback.
 
-Schema bootstrap uses SQLite `PRAGMA user_version`: a current database skips
-legacy `ALTER TABLE` migrations on later `get_db()` calls, while an old or
-fresh v0 database migrates once under a writer transaction and records the
-current version. Duplicate-column migrations are treated as the only expected
-no-op; other DDL errors are logged and raised.
+The DB runtime separates three lifecycles. `bootstrap_db()` performs path
+hardening, WAL/schema migration, and vec-table setup once per process.
+`read_db()` opens a short-lived autocommit connection with
+`PRAGMA query_only=ON`, so retrieval cannot accidentally migrate, heartbeat,
+or write. `run_write()` opens a fresh connection, acquires `BEGIN IMMEDIATE`,
+runs a DB-only callback, and closes it; only `SQLITE_BUSY`/`SQLITE_LOCKED` are
+retried with bounded jitter. `get_db()` remains a compatibility API for older
+low-level call sites.
+
+Schema migration uses SQLite `PRAGMA user_version`: a current database skips
+legacy `ALTER TABLE` work, while an old or fresh v0 database migrates once
+under a writer transaction and records the current version. Duplicate-column
+migrations are the only expected no-op; other DDL errors are logged and raised.
 
 On POSIX systems, startup and `get_db()` harden the default local store
 best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
@@ -1326,6 +1334,22 @@ The migration is batched, resumable, and idempotent (a second run finds
 nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
 unchanged.
 
+Stored rows carry an embedding-generation fingerprint, not just the backend:
+backend, model ID, vector dimension, pooling contract, and compatible runtime
+version. Search never compares a current query vector with a stale generation;
+those rows remain retrievable through FTS until `tk-migrate-embeddings` refreshes
+them. `mp_dashboard()` shows total/current-generation/vec coverage for notes and
+dialog rows.
+
+Retrieval is hybrid by default. FTS candidate generation always runs, even
+when embeddings are installed or only part of the corpus has vectors. Dense
+and lexical candidates are over-fetched and fused with reciprocal-rank fusion;
+role filters are applied before dialog top-k selection. An over-specific FTS
+AND query retries once as BM25-ranked OR, while raw dense evidence below the
+calibrated cosine floor is discarded before fusion. Consequently a missing
+host, empty vec index, partial re-embedding, or irrelevant nearest neighbour
+degrades to lexical recall/abstention instead of returning noise.
+
 **Swapping in a different-width model.** The `notes_vec` / `dialog_vec` tables
 are created as `FLOAT[EMBED_DIM]`, default 384. If you point
 `THREADKEEPER_EMBED_MODEL` at a model of a different dimension, also set
@@ -1406,7 +1430,7 @@ python scripts/memory_eval/run.py --semantic      # use embeddings if installed
 python scripts/memory_eval/run.py --judge llm      # LLM-graded (needs ANTHROPIC_API_KEY)
 ```
 
-It reports three headline numbers over a fixed ground-truth set:
+It reports four headline groups over a fixed ground-truth set:
 
 - **accuracy** — fraction of questions whose retrieval recalled the gold
   fact, broken out per the five LongMemEval axes (information extraction,
@@ -1418,6 +1442,19 @@ It reports three headline numbers over a fixed ground-truth set:
 - **tokens-per-retrieval** — mean / median / max tokens of what each query
   returned, so recall is never read apart from cost (a wider window that
   recalls more also costs more).
+- **retrieval latency** — mean / p50 / p95 / max wall-clock milliseconds. With
+  `--semantic`, the backend is reported as `hybrid`, because dense candidates
+  augment rather than replace FTS.
+
+For DB concurrency, run the reproducible local gate:
+
+```bash
+python scripts/db_stress.py --processes 12 --ops 200
+```
+
+The JSON result includes expected/actual writes, throughput, p50/p95/p99/max
+write latency, worker errors, elapsed time, and `PRAGMA quick_check`; a non-zero
+exit means a lost write, worker failure, or integrity failure.
 
 With no `--db` the harness builds the bundled fixture
 (`scripts/memory_eval/ground_truth.json` — a fictional "billing service" told

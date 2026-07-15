@@ -5,9 +5,9 @@ conversations. The target client is **Claude Code** (CLI, VS Code extension);
 Desktop also works through the same MCP protocol, but the primary environment
 is Code, because only there are the jsonl transcripts and hooks.
 
-One process per session, shared SQLite in WAL mode — multiple windows can
-read-write the same database simultaneously. One state file:
-`~/.threadkeeper/db.sqlite`.
+One process per session, one SQLite store in WAL mode. Multiple windows can
+read concurrently; SQLite still admits only one writer at a time, so writers
+use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
 ## Package map
 
@@ -140,8 +140,8 @@ runtime is fully on the package.
 
 ## Storage layers
 
-The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config
-startup and `get_db()` best-effort harden the default store:
+The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config startup
+and `bootstrap_db()` best-effort harden the default store:
 `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
 sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
 `0600`. Logically six levels:
@@ -159,8 +159,9 @@ again, and re-runs integrity_check. Restore still requires stopping live
 thread-keeper servers first; replacing a database under an open SQLite
 connection can strand that process on the old unlinked file.
 
-`get_db()` gates baseline schema setup and legacy column migrations with
-SQLite `PRAGMA user_version`. Databases at the current version skip the
+`bootstrap_db()` gates baseline schema setup and legacy column migrations with
+SQLite `PRAGMA user_version`, once per process. Databases at the current
+version skip the
 historical `ALTER TABLE` list entirely; v0 databases acquire a
 `BEGIN IMMEDIATE` writer transaction, create baseline tables/indexes, apply
 legacy columns, run data backfills, then set `user_version` to the code's
@@ -169,6 +170,16 @@ re-checks `user_version` before doing work, so only one process performs the
 migration. Duplicate-column `ALTER TABLE` failures are the only swallowed
 migration errors; any other `OperationalError` is logged and raised with the
 version left unchanged for a retry.
+
+Steady-state access is split by intent:
+
+- `read_db()` is a short-lived autocommit connection with
+  `PRAGMA query_only=ON`; it never performs startup DDL or session heartbeat.
+- `run_write(op, callback)` uses a fresh connection and `BEGIN IMMEDIATE`.
+  Lock contention rolls back, closes, and retries the whole DB-only callback
+  with bounded jitter; non-lock errors propagate immediately.
+- `get_db()` is the compatibility connection for legacy low-level paths. New
+  retrieval code does not use it.
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
@@ -635,8 +646,9 @@ children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
 non-foreground `THREADKEEPER_WRITE_ORIGIN`; either condition prevents
 shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 
-The daemons share the `get_db()` connection pool; sqlite WAL allows one writer
-+ many readers without blocking.
+Daemons share the WAL database, not a connection pool. Reads use independent
+query-only connections; write critical sections are kept short because WAL
+still permits only one writer.
 
 ### Daemon-host + thin servers (Phase 1)
 
@@ -661,7 +673,7 @@ one always-on headless process per machine:
   `{"v":1,"error":...}` out). In a thin server (`THREADKEEPER_ROLE=server`,
   the default under the flag), `embeddings._encode()` tries
   `embed_via_host(...)` first for any text it needs to embed — query or the
-  session-start catch-up ingest pass below — instead of loading the model
+  host-owned ingest pass below — instead of loading the model
   itself. `embed_via_host` returns `None` on any failure (no host, timeout,
   malformed reply), and `_encode` then honors
   `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) propagates that `None` so
@@ -669,10 +681,10 @@ one always-on headless process per machine:
   when the host is down; `local` instead falls through to lazily loading the ONNX
   model in-process, trading the RAM savings for keeping semantic search fully
   available. The ongoing content-embedding work (new dialog rows) is produced
-  by the host's own background ingest daemon; a thin server's session start
-  still runs the pre-existing bounded catch-up ingest pass
-  (`THREADKEEPER_INGEST_CAP`, unchanged by Phase 1), and any embedding it
-  needs goes through this same host-then-fallback path.
+  by the host's own background ingest daemon. Initial catch-up is asynchronous,
+  single-flight, and owned by the host; a thin server no longer scans the
+  corpus on its first read. Parsing, scrubbing, and batch embedding complete
+  before DML, and ingest commits after each transcript file.
 - **`memory_guard` supervision** — thin servers are cheap (no ONNX, no
   daemon threads) and are excluded from aggregate idle-retire while the flag
   is on (`_idle_retire_candidates`); instead `supervise_host()` calls
@@ -1232,7 +1244,7 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 
 ## sqlite-vec (HNSW) and Python fallback
 
-`db.py` tries to load the sqlite-vec extension on the first get_db():
+`db.py` tries to load the sqlite-vec extension during process bootstrap:
 
 - **Available** (`_VEC_AVAILABLE=True`): virtual tables `notes_vec`, `dialog_vec`
   on vec0 are created. KNN ~10× faster than Python-side cosine.
@@ -1266,12 +1278,22 @@ width and recreate the `*_vec` tables) instead of swallowing the error.
 default `onnx` runs the model through **fastembed / ONNX Runtime** (no PyTorch,
 ~700 MB footprint / ~850 MB RSS); `sentence-transformers` is a heavier opt-in
 fallback (~1.8 GB). `_encode()` L2-normalizes both backends' output so the dot product
-used by vec0 and the legacy path equals cosine. Each row records its producing
-backend in `embed_backend` (NULL = legacy). The two backends are not
-numerically identical, so after a switch run `tk-migrate-embeddings --all`
+used by vec0 and the legacy path equals cosine. Each row records a generation
+fingerprint in `embed_backend`: backend, model, dimension, pooling contract,
+and compatible runtime version (NULL = legacy). Dense retrieval filters to the
+current fingerprint; stale rows remain visible to the always-on FTS channel.
+After a backend/runtime generation switch, run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
-## MCP tools (119 total)
+`retrieval.py` normalizes notes and dialog hits into one `Candidate` model.
+Lexical and dense generators over-fetch independently; reciprocal-rank fusion
+keeps the raw scores and `matched_by` provenance. Dense candidates below the
+raw-cosine evidence floor are removed before fusion; an empty over-constrained
+FTS AND query retries as a BM25-ranked OR query. `search()`,
+`dialog_search()`, and `brief(query=...)` use this engine, so semantic
+availability can no longer disable lexical recall for partially embedded data.
+
+## MCP tools (112 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
