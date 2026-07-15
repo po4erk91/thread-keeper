@@ -10,6 +10,12 @@ import sys, importlib
 
 
 def _reimport(monkeypatch, tmp_path, **env_overrides):
+    for key in (
+        "THREADKEEPER_ROLE",
+        "THREADKEEPER_SPAWNED_CHILD",
+        "THREADKEEPER_WRITE_ORIGIN",
+    ):
+        monkeypatch.delenv(key, raising=False)
     env = {"THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
            "THREADKEEPER_DAEMON_HOST": "1",
            "THREADKEEPER_DISABLE_BG_DAEMONS": "1"}

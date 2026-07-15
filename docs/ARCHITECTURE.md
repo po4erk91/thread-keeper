@@ -27,6 +27,7 @@ threadkeeper/
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
+├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
@@ -67,6 +68,7 @@ threadkeeper/
     ├── pickup.py      pickup_candidates/claim/release
     ├── dialog.py      dialog_search/open_dialog_window/ingest
     ├── validate.py    validate_threads
+    ├── forget.py      forget selective-erasure tool
     ├── style.py       style_set/verbatim_user
     ├── resources.py   @mcp.resource — memory://brief|context|dashboard|agent-status (#78)
     ├── prompts.py     @mcp.prompt — review_recent_threads/run_library_curation/audit_threadkeeper (#78)
@@ -205,6 +207,11 @@ Steady-state access is split by intent:
    `*_TOKEN=` / `*_SECRET=` assignments. The redaction is default-on and can be
    disabled with `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for local debugging
    that intentionally trades away the durable secret-scrubbing guarantee.
+   Targeted privacy erasure is handled by `forget(selector, dry_run=True)` /
+   `tk-forget`: given a session/cid it deletes matching dialog rows and their
+   FTS/vector mirrors, plus directly sourced notes, verbatim, dialectic,
+   extract, task, signal, and session-sidecar records. It defaults to dry-run
+   and reports lessons/skills that cite the purged source for manual re-review.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`
@@ -1286,7 +1293,7 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (108 total)
+## MCP tools (112 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -1295,11 +1302,12 @@ below).
 
 | Module | N | Tools |
 |---|---|---|
-| threads | 12 | open_thread, note, close_thread, idle_thread, brief, context, search, compost, evolve_format, evolve_review, auto_review_trigger, mark_skill_materialized |
+| threads | 14 | auto_review_trigger, brief, close_thread, compost, context, evolve_decide, evolve_format, evolve_issue_create, evolve_review, idle_thread, mark_skill_materialized, note, open_thread, search |
 | peers | 11 | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
 | spawn | 7 | spawn, tournament, tasks, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
 | skills | 5 | skill_manage, skill_record, skill_list, curator_run, review_thread |
-| dialectic | 5 | dialectic_claim, dialectic_evidence, dialectic_review, dialectic_synthesis, dialectic_supersede |
+| dialectic | 6 | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
+| dialectic_feed | 4 | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
 | probes | 5 | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
 | core_memory | 4 | core_set, core_get, core_list, core_remove |
 | extract | 4 | extract_recent, review_candidates, accept_candidate, reject_candidate |
@@ -1316,13 +1324,17 @@ below).
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
 | dashboard | 1 | mp_dashboard |
-| agent_status | 1 | agent_status |
-| memory_guard | 2 | memory_guard_status, memory_guard_check |
+| agent_status | 2 | agent_status, agent_memory_cleanup |
+| memory_guard | 3 | memory_guard_status, memory_guard_check, memory_guard_reclaim |
 | correlation | 2 | tag_signal, task_thread |
 | consolidate | 1 | consolidate |
 | validate | 1 | validate_threads |
+| forget | 1 | forget |
 | invariants | 1 | find_invariants |
 | missed_spawns | 1 | find_missed_spawns |
+| db_maintenance | 1 | db_compact |
+| config_watch | 2 | config_watch_status, config_reload |
+| panel | 1 | convene_panel |
 | session | 1 | session_end |
 
 Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema

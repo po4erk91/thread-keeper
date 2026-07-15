@@ -11,6 +11,15 @@ version bumps follow semver per the policy in
 
 ### Added
 
+- **Selective privacy erasure (`forget` / `tk-forget`) (#104).** A new
+  dry-run-first MCP tool and console command deletes one session/cid/thread/
+  dialog UUID across `dialog_messages`, external-content `dialog_fts`,
+  `dialog_vec`/`dialog_vec_map`, notes/`notes_vec`, verbatim, dialectic
+  observations/evidence/claims, extract candidates, task rows/spool files,
+  signals, and session sidecars. Reports include per-store counts, residual
+  FTS/vector orphan checks, and lessons/skills that cite the purged source for
+  manual re-review instead of silently retaining derived guidance.
+
 - **Hybrid memory retrieval with embedding-generation safety.** `search()`,
   `dialog_search()`, and the query section of `brief()` now share one candidate
   engine: FTS always participates, dense retrieval adds candidates when a
