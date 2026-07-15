@@ -22,16 +22,43 @@ from .config import (
     PICKUP_CLAIM_TTL_S,
 )
 from .helpers import fmt_age, q
+from .db import run_write
 from .task_spool import append_spool_text
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
-from .embeddings import _cosine_search
+from .retrieval import retrieve_notes
 
 
 # Parallelism cue regex: matches user-language signals that work
 # decomposes into multiple independent units. The actual locale bundles
 # (English + Russian + count-plural-noun families) live in i18n.py.
 from .i18n import SPAWN_CUE_RE as _SPAWN_CUE_RE  # noqa: E402
+
+
+def _log_hint_event(render_conn: sqlite3.Connection, kind: str, target: str,
+                    summary: str, now: int) -> None:
+    """Best-effort hint telemetry without mutating a query-only renderer.
+
+    Direct low-level callers historically pass a writable connection and expect
+    the event to be visible there. The MCP tool passes ``read_db()`` instead,
+    so its telemetry gets a separate bounded write transaction.
+    """
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (identity._session_id or "", kind, target, summary, now),
+        )
+
+    try:
+        query_only = bool(render_conn.execute("PRAGMA query_only").fetchone()[0])
+        if not query_only:
+            _write(render_conn)
+            render_conn.commit()
+        else:
+            run_write("brief-hint-event", _write, deadline_s=0.25)
+    except sqlite3.OperationalError:
+        pass
 
 
 def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
@@ -283,16 +310,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                 )
 
             # Log this show so the next render_brief can detect repeated ignore.
-            try:
-                conn.execute(
-                    "INSERT INTO events (session_id, kind, target, summary, "
-                    "created_at) VALUES (?,?,?,?,?)",
-                    (identity._session_id or "", "spawn_hint_shown",
-                     self_cid, "", now),
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            _log_hint_event(conn, "spawn_hint_shown", self_cid, "", now)
 
     # ── live_peers ────────────────────────────────────────────────────────
     # Recent activity (last 5 min) from concurrent claude conversations.
@@ -406,16 +424,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         if th_nudge:
             out.append("")
             out.append(th_nudge)
-            try:
-                conn.execute(
-                    "INSERT INTO events (session_id, kind, target, summary, "
-                    "created_at) VALUES (?,?,?,?,?)",
-                    (identity._session_id or "", "thread_hint_shown",
-                     self_cid or "", "", now),
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            _log_hint_event(conn, "thread_hint_shown", self_cid or "", "", now)
 
     # ── memory_nudge ──────────────────────────────────────────────────────
     # Counter-driven (active push, not just passive surface): when N mutating
@@ -503,16 +512,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                 )
 
             # Log this show so the next render_brief can detect repeated ignore.
-            try:
-                conn.execute(
-                    "INSERT INTO events (session_id, kind, target, summary, "
-                    "created_at) VALUES (?,?,?,?,?)",
-                    (identity._session_id or "", "skill_hint_shown",
-                     self_cid, top["id"], now),
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+            _log_hint_event(conn, "skill_hint_shown", self_cid, top["id"], now)
 
     # ── skill_nudge ───────────────────────────────────────────────────────
     # Counter-driven companion to skill_hint: skill_hint reads thread state,
@@ -639,36 +639,20 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
 
     # ── relevant_to_query (only if query passed) ──────────────────────────
     if query:
-        if SEMANTIC_AVAILABLE:
-            hits = _cosine_search(conn, query, k)
-            if hits:
-                out.append("")
-                out.append(f"relevant q={q(query[:80])}")
-                for r in hits:
-                    snip = r["content"][:160].replace("\n", " ")
-                    if len(r["content"]) > 160:
-                        snip += "…"
-                    out.append(
-                        f"  {r['thread_id'] or '-'} {r['kind']} "
-                        f"s={r['score']:.2f} {q(snip)}"
-                    )
-        else:
-            try:
-                from .helpers import _fts_query
-                fq = _fts_query(query)
-                rows = conn.execute(
-                    "SELECT n.thread_id, n.kind, n.content FROM notes_fts f "
-                    "JOIN notes n ON f.rowid=n.id WHERE notes_fts MATCH ? LIMIT ?",
-                    (fq, k),
-                ).fetchall() if fq else []
-                if rows:
-                    out.append("")
-                    out.append(f"fts q={q(query[:80])}")
-                    for r in rows:
-                        snip = r["content"][:160].replace("\n", " ")
-                        out.append(f"  {r['thread_id'] or '-'} {r['kind']} {q(snip)}")
-            except sqlite3.OperationalError:
-                pass
+        hits = retrieve_notes(conn, query, k=k, mode="hybrid")
+        if hits:
+            out.append("")
+            out.append(f"relevant q={q(query[:80])}")
+            for hit in hits:
+                snip = hit.content[:160].replace("\n", " ")
+                if len(hit.content) > 160:
+                    snip += "…"
+                score = hit.display_score
+                score_part = f"s={score:.2f} " if score is not None else ""
+                out.append(
+                    f"  {hit.thread_id or '-'} {hit.kind or '-'} "
+                    f"{score_part}{q(snip)}"
+                )
 
     # ── weak_spots ────────────────────────────────────────────────────────
     # Top categories with high recent failure rate, plus categories that have

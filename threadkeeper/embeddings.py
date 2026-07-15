@@ -14,9 +14,11 @@ path keeps working and we can roll back without data loss. Old rows are
 backfilled to vec0 lazily by the ingester.
 """
 import logging
+from importlib import metadata as importlib_metadata
 import sqlite3
 import threading
 import time
+import warnings
 from typing import Optional
 
 from .config import (
@@ -89,7 +91,17 @@ def _get_model():
                 _model = SentenceTransformer(EMBED_MODEL_NAME)
             else:  # 'onnx' (default)
                 from fastembed import TextEmbedding  # type: ignore
-                _model = TextEmbedding(model_name=FASTEMBED_MODEL_ID)
+                # fastembed 0.8 intentionally moved this model to mean pooling.
+                # Our dependency pin + generation fingerprint make that change
+                # explicit and safely migratable, so its generic legacy warning
+                # is noise for every MCP process.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"The model .* now uses mean pooling .*",
+                        category=UserWarning,
+                    )
+                    _model = TextEmbedding(model_name=FASTEMBED_MODEL_ID)
         return _model
 
 
@@ -175,11 +187,75 @@ def encode_many(texts: list[str]):
     return _encode(texts)
 
 
+def _runtime_major_minor(package: str) -> str:
+    try:
+        raw = importlib_metadata.version(package)
+    except importlib_metadata.PackageNotFoundError:
+        return "unknown"
+    parts = raw.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else raw
+
+
+def embedding_fingerprint() -> str:
+    """Identity of the vector space used for both documents and queries.
+
+    ``embed_backend='onnx'`` alone is insufficient: model, dimension, pooling
+    and runtime changes can produce incompatible vectors while keeping the same
+    backend label. Major.minor is intentional; pyproject pins the compatible
+    runtime family and avoids a full re-embed for patch-only releases.
+    """
+    if EMBED_BACKEND == "sentence-transformers":
+        runtime = _runtime_major_minor("sentence-transformers")
+        model = EMBED_MODEL_NAME
+        pooling = "model-default"
+    else:
+        runtime = _runtime_major_minor("fastembed")
+        model = FASTEMBED_MODEL_ID
+        pooling = "mean"
+    return (
+        f"{EMBED_BACKEND}:{model}:dim={EMBED_DIM}:"
+        f"pool={pooling}:runtime={runtime}"
+    )
+
+
 def embed_tag(blob: Optional[bytes]) -> Optional[str]:
-    """Backend label to store in the `embed_backend` column alongside a freshly
-    written embedding blob. None when no embedding was produced, so legacy /
-    NULL-vector rows stay untagged."""
-    return EMBED_BACKEND if blob is not None else None
+    """Vector-generation tag stored alongside a freshly written embedding."""
+    return embedding_fingerprint() if blob is not None else None
+
+
+def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
+    """Return current-generation coverage without mutating/backfilling rows."""
+    active = embedding_fingerprint()
+
+    def _count(sql: str, params: tuple = ()) -> int:
+        try:
+            return int(conn.execute(sql, params).fetchone()[0])
+        except sqlite3.OperationalError:
+            return 0
+
+    return {
+        "generation": active,
+        "notes_total": _count("SELECT COUNT(*) FROM notes"),
+        "notes_current": _count(
+            "SELECT COUNT(*) FROM notes WHERE embedding IS NOT NULL "
+            "AND embed_backend=?", (active,),
+        ),
+        "notes_vec": _count(
+            "SELECT COUNT(*) FROM notes n JOIN notes_vec v ON v.id=n.id "
+            "WHERE n.embed_backend=?", (active,),
+        ),
+        "dialog_total": _count("SELECT COUNT(*) FROM dialog_messages"),
+        "dialog_current": _count(
+            "SELECT COUNT(*) FROM dialog_messages WHERE embedding IS NOT NULL "
+            "AND embed_backend=?", (active,),
+        ),
+        "dialog_vec": _count(
+            "SELECT COUNT(*) FROM dialog_messages d "
+            "JOIN dialog_vec_map m ON m.uuid=d.uuid "
+            "JOIN dialog_vec v ON v.rowid=m.rowid "
+            "WHERE d.embed_backend=?", (active,),
+        ),
+    }
 
 
 def _embed(text: str) -> Optional[bytes]:
@@ -196,15 +272,24 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     if qa is None:
         return []
     qv = qa[0]
+    active = embedding_fingerprint()
     if _vec_on():
         try:
-            return _vec0_notes_search(conn, qv.tobytes(), k)
+            hits = _vec0_notes_search(
+                conn, qv.tobytes(), k, embed_backend=active
+            )
+            # A filtered vec0 query can return fewer than k rows when stale
+            # embedding generations or legacy orphans consume KNN slots.
+            # Re-score the current generation in Python for an exact fallback.
+            if len(hits) >= k:
+                return hits
         except sqlite3.OperationalError:
             pass  # fall through to legacy
     # Legacy Python-side path
     rows = conn.execute(
         "SELECT id, content, kind, thread_id, created_at, embedding "
-        "FROM notes WHERE embedding IS NOT NULL"
+        "FROM notes WHERE embedding IS NOT NULL AND embed_backend=?",
+        (active,),
     ).fetchall()
     if not rows:
         return []
@@ -217,7 +302,7 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
 
 
 def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
-                       k: int) -> list[dict]:
+                       k: int, embed_backend: str = "") -> list[dict]:
     """vec0 KNN over notes_vec, joined back to notes for payload.
     Distance is squared-Euclidean on normalized vectors; we convert to
     cosine score for compatibility with the legacy result shape:
@@ -231,16 +316,20 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     legacy orphan backlog gracefully.
     """
     want = max(1, int(k))
-    fetch_k = want * 2 + 8
-    rows = conn.execute(
+    fetch_k = max(want * 8, 40) if embed_backend else want * 2 + 8
+    sql = (
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
         "       v.distance "
         "FROM notes_vec v "
         "JOIN notes n ON n.id = v.id "
-        "WHERE v.embedding MATCH ? AND k = ? "
-        "ORDER BY v.distance",
-        (qv_blob, fetch_k),
-    ).fetchall()
+        "WHERE v.embedding MATCH ? AND k = ?"
+    )
+    params: list = [qv_blob, fetch_k]
+    if embed_backend:
+        sql += " AND n.embed_backend = ?"
+        params.append(embed_backend)
+    sql += " ORDER BY v.distance"
+    rows = conn.execute(sql, params).fetchall()
     out = []
     for r in rows:
         score = max(-1.0, min(1.0, 1.0 - (r["distance"] ** 2) / 2.0))
@@ -251,22 +340,33 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     return out[:want]
 
 
-def _dialog_cosine_search(conn, query: str, k: int) -> list[dict]:
+def _dialog_cosine_search(conn, query: str, k: int,
+                          role: str = "") -> list[dict]:
     """Top-k cosine over dialog_messages. Uses vec0 ANN when available."""
     import numpy as np  # type: ignore
     qa = _encode([query])
     if qa is None:
         return []
     qv = qa[0]
+    active = embedding_fingerprint()
     if _vec_on():
         try:
-            return _vec0_dialog_search(conn, qv.tobytes(), k)
+            hits = _vec0_dialog_search(
+                conn, qv.tobytes(), k, role=role, embed_backend=active
+            )
+            if len(hits) >= k:
+                return hits
         except sqlite3.OperationalError:
             pass
-    rows = conn.execute(
+    sql = (
         "SELECT uuid, role, project, session_id, content, created_at, embedding "
-        "FROM dialog_messages WHERE embedding IS NOT NULL"
-    ).fetchall()
+        "FROM dialog_messages WHERE embedding IS NOT NULL AND embed_backend=?"
+    )
+    params: tuple = (active,)
+    if role:
+        sql += " AND role=?"
+        params = (active, role)
+    rows = conn.execute(sql, params).fetchall()
     if not rows:
         return []
     scored = []
@@ -336,19 +436,27 @@ def _vec_upsert_dialog(conn: sqlite3.Connection, uuid: str,
 
 
 def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
-                        k: int) -> list[dict]:
+                        k: int, role: str = "",
+                        embed_backend: str = "") -> list[dict]:
     """vec0 KNN over dialog_vec, joined via dialog_vec_map.uuid back to
     dialog_messages for payload."""
-    rows = conn.execute(
+    sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
         "       d.created_at, v.distance "
         "FROM dialog_vec v "
         "JOIN dialog_vec_map m ON m.rowid = v.rowid "
         "JOIN dialog_messages d ON d.uuid = m.uuid "
-        "WHERE v.embedding MATCH ? AND k = ? "
-        "ORDER BY v.distance",
-        (qv_blob, max(1, int(k))),
-    ).fetchall()
+        "WHERE v.embedding MATCH ? AND k = ?"
+    )
+    params: list = [qv_blob, max(1, int(k))]
+    if role:
+        sql += " AND d.role = ?"
+        params.append(role)
+    if embed_backend:
+        sql += " AND d.embed_backend = ?"
+        params.append(embed_backend)
+    sql += " ORDER BY v.distance"
+    rows = conn.execute(sql, params).fetchall()
     out = []
     for r in rows:
         score = max(-1.0, min(1.0, 1.0 - (r["distance"] ** 2) / 2.0))
@@ -359,7 +467,7 @@ def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
     return out
 
 def _fts_search(conn: sqlite3.Connection, query: str,
-                k: int) -> list[dict]:
+                k: int, role: str = "") -> list[dict]:
     """FTS5 search over dialog_fts joined to dialog_messages. FTS5 ranks
     by BM25 (lower = better); we keep insertion order from the result for
     RRF (already ranked best-first by FTS5). dialog_fts is external-content
@@ -368,14 +476,26 @@ def _fts_search(conn: sqlite3.Connection, query: str,
     fq = _fts_query(query)
     if not fq:
         return []
-    try:
-        rows = conn.execute(
-            "SELECT d.uuid, d.role, d.session_id, d.content, d.created_at "
+    def _run(match_query: str):
+        sql = (
+            "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
+            "       d.created_at, bm25(dialog_fts) AS lexical_score "
             "FROM dialog_fts f "
             "JOIN dialog_messages d ON d.rowid = f.rowid "
-            "WHERE dialog_fts MATCH ? ORDER BY rank LIMIT ?",
-            (fq, max(1, int(k))),
-        ).fetchall()
+            "WHERE dialog_fts MATCH ?"
+        )
+        params: list = [match_query]
+        if role:
+            sql += " AND d.role = ?"
+            params.append(role)
+        sql += " ORDER BY lexical_score, d.rowid DESC LIMIT ?"
+        params.append(max(1, int(k)))
+        return conn.execute(sql, params).fetchall()
+
+    try:
+        rows = _run(fq)
+        if not rows and " " in fq:
+            rows = _run(fq.replace(" ", " OR "))
     except sqlite3.OperationalError:
         # FTS reserved-char syntax error or table missing
         return []
@@ -383,9 +503,11 @@ def _fts_search(conn: sqlite3.Connection, query: str,
         {
             "uuid": r["uuid"],
             "role": r["role"],
+            "project": r["project"],
             "session_id": r["session_id"],
             "content": r["content"],
             "created_at": r["created_at"],
+            "lexical_score": float(r["lexical_score"]),
         }
         for r in rows
     ]

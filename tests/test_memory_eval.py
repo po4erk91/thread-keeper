@@ -60,7 +60,11 @@ def test_judge_lexical_gold_all_requires_every_fact():
 
 def test_judge_lexical_abstention_clean_vs_leak():
     run = _load_run_module()
-    item = {"abstain": True, "trap_substrings": ["migrated to kubernetes"]}
+    item = {
+        "abstain": True,
+        "trap_substrings": ["migrated to kubernetes"],
+        "abstain_evidence": ["stayed on ecs"],
+    }
     # faithful context: no fabricated claim surfaced → correct refusal
     clean, _ = run.judge_lexical(item, "we considered kubernetes but stayed on ecs")
     assert clean is True
@@ -68,6 +72,19 @@ def test_judge_lexical_abstention_clean_vs_leak():
     leak, reason = run.judge_lexical(item, "we migrated to kubernetes last week")
     assert leak is False
     assert "trap" in reason
+
+
+def test_judge_lexical_abstention_rejects_unrelated_candidates():
+    run = _load_run_module()
+    item = {
+        "abstain": True,
+        "trap_substrings": ["soc2"],
+        "abstain_evidence": [],
+    }
+    ok, reason = run.judge_lexical(item, "PostgreSQL billing configuration")
+    assert ok is False
+    assert "unrelated" in reason
+    assert run.judge_lexical(item, "no_matches")[0] is True
 
 
 # ── end-to-end smoke ──────────────────────────────────────────────────────
@@ -89,6 +106,7 @@ def test_smoke_emits_headline_metrics(smoke_report):
     assert r["abstention"]["rate"] is not None
     assert r["tokens_per_retrieval"]["total"] > 0
     assert r["tokens_per_retrieval"]["mean"] > 0
+    assert r["retrieval_latency_ms"]["p95"] > 0
     assert r["backend"] == "fts"  # default run is offline / no embeddings
 
 
@@ -108,6 +126,24 @@ def test_smoke_golden_baseline_is_perfect(smoke_report):
     assert r["accuracy"] == 1.0, r["rows"]
     assert r["abstention"]["rate"] == 1.0
     assert r["abstention"]["n"] >= 10  # abstention is the high-payoff axis
+
+
+def test_semantic_smoke_uses_hybrid_and_keeps_golden_recall():
+    """Semantic availability must add dense candidates, not disable lexical
+    recall for notes that have not been embedded yet."""
+    proc = subprocess.run(
+        [sys.executable, str(RUN_PY), "--semantic", "--json"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=240,
+    )
+    assert proc.returncode == 0, f"runner failed: {proc.stderr}\n{proc.stdout}"
+    report = json.loads(proc.stdout)
+    assert report["backend"] == "hybrid"
+    assert report["accuracy"] == 1.0, report["rows"]
+    health = report["embedding_index"]
+    assert health["notes_current"] == health["notes_total"] > 0
+    assert health["dialog_current"] == health["dialog_total"] > 0
+    note_rows = [r for r in report["rows"] if r["system"] == "search"]
+    assert note_rows and all(r["correct"] for r in note_rows)
 
 
 def test_llm_judge_without_key_exits_cleanly():

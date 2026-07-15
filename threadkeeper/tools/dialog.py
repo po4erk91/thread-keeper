@@ -13,8 +13,9 @@ from pathlib import Path
 
 from .._mcp import read_tool, write_tool
 from ..config import TASK_LOG_DIR, DIALOG_LOG, SEMANTIC_AVAILABLE
-from ..db import get_db
+from ..db import get_db, read_db
 from ..helpers import fmt_age, q
+from .. import identity
 from ..identity import _ensure_session
 from ..task_spool import (
     TASK_SPOOL_EXEC_MODE,
@@ -22,7 +23,7 @@ from ..task_spool import (
     touch_spool_file,
     write_spool_text,
 )
-from ..embeddings import _dialog_cosine_search, _fts_search, _rrf_combine
+from ..retrieval import retrieve_dialogs
 from ..ingest import _ingest_all
 
 
@@ -72,40 +73,32 @@ def dialog_search(query: str, k: int = 5, role: str = "",
 
     mode='hybrid' (default) combines semantic and FTS5 keyword via RRF.
     mode='semantic' is pure cosine. mode='fts' is pure FTS5 keyword."""
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
+    with read_db() as conn:
+        return _dialog_search_conn(conn, query=query, k=k, role=role, mode=mode)
+
+
+def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
+                        role: str, mode: str) -> str:
+    """Connection-scoped implementation used by the read-only MCP wrapper."""
     role = role.strip().lower()
     mode = mode.strip().lower()
     if mode not in ("hybrid", "semantic", "fts"):
         return f"ERR bad_mode={mode} (use hybrid|semantic|fts)"
-    over_fetch = max(k * 5, 20)
-    sem_hits: list[dict] = []
-    fts_hits: list[dict] = []
-    if mode in ("hybrid", "semantic") and SEMANTIC_AVAILABLE:
-        sem_hits = _dialog_cosine_search(conn, query, over_fetch)
-    if mode in ("hybrid", "fts"):
-        fts_hits = _fts_search(conn, query, over_fetch)
-    if role:
-        sem_hits = [h for h in sem_hits if h.get("role") == role]
-        fts_hits = [h for h in fts_hits if h.get("role") == role]
-    if mode == "hybrid":
-        hits = _rrf_combine([sem_hits, fts_hits], top_n=k)
-    elif mode == "semantic":
-        hits = sem_hits[:k]
-    else:
-        hits = fts_hits[:k]
+    hits = retrieve_dialogs(conn, query, k=k, role=role, mode=mode)
     if not hits:
-        if not SEMANTIC_AVAILABLE and not fts_hits:
+        if not SEMANTIC_AVAILABLE and mode != "semantic":
             return _legacy_like_fallback(conn, query, k, role)
         return f"no_matches (mode={mode})"
     now = int(time.time())
     lines = []
-    for h in hits:
-        snip = h["content"][:240].replace("\n", " ⏎ ")
-        ago = fmt_age(now - h["created_at"])
-        sess = (h["session_id"] or "-")[:8]
-        score_part = f"s={h['score']:.2f} " if h.get("score") is not None else ""
-        lines.append(f"{h['role']}@{sess} {score_part}{ago}_ago {q(snip)}")
+    for hit in hits:
+        snip = hit.content[:240].replace("\n", " ⏎ ")
+        ago = fmt_age(now - hit.created_at)
+        sess = (hit.session_id or "-")[:8]
+        score = hit.display_score
+        score_part = f"s={score:.2f} " if score is not None else ""
+        lines.append(f"{hit.role}@{sess} {score_part}{ago}_ago {q(snip)}")
     return "\n".join(lines)
 
 
@@ -135,8 +128,8 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
 
 @write_tool()
 def ingest(max_msgs: int = 5000) -> str:
-    """Ingest new Claude Code transcripts. Auto-runs on session start; call
-    manually for backfill or after long absence."""
+    """Ingest new transcripts. Initial and periodic passes run asynchronously
+    in the daemon host; call manually for backfill or after a long absence."""
     conn = get_db()
     _ensure_session(conn)
     new_msgs, files = _ingest_all(conn, max_msgs=max_msgs)

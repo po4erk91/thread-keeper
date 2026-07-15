@@ -10,12 +10,10 @@ import time
 from typing import Optional
 
 from .._mcp import read_tool, write_tool
-from ..db import get_db
+from ..db import read_db, run_write
 from ..helpers import fmt_age, q
 from .. import identity
 from ..identity import (
-    _ensure_session,
-    _ensure_cursor,
     _detect_self_cid,
     _emit,
     _heartbeat,
@@ -52,41 +50,44 @@ def peers(window_min: int = 5) -> str:
     Activity inferred from dialog_messages (ingested live). For each peer
     returns: cid, last user message snippet, age, message count. Self is
     marked with `*`. Empty if you're alone."""
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
     self_cid = _detect_self_cid()
     now_t = int(time.time())
     cutoff = now_t - (window_min * 60)
-    rows = conn.execute(
-        "SELECT session_id, role, content, created_at FROM dialog_messages "
-        "WHERE created_at > ? AND session_id IS NOT NULL AND session_id != '' "
-        "ORDER BY created_at DESC LIMIT 200",
-        (cutoff,),
-    ).fetchall()
-    by_sess: dict[str, dict] = {}
-    for r in rows:
-        sid = r["session_id"]
-        d = by_sess.setdefault(
-            sid, {"last_user": None, "last_any_at": 0, "msgs": 0}
-        )
-        d["msgs"] += 1
-        if r["created_at"] > d["last_any_at"]:
-            d["last_any_at"] = r["created_at"]
-        if r["role"] == "user" and d["last_user"] is None:
-            content = r["content"]
-            if content.startswith("[tool_result]") or content.startswith("[Image"):
-                alt = conn.execute(
-                    "SELECT content, created_at FROM dialog_messages "
-                    "WHERE session_id=? AND role='user' "
-                    "AND content NOT LIKE '[tool_result]%' "
-                    "AND content NOT LIKE '[Image%' "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (sid,),
-                ).fetchone()
-                if alt:
-                    d["last_user"] = {"content": alt["content"], "created_at": alt["created_at"]}
-            else:
-                d["last_user"] = dict(r)
+    with read_db() as conn:
+        rows = conn.execute(
+            "SELECT session_id, role, content, created_at FROM dialog_messages "
+            "WHERE created_at > ? AND session_id IS NOT NULL AND session_id != '' "
+            "ORDER BY created_at DESC LIMIT 200",
+            (cutoff,),
+        ).fetchall()
+        by_sess: dict[str, dict] = {}
+        for r in rows:
+            sid = r["session_id"]
+            d = by_sess.setdefault(
+                sid, {"last_user": None, "last_any_at": 0, "msgs": 0}
+            )
+            d["msgs"] += 1
+            if r["created_at"] > d["last_any_at"]:
+                d["last_any_at"] = r["created_at"]
+            if r["role"] == "user" and d["last_user"] is None:
+                content = r["content"]
+                if content.startswith("[tool_result]") or content.startswith("[Image"):
+                    alt = conn.execute(
+                        "SELECT content, created_at FROM dialog_messages "
+                        "WHERE session_id=? AND role='user' "
+                        "AND content NOT LIKE '[tool_result]%' "
+                        "AND content NOT LIKE '[Image%' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (sid,),
+                    ).fetchone()
+                    if alt:
+                        d["last_user"] = {
+                            "content": alt["content"],
+                            "created_at": alt["created_at"],
+                        }
+                else:
+                    d["last_user"] = dict(r)
     if not by_sess:
         return "no_peers (you alone)"
     items = sorted(
@@ -133,54 +134,58 @@ def _post_signal(to_cid: str, content: str, kind: str) -> str:
     self_cid = _detect_self_cid()
     if not self_cid:
         return "ERR cannot_detect_self_cid"
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
     target: Optional[str] = None
-    if to_cid:
-        if len(to_cid) < 36:
-            row = conn.execute(
-                "SELECT DISTINCT session_id FROM dialog_messages "
-                "WHERE session_id LIKE ? LIMIT 2",
-                (to_cid + "%",),
-            ).fetchall()
-            if not row:
-                return f"ERR no_peer_matching={to_cid}"
-            if len(row) > 1:
-                return f"ERR ambiguous_prefix={to_cid} matches={len(row)}"
-            target = row[0]["session_id"]
-        else:
-            target = to_cid
-        if target == self_cid:
-            return "ERR self_target (whispering to yourself; use note instead)"
+    with read_db() as conn:
+        if to_cid:
+            if len(to_cid) < 36:
+                row = conn.execute(
+                    "SELECT DISTINCT session_id FROM dialog_messages "
+                    "WHERE session_id LIKE ? LIMIT 2",
+                    (to_cid + "%",),
+                ).fetchall()
+                if not row:
+                    return f"ERR no_peer_matching={to_cid}"
+                if len(row) > 1:
+                    return f"ERR ambiguous_prefix={to_cid} matches={len(row)}"
+                target = row[0]["session_id"]
+            else:
+                target = to_cid
+            if target == self_cid:
+                return "ERR self_target (whispering to yourself; use note instead)"
+        auto_task = None
+        try:
+            candidate_cids = [self_cid]
+            if target:
+                candidate_cids.append(target)
+            for cc in candidate_cids:
+                row = conn.execute(
+                    "SELECT id FROM tasks WHERE spawned_cid=? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (cc,),
+                ).fetchone()
+                if row:
+                    auto_task = row["id"]
+                    break
+        except sqlite3.OperationalError:
+            pass
     now_t = int(time.time())
-    auto_task = None
-    try:
-        candidate_cids = [self_cid]
-        if target:
-            candidate_cids.append(target)
-        for cc in candidate_cids:
-            row = conn.execute(
-                "SELECT id FROM tasks WHERE spawned_cid=? "
-                "ORDER BY started_at DESC LIMIT 1",
-                (cc,),
-            ).fetchone()
-            if row:
-                auto_task = row["id"]
-                break
-    except sqlite3.OperationalError:
-        pass
-    cur = conn.execute(
-        "INSERT INTO signals (from_cid, to_cid, kind, content, created_at, task_id) "
-        "VALUES (?,?,?,?,?,?)",
-        (self_cid, target, kind, content, now_t, auto_task),
-    )
-    _emit(conn, f"signal:{kind}", target=target or "*", summary=content)
+
+    def _write(conn: sqlite3.Connection) -> int:
+        cur = conn.execute(
+            "INSERT INTO signals (from_cid, to_cid, kind, content, created_at, "
+            "task_id) VALUES (?,?,?,?,?,?)",
+            (self_cid, target, kind, content, now_t, auto_task),
+        )
+        _emit(conn, f"signal:{kind}", target=target or "*", summary=content)
+        return int(cur.lastrowid)
+
+    signal_id = run_write("post-signal", _write)
     _append_dialog_log(self_cid, target, kind, content)
-    conn.commit()
     tail = f" task={auto_task}" if auto_task else ""
     if target:
-        return f"ok id={cur.lastrowid} -> {target[:8]}{tail}"
-    return f"ok id={cur.lastrowid} broadcast{tail}"
+        return f"ok id={signal_id} -> {target[:8]}{tail}"
+    return f"ok id={signal_id} broadcast{tail}"
 
 
 @write_tool()
@@ -199,8 +204,7 @@ def wait(timeout_s: int = 30, kinds: str = "", mark_read: bool = True) -> str:
         return "ERR cannot_detect_self_cid"
     timeout_s = max(1, min(int(timeout_s), 120))
     kinds_filter = [k.strip() for k in kinds.split(",") if k.strip()]
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
     deadline = time.time() + timeout_s
     poll_interval = 0.25
     while True:
@@ -210,13 +214,15 @@ def wait(timeout_s: int = 30, kinds: str = "", mark_read: bool = True) -> str:
             ph = ",".join(["?"] * len(kinds_filter))
             kind_clause = f" AND kind IN ({ph})"
             params += kinds_filter
-        rows = conn.execute(
-            f"SELECT id, from_cid, to_cid, kind, content, created_at FROM signals "
-            f"WHERE (to_cid = ? OR to_cid IS NULL) AND from_cid != ? "
-            f"AND read_at IS NULL{kind_clause} "
-            f"ORDER BY created_at ASC LIMIT 10",
-            params,
-        ).fetchall()
+        with read_db() as conn:
+            rows = conn.execute(
+                "SELECT id, from_cid, to_cid, kind, content, created_at "
+                "FROM signals "
+                "WHERE (to_cid = ? OR to_cid IS NULL) AND from_cid != ? "
+                f"AND read_at IS NULL{kind_clause} "
+                "ORDER BY created_at ASC LIMIT 10",
+                params,
+            ).fetchall()
         if rows:
             now_t = int(time.time())
             lines = [f"got={len(rows)} cid={self_cid[:8]}"]
@@ -228,12 +234,16 @@ def wait(timeout_s: int = 30, kinds: str = "", mark_read: bool = True) -> str:
                     f"+{r['kind']} {ago}_ago {q(r['content'][:240])}"
                 )
             if mark_read:
-                conn.execute(
-                    f"UPDATE signals SET read_at=? "
-                    f"WHERE id IN ({','.join('?' * len(rows))})",
-                    (now_t, *[r["id"] for r in rows]),
-                )
-                conn.commit()
+                ids = tuple(r["id"] for r in rows)
+
+                def _mark(conn: sqlite3.Connection) -> None:
+                    conn.execute(
+                        "UPDATE signals SET read_at=? "
+                        f"WHERE id IN ({','.join('?' * len(ids))})",
+                        (now_t, *ids),
+                    )
+
+                run_write("wait-mark-read", _mark)
             return "\n".join(lines)
         if time.time() >= deadline:
             return f"timeout after {timeout_s}s (no_signals)"
@@ -256,45 +266,54 @@ def ask(to_cid: str, question: str, timeout_s: int = 60) -> str:
     if not to_cid.strip():
         return "ERR empty_to_cid"
     timeout_s = max(1, min(int(timeout_s), 120))
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
     target = to_cid.strip()
-    if len(target) < 36:
-        row = conn.execute(
-            "SELECT DISTINCT session_id FROM dialog_messages "
-            "WHERE session_id LIKE ? LIMIT 2",
-            (target + "%",),
-        ).fetchall()
-        if not row:
-            return f"ERR no_peer_matching={target}"
-        if len(row) > 1:
-            return f"ERR ambiguous_prefix={target} matches={len(row)}"
-        target = row[0]["session_id"]
+    with read_db() as conn:
+        if len(target) < 36:
+            row = conn.execute(
+                "SELECT DISTINCT session_id FROM dialog_messages "
+                "WHERE session_id LIKE ? LIMIT 2",
+                (target + "%",),
+            ).fetchall()
+            if not row:
+                return f"ERR no_peer_matching={target}"
+            if len(row) > 1:
+                return f"ERR ambiguous_prefix={target} matches={len(row)}"
+            target = row[0]["session_id"]
     if target == self_cid:
         return "ERR self_target"
     now_t = int(time.time())
-    cur = conn.execute(
-        "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
-        "VALUES (?,?,?,?,?)",
-        (self_cid, target, "question", question, now_t),
-    )
-    qid = cur.lastrowid
-    _emit(conn, "signal:question", target=target, summary=question)
-    conn.commit()
+
+    def _post(conn: sqlite3.Connection) -> int:
+        cur = conn.execute(
+            "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (self_cid, target, "question", question, now_t),
+        )
+        _emit(conn, "signal:question", target=target, summary=question)
+        return int(cur.lastrowid)
+
+    qid = run_write("ask-post", _post)
     deadline = time.time() + timeout_s
     while True:
-        ans = conn.execute(
-            "SELECT id, content, kind, created_at FROM signals "
-            "WHERE from_cid=? AND to_cid=? AND kind IN ('answer','whisper') "
-            "AND created_at >= ? ORDER BY created_at ASC LIMIT 1",
-            (target, self_cid, now_t),
-        ).fetchone()
+        with read_db() as conn:
+            ans = conn.execute(
+                "SELECT id, content, kind, created_at FROM signals "
+                "WHERE from_cid=? AND to_cid=? "
+                "AND kind IN ('answer','whisper') "
+                "AND created_at >= ? ORDER BY created_at ASC LIMIT 1",
+                (target, self_cid, now_t),
+            ).fetchone()
         if ans:
-            conn.execute(
-                "UPDATE signals SET read_at=? WHERE id=?",
-                (int(time.time()), ans["id"]),
-            )
-            conn.commit()
+            answer_id = ans["id"]
+
+            def _mark(conn: sqlite3.Connection) -> None:
+                conn.execute(
+                    "UPDATE signals SET read_at=? WHERE id=?",
+                    (int(time.time()), answer_id),
+                )
+
+            run_write("ask-mark-answer", _mark)
             return (
                 f"answer #{ans['id']} ({ans['kind']}) from {target[:8]}: "
                 f"{ans['content']}"
@@ -316,27 +335,35 @@ def respond(qid: int, content: str) -> str:
     self_cid = _detect_self_cid()
     if not self_cid:
         return "ERR cannot_detect_self_cid"
-    conn = get_db()
-    _ensure_session(conn)
-    qrow = conn.execute(
-        "SELECT from_cid, to_cid, kind FROM signals WHERE id=?", (qid,)
-    ).fetchone()
-    if not qrow:
-        return f"ERR question_not_found id={qid}"
-    if qrow["to_cid"] != self_cid:
-        scope = qrow["to_cid"][:8] if qrow["to_cid"] else "broadcast"
-        return f"ERR not_addressed_to_me question.to={scope}"
+    identity.ensure_session_started()
     now_t = int(time.time())
-    cur = conn.execute(
-        "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
-        "VALUES (?,?,?,?,?)",
-        (self_cid, qrow["from_cid"], "answer", content, now_t),
-    )
-    conn.execute("UPDATE signals SET read_at=? WHERE id=?", (now_t, qid))
-    _emit(conn, "signal:answer", target=qrow["from_cid"], summary=content)
-    _append_dialog_log(self_cid, qrow["from_cid"], "answer", content)
-    conn.commit()
-    return f"ok id={cur.lastrowid} -> {qrow['from_cid'][:8]}"
+
+    def _write(conn: sqlite3.Connection) -> tuple[str, int, str]:
+        qrow = conn.execute(
+            "SELECT from_cid, to_cid, kind FROM signals WHERE id=?", (qid,)
+        ).fetchone()
+        if not qrow:
+            return "missing", 0, ""
+        if qrow["to_cid"] != self_cid:
+            scope = qrow["to_cid"][:8] if qrow["to_cid"] else "broadcast"
+            return "wrong-target", 0, scope
+        from_cid = qrow["from_cid"]
+        cur = conn.execute(
+            "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (self_cid, from_cid, "answer", content, now_t),
+        )
+        conn.execute("UPDATE signals SET read_at=? WHERE id=?", (now_t, qid))
+        _emit(conn, "signal:answer", target=from_cid, summary=content)
+        return "ok", int(cur.lastrowid), from_cid
+
+    status, answer_id, detail = run_write("respond", _write)
+    if status == "missing":
+        return f"ERR question_not_found id={qid}"
+    if status == "wrong-target":
+        return f"ERR not_addressed_to_me question.to={detail}"
+    _append_dialog_log(self_cid, detail, "answer", content)
+    return f"ok id={answer_id} -> {detail[:8]}"
 
 
 @write_tool()
@@ -349,19 +376,18 @@ def inbox(unread_only: bool = True, k: int = 20, mark_read: bool = True) -> str:
     self_cid = _detect_self_cid()
     if not self_cid:
         return "ERR cannot_detect_self_cid"
-    conn = get_db()
-    _ensure_session(conn)
+    identity.ensure_session_started()
     where = "(to_cid = ? OR to_cid IS NULL) AND from_cid != ?"
     params: list = [self_cid, self_cid]
     if unread_only:
         where += " AND read_at IS NULL"
-    rows = conn.execute(
-        f"SELECT id, from_cid, to_cid, kind, content, created_at FROM signals "
-        f"WHERE {where} ORDER BY created_at DESC LIMIT ?",
-        (*params, k),
-    ).fetchall()
+    with read_db() as conn:
+        rows = conn.execute(
+            "SELECT id, from_cid, to_cid, kind, content, created_at "
+            f"FROM signals WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            (*params, k),
+        ).fetchall()
     if not rows:
-        conn.commit()
         return "no_signals"
     now_t = int(time.time())
     lines = [f"got={len(rows)} cid={self_cid[:8]}"]
@@ -373,12 +399,16 @@ def inbox(unread_only: bool = True, k: int = 20, mark_read: bool = True) -> str:
             f"{ago}_ago {q(r['content'][:200])}"
         )
     if mark_read and unread_only:
-        conn.execute(
-            f"UPDATE signals SET read_at=? "
-            f"WHERE id IN ({','.join('?' * len(rows))})",
-            (now_t, *[r["id"] for r in rows]),
-        )
-        conn.commit()
+        ids = tuple(r["id"] for r in rows)
+
+        def _mark(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE signals SET read_at=? "
+                f"WHERE id IN ({','.join('?' * len(ids))})",
+                (now_t, *ids),
+            )
+
+        run_write("inbox-mark-read", _mark)
     return "\n".join(lines)
 
 
@@ -389,24 +419,34 @@ def live_status(advance_cursor: bool = True, k: int = 30) -> str:
     suspect a parallel instance is working on something relevant. Advances
     this session's cursor by default; pass advance_cursor=False to peek
     without consuming."""
-    conn = get_db()
-    _ensure_session(conn)
-    _ensure_cursor(conn)
-    cur_row = conn.execute(
-        "SELECT last_event_id FROM cursors WHERE session_id=?",
-        (identity._session_id,),
-    ).fetchone()
-    cur_id = cur_row["last_event_id"] if cur_row else 0
-    rows = conn.execute(
-        "SELECT id, session_id, kind, target, summary, created_at FROM events "
-        "WHERE id > ? AND session_id != ? ORDER BY id ASC LIMIT ?",
-        (cur_id, identity._session_id, k),
-    ).fetchall()
-    _heartbeat(conn)
-    if not rows:
-        conn.commit()
-        return "no_fresh_events"
+    identity.ensure_session_started()
+    with read_db() as conn:
+        cur_row = conn.execute(
+            "SELECT last_event_id FROM cursors WHERE session_id=?",
+            (identity._session_id,),
+        ).fetchone()
+        cur_id = cur_row["last_event_id"] if cur_row else 0
+        rows = conn.execute(
+            "SELECT id, session_id, kind, target, summary, created_at "
+            "FROM events WHERE id > ? AND session_id != ? "
+            "ORDER BY id ASC LIMIT ?",
+            (cur_id, identity._session_id, k),
+        ).fetchall()
     now = int(time.time())
+    max_seen = rows[-1]["id"] if rows and advance_cursor else None
+
+    def _touch(conn: sqlite3.Connection) -> None:
+        _heartbeat(conn)
+        if max_seen is not None:
+            conn.execute(
+                "UPDATE cursors SET last_event_id=?, updated_at=? "
+                "WHERE session_id=?",
+                (max_seen, now, identity._session_id),
+            )
+
+    run_write("live-status-touch", _touch)
+    if not rows:
+        return "no_fresh_events"
     lines = [f"fresh={len(rows)}"]
     for e in rows:
         ago = fmt_age(now - e["created_at"])
@@ -415,13 +455,6 @@ def live_status(advance_cursor: bool = True, k: int = 30) -> str:
         lines.append(
             f"  {e['session_id']}@{target} +{e['kind']} {q(summary)} {ago}_ago"
         )
-    if advance_cursor:
-        max_seen = rows[-1]["id"]
-        conn.execute(
-            "UPDATE cursors SET last_event_id=?, updated_at=? WHERE session_id=?",
-            (max_seen, now, identity._session_id),
-        )
-    conn.commit()
     return "\n".join(lines)
 
 
@@ -430,17 +463,20 @@ def presence(idle_threshold_min: int = 5) -> str:
     """List concurrent Claude sessions with heartbeats within threshold
     (default 5 min). Excludes self. Useful for understanding who else is
     currently active before making changes."""
-    conn = get_db()
-    _ensure_session(conn)
-    _heartbeat(conn)
+    identity.ensure_session_started()
+
+    def _touch(conn: sqlite3.Connection) -> None:
+        _heartbeat(conn)
+
+    run_write("presence-heartbeat", _touch)
     now = int(time.time())
     threshold = now - (idle_threshold_min * 60)
-    rows = conn.execute(
-        "SELECT * FROM presence WHERE heartbeat_at >= ? AND session_id != ? "
-        "ORDER BY heartbeat_at DESC",
-        (threshold, identity._session_id),
-    ).fetchall()
-    conn.commit()
+    with read_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM presence WHERE heartbeat_at >= ? AND session_id != ? "
+            "ORDER BY heartbeat_at DESC",
+            (threshold, identity._session_id),
+        ).fetchall()
     if not rows:
         return "no_other_active"
     lines = [f"active_others={len(rows)}"]
@@ -493,10 +529,9 @@ def search_via_parent(query: str, k: int = 5,
     self_cid = _detect_self_cid()
     if not self_cid:
         return "ERR cannot_detect_self_cid"
-    conn = get_db()
-    _ensure_session(conn)
-
-    target = _resolve_parent_cid(conn)
+    identity.ensure_session_started()
+    with read_db() as conn:
+        target = _resolve_parent_cid(conn)
     if target == self_cid:
         return "ERR self_target"
 
@@ -504,31 +539,38 @@ def search_via_parent(query: str, k: int = 5,
         "query": query, "k": int(k), "scope": scope, "mode": mode,
     })
     now_t = int(time.time())
-    cur = conn.execute(
-        "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
-        "VALUES (?, ?, 'search_request', ?, ?)",
-        (self_cid, target, payload, now_t),
-    )
-    request_id = cur.lastrowid
+
+    def _post(conn: sqlite3.Connection) -> int:
+        cur = conn.execute(
+            "INSERT INTO signals (from_cid, to_cid, kind, content, created_at) "
+            "VALUES (?, ?, 'search_request', ?, ?)",
+            (self_cid, target, payload, now_t),
+        )
+        return int(cur.lastrowid)
+
+    request_id = run_write("search-via-parent-post", _post)
     _append_dialog_log(self_cid, target, "search_request",
                        f"q={query[:80]} k={k} scope={scope}")
-    conn.commit()
 
     deadline = time.time() + max(1, min(int(timeout_s), 120))
     while True:
-        resp = conn.execute(
-            "SELECT id, from_cid, content FROM signals "
-            "WHERE kind='search_response' AND to_cid=? "
-            "  AND created_at >= ? "
-            "ORDER BY id ASC LIMIT 1",
-            (self_cid, now_t),
-        ).fetchone()
+        with read_db() as conn:
+            resp = conn.execute(
+                "SELECT id, from_cid, content FROM signals "
+                "WHERE kind='search_response' AND to_cid=? "
+                "AND created_at >= ? ORDER BY id ASC LIMIT 1",
+                (self_cid, now_t),
+            ).fetchone()
         if resp:
-            conn.execute(
-                "UPDATE signals SET read_at=? WHERE id=?",
-                (int(time.time()), resp["id"]),
-            )
-            conn.commit()
+            response_id = resp["id"]
+
+            def _mark(conn: sqlite3.Connection) -> None:
+                conn.execute(
+                    "UPDATE signals SET read_at=? WHERE id=?",
+                    (int(time.time()), response_id),
+                )
+
+            run_write("search-via-parent-mark", _mark)
             try:
                 body = _json.loads(resp["content"])
             except _json.JSONDecodeError:

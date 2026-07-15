@@ -7,6 +7,7 @@ import re
 import sqlite3
 import secrets
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -18,6 +19,7 @@ from .config import CLIENT_LABEL, SELF_CID_TTL_S, CLAUDE_PROJECTS_DIR, WRITE_ORI
 _session_id: Optional[str] = None
 _session_start: Optional[int] = None
 _client_label = CLIENT_LABEL
+_session_lock = threading.RLock()
 
 # Self conversation_id detection. The jsonl stem (e.g. "570fe39e-…")
 # uniquely identifies a window. Resolution prefers env override → ppid walk
@@ -71,7 +73,7 @@ def _emit(conn: sqlite3.Connection, kind: str,
 
 
 def _heartbeat(conn: sqlite3.Connection) -> None:
-    """Touch presence without emitting an event (for read-only tool calls)."""
+    """Touch presence explicitly; read tools never call this synchronously."""
     if _session_id is None:
         return
     conn.execute(
@@ -81,10 +83,27 @@ def _heartbeat(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> str:
+    """Initialize the process session once without per-read heartbeat writes."""
+    with _session_lock:
+        return _ensure_session_locked(conn, client=client)
+
+
+def ensure_session_started(client: Optional[str] = None) -> str:
+    """Ensure a session exists, closing the short-lived startup connection."""
+    if _session_id is not None:
+        return _session_id
+    from .db import get_db
+    conn = get_db()
+    try:
+        return _ensure_session(conn, client=client)
+    finally:
+        conn.close()
+
+
+def _ensure_session_locked(conn: sqlite3.Connection,
+                           client: Optional[str] = None) -> str:
     global _session_id, _session_start
     if _session_id is not None:
-        _heartbeat(conn)
-        conn.commit()
         return _session_id
 
     if _session_id is None:
@@ -107,19 +126,6 @@ def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> s
         )
         _ensure_cursor(conn)
         conn.commit()
-        # Lazy imports avoid circular module deps (ingest imports embeddings
-        # which imports nothing here — but we still keep this lazy in case
-        # the surface widens later).
-        try:
-            from . import ingest
-            ingest._ingest_all(conn, max_msgs=ingest.INGEST_CAP_PER_CALL)
-        except Exception:
-            pass  # Never block session start on ingestion failure
-        try:
-            from . import ingest
-            ingest._backfill_dialog_fts_if_empty(conn)
-        except Exception:
-            pass  # FTS unavailable shouldn't block session start
         # Phase 1 (daemon-host): who actually runs the loops depends on the
         # flag + this process's role. `host.start_daemons()` (Task 4) starts
         # the ingester + all 18 daemon starters that used to be in-lined here

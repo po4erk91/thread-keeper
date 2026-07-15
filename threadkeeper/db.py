@@ -2,10 +2,14 @@
 Imported by every tool module that needs DB access."""
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import logging
+import random
 import sqlite3
+import threading
 import time
+from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
@@ -21,7 +25,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
     "EMBED_DIM",
+    "bootstrap_db",
     "get_db",
+    "read_db",
+    "run_write",
     "vec_available",
     "SCHEMA",
 ]
@@ -33,6 +40,15 @@ CURRENT_SCHEMA_VERSION = 2
 # on connections from this process; False means we fall back to the legacy
 # Python-side cosine path (still correct, just slower).
 _VEC_AVAILABLE: bool | None = None
+
+# Bootstrap is process-local. SQLite's user_version transaction remains the
+# cross-process arbiter, while this lock prevents two threads in ONE MCP server
+# from repeating WAL/schema/vec setup concurrently. Ordinary connections do
+# not run DDL after this latch is set.
+_BOOTSTRAP_LOCK = threading.RLock()
+_BOOTSTRAPPED = False
+
+_T = TypeVar("_T")
 
 
 def _try_load_vec(conn: sqlite3.Connection) -> bool:
@@ -88,7 +104,7 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at  INTEGER NOT NULL,
     session_id  TEXT,
     embedding   BLOB,
-    embed_backend TEXT           -- backend that produced `embedding`; NULL = legacy
+    embed_backend TEXT           -- generation fingerprint; NULL = legacy
 );
 
 CREATE TABLE IF NOT EXISTS verbatim (
@@ -160,7 +176,7 @@ CREATE TABLE IF NOT EXISTS dialog_messages (
     model        TEXT,
     created_at   INTEGER NOT NULL,
     embedding    BLOB,
-    embed_backend TEXT           -- backend that produced `embedding`; NULL = legacy
+    embed_backend TEXT           -- generation fingerprint; NULL = legacy
 );
 
 CREATE TABLE IF NOT EXISTS ingest_state (
@@ -892,63 +908,179 @@ def _execute_startup_pragma(
             time.sleep(0.1)
 
 
-def get_db() -> sqlite3.Connection:
+def _open_connection(*, autocommit: bool = False,
+                     busy_timeout_ms: int = 10_000) -> tuple[sqlite3.Connection, bool]:
+    """Open and configure one connection without schema/DDL side effects."""
     global _VEC_AVAILABLE
-    harden_storage_paths(
-        DB_PATH,
-        env_file=_ENV_FILE,
-        curator_reports_dir=CURATOR_REPORTS_DIR,
-        create_db=True,
-    )
-    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
-    # WAL = concurrent readers + one writer without blocking. Required for
-    # running Desktop + CLI + VS Code against the same DB simultaneously.
-    conn.execute("PRAGMA busy_timeout=10000")
-    _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
-    _execute_startup_pragma(conn, "PRAGMA synchronous=NORMAL")
-    harden_storage_paths(
-        DB_PATH,
-        env_file=_ENV_FILE,
-        curator_reports_dir=CURATOR_REPORTS_DIR,
-    )
-    # Load sqlite-vec extension if available. Must happen BEFORE schema
-    # so the vec0 virtual tables can be created in this connection.
+    kwargs = {
+        "timeout": max(0.001, busy_timeout_ms / 1000.0),
+    }
+    if autocommit:
+        kwargs["isolation_level"] = None
+    conn = sqlite3.connect(str(DB_PATH), **kwargs)
+    conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+    # synchronous is per-connection. Unlike journal_mode, setting it does not
+    # rewrite the database header or compete for the writer slot.
+    conn.execute("PRAGMA synchronous=NORMAL")
     vec_loaded = _try_load_vec(conn)
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
-    _ensure_schema(conn)
-    if vec_loaded:
-        # Create vec0 virtual tables side-by-side with the BLOB-embedding
-        # ones. Existing data in notes.embedding / dialog_messages.embedding
-        # is migrated lazily by a backfill job (see ingest.py).
-        try:
-            conn.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
-                f"  id INTEGER PRIMARY KEY,"
-                f"  embedding FLOAT[{EMBED_DIM}]"
-                f")"
-            )
-            conn.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS dialog_vec USING vec0("
-                f"  rowid INTEGER PRIMARY KEY,"
-                f"  embedding FLOAT[{EMBED_DIM}]"
-                f")"
-            )
-            # Sidecar to map dialog_vec.rowid → dialog_messages.uuid since
-            # vec0 PKs must be integers but dialog_messages keys on TEXT uuid.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS dialog_vec_map ("
-                "  rowid INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  uuid  TEXT NOT NULL UNIQUE"
-                ")"
-            )
-        except sqlite3.OperationalError as e:
-            logger.debug("vec0 table creation skipped: %s", e)
-    conn.commit()
-    harden_storage_paths(
-        DB_PATH,
-        env_file=_ENV_FILE,
-        curator_reports_dir=CURATOR_REPORTS_DIR,
-    )
     conn.row_factory = sqlite3.Row
+    return conn, vec_loaded
+
+
+def _ensure_vec_tables(conn: sqlite3.Connection, *, vec_loaded: bool) -> None:
+    """Create sqlite-vec mirrors during bootstrap, never on read calls."""
+    if not vec_loaded:
+        return
+    try:
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+            f"  id INTEGER PRIMARY KEY,"
+            f"  embedding FLOAT[{EMBED_DIM}]"
+            f")"
+        )
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS dialog_vec USING vec0("
+            f"  rowid INTEGER PRIMARY KEY,"
+            f"  embedding FLOAT[{EMBED_DIM}]"
+            f")"
+        )
+        # Sidecar to map dialog_vec.rowid → dialog_messages.uuid since vec0
+        # primary keys must be integers but dialog_messages keys on TEXT uuid.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dialog_vec_map ("
+            "  rowid INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  uuid  TEXT NOT NULL UNIQUE"
+            ")"
+        )
+    except sqlite3.OperationalError as exc:
+        logger.debug("vec0 table creation skipped: %s", exc)
+
+
+def bootstrap_db() -> None:
+    """Perform process startup setup exactly once.
+
+    Cross-process schema serialization still lives in ``_ensure_schema``.
+    This process-local latch only keeps ordinary tool connections from
+    repeating journal-mode negotiation and DDL on every call.
+    """
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+    with _BOOTSTRAP_LOCK:
+        if _BOOTSTRAPPED:
+            return
+        harden_storage_paths(
+            DB_PATH,
+            env_file=_ENV_FILE,
+            curator_reports_dir=CURATOR_REPORTS_DIR,
+            create_db=True,
+        )
+        conn: sqlite3.Connection | None = None
+        try:
+            conn, vec_loaded = _open_connection()
+            # WAL negotiation can need the writer lock, so it belongs only in
+            # bootstrap and retains the bounded startup retry.
+            _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
+            _ensure_schema(conn)
+            _ensure_vec_tables(conn, vec_loaded=vec_loaded)
+            conn.commit()
+            _BOOTSTRAPPED = True
+        finally:
+            if conn is not None:
+                conn.close()
+        harden_storage_paths(
+            DB_PATH,
+            env_file=_ENV_FILE,
+            curator_reports_dir=CURATOR_REPORTS_DIR,
+        )
+
+
+def get_db() -> sqlite3.Connection:
+    """Legacy read/write connection factory.
+
+    New read paths should use :func:`read_db`; new atomic mutations should use
+    :func:`run_write`. This compatibility surface remains while existing tools
+    are migrated, but no longer performs DDL after process bootstrap.
+    """
+    bootstrap_db()
+    conn, _ = _open_connection()
     return conn
+
+
+@contextmanager
+def read_db() -> Iterator[sqlite3.Connection]:
+    """Yield a short-lived autocommit connection that SQLite enforces read-only."""
+    bootstrap_db()
+    conn, _ = _open_connection(autocommit=True)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        yield conn
+    finally:
+        conn.close()
+
+
+def _is_lock_error(exc: sqlite3.OperationalError) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        # Extended SQLite result codes retain the primary code in the low byte.
+        primary = code & 0xFF
+        if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return True
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg
+
+
+def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
+              deadline_s: float = 10.0) -> _T:
+    """Run one DB-only callback in a short retriable write transaction.
+
+    The callback may be invoked more than once, so it must not perform network,
+    filesystem, subprocess, model inference, or other external side effects.
+    Every retry uses a fresh connection and begins with ``BEGIN IMMEDIATE``;
+    unknown errors surface immediately.
+    """
+    bootstrap_db()
+    deadline = time.monotonic() + max(0.0, float(deadline_s))
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = max(0.0, deadline - time.monotonic())
+        # Keep each SQLite busy wait short enough that the outer transaction
+        # boundary can roll back and retry with jitter instead of one 10s stall.
+        busy_ms = max(1, min(250, int(remaining * 1000) or 1))
+        conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = fn(conn)
+            conn.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            if not _is_lock_error(exc) or time.monotonic() >= deadline:
+                if _is_lock_error(exc):
+                    logger.warning(
+                        "SQLite write deadline exhausted op=%s attempts=%d",
+                        op,
+                        attempt,
+                    )
+                raise
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # The next attempt is allowed to raise SQLite's original lock error;
+            # this branch is normally reached only after a very short deadline.
+            continue
+        base = min(0.25, 0.01 * (2 ** min(attempt - 1, 5)))
+        time.sleep(min(remaining, base * random.uniform(0.75, 1.25)))

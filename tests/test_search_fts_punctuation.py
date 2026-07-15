@@ -20,8 +20,8 @@ def _tool(pkg, name):
 
 
 def _force_fts(monkeypatch):
-    import threadkeeper.tools.threads as th
-    monkeypatch.setattr(th, "SEMANTIC_AVAILABLE", False)
+    import threadkeeper.retrieval as retrieval
+    monkeypatch.setattr(retrieval.config, "SEMANTIC_AVAILABLE", False)
 
 
 def test_fts_query_helper():

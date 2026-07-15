@@ -18,6 +18,7 @@ It reports, over a fixed ground-truth set:
                           system correctly refused (did not leak a trap fact)
   • tokens-per-retrieval — mean / median / max tokens of what each query
                           returned, so recall is never read apart from cost
+  • retrieval latency   — mean / p50 / p95 / max wall-clock milliseconds
 
 The default judge is **lexical** (deterministic, offline, no API key, no
 embeddings) so a single command is reproducible and CI-safe. An optional
@@ -79,6 +80,15 @@ def estimate_tokens(text: str) -> int:
     return len(_TOK_RE.findall(text))
 
 
+def _percentile(values: list[float], fraction: float) -> float:
+    """Nearest-rank percentile, deterministic for small eval sets."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int(len(ordered) * fraction + 0.999) - 1))
+    return ordered[index]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Environment + package import
 # ──────────────────────────────────────────────────────────────────────────
@@ -118,12 +128,13 @@ def _prepare_env(db_path: Path, semantic: bool) -> None:
 def _import_threadkeeper():
     """Import after _prepare_env. Returns the handful of modules we touch."""
     import threadkeeper.server  # noqa: F401  (registers tools + inits schema)
-    from threadkeeper import db, config, brief as brief_mod
+    from threadkeeper import db, config, brief as brief_mod, embeddings
     from threadkeeper.tools import dialog as dialog_tool, threads as threads_tool
     return {
         "db": db,
         "config": config,
         "brief": brief_mod,
+        "embeddings": embeddings,
         "dialog_search": dialog_tool.dialog_search,
         "search": threads_tool.search,
     }
@@ -164,6 +175,48 @@ def seed_corpus(conn, corpus: dict, now: int | None = None) -> None:
     conn.commit()
 
 
+def seed_embeddings(tk: dict) -> None:
+    """Give the demo corpus full current-generation vector coverage.
+
+    Encoding happens before the write transaction, matching production's
+    transaction contract. The semantic eval therefore exercises dense+FTS
+    fusion rather than merely proving the empty-index FTS fallback.
+    """
+    with tk["db"].read_db() as conn:
+        note_rows = conn.execute(
+            "SELECT id, content FROM notes ORDER BY id"
+        ).fetchall()
+        dialog_rows = conn.execute(
+            "SELECT uuid, content FROM dialog_messages ORDER BY rowid"
+        ).fetchall()
+    texts = [row["content"] for row in note_rows]
+    texts.extend(row["content"] for row in dialog_rows)
+    vectors = tk["embeddings"].encode_many(texts)
+    if vectors is None:
+        return
+    blobs = [vector.astype("float32").tobytes() for vector in vectors]
+    note_blobs = blobs[:len(note_rows)]
+    dialog_blobs = blobs[len(note_rows):]
+    tag = tk["embeddings"].embedding_fingerprint()
+
+    def _write(conn) -> None:
+        for row, blob in zip(note_rows, note_blobs):
+            conn.execute(
+                "UPDATE notes SET embedding=?, embed_backend=? WHERE id=?",
+                (blob, tag, row["id"]),
+            )
+            tk["embeddings"]._vec_upsert_note(conn, row["id"], blob)
+        for row, blob in zip(dialog_rows, dialog_blobs):
+            conn.execute(
+                "UPDATE dialog_messages SET embedding=?, embed_backend=? "
+                "WHERE uuid=?",
+                (blob, tag, row["uuid"]),
+            )
+            tk["embeddings"]._vec_upsert_dialog(conn, row["uuid"], blob)
+
+    tk["db"].run_write("memory-eval-seed-embeddings", _write)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Retrieval — call the REAL systems-under-test
 # ──────────────────────────────────────────────────────────────────────────
@@ -194,16 +247,24 @@ def judge_lexical(item: dict, ctx: str) -> tuple[bool, str]:
     """Deterministic substring judge.
 
     Normal question  → correct if the gold fact was surfaced (recall).
-    Abstention (`abstain`) → correct if NO `trap_substrings` (fabricated
-    claims, absent from the corpus) leaked into the retrieved context. A bare
-    `no_matches` trivially contains no trap, so it counts as a correct refusal.
+    Abstention (`abstain`) → correct only when no fabricated trap leaked AND
+    retrieval either returned no candidates or surfaced labeled counterevidence.
+    Unrelated nearest neighbours do not count as abstention.
     """
     low = ctx.lower()
     if item.get("abstain"):
         leaked = [t for t in item.get("trap_substrings", []) if t.lower() in low]
         if leaked:
             return False, f"leaked trap: {leaked[0]!r}"
-        return True, "abstained (no trap surfaced)"
+        evidence = [
+            value for value in item.get("abstain_evidence", [])
+            if value.lower() in low
+        ]
+        if evidence:
+            return True, f"counterevidence recalled: {evidence[0]!r}"
+        if any(marker in low for marker in _NO_HIT_MARKERS):
+            return True, "abstained (no candidates)"
+        return False, "unrelated candidates surfaced instead of abstaining"
     gold_all = item.get("gold_all")
     if gold_all:
         missing = [g for g in gold_all if g.lower() not in low]
@@ -292,10 +353,12 @@ def evaluate(tk: dict, ground_truth: dict, *, judge: str = "lexical",
         raise LLMJudgeUnavailable(
             "ANTHROPIC_API_KEY not set; rerun with --judge lexical (default)."
         )
-    backend = "semantic" if tk["config"].SEMANTIC_AVAILABLE else "fts"
+    backend = "hybrid" if tk["config"].SEMANTIC_AVAILABLE else "fts"
     rows: list[dict] = []
     for item in ground_truth["questions"]:
+        started = time.perf_counter()
         ctx = retrieve(tk, item)
+        latency_ms = (time.perf_counter() - started) * 1000.0
         tokens = estimate_tokens(ctx)
         if judge == "llm":
             correct, reason = judge_llm(
@@ -310,6 +373,7 @@ def evaluate(tk: dict, ground_truth: dict, *, judge: str = "lexical",
             "correct": correct,
             "reason": reason,
             "tokens": tokens,
+            "latency_ms": round(latency_ms, 3),
             "no_hit": any(mk in ctx for mk in _NO_HIT_MARKERS),
         })
 
@@ -326,6 +390,9 @@ def evaluate(tk: dict, ground_truth: dict, *, judge: str = "lexical",
             }
     abst = [r for r in rows if r["abstain"]]
     toks = [r["tokens"] for r in rows]
+    latencies = [r["latency_ms"] for r in rows]
+    with tk["db"].read_db() as conn:
+        index_health = tk["embeddings"].embedding_index_health(conn)
     return {
         "backend": backend,
         "judge": judge,
@@ -345,6 +412,13 @@ def evaluate(tk: dict, ground_truth: dict, *, judge: str = "lexical",
             "max": max(toks) if toks else 0,
             "total": sum(toks),
         },
+        "retrieval_latency_ms": {
+            "mean": round(statistics.fmean(latencies), 3) if latencies else 0.0,
+            "p50": round(_percentile(latencies, 0.50), 3),
+            "p95": round(_percentile(latencies, 0.95), 3),
+            "max": round(max(latencies), 3) if latencies else 0.0,
+        },
+        "embedding_index": index_health,
         "rows": rows,
     }
 
@@ -371,6 +445,11 @@ def format_report(report: dict) -> str:
     out.append(
         f"tokens/retrieval   : mean={tpr['mean']}  median={tpr['median']}  "
         f"max={tpr['max']}  total={tpr['total']}"
+    )
+    lat = report["retrieval_latency_ms"]
+    out.append(
+        f"latency (ms)       : mean={lat['mean']}  p50={lat['p50']}  "
+        f"p95={lat['p95']}  max={lat['max']}"
     )
     out.append("")
     out.append("per-axis accuracy:")
@@ -427,7 +506,13 @@ def main(argv: list[str] | None = None) -> int:
         _prepare_env(db_path, semantic=args.semantic)
         tk = _import_threadkeeper()
         if seed:
-            seed_corpus(tk["db"].get_db(), gt["corpus"])
+            seed_conn = tk["db"].get_db()
+            try:
+                seed_corpus(seed_conn, gt["corpus"])
+            finally:
+                seed_conn.close()
+            if args.semantic:
+                seed_embeddings(tk)
 
         try:
             report = evaluate(tk, gt, judge=args.judge, llm_model=args.llm_model)
