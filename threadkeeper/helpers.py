@@ -122,12 +122,18 @@ def _gen_short_id(conn: sqlite3.Connection, prefix: str, table: str,
 
 def _global_ids_on(conn: sqlite3.Connection) -> bool:
     """After the sync re-id migration, generated ids must be globally unique
-    (ULID) instead of the local 3-hex short ids. Gated on PRAGMA user_version."""
+    (ULID) instead of the local 3-hex short ids. Gated on
+    sync_state.sync_schema_version — NOT PRAGMA user_version, which the core DB
+    owns as its own schema-migration counter (a non-migrated install would
+    otherwise flip to ULIDs the moment that counter reaches SYNC_SCHEMA_VERSION)."""
     from .sync import SYNC_SCHEMA_VERSION
     try:
-        return int(conn.execute("PRAGMA user_version").fetchone()[0]) >= SYNC_SCHEMA_VERSION
+        row = conn.execute(
+            "SELECT sync_schema_version FROM sync_state WHERE id=1"
+        ).fetchone()
     except sqlite3.Error:
         return False
+    return bool(row) and row[0] is not None and int(row[0]) >= SYNC_SCHEMA_VERSION
 
 
 def gen_thread_id(conn: sqlite3.Connection) -> str:

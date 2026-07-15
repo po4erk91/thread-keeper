@@ -42,9 +42,10 @@ def test_fresh_schema_is_external_content(fresh_mp):
     assert triggers == {"dialog_fts_ai", "dialog_fts_ad", "dialog_fts_au"}
 
 
-def test_fresh_db_starts_at_v2(fresh_mp):
+def test_fresh_db_starts_at_current_version(fresh_mp):
     conn = fresh_mp["db"].get_db()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == \
+        fresh_mp["db"].CURRENT_SCHEMA_VERSION
 
 
 def test_trigger_insert_makes_row_searchable(fresh_mp):

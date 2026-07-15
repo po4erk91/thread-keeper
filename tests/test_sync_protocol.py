@@ -11,11 +11,15 @@ def _build_db(dbmod, migrate, path):
     """Materialize + migrate a standalone DB file at `path`."""
     old = dbmod.DB_PATH
     dbmod.DB_PATH = path
+    # bootstrap_db latches once per process; force it to re-materialize schema
+    # at this fresh path (the fixture only resets the latch once per test).
+    dbmod.bootstrap_db(force=True)
     try:
         dbmod.get_db().close()
         assert migrate.apply(path, do_apply=True) == 0
     finally:
         dbmod.DB_PATH = old
+        dbmod._BOOTSTRAPPED = False
     return path
 
 

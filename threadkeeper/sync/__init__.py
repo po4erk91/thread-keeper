@@ -8,12 +8,14 @@ locally from the base tables after a merge.
 
 The feature is dormant until the operator runs the opt-in `tk-sync-migrate`
 script (which converts INTEGER autoincrement PKs on the replicated tables to
-global TEXT ids and bumps `PRAGMA user_version`) and configures peers. See
-docs/sync.md.
+global TEXT ids and sets `sync_state.sync_schema_version`) and configures peers.
+See docs/sync.md.
 """
 from __future__ import annotations
 
-# Schema version the re-id migration bumps `PRAGMA user_version` to. The sync
-# daemon and tools stay inert while the DB is below this — so installing the
-# feature without migrating leaves an existing user completely unaffected.
+# Schema version the re-id migration writes to `sync_state.sync_schema_version`.
+# (Deliberately NOT PRAGMA user_version, which the core db owns as its own
+# schema-migration counter.) The sync daemon and tools stay inert while the DB
+# is below this — installing the feature without migrating leaves an existing
+# user completely unaffected.
 SYNC_SCHEMA_VERSION = 1

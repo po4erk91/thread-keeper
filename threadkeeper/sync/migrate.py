@@ -4,8 +4,8 @@ This is the ONE destructive step of cross-machine sync. It converts the
 INTEGER-AUTOINCREMENT primary keys on the replicated memory tables to global
 ULID TEXT ids (and widens the short 3-hex TEXT ids), rewriting every foreign
 reference in lockstep, then rebuilds derived indexes and stamps a baseline
-HLC. After it runs, `PRAGMA user_version` is bumped so the sync daemon/tools
-activate; before it runs they stay dormant.
+HLC. After it runs, `sync_state.sync_schema_version` is set so the sync
+daemon/tools activate; before it runs they stay dormant.
 
 NEVER auto-run. The operator invokes `tk-sync-migrate` (or
 `python -m threadkeeper.sync.migrate`) explicitly, after a backup. `--dry-run`
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import shutil
 import sqlite3
 import sys
 import time
@@ -60,8 +59,17 @@ EDGE_KIND_TABLE = {
 }
 
 
-def _user_version(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+def _sync_version(conn: sqlite3.Connection) -> int:
+    """Sync migration gate, read from sync_state — NOT PRAGMA user_version, which
+    main owns as its own schema-migration counter (CURRENT_SCHEMA_VERSION).
+    0 = not migrated (absent table/row/value)."""
+    try:
+        row = conn.execute(
+            "SELECT sync_schema_version FROM sync_state WHERE id=1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def _declared_fk_children(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
@@ -94,7 +102,7 @@ def plan(conn: sqlite3.Connection) -> dict:
     maps = _build_maps(conn)
     children = _declared_fk_children(conn)
     return {
-        "user_version": _user_version(conn),
+        "sync_schema_version": _sync_version(conn),
         "target_version": SYNC_SCHEMA_VERSION,
         "rows_per_table": {t: len(m) for t, m in maps.items()},
         "fk_children": {t: children[t] for t in REID_PREFIX if children[t]},
@@ -207,13 +215,13 @@ def apply(db_path: Path, do_apply: bool) -> int:
 
     probe = sqlite3.connect(str(db_path))
     try:
-        uv = _user_version(probe)
+        uv = _sync_version(probe)
         summary = plan(probe)
     finally:
         probe.close()
 
     if uv >= SYNC_SCHEMA_VERSION:
-        print(f"already migrated (user_version={uv} >= {SYNC_SCHEMA_VERSION}); no-op.")
+        print(f"already migrated (sync_schema_version={uv} >= {SYNC_SCHEMA_VERSION}); no-op.")
         return 0
 
     print("re-id migration plan:")
@@ -226,8 +234,17 @@ def apply(db_path: Path, do_apply: bool) -> int:
         print("\n--dry-run: no changes written. Re-run with --apply to migrate.")
         return 0
 
-    backup = db_path.with_name(db_path.name + f".bak-{int(time.time())}")
-    shutil.copy2(db_path, backup)
+    backup = db_path.with_name(db_path.name + f".bak-{int(time.time())}.sqlite")
+    # Consistent single-file snapshot BEFORE any mutation. VACUUM INTO reads the
+    # live DB *through a connection*, so it captures committed pages still resident
+    # in the -wal — a plain file copy would miss them and produce a torn/stale
+    # backup exactly when it matters most (review of PR #201; same class as #95).
+    bk = sqlite3.connect(str(db_path))
+    try:
+        bk.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        bk.execute("VACUUM INTO ?", (str(backup),))
+    finally:
+        bk.close()
     print(f"\nbackup: {backup}")
 
     conn = sqlite3.connect(str(db_path))
@@ -248,7 +265,14 @@ def apply(db_path: Path, do_apply: bool) -> int:
         conn.execute("COMMIT")
         # Enable the feature BEFORE reopening via get_db so that connection
         # materializes the migrated schema (rowid notes_vec + map + triggers).
-        conn.execute(f"PRAGMA user_version={SYNC_SCHEMA_VERSION}")
+        # The gate lives in sync_state — main owns PRAGMA user_version. Ensure the
+        # singleton row exists (get_node_id → _ensure_state) before stamping it.
+        sync_identity.get_node_id(conn)
+        conn.execute(
+            "UPDATE sync_state SET sync_schema_version=? WHERE id=1",
+            (SYNC_SCHEMA_VERSION,),
+        )
+        conn.commit()
     except Exception:
         conn.rollback()
         conn.close()
@@ -260,8 +284,12 @@ def apply(db_path: Path, do_apply: bool) -> int:
     # Reopen through get_db (reasserts declared indexes/triggers on the rebuilt
     # tables + installs sync). Rebuild derived indexes and stamp a baseline HLC
     # under applying_guard so capture triggers don't clobber the explicit stamp.
-    from ..db import get_db
+    # force=True: the gate just flipped, so bootstrap must re-run to rebuild the
+    # migrated notes_vec keying and install capture triggers (the earlier
+    # bootstrap saw an un-migrated DB and installed neither).
+    from ..db import get_db, bootstrap_db
     from . import capture
+    bootstrap_db(force=True)
     conn = get_db()
     try:
         with capture.applying_guard(conn):
@@ -271,8 +299,8 @@ def apply(db_path: Path, do_apply: bool) -> int:
     finally:
         conn.close()
 
-    print(f"done. user_version={SYNC_SCHEMA_VERSION}. Sync is now enabled once "
-          f"peers + listen are configured.")
+    print(f"done. sync_schema_version={SYNC_SCHEMA_VERSION}. Sync is now enabled "
+          f"once peers + listen are configured.")
     return 0
 
 

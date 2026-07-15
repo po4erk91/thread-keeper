@@ -1086,18 +1086,24 @@ def _ensure_sync_capture(conn: sqlite3.Connection) -> None:
         pass
 
 
-def bootstrap_db() -> None:
+def bootstrap_db(force: bool = False) -> None:
     """Perform process startup setup exactly once.
 
     Cross-process schema serialization still lives in ``_ensure_schema``.
     This process-local latch only keeps ordinary tool connections from
     repeating journal-mode negotiation and DDL on every call.
+
+    ``force=True`` re-runs setup even if already latched. Needed when the DB
+    materially changes underneath a live process: the opt-in sync re-id
+    migration flips the sync gate, so bootstrap must re-run to rebuild the
+    migrated notes_vec keying and install capture triggers; tests also use it
+    when repointing ``DB_PATH`` to a fresh file mid-process.
     """
     global _BOOTSTRAPPED
-    if _BOOTSTRAPPED:
+    if _BOOTSTRAPPED and not force:
         return
     with _BOOTSTRAP_LOCK:
-        if _BOOTSTRAPPED:
+        if _BOOTSTRAPPED and not force:
             return
         harden_storage_paths(
             DB_PATH,

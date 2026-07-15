@@ -92,7 +92,7 @@ def test_migrates_v1_to_external_content(tmp_path, monkeypatch):
     tk_db = _boot_db(monkeypatch, db_path)
     conn = tk_db.get_db()
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == tk_db.CURRENT_SCHEMA_VERSION
     ddl = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='dialog_fts'"
     ).fetchone()[0]
@@ -155,8 +155,8 @@ def test_migration_rerun_is_noop(tmp_path, monkeypatch):
     )
     conn.close()
 
-    conn2 = tk_db.get_db()  # second connect: version already 2 → fast path
-    assert conn2.execute("PRAGMA user_version").fetchone()[0] == 2
+    conn2 = tk_db.get_db()  # second connect: version already current → fast path
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == tk_db.CURRENT_SCHEMA_VERSION
     counts2 = (
         conn2.execute("SELECT COUNT(*) FROM dialog_messages").fetchone()[0],
         conn2.execute("SELECT COUNT(*) FROM dialog_fts_docsize").fetchone()[0],
@@ -177,7 +177,7 @@ def test_pre_versioning_db_with_old_fts_migrates(tmp_path, monkeypatch):
 
     tk_db = _boot_db(monkeypatch, db_path)
     conn = tk_db.get_db()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == tk_db.CURRENT_SCHEMA_VERSION
     ddl = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='dialog_fts'"
     ).fetchone()[0]

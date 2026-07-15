@@ -44,9 +44,10 @@ the wire and recomputed locally (every node has the model).
   dialectic_evidence, dialectic_observations, edges, skill_usage, reliability,
   probes, probe_results, evolve, style.
 - **Node-local** (never synced): sessions, presence, cursors, ingest_state,
-  resource_controls, events, signals, tasks, extract_candidates. Keeping
-  `events` local means its autoincrement id (the live-channel cursor) never
-  collides across machines.
+  resource_controls, events, signals, tasks, extract_candidates, daemon_state.
+  Keeping `events` local means its autoincrement id (the live-channel cursor)
+  never collides across machines; `daemon_state` is per-machine background
+  cadence (single-flight claim timestamps) — meaningless to replicate.
 - **Derived** (rebuilt locally): notes_fts, dialog_fts, notes_vec, dialog_vec,
   and the *_vec_map sidecars.
 
@@ -78,11 +79,27 @@ POST /sync/pull  {vv}       -> {vv, changes}   rows the caller is missing
 POST /sync/push  {changes}  -> {applied}        merge the caller's changes
 ```
 
-Bearer-token auth (`THREADKEEPER_SYNC_TOKEN`). Transport is plain HTTP intended
-to run over an already-encrypted private network (WireGuard/OpenVPN/Tailscale
-or LAN); TLS can be fronted or added later without protocol changes. NAT'd
-peers need a relay/rendezvous (future). Self-healing: an unreachable peer just
-retries next tick.
+Bearer-token auth (`THREADKEEPER_SYNC_TOKEN`), compared in constant time.
+Transport is plain HTTP intended to run over an already-encrypted private
+network (WireGuard/OpenVPN/Tailscale or LAN); TLS can be fronted or added later
+without protocol changes. NAT'd peers need a relay/rendezvous (future).
+Self-healing: an unreachable peer just retries next tick.
+
+## Trust model
+
+**Every peer is equal-trust.** There are no per-table or per-row ACLs: any peer
+that holds the shared token can write **any** replicated row (LWW by HLC means a
+peer can also overwrite or tombstone rows another node authored). The mesh
+assumes all machines belong to the same user. Guard the token accordingly and
+run only over a private/encrypted network.
+
+Because the DB replicates full private transcripts (`dialog_messages`), the
+server **refuses to bind a wildcard or public address by default** — `0.0.0.0`,
+`::`, a public IP, or an unresolvable hostname are rejected; only loopback and
+private/link-local addresses are allowed. Bind an explicit private/VPN address
+(e.g. your LAN or `10.8.0.x` VPN IP), or set
+`THREADKEEPER_SYNC_ALLOW_PUBLIC_BIND=1` to override — only behind your own
+network controls.
 
 ## Configuration (all OFF by default)
 
@@ -92,28 +109,42 @@ retries next tick.
 | `THREADKEEPER_SYNC_PEERS` | CSV of peer base URLs (`http://host:port`) |
 | `THREADKEEPER_SYNC_LISTEN` | local `host:port` to serve; empty = no server |
 | `THREADKEEPER_SYNC_TOKEN` | shared bearer token for peer auth |
+| `THREADKEEPER_SYNC_ALLOW_PUBLIC_BIND` | allow binding a wildcard/public listen address (default off) |
 
 Tools: `sync_status`, `sync_peers`, `sync_now`.
 
 ## Migration (opt-in, one-time, destructive)
 
-The feature is dormant until `PRAGMA user_version >= SYNC_SCHEMA_VERSION`. The
-additive schema (sync columns + tables) is applied automatically and is safe.
-The **re-id** (INTEGER PKs → global TEXT ids, references rewritten in lockstep,
-derived indexes rebuilt) is a separate opt-in script and is **never auto-run**:
+The feature is dormant until `sync_state.sync_schema_version >=
+SYNC_SCHEMA_VERSION`. (The gate deliberately lives in `sync_state`, not
+`PRAGMA user_version` — the core DB owns `user_version` as its own
+schema-migration counter.) The additive schema (sync columns + tables) rides the
+core schema versioning and is applied automatically and safely. The **re-id**
+(INTEGER PKs → global TEXT ids, references rewritten in lockstep, derived indexes
+rebuilt) is a separate opt-in script and is **never auto-run**:
 
 ```
 tk-sync-migrate            # dry-run: shows the plan, writes nothing
-tk-sync-migrate --apply    # backs up db.sqlite, then migrates; bumps user_version
+tk-sync-migrate --apply    # snapshots db.sqlite, then migrates; sets the sync gate
 ```
 
-`--apply` auto-backs-up `db.sqlite`, runs in a transaction, and is idempotent.
-Run it with a fresh backup; installing the feature without migrating leaves an
-existing user completely unaffected (sync stays off).
+`--apply` first writes a **consistent single-file snapshot** (`VACUUM INTO`,
+which reads through a live connection so WAL-resident committed pages are
+captured — a plain file copy could miss them), then migrates in a transaction,
+and is idempotent. Installing the feature without migrating leaves an existing
+user completely unaffected (sync stays off).
 
 ## Status / follow-ups
 
+- **Learning-loop double-processing.** Once `dialog_messages` replicates, each
+  machine's shadow_review / extract / dialectic miners will independently
+  process the *same* synced rows → the same lessons/claims minted on every node
+  (N machines ≈ N× LLM spend on one window; write-time dedup soaks some of it).
+  Planned fix: scope those loops to locally-ingested rows (`origin_node = self`),
+  or replicate the loop cursors/claims so work is done once. The cursor/claim
+  bookkeeping already lives in node-local tables, so this is additive.
 - Counter columns (`skill_usage.*_count`) merge by LWW for now (an increment on
-  the losing side is dropped); a per-node partial-count CRDT is a follow-up.
+  the losing side is dropped); a per-node partial-count CRDT summed at read
+  (G-Counter style) fits the schema as a follow-up.
 - TLS termination in-process, mDNS/reachability-triggered sync, and a relay for
   NAT'd peers are follow-ups; the current MVP relies on a private network.

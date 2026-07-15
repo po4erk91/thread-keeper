@@ -413,12 +413,16 @@ class Settings(BaseSettings):
     # ── Cross-machine sync (feature-gated; off until re-id migration ran) ──────
     # Symmetric P2P anti-entropy replication of the memory tables across a
     # user's machines. All default OFF: sync stays dormant until the operator
-    # runs `tk-sync-migrate` (which bumps PRAGMA user_version) AND configures
-    # peers + a listen address. See docs/sync.md.
+    # runs `tk-sync-migrate` (which sets sync_state.sync_schema_version) AND
+    # configures peers + a listen address. See docs/sync.md.
     sync_interval_s: float = 0.0          # daemon tick; 0 = sync daemon off
     sync_peers: str = ""                  # CSV of peer base URLs (host:port)
     sync_listen: str = ""                 # local listen "host:port"; "" = no server
     sync_token: str = ""                  # shared bearer token for peer auth
+    # The DB replicates full private transcripts, so the server refuses to bind a
+    # wildcard/public address (0.0.0.0, ::, a public IP, or an unresolvable host)
+    # by default. Set true to override — only behind your own network controls.
+    sync_allow_public_bind: bool = False
 
     # ── Nested spawn config ───────────────────────────────────────────────────
     spawn: SpawnSettings = SpawnSettings()
@@ -770,6 +774,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SYNC_PEERS": s.sync_peers,
         "SYNC_LISTEN": s.sync_listen,
         "SYNC_TOKEN": s.sync_token,
+        "SYNC_ALLOW_PUBLIC_BIND": s.sync_allow_public_bind,
     }
 
 

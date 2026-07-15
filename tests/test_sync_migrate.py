@@ -58,7 +58,7 @@ def test_migration_reids_and_fixes_refs(fresh_mp):
     # dry-run writes nothing
     assert migrate.apply(db_path, do_apply=False) == 0
     c = sqlite3.connect(str(db_path))
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 0
+    assert migrate._sync_version(c) == 0
     assert c.execute("SELECT id FROM notes WHERE id='1'").fetchone() is not None
     c.close()
 
@@ -68,7 +68,7 @@ def test_migration_reids_and_fixes_refs(fresh_mp):
     c = sqlite3.connect(str(db_path))
     c.row_factory = sqlite3.Row
     try:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == SYNC_SCHEMA_VERSION
+        assert migrate._sync_version(c) == SYNC_SCHEMA_VERSION
         # notes.id is now TEXT ULID, not the old integer
         notes = {r["content"]: r["id"] for r in c.execute("SELECT id,content FROM notes")}
         assert set(notes) == {"n1", "n2"}
@@ -117,5 +117,5 @@ def test_migration_idempotent(fresh_mp):
     _seed(conn)
     conn.close()
     assert migrate.apply(db.DB_PATH, do_apply=True) == 0
-    # second apply is a clean no-op (already at target user_version)
+    # second apply is a clean no-op (already at target sync_schema_version)
     assert migrate.apply(db.DB_PATH, do_apply=True) == 0

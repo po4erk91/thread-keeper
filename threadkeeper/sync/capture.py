@@ -11,7 +11,7 @@ the protocol's apply path via `applying_guard`) so that merging a peer's
 changes does NOT get re-captured as a fresh local write — that guard is the
 correctness crux that keeps origin/hlc of a relayed row intact.
 
-Triggers exist only once `PRAGMA user_version >= SYNC_SCHEMA_VERSION`
+Triggers exist only once `sync_state.sync_schema_version >= SYNC_SCHEMA_VERSION`
 (i.e. after `tk-sync-migrate`). Pre-migration installs are untouched.
 """
 from __future__ import annotations
@@ -47,8 +47,18 @@ _NOT_APPLYING = "(SELECT applying FROM sync_state WHERE id=1)=0"
 
 
 def is_migrated(conn: sqlite3.Connection) -> bool:
-    """True once the re-id migration ran (sync feature enabled)."""
-    return int(conn.execute("PRAGMA user_version").fetchone()[0]) >= SYNC_SCHEMA_VERSION
+    """True once the re-id migration ran (sync feature enabled).
+
+    Gated on sync_state.sync_schema_version — NOT PRAGMA user_version, which main
+    owns as its schema-migration counter. Absent table/row/value = not migrated.
+    """
+    try:
+        row = conn.execute(
+            "SELECT sync_schema_version FROM sync_state WHERE id=1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row) and row[0] is not None and int(row[0]) >= SYNC_SCHEMA_VERSION
 
 
 def _gid_expr(table: str, ref: str) -> str:

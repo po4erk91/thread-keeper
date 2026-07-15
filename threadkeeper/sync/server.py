@@ -12,6 +12,8 @@ follow-up) without touching the protocol. OFF by default (no listen address).
 """
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +31,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not SYNC_TOKEN:
             return False  # never serve without a token configured
-        return self.headers.get("Authorization") == f"Bearer {SYNC_TOKEN}"
+        # Constant-time compare: no early-out timing leak on the token even on a
+        # private network. compare_digest also tolerates a missing/short header.
+        return hmac.compare_digest(
+            self.headers.get("Authorization", ""), f"Bearer {SYNC_TOKEN}"
+        )
 
     def _send_json(self, code: int, obj: dict) -> None:
         data = protocol.dumps(obj).encode()
@@ -83,6 +89,21 @@ def _parse_listen(listen: str) -> tuple[str, int] | None:
         return None
 
 
+def _is_safe_bind_host(host: str) -> bool:
+    """A bind host needs no override only if it is loopback or a private/link-
+    local address. Wildcard binds (0.0.0.0 / ::) expose every interface — public
+    ones included — and a bare hostname can't be proven private, so both require
+    the explicit override. The DB replicates full private transcripts."""
+    h = (host or "").strip().strip("[]")
+    if h in ("", "0.0.0.0", "::", "*"):
+        return False
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False  # hostname, not a literal IP — cannot verify it's private
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
 def start_server() -> None:
     """Start the sync HTTP server if a listen address + token are configured."""
     global _started
@@ -91,8 +112,16 @@ def start_server() -> None:
     addr = _parse_listen(SYNC_LISTEN)
     if addr is None or not SYNC_TOKEN:
         return
-    from ..config import BACKGROUND_DAEMONS_ALLOWED
+    from ..config import BACKGROUND_DAEMONS_ALLOWED, SYNC_ALLOW_PUBLIC_BIND
     if not BACKGROUND_DAEMONS_ALLOWED:
+        return
+    if not _is_safe_bind_host(addr[0]) and not SYNC_ALLOW_PUBLIC_BIND:
+        logger.error(
+            "sync server refusing to bind %s:%d — not a loopback/private "
+            "address. The DB replicates full private transcripts. Bind a "
+            "private/VPN address, or set THREADKEEPER_SYNC_ALLOW_PUBLIC_BIND=1 "
+            "to override (only behind your own network controls).", *addr,
+        )
         return
     httpd = ThreadingHTTPServer(addr, _Handler)
     t = threading.Thread(target=httpd.serve_forever, name="sync_server", daemon=True)
