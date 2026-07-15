@@ -129,6 +129,12 @@ remains a live question.
   the live WAL store while writer loops continue, and `tk-backup restore --yes`
   verifies the snapshot, atomically swaps the DB, and clears stale
   `-wal`/`-shm` sidecars after the user stops thread-keeper.
+- Privacy selective erasure (#104): `forget(selector, dry_run=True)` and the
+  `tk-forget` console command provide dry-run-first targeted deletion for one
+  session/cid/thread/dialog UUID. Applying removes dialog rows plus FTS/vector
+  sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
+  candidates, task rows/spool files, signals, and session sidecars, while
+  surfacing lessons/skills that cite the purged source for manual re-review.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

@@ -80,6 +80,8 @@ thread-keeper-setup = "threadkeeper._setup:main"
 tk-migrate-embeddings = "threadkeeper.migrate_embeddings:main"
 # Create/restore consistent single-file snapshots of the live WAL SQLite store.
 tk-backup = "threadkeeper.backup:main"
+# Dry-run/apply targeted erasure for one session/cid/thread/dialog UUID.
+tk-forget = "threadkeeper.forget:main"
 # JSON/text status feed for menu-bar widgets and terminal monitors.
 tk-agent-status = "threadkeeper.agent_status:main"
 

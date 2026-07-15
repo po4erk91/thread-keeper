@@ -1114,8 +1114,8 @@ override pointing at them falls back to the next priority level.
 
 ## Hygiene tools
 
-Two tools keep the memory tidy — both default to `dry_run=True`, run
-them with `dry_run=False` to apply:
+Three tools keep the memory tidy. `consolidate()` and `forget()` default to
+`dry_run=True`; run them with `dry_run=False` to apply:
 
 - **`consolidate()`** — dedup near-identical notes (intra-thread cosine
   ≥ 0.95), deduplicate verbatim quotes, demote untouched-active threads
@@ -1126,6 +1126,16 @@ them with `dry_run=False` to apply:
   `THREADKEEPER_TASK_RETENTION_DAYS` defaults to `30` and
   `THREADKEEPER_TASK_RETENTION_COUNT` defaults to `1000`; a row is kept if it
   is protected by either bound. Set either knob to `0` to disable that bound.
+- **`forget(selector, selector_type="auto", dry_run=True)`** — targeted
+  privacy erasure for one session/cid/thread/dialog UUID. Dry-run reports the
+  rows that would be removed from `dialog_messages`, FTS/vector sidecars,
+  notes, verbatim, dialectic observations/evidence/claims, extract candidates,
+  task rows, task spool files, signals, and session sidecars. Applying deletes
+  those rows and leaves `dialog_fts`, `dialog_vec`, `dialog_vec_map`,
+  `notes_fts`, and `notes_vec` without orphaned rows. Lessons and skills that
+  cite the purged source are listed for manual re-review instead of being
+  silently kept or automatically edited. The same operation is available as
+  `tk-forget`; it is also dry-run by default and uses `--apply` to delete.
 - **`validate_threads()`** — heuristic triage of active threads with
   four categories (first match wins per thread):
   - `no_notes_old` — active with zero notes ≥ 7 days → close as abandoned.
@@ -1235,6 +1245,27 @@ WAL mode because recent committed transactions may exist only in
 first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
+
+### Selective Erasure
+
+For one regretted or sensitive conversation, use targeted erasure instead of
+removing the whole database:
+
+```bash
+tk-forget <session-or-cid>          # dry-run
+tk-backup create ~/threadkeeper-before-forget.sqlite
+tk-forget <session-or-cid> --apply
+```
+
+The MCP equivalent is `forget(selector, dry_run=True)`, with `dry_run=False`
+for the destructive call. `selector_type="auto"` treats thread IDs and dialog
+UUIDs specially, otherwise it treats the selector as the conversation
+`session_id`/cid used by `dialog_messages`. The deletion cascades through the
+stores that can hold direct content or durable derivatives. `lessons.md` and
+SKILL.md files are not rewritten automatically because they may contain
+generalized guidance mixed with the cited source; the report lists matching
+lessons/skills under `review_required` so a human or foreground agent can
+decide whether to edit, keep, or remove them.
 
 ### Retention
 
