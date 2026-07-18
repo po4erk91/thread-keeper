@@ -26,6 +26,11 @@ from .capture import _PK, _COMPOSITE, applying_guard
 
 # Columns never shipped: recomputed locally from content on each node.
 _PAYLOAD_EXCLUDE = {"embedding", "embed_backend"}
+# Cap on rows re-embedded synchronously in rebuild_derived (the /sync/push
+# request path). A large initial corpus would otherwise blow the client's ~30s
+# timeout and retry into the same expensive path. NULL embeddings are a valid
+# eventual state; the background ingester finishes the remainder in bounded ticks.
+_SYNC_EMBED_PUSH_BUDGET = 200
 _ALL_TABLES = list(_PK) + list(_COMPOSITE)
 # Replicated tables whose embedding is derived from a text column — used to
 # preserve an existing local embedding across an upsert when the source text is
@@ -217,8 +222,10 @@ def rebuild_derived(conn: sqlite3.Connection) -> None:
             )
             _backfill_dialog_fts_if_empty(conn)
             # Re-embed synced rows (notes/dialog/concepts) that arrived without
-            # an embedding BEFORE mirroring BLOBs into the vec indexes.
-            _backfill_sync_embeddings(conn)
+            # an embedding BEFORE mirroring BLOBs into the vec indexes. Bounded
+            # so this request path can't time out on a large corpus; the
+            # background ingester finishes the remainder in later ticks.
+            _backfill_sync_embeddings(conn, max_rows=_SYNC_EMBED_PUSH_BUDGET)
             while _backfill_vec_tables(conn)[0]:
                 pass
         except Exception:

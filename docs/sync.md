@@ -64,10 +64,19 @@ are already global and merge by key.
 
 On a migrated DB, per-table triggers stamp `origin_node`/`hlc` on local writes
 and append to `sync_oplog`. The HLC is advanced in pure SQL off the
-`sync_state` singleton. Triggers are suppressed while `sync_state.applying=1`
-(set by `applying_guard` during a merge) so applying a peer's rows does not get
-re-captured as a local write — this preserves the relayed row's origin/hlc and
-keeps reconcile idempotent.
+`sync_state` singleton. During a merge the triggers are suppressed by
+`applying_guard`, which creates a **connection-local `TEMP` table**
+(`_tk_sync_applying`) that the triggers probe via `pragma_table_list` — so
+applying a peer's rows does not get re-captured as a local write (preserving the
+relayed row's origin/hlc and keeping reconcile idempotent), while a concurrent
+local write on *another* connection is still captured normally. Suppression is
+deliberately not a shared `sync_state` flag: a shared row would leak through an
+inner commit and silently drop unrelated concurrent writes.
+
+The receive path also absorbs the highest HLC it applies into the local clock
+(`identity.hlc_absorb`, inside the same guarded transaction) so a subsequent
+local edit is stamped from a clock that dominates everything just received —
+otherwise a local edit after a clock-ahead remote row would lose under LWW.
 
 ## Transport
 
@@ -134,6 +143,38 @@ captured — a plain file copy could miss them), then migrates in a transaction,
 and is idempotent. Installing the feature without migrating leaves an existing
 user completely unaffected (sync stays off).
 
+## Cloning a DB / replica identity
+
+The `node_id` lives inside the DB (`sync_state`), so **copying a migrated
+`db.sqlite` — or the whole `~/.threadkeeper` state directory — onto a second
+active machine duplicates the sync identity.** Because the version vector is
+`MAX(hlc)` per `origin_node`, two independent HLC streams under the same origin
+are indistinguishable: once a peer sees the higher stream it assumes every lower
+timestamp for that origin is already known, and a valid change from the other
+machine can be dropped **forever** (data loss, not an LWW collision on one row).
+
+The distinction that matters:
+
+- **Restoring a backup as a replacement** for the same writer (old machine gone)
+  may keep the identity — there is still only one live writer for it.
+- **Creating a second, simultaneously-writable replica** from a DB/state-dir
+  copy **must reset the clone's identity before it accepts any local write or
+  sync**:
+
+```
+tk-sync-reset-node            # dry-run: prints old/new node id + HLC high-water
+tk-sync-reset-node --apply    # assigns a fresh node_id on THIS (clone) DB
+```
+
+`--apply` runs in one exclusive transaction: it preserves the DB's existing HLC
+high-water mark (so a post-reset local write still dominates anything already
+observed, including a future-skewed remote HLC), changes only
+`sync_state.node_id`, clears seen-cursor state (`sync_peer_vv`), and atomically
+replaces the `node.id` mirror. Historical rows keep their `origin_node` — that
+history is already present in the copied DB. An identity file/DB mismatch check
+is defense-in-depth but cannot detect a full state-dir copy, so this explicit
+reset is the required path.
+
 ## Status / follow-ups
 
 - **Learning-loop double-processing.** Once `dialog_messages` replicates, each
@@ -146,5 +187,9 @@ user completely unaffected (sync stays off).
 - Counter columns (`skill_usage.*_count`) merge by LWW for now (an increment on
   the losing side is dropped); a per-node partial-count CRDT summed at read
   (G-Counter style) fits the schema as a follow-up.
+- Synced rows arrive without embeddings (never shipped). `/sync/push` re-embeds
+  only a bounded slice per request so it can't blow the client timeout on a large
+  initial corpus; the background ingester drains the remainder in bounded ticks.
+  NULL embeddings are a valid eventual state until then.
 - TLS termination in-process, mDNS/reachability-triggered sync, and a relay for
   NAT'd peers are follow-ups; the current MVP relies on a private network.

@@ -200,3 +200,59 @@ def test_apply_preserves_local_embedding_on_unchanged_content(fresh_mp):
         assert emb == b"\x01\x02\x03\x04", "local embedding clobbered on unchanged-content upsert"
     finally:
         conn.close()
+
+
+def test_push_embedding_backfill_is_bounded(fresh_mp, tmp_path):
+    """R3-F regression: /sync/push (rebuild_derived) must re-embed at most the
+    budget per call so a large corpus can't blow the client timeout; the
+    remainder is finished by later (background) passes."""
+    from threadkeeper.config import SEMANTIC_AVAILABLE
+    if not SEMANTIC_AVAILABLE:
+        import pytest
+        pytest.skip("needs embeddings")
+    from threadkeeper.sync import migrate, protocol
+    from threadkeeper.ingest import _backfill_sync_embeddings
+    from threadkeeper.helpers import gen_global_id
+    db = fresh_mp["db"]
+    _build_db(db, migrate, tmp_path / "A.sqlite")
+    conn = _open(tmp_path / "A.sqlite")
+    try:
+        # seed more NULL-embedding concepts than the push budget
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO concepts(id,description,registered_at) VALUES(?,?,?)",
+                (gen_global_id("C"), f"anteater fact number {i}", 1))
+        conn.commit()
+
+        def _null():
+            return conn.execute(
+                "SELECT COUNT(*) FROM concepts WHERE embedding IS NULL").fetchone()[0]
+        assert _null() == 5
+
+        # one bounded pass processes no more than the budget
+        did = _backfill_sync_embeddings(conn, max_rows=2)
+        assert did == 2, did
+        assert _null() == 3
+
+        # subsequent bounded passes finish the remainder
+        _backfill_sync_embeddings(conn, max_rows=2)
+        _backfill_sync_embeddings(conn, max_rows=2)
+        assert _null() == 0
+
+        # the /sync/push path honors the module budget: shrink it and confirm
+        # rebuild_derived leaves the excess for later.
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO concepts(id,description,registered_at) VALUES(?,?,?)",
+                (gen_global_id("C"), f"badger fact {i}", 1))
+        conn.commit()
+        import threadkeeper.sync.protocol as pmod
+        old = pmod._SYNC_EMBED_PUSH_BUDGET
+        pmod._SYNC_EMBED_PUSH_BUDGET = 1
+        try:
+            protocol.rebuild_derived(conn)
+        finally:
+            pmod._SYNC_EMBED_PUSH_BUDGET = old
+        assert _null() == 2, "rebuild_derived exceeded the push budget"
+    finally:
+        conn.close()

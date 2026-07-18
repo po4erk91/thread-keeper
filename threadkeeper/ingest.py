@@ -646,7 +646,11 @@ _SYNC_EMBED_TABLES = (
 )
 
 
-def _backfill_sync_embeddings(conn: sqlite3.Connection, batch: int = 100) -> int:
+def _backfill_sync_embeddings(
+    conn: sqlite3.Connection,
+    batch: int = 100,
+    max_rows: int | None = None,
+) -> int:
     """Re-embed replicated rows that arrived over sync without an embedding.
 
     The wire payload omits `embedding`/`embed_backend` (they are local derived
@@ -654,8 +658,12 @@ def _backfill_sync_embeddings(conn: sqlite3.Connection, batch: int = 100) -> int
     and are invisible to semantic search until re-embedded here. Notes/dialog
     are also mirrored into their vec tables. MUST run under `applying_guard`
     (rebuild_derived does) so the embedding UPDATEs are not captured as fresh
-    sync writes. Loops in batches until no NULL-embedding rows remain; returns
-    the total re-embedded. No-op without embeddings.
+    sync writes. Returns the total re-embedded. No-op without embeddings.
+
+    `max_rows` caps the work per call so a request-path caller (e.g. /sync/push)
+    stays bounded and can't time out on a large initial corpus; NULL embeddings
+    are a valid eventual state, so the centralized daemon finishes the remainder
+    in later bounded ticks. `None` = process everything (background use).
     """
     from .config import SEMANTIC_AVAILABLE
     if not SEMANTIC_AVAILABLE:
@@ -665,13 +673,14 @@ def _backfill_sync_embeddings(conn: sqlite3.Connection, batch: int = 100) -> int
     )
     total = 0
     for table, text_col, pk_col, vec_kind, trunc in _SYNC_EMBED_TABLES:
-        while True:
+        while max_rows is None or total < max_rows:
+            lim = batch if max_rows is None else min(batch, max_rows - total)
             try:
                 rows = conn.execute(
                     f"SELECT {pk_col} AS k, {text_col} AS t FROM {table} "
                     f"WHERE embedding IS NULL AND {text_col} IS NOT NULL "
                     f"LIMIT ?",
-                    (batch,),
+                    (lim,),
                 ).fetchall()
             except sqlite3.OperationalError:
                 break
@@ -701,8 +710,10 @@ def _backfill_sync_embeddings(conn: sqlite3.Connection, batch: int = 100) -> int
                 except sqlite3.OperationalError:
                     continue
             total += n
-            if n == 0 or len(rows) < batch:
+            if n == 0 or len(rows) < lim:
                 break  # no progress (avoid a hot loop) or last partial batch
+        if max_rows is not None and total >= max_rows:
+            break
     if total:
         try:
             conn.commit()
@@ -811,6 +822,19 @@ def _start_background_ingester() -> None:
                         # into the vec0 virtual tables in batches so the
                         # sub-linear index gradually warms up.
                         _backfill_vec_tables(bg_conn, batch=500)
+                        # Finish re-embedding rows that arrived over sync
+                        # without an embedding (dialog/concepts especially).
+                        # /sync/push only does a bounded slice; this bounded
+                        # tick drains the rest. Under applying_guard so the
+                        # embedding UPDATEs aren't captured as sync writes.
+                        try:
+                            from .sync.capture import is_migrated, applying_guard
+                            if is_migrated(bg_conn):
+                                with applying_guard(bg_conn):
+                                    _backfill_sync_embeddings(
+                                        bg_conn, max_rows=200)
+                        except Exception:
+                            pass
                     finally:
                         bg_conn.close()
                 finally:
