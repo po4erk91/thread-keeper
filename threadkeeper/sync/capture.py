@@ -6,10 +6,13 @@ Every local write to a replicated table must (a) get a global write timestamp
 sites, this is done with SQLite triggers generated per replicated table.
 
 The triggers compute the HLC in pure SQL off the `sync_state` singleton, so
-they need no Python. They are suppressed while `sync_state.applying=1` (set by
-the protocol's apply path via `applying_guard`) so that merging a peer's
-changes does NOT get re-captured as a fresh local write — that guard is the
-correctness crux that keeps origin/hlc of a relayed row intact.
+they need no Python. They are suppressed while a per-connection TEMP marker
+table exists (created by `applying_guard`) so that merging a peer's changes does
+NOT get re-captured as a fresh local write — that guard is the correctness crux
+that keeps origin/hlc of a relayed row intact. The marker is connection-local
+(a temp table, invisible to other connections and unaffected by their commits),
+so a concurrent local write on another connection is always captured, and an
+inner commit inside the guarded path cannot expose suppression to anyone else.
 
 Triggers exist only once `sync_state.sync_schema_version >= SYNC_SCHEMA_VERSION`
 (i.e. after `tk-sync-migrate`). Pre-migration installs are untouched.
@@ -43,7 +46,16 @@ _ADVANCE = (
 _HLC = ("(SELECT printf('%015d:%06d:%s',hlc_phys_ms,hlc_counter,node_id) "
         "FROM sync_state WHERE id=1)")
 _NODE = "(SELECT node_id FROM sync_state WHERE id=1)"
-_NOT_APPLYING = "(SELECT applying FROM sync_state WHERE id=1)=0"
+# Suppression is a per-connection TEMP table, probed via pragma_table_list — the
+# only temp-catalog probe usable inside a trigger (a trigger may not reference
+# the `temp` schema directly, and unqualified sqlite_temp_master binds to main).
+# It never errors on connections lacking the table (reads 0) and is invisible to
+# other connections regardless of their commits.
+_APPLYING_TABLE = "_tk_sync_applying"
+_NOT_APPLYING = (
+    f"(SELECT count(*) FROM pragma_table_list "
+    f"WHERE schema='temp' AND name='{_APPLYING_TABLE}')=0"
+)
 
 
 def is_migrated(conn: sqlite3.Connection) -> bool:
@@ -111,11 +123,15 @@ def install_triggers(conn: sqlite3.Connection) -> None:
 
 @contextlib.contextmanager
 def applying_guard(conn: sqlite3.Connection):
-    """Within this block, capture triggers are suppressed. Used by the apply
-    path so merging a peer's rows keeps their original origin/hlc and does not
-    echo back into the oplog."""
-    conn.execute("UPDATE sync_state SET applying=1 WHERE id=1")
+    """Within this block, capture triggers are suppressed ON THIS CONNECTION.
+
+    Suppression is a per-connection TEMP table, not a shared `sync_state` row:
+    other connections never see it and their commits never affect it, so a
+    concurrent local write elsewhere is still captured and an inner commit in
+    the guarded path (e.g. rebuild_derived's backfills) cannot leak suppression.
+    The temp table persists across commits on this connection until dropped."""
+    conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {_APPLYING_TABLE} (x)")
     try:
         yield
     finally:
-        conn.execute("UPDATE sync_state SET applying=0 WHERE id=1")
+        conn.execute(f"DROP TABLE IF EXISTS {_APPLYING_TABLE}")

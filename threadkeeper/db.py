@@ -589,8 +589,6 @@ CREATE TABLE IF NOT EXISTS sync_state (
     node_id      TEXT NOT NULL,
     hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
     hlc_counter  INTEGER NOT NULL DEFAULT 0,
-    -- 1 while applying remote changes: suppresses capture triggers.
-    applying     INTEGER NOT NULL DEFAULT 0,
     -- Gate for the opt-in re-id migration. 0 = not migrated; the sync feature
     -- (capture triggers, TEXT-PK vec keying) stays dormant until sync/migrate.py
     -- sets this to SYNC_SCHEMA_VERSION. Deliberately NOT PRAGMA user_version,

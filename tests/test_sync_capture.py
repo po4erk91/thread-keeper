@@ -73,3 +73,40 @@ def test_applying_guard_suppresses_capture(fresh_mp):
         assert r["origin_node"] == "Npeerxxx"
     finally:
         conn.close()
+
+
+def test_applying_guard_is_connection_local(fresh_mp):
+    """Blocker #3 regression: the apply guard must suppress capture on ITS
+    connection only. A concurrent local write on another connection must still
+    be captured — even when the guarded connection commits mid-guard, as
+    rebuild_derived's internal backfills do."""
+    import sqlite3
+    from threadkeeper.sync import capture
+    from threadkeeper.helpers import gen_global_id
+    db = _fresh_migrated(fresh_mp)
+    a = sqlite3.connect(str(db.DB_PATH))
+    b = sqlite3.connect(str(db.DB_PATH))
+    try:
+        tid = gen_global_id("T")
+        with capture.applying_guard(a):
+            # A commits WHILE the guard is active — mimics an inner commit in
+            # the guarded path leaking a shared suppression flag to others.
+            a.commit()
+            # B makes an ordinary local write and commits.
+            b.execute(
+                "INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
+                " VALUES(?,?,?,?,?)", (tid, "local-on-B", "active", 1, 1))
+            b.commit()
+        # B's row must be fully captured despite A being mid-guard: stamped with
+        # origin/hlc and logged to the oplog (>=1; a separate pre-existing quirk
+        # double-logs puts, orthogonal to this connection-locality check).
+        row = b.execute(
+            "SELECT origin_node, hlc FROM threads WHERE id=?", (tid,)).fetchone()
+        assert row is not None and row[0] is not None and row[1], row
+        n = b.execute(
+            "SELECT COUNT(*) FROM sync_oplog WHERE gid=? AND op='put'", (tid,)
+        ).fetchone()[0]
+        assert n >= 1, n
+    finally:
+        a.close()
+        b.close()
