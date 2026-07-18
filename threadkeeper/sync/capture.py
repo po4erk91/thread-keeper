@@ -102,10 +102,15 @@ def install_triggers(conn: sqlite3.Connection) -> None:
             f"{_oplog_insert(t, 'NEW', 'put')} END;"
         )
         # UPDATE: a local edit is a new write (re-stamp + oplog). Suppressed
-        # during apply. Does not recurse: recursive_triggers defaults OFF.
+        # during apply. `OLD.origin_node IS NOT NULL` skips the AFTER-INSERT
+        # trigger's own stamping UPDATE (which flips origin_node NULL->set): that
+        # UPDATE fires this trigger too (recursive_triggers OFF only blocks a
+        # trigger re-firing ITSELF, not one trigger firing another), so without
+        # the guard every insert would be logged twice. This trigger's own
+        # re-stamp UPDATE does not recurse (self-firing is blocked).
         conn.executescript(
             f"CREATE TRIGGER IF NOT EXISTS {t}__sync_au AFTER UPDATE ON {t} "
-            f"WHEN {_NOT_APPLYING} BEGIN "
+            f"WHEN {_NOT_APPLYING} AND OLD.origin_node IS NOT NULL BEGIN "
             f"{_ADVANCE} "
             f"UPDATE {t} SET origin_node={_NODE}, hlc={_HLC} WHERE rowid=NEW.rowid; "
             f"{_oplog_insert(t, 'NEW', 'put')} END;"

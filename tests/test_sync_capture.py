@@ -98,15 +98,43 @@ def test_applying_guard_is_connection_local(fresh_mp):
                 " VALUES(?,?,?,?,?)", (tid, "local-on-B", "active", 1, 1))
             b.commit()
         # B's row must be fully captured despite A being mid-guard: stamped with
-        # origin/hlc and logged to the oplog (>=1; a separate pre-existing quirk
-        # double-logs puts, orthogonal to this connection-locality check).
+        # origin/hlc and logged to the oplog exactly once.
         row = b.execute(
             "SELECT origin_node, hlc FROM threads WHERE id=?", (tid,)).fetchone()
         assert row is not None and row[0] is not None and row[1], row
         n = b.execute(
             "SELECT COUNT(*) FROM sync_oplog WHERE gid=? AND op='put'", (tid,)
         ).fetchone()[0]
-        assert n >= 1, n
+        assert n == 1, n
     finally:
         a.close()
         b.close()
+
+
+def test_single_write_logs_one_oplog_put(fresh_mp):
+    """A local insert must log exactly one oplog 'put', and a later edit exactly
+    one more. The AFTER-INSERT trigger's own stamping UPDATE fires the
+    AFTER-UPDATE trigger (recursive_triggers OFF only blocks self-recursion), so
+    without the OLD.origin_node guard each insert was double-logged."""
+    from threadkeeper.helpers import gen_global_id
+    db = _fresh_migrated(fresh_mp)
+    conn = db.get_db()
+    try:
+        tid = gen_global_id("T")
+        conn.execute(
+            "INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
+            " VALUES(?,?,?,?,?)", (tid, "q", "active", 1, 1))
+        conn.commit()
+        puts = conn.execute(
+            "SELECT COUNT(*) FROM sync_oplog WHERE gid=? AND op='put'", (tid,)
+        ).fetchone()[0]
+        assert puts == 1, puts
+
+        conn.execute("UPDATE threads SET state='closed' WHERE id=?", (tid,))
+        conn.commit()
+        puts = conn.execute(
+            "SELECT COUNT(*) FROM sync_oplog WHERE gid=? AND op='put'", (tid,)
+        ).fetchone()[0]
+        assert puts == 2, puts  # exactly one more for the edit
+    finally:
+        conn.close()
