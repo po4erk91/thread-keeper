@@ -316,42 +316,13 @@ class CodexAdapter(CLIAdapter):
             return []
         return list(self.sessions_dir.glob("**/rollout-*.jsonl"))
 
-    def _forced_session_id(self, fp: Path) -> str:
-        """Return THREADKEEPER_FORCE_CID encoded in our spawn preamble.
-
-        Codex records its own rollout UUID in session_meta.payload.id even
-        when the child process has THREADKEEPER_FORCE_CID. For thread-keeper
-        provenance we want every message from that spawned transcript grouped
-        under the forced child cid, matching tasks.spawned_cid and Claude's
-        --session-id behavior.
-        """
-        try:
-            with fp.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if "You were spawned in the background" not in line:
-                        continue
-                    try:
-                        env = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    payload = env.get("payload") or {}
-                    if not isinstance(payload, dict):
-                        continue
-                    if payload.get("type") != "message":
-                        continue
-                    cid = _forced_cid_from_text(_extract_text(payload))
-                    if cid:
-                        return cid
-        except OSError:
-            return ""
-        return ""
-
     def iter_messages(self, fp: Path) -> Iterator[NormalizedMessage]:
         sess_id = ""
-        forced_session_id = self._forced_session_id(fp)
+        forced_session_id = ""
+        pending: list[NormalizedMessage] = []
         try:
             with fp.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
+                for idx, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
                         continue
@@ -363,6 +334,9 @@ class CodexAdapter(CLIAdapter):
                     payload = env.get("payload") or {}
                     if typ == "session_meta" and isinstance(payload, dict):
                         sess_id = payload.get("id") or sess_id
+                        if sess_id and not forced_session_id:
+                            for msg in pending:
+                                msg.session_id = sess_id
                         continue
                     if typ != "response_item":
                         continue
@@ -378,10 +352,20 @@ class CodexAdapter(CLIAdapter):
                     if role not in ("user", "assistant"):
                         continue
                     text = _extract_text(payload)
+                    cid = _forced_cid_from_text(text)
+                    if cid and not forced_session_id:
+                        forced_session_id = cid
+                        for msg in pending:
+                            msg.session_id = forced_session_id
+                            yield msg
+                        pending.clear()
                     # Stable per-line id: use payload.id when present,
-                    # else fall back to timestamp+offset.
-                    uuid = payload.get("id") or f"codex:{fp.name}:{env.get('timestamp', '')}"
-                    yield NormalizedMessage(
+                    # else fall back to timestamp plus line index.
+                    uuid = (
+                        payload.get("id")
+                        or f"codex:{fp.name}:{idx}:{env.get('timestamp', '')}"
+                    )
+                    msg = NormalizedMessage(
                         uuid=uuid,
                         session_id=forced_session_id or sess_id,
                         role=role,
@@ -390,6 +374,12 @@ class CodexAdapter(CLIAdapter):
                         created_at=_ts(env.get("timestamp", "")),
                         raw=payload,
                     )
+                    if forced_session_id:
+                        yield msg
+                    else:
+                        pending.append(msg)
+                for msg in pending:
+                    yield msg
         except OSError:
             return
 
