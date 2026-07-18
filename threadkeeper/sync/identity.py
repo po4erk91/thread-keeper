@@ -91,9 +91,15 @@ def hlc_now(conn: sqlite3.Connection) -> str:
     return _fmt(phys, ctr, node_id)
 
 
-def hlc_update(conn: sqlite3.Connection, remote_hlc: str) -> str:
+def hlc_absorb(conn: sqlite3.Connection, remote_hlc: str) -> str:
     """Merge a received remote HLC into the local clock (standard HLC receive
-    rule) and return the new local HLC. Keeps causality across machines."""
+    rule) WITHOUT committing — the caller owns the transaction.
+
+    The replication apply path must absorb received HLCs inside the same
+    transaction/`applying_guard` as the merged rows, so a `conn.commit()` here
+    would tear that unit apart. It also must run so a subsequent local write is
+    stamped from a clock that already dominates everything just received;
+    otherwise a local edit lands with a lower HLC and LWW drops it."""
     _ensure_state(conn)
     row = conn.execute(
         "SELECT node_id, hlc_phys_ms, hlc_counter FROM sync_state WHERE id=1"
@@ -114,5 +120,13 @@ def hlc_update(conn: sqlite3.Connection, remote_hlc: str) -> str:
         "UPDATE sync_state SET hlc_phys_ms=?, hlc_counter=? WHERE id=1",
         (phys, ctr),
     )
-    conn.commit()
     return _fmt(phys, ctr, node_id)
+
+
+def hlc_update(conn: sqlite3.Connection, remote_hlc: str) -> str:
+    """Merge a received remote HLC into the local clock (standard HLC receive
+    rule) and return the new local HLC. Keeps causality across machines.
+    Commits; use :func:`hlc_absorb` inside a caller-owned transaction."""
+    new = hlc_absorb(conn, remote_hlc)
+    conn.commit()
+    return new

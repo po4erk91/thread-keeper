@@ -111,8 +111,17 @@ def _has_newer_tombstone(conn, table, gid, hlc) -> bool:
 
 def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
     """Merge a peer changeset (LWW by hlc). Runs under applying_guard so the
-    capture triggers don't re-log these as local writes. Returns count applied."""
+    capture triggers don't re-log these as local writes. Returns count applied.
+
+    Before committing, every received HLC is absorbed into the local clock so a
+    subsequent local edit is stamped from a clock that already dominates the
+    merged rows — otherwise the local write lands with a lower HLC and the next
+    reconcile drops it via LWW. Done inside the guard's transaction so the clock
+    advance is atomic with the applied rows."""
+    from . import identity as sync_identity
+
     n = 0
+    max_hlc = ""
     with applying_guard(conn):
         for c in changes:
             t = c["tbl"]
@@ -120,6 +129,8 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
                 continue
             where, keyfn = _pk_where(t)
             hlc = c["hlc"]
+            if hlc and hlc > max_hlc:
+                max_hlc = hlc
             if c["op"] == "del":
                 gid = c["gid"]
                 # resolve pk value(s) from gid (composite is 'a:b')
@@ -153,6 +164,11 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
                 [row[k] for k in cols],
             )
             n += 1
+        # Absorb the highest HLC just received so the next local write is
+        # stamped from a clock that dominates it (LWW would otherwise drop the
+        # local edit). Inside the guard's transaction → atomic with the rows.
+        if max_hlc:
+            sync_identity.hlc_absorb(conn, max_hlc)
     conn.commit()
     return n
 
