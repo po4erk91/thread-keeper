@@ -636,6 +636,81 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
     return updated
 
 
+# Replicated embedding-bearing tables: (table, text col, pk col, vec kind,
+# truncate). Embeddings/embed_backend are never shipped over sync, so rows that
+# arrive from a peer carry NULL and must be re-embedded locally from content.
+_SYNC_EMBED_TABLES = (
+    ("notes", "content", "id", "note", None),
+    ("dialog_messages", "content", "uuid", "dialog", 2000),
+    ("concepts", "description", "id", None, None),
+)
+
+
+def _backfill_sync_embeddings(conn: sqlite3.Connection, batch: int = 100) -> int:
+    """Re-embed replicated rows that arrived over sync without an embedding.
+
+    The wire payload omits `embedding`/`embed_backend` (they are local derived
+    state), so synced notes/dialog_messages/concepts land with NULL embeddings
+    and are invisible to semantic search until re-embedded here. Notes/dialog
+    are also mirrored into their vec tables. MUST run under `applying_guard`
+    (rebuild_derived does) so the embedding UPDATEs are not captured as fresh
+    sync writes. Loops in batches until no NULL-embedding rows remain; returns
+    the total re-embedded. No-op without embeddings.
+    """
+    from .config import SEMANTIC_AVAILABLE
+    if not SEMANTIC_AVAILABLE:
+        return 0
+    from .embeddings import (
+        encode_many, embed_tag, _vec_upsert_note, _vec_upsert_dialog,
+    )
+    total = 0
+    for table, text_col, pk_col, vec_kind, trunc in _SYNC_EMBED_TABLES:
+        while True:
+            try:
+                rows = conn.execute(
+                    f"SELECT {pk_col} AS k, {text_col} AS t FROM {table} "
+                    f"WHERE embedding IS NULL AND {text_col} IS NOT NULL "
+                    f"LIMIT ?",
+                    (batch,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                break
+            if not rows:
+                break
+            texts = [(r["t"][:trunc] if trunc else r["t"]) for r in rows]
+            try:
+                vectors = encode_many(texts)
+            except Exception:
+                break
+            if vectors is None:
+                break
+            n = 0
+            for i, r in enumerate(rows):
+                emb = vectors[i].astype("float32").tobytes()
+                try:
+                    conn.execute(
+                        f"UPDATE {table} SET embedding=?, embed_backend=? "
+                        f"WHERE {pk_col}=?",
+                        (emb, embed_tag(emb), r["k"]),
+                    )
+                    if vec_kind == "note":
+                        _vec_upsert_note(conn, r["k"], emb)
+                    elif vec_kind == "dialog":
+                        _vec_upsert_dialog(conn, r["k"], emb)
+                    n += 1
+                except sqlite3.OperationalError:
+                    continue
+            total += n
+            if n == 0 or len(rows) < batch:
+                break  # no progress (avoid a hot loop) or last partial batch
+    if total:
+        try:
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+    return total
+
+
 def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[int, int]:
     """One-shot migration: mirror existing notes.embedding and
     dialog_messages.embedding BLOBs into notes_vec / dialog_vec.

@@ -27,6 +27,12 @@ from .capture import _PK, _COMPOSITE, applying_guard
 # Columns never shipped: recomputed locally from content on each node.
 _PAYLOAD_EXCLUDE = {"embedding", "embed_backend"}
 _ALL_TABLES = list(_PK) + list(_COMPOSITE)
+# Replicated tables whose embedding is derived from a text column — used to
+# preserve an existing local embedding across an upsert when the source text is
+# unchanged (the wire payload never carries the embedding itself).
+_EMBED_TEXT_COL = {
+    "notes": "content", "dialog_messages": "content", "concepts": "description",
+}
 
 
 def _pk_where(table: str):
@@ -156,6 +162,19 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
             local = _local_hlc(conn, t, where, keyvals)
             if local is not None and hlc <= local:
                 continue  # local copy is newer-or-equal
+            # embedding/embed_backend are never shipped, so INSERT OR REPLACE
+            # would NULL any existing local embedding. Preserve it when the row's
+            # embed-source text is unchanged; a content change leaves it NULL for
+            # rebuild_derived to recompute.
+            etext = _EMBED_TEXT_COL.get(t)
+            preserve = None
+            if etext is not None:
+                lr = conn.execute(
+                    f"SELECT {etext} AS tc, embedding, embed_backend "
+                    f"FROM {t} WHERE {where}", keyvals
+                ).fetchone()
+                if lr is not None and lr[1] is not None and lr[0] == row.get(etext):
+                    preserve = (lr[1], lr[2])
             cols = list(row.keys())
             placeholders = ",".join("?" for _ in cols)
             conn.execute(
@@ -163,6 +182,11 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
                 f"VALUES ({placeholders})",
                 [row[k] for k in cols],
             )
+            if preserve is not None:
+                conn.execute(
+                    f"UPDATE {t} SET embedding=?, embed_backend=? WHERE {where}",
+                    (preserve[0], preserve[1], *keyvals),
+                )
             n += 1
         # Absorb the highest HLC just received so the next local write is
         # stamped from a clock that dominates it (LWW would otherwise drop the
@@ -187,8 +211,14 @@ def rebuild_derived(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
         try:
-            from ..ingest import _backfill_dialog_fts_if_empty, _backfill_vec_tables
+            from ..ingest import (
+                _backfill_dialog_fts_if_empty, _backfill_vec_tables,
+                _backfill_sync_embeddings,
+            )
             _backfill_dialog_fts_if_empty(conn)
+            # Re-embed synced rows (notes/dialog/concepts) that arrived without
+            # an embedding BEFORE mirroring BLOBs into the vec indexes.
+            _backfill_sync_embeddings(conn)
             while _backfill_vec_tables(conn)[0]:
                 pass
         except Exception:

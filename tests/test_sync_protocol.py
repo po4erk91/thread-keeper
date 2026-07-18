@@ -141,3 +141,62 @@ def test_receive_advances_hlc_so_later_local_edit_wins(fresh_mp, tmp_path):
             assert q == "edited-on-A", (conn, q)
     finally:
         a.close(); b.close()
+
+
+def test_sync_recomputes_missing_embeddings(fresh_mp, tmp_path):
+    """F4 regression: embeddings are stripped from the wire, so a synced concept
+    (or dialog row) lands with NULL embedding and must be re-embedded locally
+    during rebuild_derived — else it is invisible to semantic search."""
+    from threadkeeper.config import SEMANTIC_AVAILABLE
+    if not SEMANTIC_AVAILABLE:
+        import pytest
+        pytest.skip("needs embeddings")
+    from threadkeeper.sync import migrate, protocol
+    from threadkeeper.helpers import gen_global_id
+    db = fresh_mp["db"]
+    pa = _build_db(db, migrate, tmp_path / "A.sqlite")
+    pb = _build_db(db, migrate, tmp_path / "B.sqlite")
+    a, b = _open(pa), _open(pb)
+    try:
+        cid = gen_global_id("C")
+        a.execute("INSERT INTO concepts(id,description,registered_at) VALUES(?,?,?)",
+                  (cid, "octopus camouflage behaviour", 1))
+        a.commit()
+        protocol.sync_pair(a, b)
+        # B received the concept (content) and re-embedded it locally.
+        emb = b.execute("SELECT embedding FROM concepts WHERE id=?", (cid,)).fetchone()[0]
+        assert emb is not None, "synced concept embedding was not recomputed on B"
+    finally:
+        a.close()
+        b.close()
+
+
+def test_apply_preserves_local_embedding_on_unchanged_content(fresh_mp):
+    """F4 regression: a winning remote put must not clobber the local embedding
+    (never shipped) when the embed-source text is unchanged."""
+    from threadkeeper.sync import migrate, protocol
+    from threadkeeper.helpers import gen_global_id
+    db = fresh_mp["db"]
+    db.get_db().close()
+    assert migrate.apply(db.DB_PATH, do_apply=True) == 0
+    conn = db.get_db()
+    try:
+        cid = gen_global_id("C")
+        conn.execute(
+            "INSERT INTO concepts(id,description,embedding,embed_backend,registered_at)"
+            " VALUES(?,?,?,?,?)", (cid, "same text", b"\x01\x02\x03\x04", "onnx", 1))
+        conn.commit()
+        # a remote put with the SAME description but a dominating hlc
+        row = dict(conn.execute("SELECT * FROM concepts WHERE id=?", (cid,)).fetchone())
+        row.pop("embedding", None)
+        row.pop("embed_backend", None)
+        newer = "999999999999999:000000:Npeer"
+        row["hlc"] = newer
+        row["origin_node"] = "Npeer"
+        assert protocol.apply_changes(
+            conn, [{"tbl": "concepts", "op": "put", "hlc": newer,
+                    "origin": "Npeer", "row": row}]) == 1
+        emb = conn.execute("SELECT embedding FROM concepts WHERE id=?", (cid,)).fetchone()[0]
+        assert emb == b"\x01\x02\x03\x04", "local embedding clobbered on unchanged-content upsert"
+    finally:
+        conn.close()
