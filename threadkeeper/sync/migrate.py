@@ -112,10 +112,22 @@ def plan(conn: sqlite3.Connection) -> dict:
 
 def _rebuild_int_table(conn: sqlite3.Connection, table: str) -> None:
     """Recreate an INTEGER-PK table with a TEXT PK, copying all rows verbatim
-    (ids land as their text form; remapping happens afterwards)."""
+    (ids land as their text form; remapping happens afterwards).
+
+    DROP TABLE also drops the table's indexes and triggers, so its real
+    (non-auto) indexes are captured first and recreated verbatim afterwards —
+    their columns are unchanged, so the stored DDL still applies. Triggers are
+    NOT auto-restored here: the only ones on a rebuilt table are notes_fts's,
+    which must be re-keyed onto the integer rowid (see _rebuild_notes_fts)."""
     sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ).fetchone()[0]
+    index_sqls = [
+        r[0] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? "
+            "AND sql IS NOT NULL", (table,)
+        ).fetchall()
+    ]
     # Only the rowid-alias PK carries AUTOINCREMENT, so this targets the id col.
     # The DEFAULT lets post-migration INSERTs that omit id still get a global
     # id (128-bit random hex, collision-safe across machines) with zero
@@ -134,6 +146,36 @@ def _rebuild_int_table(conn: sqlite3.Connection, table: str) -> None:
     conn.execute(f"INSERT INTO {table}__new SELECT * FROM {table}")
     conn.execute(f"DROP TABLE {table}")
     conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+    for isql in index_sqls:
+        conn.execute(isql)
+
+
+def _rebuild_notes_fts(conn: sqlite3.Connection) -> None:
+    """Re-key notes FTS onto the LOCAL integer rowid.
+
+    `notes.id` becomes a TEXT ULID after the rebuild, but an FTS5 external-
+    content `content_rowid` must be an integer. The old notes_fts (keyed on
+    `id`) and its INSERT/DELETE triggers (dropped with the rebuilt table) are
+    recreated keyed on `notes.rowid` — the same shape main uses for dialog_fts.
+    Content is repopulated by the later 'rebuild' in _rebuild_derived. Uses
+    single-statement execs (not executescript, which would commit the
+    surrounding migration transaction)."""
+    conn.execute("DROP TABLE IF EXISTS notes_fts")
+    conn.execute(
+        "CREATE VIRTUAL TABLE notes_fts USING fts5("
+        "content, content='notes', content_rowid='rowid')"
+    )
+    conn.execute("DROP TRIGGER IF EXISTS notes_fts_ai")
+    conn.execute("DROP TRIGGER IF EXISTS notes_fts_ad")
+    conn.execute(
+        "CREATE TRIGGER notes_fts_ai AFTER INSERT ON notes BEGIN "
+        "INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER notes_fts_ad AFTER DELETE ON notes BEGIN "
+        "INSERT INTO notes_fts(notes_fts, rowid, content) "
+        "VALUES('delete', old.rowid, old.content); END"
+    )
 
 
 def _remap_ids(conn: sqlite3.Connection, table: str, id_map: dict[str, str]) -> None:
@@ -262,6 +304,7 @@ def apply(db_path: Path, do_apply: bool) -> int:
         for table in REID_PREFIX:
             _remap_ids(conn, table, maps[table])
         _fix_refs(conn, maps, children)
+        _rebuild_notes_fts(conn)
         conn.execute("COMMIT")
         # Enable the feature BEFORE reopening via get_db so that connection
         # materializes the migrated schema (rowid notes_vec + map + triggers).

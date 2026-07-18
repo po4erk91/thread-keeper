@@ -119,3 +119,53 @@ def test_migration_idempotent(fresh_mp):
     assert migrate.apply(db.DB_PATH, do_apply=True) == 0
     # second apply is a clean no-op (already at target sync_schema_version)
     assert migrate.apply(db.DB_PATH, do_apply=True) == 0
+
+
+def test_migration_rebuilds_notes_fts_and_indexes(fresh_mp):
+    """Blocker #2 regression: the re-id migration drops notes' indexes +
+    notes_fts triggers and leaves notes_fts keyed on the (now-TEXT) id. Both
+    pre-existing and newly-inserted notes must stay FTS-searchable, and the
+    indexes/triggers must be restored."""
+    from threadkeeper.sync import migrate
+    db = fresh_mp["db"]
+    conn = db.get_db()
+    conn.execute("INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
+                 " VALUES('T1','q','active',1,1)")
+    conn.execute("INSERT INTO notes(thread_id,content,kind,created_at)"
+                 " VALUES('T1','platypus pre-migration',?,1)", ("move",))
+    conn.commit()
+    conn.close()
+
+    assert migrate.apply(db.DB_PATH, do_apply=True) == 0
+
+    conn = db.get_db()
+    try:
+        def _fts(term):
+            return [r[0] for r in conn.execute(
+                "SELECT n.content FROM notes_fts f JOIN notes n ON n.rowid=f.rowid "
+                "WHERE notes_fts MATCH ?", (term,)).fetchall()]
+
+        # pre-existing note is still searchable after migration
+        assert any("platypus" in c for c in _fts("platypus")), _fts("platypus")
+        # FTS triggers were recreated
+        trigs = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND name IN ('notes_fts_ai','notes_fts_ad')")}
+        assert trigs == {"notes_fts_ai", "notes_fts_ad"}, trigs
+        # ordinary indexes were recreated
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name IN ('idx_notes_thread','idx_notes_created')")}
+        assert idx == {"idx_notes_thread", "idx_notes_created"}, idx
+        # notes_fts is keyed on the integer rowid, not the TEXT id
+        fts_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='notes_fts'").fetchone()[0]
+        assert "content_rowid='rowid'" in fts_sql, fts_sql
+        # a NEW note inserted post-migration is searchable via the recreated trigger
+        tid = conn.execute("SELECT id FROM threads LIMIT 1").fetchone()[0]
+        conn.execute("INSERT INTO notes(thread_id,content,kind,created_at)"
+                     " VALUES(?,?,?,2)", (tid, "narwhal post-migration", "move"))
+        conn.commit()
+        assert any("narwhal" in c for c in _fts("narwhal")), _fts("narwhal")
+    finally:
+        conn.close()
