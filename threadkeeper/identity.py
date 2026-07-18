@@ -148,15 +148,11 @@ def _ensure_session_locked(conn: sqlite3.Connection,
         # else: flag on + role == "host" — host.main() already started the
         # loops; a re-entrant _ensure_session (e.g. the host heartbeat) must
         # NOT restart them. Do nothing.
-        try:
-            # Cross-machine sync: server (peers pull/push) + client reconcile
-            # loop. Both no-op unless the DB is migrated and peers/token/listen
-            # are configured. See threadkeeper/sync/.
-            from .sync import server as sync_server, daemon as sync_daemon
-            sync_server.start_server()
-            sync_daemon.start_sync_daemon()
-        except Exception:
-            pass
+        #
+        # Cross-machine sync (server + client reconcile loop) is started by
+        # host.start_daemons() alongside every other daemon — NOT inline here —
+        # so with DAEMON_HOST_ENABLED only the host process runs it and thin
+        # servers don't each race to bind the sync listen port.
         try:
             # One-shot self-heal: claims seeded before the tier machinery
             # never got their tier recomputed (see recompute_all_tiers). Cheap
