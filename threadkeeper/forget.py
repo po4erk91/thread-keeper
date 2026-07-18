@@ -878,9 +878,11 @@ def _orphan_counts(conn: sqlite3.Connection) -> dict[str, int]:
         if _table_exists(conn, "notes_fts_docsize"):
             out["notes_fts_orphans"] = int(
                 conn.execute(
+                    # docsize.id is the FTS content_rowid == notes.rowid, NOT the
+                    # (post-migration TEXT) notes.id.
                     "SELECT COUNT(*) FROM notes_fts_docsize ds "
-                    "LEFT JOIN notes n ON n.id=ds.id "
-                    "WHERE n.id IS NULL"
+                    "LEFT JOIN notes n ON n.rowid=ds.id "
+                    "WHERE n.rowid IS NULL"
                 ).fetchone()[0]
             )
     except sqlite3.OperationalError:

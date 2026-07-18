@@ -167,6 +167,7 @@ def _rebuild_notes_fts(conn: sqlite3.Connection) -> None:
     )
     conn.execute("DROP TRIGGER IF EXISTS notes_fts_ai")
     conn.execute("DROP TRIGGER IF EXISTS notes_fts_ad")
+    conn.execute("DROP TRIGGER IF EXISTS notes_fts_au")
     conn.execute(
         "CREATE TRIGGER notes_fts_ai AFTER INSERT ON notes BEGIN "
         "INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content); END"
@@ -175,6 +176,13 @@ def _rebuild_notes_fts(conn: sqlite3.Connection) -> None:
         "CREATE TRIGGER notes_fts_ad AFTER DELETE ON notes BEGIN "
         "INSERT INTO notes_fts(notes_fts, rowid, content) "
         "VALUES('delete', old.rowid, old.content); END"
+    )
+    # OF content: skip the frequent hlc/origin capture-stamp UPDATEs.
+    conn.execute(
+        "CREATE TRIGGER notes_fts_au AFTER UPDATE OF content ON notes BEGIN "
+        "INSERT INTO notes_fts(notes_fts, rowid, content) "
+        "VALUES('delete', old.rowid, old.content); "
+        "INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content); END"
     )
 
 

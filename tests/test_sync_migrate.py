@@ -121,12 +121,32 @@ def test_migration_idempotent(fresh_mp):
     assert migrate.apply(db.DB_PATH, do_apply=True) == 0
 
 
+def test_notes_fts_search_works_pre_migration(fresh_mp):
+    """The production retrieval path must work on a fresh, un-migrated DB too."""
+    from threadkeeper.retrieval import _notes_fts_search
+    db = fresh_mp["db"]
+    conn = db.get_db()
+    try:
+        conn.execute("INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
+                     " VALUES('T1','q','active',1,1)")
+        conn.execute("INSERT INTO notes(thread_id,content,kind,created_at)"
+                     " VALUES('T1','wombat pre-migration note',?,1)", ("move",))
+        conn.commit()
+        hits = _notes_fts_search(conn, "wombat", 5)
+        assert any("wombat" in c.content for c in hits), hits
+    finally:
+        conn.close()
+
+
 def test_migration_rebuilds_notes_fts_and_indexes(fresh_mp):
-    """Blocker #2 regression: the re-id migration drops notes' indexes +
-    notes_fts triggers and leaves notes_fts keyed on the (now-TEXT) id. Both
-    pre-existing and newly-inserted notes must stay FTS-searchable, and the
-    indexes/triggers must be restored."""
+    """R3-B1 regression, via the PRODUCTION retrieval path (_notes_fts_search),
+    not a bespoke query: the re-id migration rebuilds notes and must leave notes
+    (pre-existing and newly-inserted) searchable, indexes/triggers restored, and
+    the FTS keyed on the integer rowid — with no false orphans in the integrity
+    report."""
     from threadkeeper.sync import migrate
+    from threadkeeper.retrieval import _notes_fts_search
+    from threadkeeper.forget import _orphan_counts
     db = fresh_mp["db"]
     conn = db.get_db()
     conn.execute("INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
@@ -140,18 +160,16 @@ def test_migration_rebuilds_notes_fts_and_indexes(fresh_mp):
 
     conn = db.get_db()
     try:
-        def _fts(term):
-            return [r[0] for r in conn.execute(
-                "SELECT n.content FROM notes_fts f JOIN notes n ON n.rowid=f.rowid "
-                "WHERE notes_fts MATCH ?", (term,)).fetchall()]
+        def _hits(term):
+            return [c.content for c in _notes_fts_search(conn, term, 5)]
 
-        # pre-existing note is still searchable after migration
-        assert any("platypus" in c for c in _fts("platypus")), _fts("platypus")
-        # FTS triggers were recreated
+        # pre-existing note still found via the real retrieval function
+        assert any("platypus" in c for c in _hits("platypus")), _hits("platypus")
+        # FTS maintenance triggers recreated (incl. the UPDATE trigger)
         trigs = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' "
-            "AND name IN ('notes_fts_ai','notes_fts_ad')")}
-        assert trigs == {"notes_fts_ai", "notes_fts_ad"}, trigs
+            "AND name IN ('notes_fts_ai','notes_fts_ad','notes_fts_au')")}
+        assert trigs == {"notes_fts_ai", "notes_fts_ad", "notes_fts_au"}, trigs
         # ordinary indexes were recreated
         idx = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' "
@@ -161,11 +179,19 @@ def test_migration_rebuilds_notes_fts_and_indexes(fresh_mp):
         fts_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='notes_fts'").fetchone()[0]
         assert "content_rowid='rowid'" in fts_sql, fts_sql
-        # a NEW note inserted post-migration is searchable via the recreated trigger
+        # a NEW note inserted post-migration is found via the real retrieval fn
         tid = conn.execute("SELECT id FROM threads LIMIT 1").fetchone()[0]
         conn.execute("INSERT INTO notes(thread_id,content,kind,created_at)"
                      " VALUES(?,?,?,2)", (tid, "narwhal post-migration", "move"))
         conn.commit()
-        assert any("narwhal" in c for c in _fts("narwhal")), _fts("narwhal")
+        assert any("narwhal" in c for c in _hits("narwhal")), _hits("narwhal")
+        # an in-place content edit re-indexes via notes_fts_au
+        nid = conn.execute("SELECT id FROM notes WHERE content LIKE 'narwhal%'").fetchone()[0]
+        conn.execute("UPDATE notes SET content='beluga edited' WHERE id=?", (nid,))
+        conn.commit()
+        assert any("beluga" in c for c in _hits("beluga")), _hits("beluga")
+        assert not _hits("narwhal"), "stale FTS token after content edit"
+        # valid FTS rows are NOT reported as orphans by the integrity report
+        assert _orphan_counts(conn)["notes_fts_orphans"] == 0
     finally:
         conn.close()

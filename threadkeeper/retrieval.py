@@ -51,7 +51,10 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
         return conn.execute(
             "SELECT n.id, n.thread_id, n.kind, n.content, n.created_at, "
             "       bm25(notes_fts) AS lexical_score "
-            "FROM notes_fts f JOIN notes n ON n.id=f.rowid "
+            # notes_fts is external-content keyed on notes.rowid (content_rowid);
+            # join on rowid, NOT n.id — post-migration n.id is a TEXT ULID while
+            # the FTS rowid stays the integer notes.rowid.
+            "FROM notes_fts f JOIN notes n ON n.rowid=f.rowid "
             "WHERE notes_fts MATCH ? "
             "ORDER BY lexical_score, n.id DESC LIMIT ?",
             (match_query, max(1, int(k))),

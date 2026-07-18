@@ -611,14 +611,25 @@ CREATE TABLE IF NOT EXISTS sync_peer_vv (
     max_hlc      TEXT NOT NULL
 );
 
+-- External-content FTS keyed on the integer notes.rowid (not notes.id): the
+-- re-id migration turns notes.id into a TEXT ULID, but an FTS5 content_rowid
+-- must stay integer. Pre-migration notes.id == rowid, so this is equivalent
+-- there; keeping the baseline on rowid means a self-heal/recreate on a migrated
+-- DB reproduces the correct layout. All notes_fts consumers join on n.rowid.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    content, content='notes', content_rowid='id'
+    content, content='notes', content_rowid='rowid'
 );
 CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+END;
+-- OF content: fire only on a real content edit, not the frequent hlc/origin
+-- capture-stamp UPDATEs (which never touch content). Mirrors dialog_fts_au.
+CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE OF content ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+    INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 """
 
