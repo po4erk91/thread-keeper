@@ -859,10 +859,10 @@ deduplicated against the issues above):
   instead of copying live `-wal`/`-shm` sidecars, so dirty-WAL source databases
   migrate into a consistent main DB and machine-local `-shm` state is never
   imported.
-- Codex adapter: the fallback message **UUID** has no per-line offset, so
-  timestamp-colliding messages collapse to one uuid and the later ones are
-  deduped away; separately, each rollout file is fully scanned twice per ingest
-  pass (#97).
+- ✅ DONE (#97): Codex adapter fallback message **UUIDs** now include the
+  rollout line index, so timestamp-colliding messages keep distinct dialog
+  rows, and forced child-cid detection happens during the single rollout scan
+  instead of opening each Codex transcript twice per ingest pass.
 - ✅ DONE (#98): The candidate-reviewer's "max 2 new skills per pass" cap is
   enforced server-side in `skill_manage(create)` for autonomous learning-loop
   child origins, not only stated in the reviewer prompt.

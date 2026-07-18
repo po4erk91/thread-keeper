@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex transcript ingest keeps timestamp-colliding fallback messages (#97).**
+  Fallback message UUIDs now include the rollout line index, and forced child
+  cid detection happens during the normal JSONL pass instead of opening each
+  Codex rollout twice.
+
 ## v0.15.0 — 2026-07-15
 
 ### Added

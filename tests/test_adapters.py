@@ -380,6 +380,76 @@ def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     assert msgs[1].content == "hello"
 
 
+def test_codex_fallback_uuid_uses_line_index_for_same_timestamp(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"
+    ts = "2026-05-14T10:00:02Z"
+    fp.write_text("\n".join([
+        json.dumps({"timestamp": "2026-05-14T10:00:00Z", "type": "session_meta",
+                    "payload": {"id": "sess-x", "cwd": "/x"}}),
+        json.dumps({"timestamp": ts, "type": "response_item",
+                    "payload": {"type": "message", "role": "user",
+                                "content": [{"type": "input_text",
+                                             "text": "first colliding turn"}]}}),
+        json.dumps({"timestamp": ts, "type": "response_item",
+                    "payload": {"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text",
+                                             "text": "second colliding turn"}]}}),
+    ]) + "\n")
+
+    msgs = list(pkg["codex"].iter_messages(fp))
+
+    assert [m.uuid for m in msgs] == [
+        f"codex:{fp.name}:2:{ts}",
+        f"codex:{fp.name}:3:{ts}",
+    ]
+    assert len({m.uuid for m in msgs}) == 2
+
+
+def test_codex_ingest_keeps_timestamp_colliding_fallback_messages(
+    fresh_mp, tmp_path
+):
+    from threadkeeper import ingest
+    from threadkeeper.adapters.codex import ADAPTER
+
+    ingest.SEMANTIC_AVAILABLE = False
+    conn = fresh_mp["db"].get_db()
+    rollout_dir = tmp_path / "2026" / "05" / "14"
+    rollout_dir.mkdir(parents=True)
+    fp = rollout_dir / "rollout-2026-05-14T10-00-00.jsonl"
+    ts = "2026-05-14T10:00:02Z"
+    fp.write_text("\n".join([
+        json.dumps({"timestamp": "2026-05-14T10:00:00Z", "type": "session_meta",
+                    "payload": {"id": "sess-x", "cwd": "/x"}}),
+        json.dumps({"timestamp": ts, "type": "response_item",
+                    "payload": {"type": "message", "role": "user",
+                                "content": [{"type": "input_text",
+                                             "text": "first colliding payload"}]}}),
+        json.dumps({"timestamp": ts, "type": "response_item",
+                    "payload": {"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text",
+                                             "text": "second colliding payload"}]}}),
+    ]) + "\n")
+
+    added = ingest._ingest_file(conn, fp, max_msgs=100, adapter=ADAPTER)
+    conn.commit()
+
+    assert added == 2
+    rows = conn.execute(
+        "SELECT uuid, content FROM dialog_messages ORDER BY rowid"
+    ).fetchall()
+    assert [row["uuid"] for row in rows] == [
+        f"codex:{fp.name}:2:{ts}",
+        f"codex:{fp.name}:3:{ts}",
+    ]
+    assert [row["content"] for row in rows] == [
+        "first colliding payload",
+        "second colliding payload",
+    ]
+
+
 def test_codex_iter_messages_uses_forced_child_cid_from_spawn_preamble(
     tmp_path, monkeypatch,
 ):
@@ -432,7 +502,19 @@ def test_codex_iter_messages_uses_forced_child_cid_from_spawn_preamble(
         }),
     ]) + "\n")
 
+    opened = 0
+    original_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        nonlocal opened
+        if self == fp:
+            opened += 1
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
     msgs = list(pkg["codex"].iter_messages(fp))
+
+    assert opened == 1
     assert [m.uuid for m in msgs] == ["u-agents", "u-spawn", "a-1"]
     assert {m.session_id for m in msgs} == {forced_cid}
 
