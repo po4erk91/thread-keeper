@@ -240,7 +240,14 @@ def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
             "SELECT COUNT(*) FROM notes WHERE embedding IS NOT NULL "
             "AND embed_backend=?", (active,),
         ),
+        # Post-migration notes_vec is keyed by rowid via notes_vec_map.gid;
+        # pre-migration it is keyed directly by the integer note id.
         "notes_vec": _count(
+            "SELECT COUNT(*) FROM notes n "
+            "JOIN notes_vec_map m ON m.gid=n.id "
+            "JOIN notes_vec v ON v.rowid=m.rowid "
+            "WHERE n.embed_backend=?", (active,),
+        ) if _notes_mapped(conn) else _count(
             "SELECT COUNT(*) FROM notes n JOIN notes_vec v ON v.id=n.id "
             "WHERE n.embed_backend=?", (active,),
         ),
