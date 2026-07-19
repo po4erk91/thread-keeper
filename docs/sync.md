@@ -189,7 +189,9 @@ reset is the required path.
   (G-Counter style) fits the schema as a follow-up.
 - Synced rows arrive without embeddings (never shipped). `/sync/push` re-embeds
   only a bounded slice per request so it can't blow the client timeout on a large
-  initial corpus; the background ingester drains the remainder in bounded ticks.
+  initial corpus; the background ingester drains the remainder in bounded ticks
+  under `applying_guard`. All migrated-DB embedding backfills are derived-only:
+  they preserve the row's `origin_node`/HLC and never append to the sync oplog.
   NULL embeddings are a valid eventual state until then.
 - TLS termination in-process, mDNS/reachability-triggered sync, and a relay for
   NAT'd peers are follow-ups; the current MVP relies on a private network.

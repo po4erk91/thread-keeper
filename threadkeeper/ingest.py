@@ -722,6 +722,27 @@ def _backfill_sync_embeddings(
     return total
 
 
+def _backfill_background_embeddings(
+    conn: sqlite3.Connection,
+    max_rows: int = 200,
+) -> int:
+    """Run one bounded background embedding pass without creating sync writes.
+
+    On a migrated DB every embedding-bearing table is replicated, and an
+    ordinary ``UPDATE notes SET embedding=...`` fires the sync capture trigger.
+    Treating that derived-only update as a new LWW write can overwrite a
+    concurrent content edit from another replica.  Use the connection-local
+    applying guard for the whole migrated backfill so origin/HLC/oplog stay
+    unchanged.  Before migration, keep the legacy light-child note backfill.
+    """
+    from .sync.capture import applying_guard, is_migrated
+
+    if is_migrated(conn):
+        with applying_guard(conn):
+            return _backfill_sync_embeddings(conn, max_rows=max_rows)
+    return _backfill_note_embeddings(conn, max_n=min(20, max(0, max_rows)))
+
+
 def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[int, int]:
     """One-shot migration: mirror existing notes.embedding and
     dialog_messages.embedding BLOBs into notes_vec / dialog_vec.
@@ -812,29 +833,15 @@ def _start_background_ingester() -> None:
                             max_msgs=200,
                             max_age_s=_ingest_recent_window_s,
                         )
-                        # Embedding backfill: light children write notes
-                        # with embedding=NULL (NO_EMBEDDINGS=1). Parent
-                        # processes with SEMANTIC_AVAILABLE catch them up
-                        # asynchronously so semantic search recovers
-                        # without blocking the child.
-                        _backfill_note_embeddings(bg_conn, max_n=20)
+                        # Embed a bounded slice of NULL rows. On migrated DBs
+                        # this runs under applying_guard so derived embedding
+                        # UPDATEs never become LWW sync writes; the sync helper
+                        # covers light-child notes as well as dialog/concepts.
+                        _backfill_background_embeddings(bg_conn, max_rows=200)
                         # vec0 backfill: mirror legacy BLOB embeddings
                         # into the vec0 virtual tables in batches so the
                         # sub-linear index gradually warms up.
                         _backfill_vec_tables(bg_conn, batch=500)
-                        # Finish re-embedding rows that arrived over sync
-                        # without an embedding (dialog/concepts especially).
-                        # /sync/push only does a bounded slice; this bounded
-                        # tick drains the rest. Under applying_guard so the
-                        # embedding UPDATEs aren't captured as sync writes.
-                        try:
-                            from .sync.capture import is_migrated, applying_guard
-                            if is_migrated(bg_conn):
-                                with applying_guard(bg_conn):
-                                    _backfill_sync_embeddings(
-                                        bg_conn, max_rows=200)
-                        except Exception:
-                            pass
                     finally:
                         bg_conn.close()
                 finally:

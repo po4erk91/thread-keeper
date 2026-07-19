@@ -256,3 +256,89 @@ def test_push_embedding_backfill_is_bounded(fresh_mp, tmp_path):
         assert _null() == 2, "rebuild_derived exceeded the push budget"
     finally:
         conn.close()
+
+
+def test_background_embedding_backfill_is_not_an_lww_write(
+    fresh_mp, tmp_path, monkeypatch,
+):
+    """A derived embedding update must not re-stamp a replicated note.
+
+    Otherwise a background backfill on B can get a higher HLC than a concurrent
+    content edit on A and make the old content win LWW. This covers the actual
+    bounded background helper used after /sync/push leaves NULL rows behind.
+    """
+    import numpy as np
+
+    from threadkeeper import embeddings, ingest
+    from threadkeeper.sync import migrate, protocol
+    from threadkeeper.sync import identity as sync_id
+    from threadkeeper.helpers import gen_global_id
+
+    db = fresh_mp["db"]
+    pa = _build_db(db, migrate, tmp_path / "A.sqlite")
+    pb = _build_db(db, migrate, tmp_path / "B.sqlite")
+    a, b = _open(pa), _open(pb)
+    try:
+        tid = _add_thread(a, gen_global_id, "embedding-race")
+        nid = gen_global_id("")
+        a.execute(
+            "INSERT INTO notes(id,thread_id,content,kind,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (nid, tid, "old content", "move", 1),
+        )
+        a.commit()
+
+        # Model a note beyond the bounded /sync/push slice.
+        old_budget = protocol._SYNC_EMBED_PUSH_BUDGET
+        protocol._SYNC_EMBED_PUSH_BUDGET = 0
+        try:
+            protocol.sync_pair(a, b)
+        finally:
+            protocol._SYNC_EMBED_PUSH_BUDGET = old_budget
+        before = b.execute(
+            "SELECT origin_node,hlc FROM notes WHERE id=?", (nid,)
+        ).fetchone()
+        oplog_before = b.execute("SELECT COUNT(*) FROM sync_oplog").fetchone()[0]
+
+        # A real user edit races with B's later derived-only backfill.
+        a.execute("UPDATE notes SET content='user edit wins' WHERE id=?", (nid,))
+        a.commit()
+        future = sync_id._now_ms() + 120_000
+        b.execute(
+            "UPDATE sync_state SET hlc_phys_ms=?,hlc_counter=0 WHERE id=1",
+            (future,),
+        )
+        b.commit()
+
+        monkeypatch.setattr(fresh_mp["config"], "SEMANTIC_AVAILABLE", True)
+        monkeypatch.setattr(
+            embeddings,
+            "encode_many",
+            lambda texts: np.zeros(
+                (len(texts), fresh_mp["config"].EMBED_DIM), dtype="float32"
+            ),
+        )
+        assert ingest._backfill_background_embeddings(b, max_rows=20) == 1
+
+        after = b.execute(
+            "SELECT origin_node,hlc,embedding FROM notes WHERE id=?", (nid,)
+        ).fetchone()
+        assert after["embedding"] is not None
+        assert (after["origin_node"], after["hlc"]) == (
+            before["origin_node"], before["hlc"]
+        )
+        assert (
+            b.execute("SELECT COUNT(*) FROM sync_oplog").fetchone()[0]
+            == oplog_before
+        )
+
+        # Reconcile the user edit. With no synthetic B-side LWW write, the edit
+        # must win on both replicas despite B's future local clock.
+        protocol.sync_pair(a, b)
+        for conn in (a, b):
+            assert conn.execute(
+                "SELECT content FROM notes WHERE id=?", (nid,)
+            ).fetchone()[0] == "user edit wins"
+    finally:
+        a.close()
+        b.close()
