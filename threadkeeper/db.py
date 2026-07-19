@@ -13,6 +13,7 @@ from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
+from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -581,14 +582,54 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_ori
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
+-- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
+-- Node identity + Hybrid Logical Clock singleton.
+CREATE TABLE IF NOT EXISTS sync_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    node_id      TEXT NOT NULL,
+    hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
+    hlc_counter  INTEGER NOT NULL DEFAULT 0,
+    -- Gate for the opt-in re-id migration. 0 = not migrated; the sync feature
+    -- (capture triggers, TEXT-PK vec keying) stays dormant until sync/migrate.py
+    -- sets this to SYNC_SCHEMA_VERSION. Deliberately NOT PRAGMA user_version,
+    -- which main owns as its schema-migration counter (CURRENT_SCHEMA_VERSION).
+    sync_schema_version INTEGER NOT NULL DEFAULT 0
+);
+-- Change-capture index: one row per mutation of a replicated row (op='put'|'del').
+CREATE TABLE IF NOT EXISTS sync_oplog (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tbl          TEXT NOT NULL,
+    gid          TEXT NOT NULL,
+    op           TEXT NOT NULL,
+    hlc          TEXT NOT NULL,
+    origin_node  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc ON sync_oplog(hlc);
+-- Version vector: highest HLC this node has durably applied per origin node.
+CREATE TABLE IF NOT EXISTS sync_peer_vv (
+    origin_node  TEXT PRIMARY KEY,
+    max_hlc      TEXT NOT NULL
+);
+
+-- External-content FTS keyed on the integer notes.rowid (not notes.id): the
+-- re-id migration turns notes.id into a TEXT ULID, but an FTS5 content_rowid
+-- must stay integer. Pre-migration notes.id == rowid, so this is equivalent
+-- there; keeping the baseline on rowid means a self-heal/recreate on a migrated
+-- DB reproduces the correct layout. All notes_fts consumers join on n.rowid.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    content, content='notes', content_rowid='id'
+    content, content='notes', content_rowid='rowid'
 );
 CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+END;
+-- OF content: fire only on a real content edit, not the frequent hlc/origin
+-- capture-stamp UPDATEs (which never touch content). Mirrors dialog_fts_au.
+CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE OF content ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+    INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 """
 
@@ -667,6 +708,29 @@ POST_SCHEMA_INDEXES = (
     "ON tasks(retry_root)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_retry_of "
     "ON tasks(retry_of)",
+)
+
+# Memory tables replicated by cross-machine sync (threadkeeper/sync/). Each gets
+# additive hlc/origin_node/deleted columns (see _run_schema_migrations). Node-
+# local tables (sessions, presence, cursors, ingest_state, resource_controls,
+# events, signals, tasks, extract_candidates, daemon_state) and derived indexes
+# (*_fts, *_vec) are deliberately excluded — they never sync. See docs/sync.md.
+_SYNC_REPLICATED_TABLES = (
+    "threads", "notes", "verbatim", "dialog_messages", "core_memory",
+    "concepts", "distill", "distill_votes", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "edges", "skill_usage",
+    "reliability", "probes", "probe_results", "evolve", "style",
+)
+
+# Additive sync columns stamped onto every replicated table: hlc/origin_node
+# carry a row's global write timestamp + author for last-writer-wins merges;
+# `deleted` is a tombstone (a delete propagates as deleted=1, not a hard DELETE,
+# once sync is live). Harmless pre-migration. The destructive INTEGER->TEXT PK
+# re-id is a separate opt-in step (threadkeeper/sync/migrate.py).
+_SYNC_COLUMN_DEFS = (
+    "ADD COLUMN hlc TEXT",
+    "ADD COLUMN origin_node TEXT",
+    "ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
 )
 
 
@@ -805,7 +869,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1):
+    if from_version not in (0, 1, 2):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -814,17 +878,27 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     # v2 (external-content dialog_fts): drop the old content-storing table
     # and scrub legacy raw-secret rows BEFORE the SCHEMA pass creates the
     # new table + its triggers, so the scrub UPDATEs fire no FTS triggers.
-    _drop_legacy_dialog_fts(conn)
-    _scrub_legacy_dialog_rows(conn)
+    # Only the v0/v1→v2 transition needs this; a v2 DB is already external
+    # content (both helpers are self-guarding no-ops, but skip the scrub scan).
+    if from_version < 2:
+        _drop_legacy_dialog_fts(conn)
+        _scrub_legacy_dialog_rows(conn)
 
     for statement in _iter_sql_statements(SCHEMA):
         conn.execute(statement)
     for ddl in LEGACY_COLUMN_MIGRATIONS:
         _apply_column_migration(conn, ddl)
+    # v3 (cross-machine sync): additive hlc/origin_node/deleted tombstone
+    # columns on every replicated table. Harmless while sync is dormant; the
+    # destructive INTEGER->TEXT PK re-id remains opt-in (sync/migrate.py).
+    for tbl in _SYNC_REPLICATED_TABLES:
+        for coldef in _SYNC_COLUMN_DEFS:
+            _apply_column_migration(conn, f"ALTER TABLE {tbl} {coldef}")
     _backfill_schema_data(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
-    _rebuild_dialog_fts_if_needed(conn)
+    if from_version < 2:
+        _rebuild_dialog_fts_if_needed(conn)
     _set_user_version(conn, CURRENT_SCHEMA_VERSION)
 
 
@@ -929,17 +1003,58 @@ def _open_connection(*, autocommit: bool = False,
     return conn, vec_loaded
 
 
+def _sync_migrated(conn: sqlite3.Connection) -> bool:
+    """True once the opt-in re-id migration (threadkeeper/sync/migrate.py) has run.
+
+    Gated on sync_state.sync_schema_version — deliberately NOT PRAGMA
+    user_version, which main owns as its schema-migration counter
+    (CURRENT_SCHEMA_VERSION). An absent table/row means not migrated.
+    """
+    from .sync import SYNC_SCHEMA_VERSION
+
+    try:
+        row = conn.execute(
+            "SELECT sync_schema_version FROM sync_state WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row) and int(row[0] or 0) >= SYNC_SCHEMA_VERSION
+
+
 def _ensure_vec_tables(conn: sqlite3.Connection, *, vec_loaded: bool) -> None:
     """Create sqlite-vec mirrors during bootstrap, never on read calls."""
     if not vec_loaded:
         return
+    migrated = _sync_migrated(conn)
     try:
-        conn.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
-            f"  id INTEGER PRIMARY KEY,"
-            f"  embedding FLOAT[{EMBED_DIM}]"
-            f")"
-        )
+        if migrated:
+            # Post-migration notes.id is a global TEXT id, so notes_vec is keyed
+            # by a sidecar rowid map (mirrors dialog_vec/dialog_vec_map). Self-heal
+            # a legacy id-keyed notes_vec left by a pre-migration bootstrap: drop
+            # it once so it is recreated with the rowid schema (the backfill
+            # repopulates it via notes_vec_map).
+            _nv = conn.execute("PRAGMA table_info(notes_vec)").fetchall()
+            if _nv and any(c[1] == "id" for c in _nv):
+                conn.execute("DROP TABLE notes_vec")
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                f"  rowid INTEGER PRIMARY KEY,"
+                f"  embedding FLOAT[{EMBED_DIM}]"
+                f")"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS notes_vec_map ("
+                "  rowid INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  gid   TEXT NOT NULL UNIQUE"
+                ")"
+            )
+        else:
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0("
+                f"  id INTEGER PRIMARY KEY,"
+                f"  embedding FLOAT[{EMBED_DIM}]"
+                f")"
+            )
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS dialog_vec USING vec0("
             f"  rowid INTEGER PRIMARY KEY,"
@@ -958,18 +1073,46 @@ def _ensure_vec_tables(conn: sqlite3.Connection, *, vec_loaded: bool) -> None:
         logger.debug("vec0 table creation skipped: %s", exc)
 
 
-def bootstrap_db() -> None:
+def _ensure_sync_capture(conn: sqlite3.Connection) -> None:
+    """Install capture triggers once, only on a migrated DB.
+
+    Off the per-connection hot path — runs during bootstrap after the vec
+    mirrors. A sentinel trigger-existence check keeps re-bootstraps cheap.
+    Dormant until threadkeeper/sync/migrate.py sets the gate.
+    """
+    if not _sync_migrated(conn):
+        return
+    from .sync import capture, identity as sync_identity
+
+    try:
+        sync_identity.get_node_id(conn)
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+            "AND name='notes__sync_ai'"
+        ).fetchone():
+            capture.install_triggers(conn)
+    except sqlite3.OperationalError:
+        pass
+
+
+def bootstrap_db(force: bool = False) -> None:
     """Perform process startup setup exactly once.
 
     Cross-process schema serialization still lives in ``_ensure_schema``.
     This process-local latch only keeps ordinary tool connections from
     repeating journal-mode negotiation and DDL on every call.
+
+    ``force=True`` re-runs setup even if already latched. Needed when the DB
+    materially changes underneath a live process: the opt-in sync re-id
+    migration flips the sync gate, so bootstrap must re-run to rebuild the
+    migrated notes_vec keying and install capture triggers; tests also use it
+    when repointing ``DB_PATH`` to a fresh file mid-process.
     """
     global _BOOTSTRAPPED
-    if _BOOTSTRAPPED:
+    if _BOOTSTRAPPED and not force:
         return
     with _BOOTSTRAP_LOCK:
-        if _BOOTSTRAPPED:
+        if _BOOTSTRAPPED and not force:
             return
         harden_storage_paths(
             DB_PATH,
@@ -985,6 +1128,7 @@ def bootstrap_db() -> None:
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
+            _ensure_sync_capture(conn)
             conn.commit()
             _BOOTSTRAPPED = True
         finally:

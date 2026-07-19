@@ -85,6 +85,12 @@ tk-migrate-embeddings = "threadkeeper.migrate_embeddings:main"
 tk-backup = "threadkeeper.backup:main"
 # Dry-run/apply targeted erasure for one session/cid/thread/dialog UUID.
 tk-forget = "threadkeeper.forget:main"
+# One-time re-id migration that enables cross-machine sync (opt-in, destructive;
+# back up db.sqlite first). Equivalent to `python -m threadkeeper.sync.migrate`.
+tk-sync-migrate = "threadkeeper.sync.migrate:main"
+# Assign a fresh sync identity to a CLONED DB before it accepts writes/sync, so
+# two machines don't share one node_id. `python -m threadkeeper.sync.reset_node`.
+tk-sync-reset-node = "threadkeeper.sync.reset_node:main"
 # JSON/text status feed for menu-bar widgets and terminal monitors.
 tk-agent-status = "threadkeeper.agent_status:main"
 

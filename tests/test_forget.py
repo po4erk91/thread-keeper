@@ -298,3 +298,63 @@ def test_forget_dry_run_then_apply_cascades_session(fresh_mp, tmp_path):
         "notes_vec v LEFT JOIN notes n ON n.id=v.id",
         "n.id IS NULL",
     ) == 0
+
+
+def test_forget_after_reid_migration(fresh_mp):
+    """R3-B2 regression: after the sync re-id migration, notes/verbatim/
+    dialectic ids are TEXT ULIDs. build_forget_plan must not raise int()-cast
+    errors, and apply must remove the note plus its FTS/vec/map sidecars with no
+    false orphans in the integrity report."""
+    from threadkeeper.sync import migrate
+    from threadkeeper import forget
+    from threadkeeper.embeddings import _vec_upsert_note, _notes_mapped
+    db = fresh_mp["db"]
+    config = fresh_mp["config"]
+
+    conn = db.get_db()
+    _ensure_vec_tables(conn, db)
+    conn.execute("INSERT INTO threads(id,question,state,opened_at,last_touched_at)"
+                 " VALUES('Tfg','q','active',1,1)")
+    conn.commit()
+    conn.close()
+
+    assert migrate.apply(db.DB_PATH, do_apply=True) == 0
+    assert _notes_mapped(db.get_db())  # sanity: migrated
+
+    conn = db.get_db()
+    try:
+        # post-migration inserts get TEXT ULID ids via the column DEFAULT
+        conn.execute("INSERT INTO notes(thread_id,content,kind,created_at,session_id)"
+                     " VALUES('Tfg','forget me capybara','move',1,'cid-fg')")
+        note_id = conn.execute(
+            "SELECT id FROM notes WHERE content LIKE 'forget me%'").fetchone()[0]
+        _vec_upsert_note(conn, note_id, _vec_blob(config))  # creates notes_vec_map row
+        conn.execute("INSERT INTO verbatim(speaker,content,thread_id,created_at)"
+                     " VALUES('user','verbatim capybara','Tfg',1)")
+        conn.commit()
+        assert not note_id.isdigit()  # TEXT ULID, the case that broke int() cast
+
+        # build a plan by thread — the previously-crashing path (_notes cast=int)
+        plan = forget.build_forget_plan(conn, "Tfg", "thread_id")
+        assert note_id in plan.note_ids
+        assert plan.verbatim_ids and all(not str(v).isdigit() for v in plan.verbatim_ids)
+        assert plan.counts["notes_vec"] == 1 and plan.counts["notes_vec_map"] == 1
+
+        deleted = forget._apply_forget(conn, plan)
+        conn.commit()
+        assert deleted["notes"] == 1
+        assert deleted["notes_vec"] == 1 and deleted["notes_vec_map"] == 1
+
+        # base row + all sidecars gone
+        assert conn.execute("SELECT COUNT(*) FROM notes WHERE id=?",
+                            (note_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM notes_vec_map WHERE gid=?",
+                            (note_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM verbatim").fetchone()[0] == 0
+        # integrity report reports no false orphans
+        orphans = forget._orphan_counts(conn)
+        assert orphans["notes_vec_orphans"] == 0
+        assert orphans["notes_vec_map_orphans"] == 0
+        assert orphans["notes_fts_orphans"] == 0
+    finally:
+        conn.close()
