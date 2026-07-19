@@ -2221,7 +2221,7 @@ struct EnvSettingsView: View {
         GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 14, alignment: .top)
     ]
     private let automationColumns = [
-        GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14, alignment: .top)
+        GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 14, alignment: .top)
     ]
 
     var body: some View {
@@ -2849,11 +2849,64 @@ struct AutomationJobCard: View {
                 StatusBadge(text: "Mechanical", color: .secondary)
             }
             if let definition = envStore.definition(for: job.intervalKey) {
-                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+                Divider()
+                AutomationScheduleRow(definition: definition, envStore: envStore)
                 ScheduleHint(value: envStore.values[job.intervalKey] ?? "")
             }
         }
         .settingsCardSurface()
+    }
+}
+
+struct AutomationScheduleRow: View {
+    let definition: EnvSettingDefinition
+    @ObservedObject var envStore: EnvSettingsStore
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Schedule (hours)")
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Picker("Schedule (hours)", selection: envStore.binding(for: definition.key)) {
+                Text("Default").tag("")
+                ForEach(choicesIncludingCurrent, id: \.value) { choice in
+                    Text(choice.label).tag(choice.value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(minWidth: 135, idealWidth: 170, maxWidth: 190)
+            Button {
+                envStore.setValue("", for: definition.key)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .disabled((envStore.values[definition.key] ?? "").isEmpty)
+            .accessibilityLabel("Use default for \(jobLabel)")
+            .help("Use default")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var choicesIncludingCurrent: [ChoiceOption] {
+        guard case .choice(let choices) = definition.kind,
+              let current = envStore.values[definition.key],
+              !current.isEmpty,
+              !choices.contains(where: { $0.value == current }) else {
+            if case .choice(let choices) = definition.kind { return choices }
+            return []
+        }
+        return choices + [
+            ChoiceOption(current, label: "From .env · \(hourChoiceLabel(current))")
+        ]
+    }
+
+    private var jobLabel: String {
+        definition.title.replacingOccurrences(of: " schedule (hours)", with: "")
     }
 }
 
