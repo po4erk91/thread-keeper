@@ -32,6 +32,7 @@ from pathlib import Path
 from ..config import DB_PATH
 from ..helpers import gen_global_id
 from . import identity as sync_identity
+from .capture import is_migrated
 
 
 def _high_water_hlc(conn: sqlite3.Connection) -> str:
@@ -73,15 +74,14 @@ def reset_node(db_path: Path, do_apply: bool) -> int:
     # transaction open, so the explicit BEGIN IMMEDIATE below is the only one.
     conn.isolation_level = None
     try:
-        # sync_state must exist (a non-migrated DB has no identity to reset).
-        has_state = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'"
-        ).fetchone()
-        if not has_state:
-            print("error: DB has no sync_state; run tk-sync-migrate first.",
+        # The additive core schema creates sync_state before the opt-in re-id
+        # migration, so table existence is not a sufficient gate. Check the
+        # actual sync_schema_version before any helper that could initialize the
+        # singleton; in particular, a dry-run must remain strictly read-only.
+        if not is_migrated(conn):
+            print("error: DB is not sync-migrated; run tk-sync-migrate first.",
                   file=sys.stderr)
             return 2
-        sync_identity._ensure_state(conn)
         old = conn.execute(
             "SELECT node_id FROM sync_state WHERE id=1"
         ).fetchone()[0]

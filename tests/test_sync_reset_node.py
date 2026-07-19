@@ -176,3 +176,25 @@ def test_reset_replaces_node_id_mirror(fresh_mp, tmp_path):
     assert new_db != old_db
     # mirror replaced with the new id, not left stale
     assert mirror.read_text().strip() == new_db
+
+
+def test_reset_dry_run_is_read_only_before_sync_migration(fresh_mp, capsys):
+    """The additive schema already has an empty sync_state table. A reset
+    dry-run must reject that DB without initializing the singleton row."""
+    from threadkeeper.sync import reset_node
+    db = fresh_mp["db"]
+    db.get_db().close()
+
+    conn = sqlite3.connect(str(db.DB_PATH))
+    before = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+    conn.close()
+    assert before == 0
+
+    assert reset_node.reset_node(db.DB_PATH, do_apply=False) == 2
+    captured = capsys.readouterr()
+    assert "run tk-sync-migrate first" in captured.err
+
+    conn = sqlite3.connect(str(db.DB_PATH))
+    after = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+    conn.close()
+    assert after == before
