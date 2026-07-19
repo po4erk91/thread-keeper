@@ -51,6 +51,15 @@ _BYPASS_ALLOWED_PAIRS = {
 }
 _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
 
+# Linux caps one execve argv string at MAX_ARG_STRLEN (128 KiB), even when the
+# total ARG_MAX budget is larger. Keep Claude's positional prompt well below
+# that and feed larger prompts through the existing owner-only stdin spool.
+CLAUDE_PROMPT_ARGV_MAX_BYTES = 96 * 1024
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
 
 def _permission_mode_is_bypass(permission_mode: str) -> bool:
     return (permission_mode or "").strip().lower() == "bypasspermissions"
@@ -628,8 +637,13 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         if not cmd:
             return f"ERR spawn_failed cli={chosen_cli} reason=binary_not_found"
     else:
-        cmd = [
-            bin_, "-p", prompt,
+        stdin_text = None
+        cmd = [bin_, "-p"]
+        if _utf8_len(prompt) > CLAUDE_PROMPT_ARGV_MAX_BYTES:
+            stdin_text = prompt
+        else:
+            cmd.append(prompt)
+        cmd += [
             "--session-id", child_cid,
             "--append-system-prompt", sys_extra,
         ]

@@ -206,6 +206,57 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
 
 
+def test_claude_large_prompt_uses_stdin_file(mp_with_cid, monkeypatch):
+    """Claude's prompt positional arg must stay below Linux MAX_ARG_STRLEN."""
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    monkeypatch.setattr(
+        spawn_config, "resolve_agent", lambda role, active_cli=None: "claude"
+    )
+    monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "")
+
+    captured: dict[str, object] = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = list(args)
+            stdin = kwargs.get("stdin")
+            captured["stdin"] = stdin.read().decode("utf-8")
+            self.pid = 4322
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
+
+    long_prompt = "large claude prompt " + (
+        "x" * (spawn_mod.CLAUDE_PROMPT_ARGV_MAX_BYTES + 1)
+    )
+    out = spawn_mod.spawn(
+        prompt=long_prompt,
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=False,
+        slim=True,
+    )
+
+    assert out.startswith("ok task="), out
+    args = captured["args"]
+    assert long_prompt not in args
+    assert captured["stdin"] == long_prompt
+    assert all(
+        spawn_mod._utf8_len(str(arg)) <= spawn_mod.CLAUDE_PROMPT_ARGV_MAX_BYTES
+        for arg in args
+    )
+    stdin_files = list(spawn_mod.TASK_LOG_DIR.glob("*.stdin.txt"))
+    assert len(stdin_files) == 1
+    mode = stdin_files[0].stat().st_mode & 0o777
+    assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+
 def test_spawn_slim_falls_back_to_full_config_when_unable(tmp_path, monkeypatch):
     """If _build_slim_mcp_config returns None (e.g. write error), spawn()
     must NOT crash — it just runs without slim flags."""

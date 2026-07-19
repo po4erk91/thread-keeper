@@ -273,6 +273,11 @@ CLI emits a recognizable usage trailer. Optional daily ceilings
 `THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
 recorded 24h spend reaches the configured limit; both default to `0`
 (disabled), so existing installs behave the same until a budget is set.
+Claude children keep their positional prompt argv under a conservative
+96 KiB byte ceiling; larger prompts are written to
+`THREADKEEPER_TASK_LOG_DIR/<task>.stdin.txt` with owner-only permissions and
+fed on stdin, so Linux's per-argument `MAX_ARG_STRLEN` limit cannot turn a large
+curator/reviewer prompt into an opaque `E2BIG` spawn failure.
 
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
@@ -618,10 +623,12 @@ locks.
 #### 5. Autonomous Curator
 
 Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
-= 7 days recommended) spawns a slim child that reviews the EXISTING
-`lessons.md` + `lesson_usage` + `skill_usage` inventory and writes
-`~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
-CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
+= 7 days recommended) reviews the EXISTING `lessons.md` + `lesson_usage` +
+`skill_usage` + concepts inventory through bounded slim-child batches. Each
+child sees a complete slice and writes either
+`~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
+`REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass with KEEP /
+PATCH / CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
 entries are marked `[PROTECTED]` in the inventory so the curator
 never proposes destructive changes against them, and delete-class tools
 enforce the same boundary server-side. The pass is
@@ -640,7 +647,9 @@ recorded complete/endorsed curator pass, the wake-up records an
 `unchanged_inventory` no-op event and endorses the last report instead of
 asking another child to re-grade the same snapshot. `curator_review_status()`
 shows both the last endorsed `inventory_sha256` and the current inventory hash
-so operators can tell whether the store is quiescent.
+so operators can tell whether the store is quiescent. Spawned pass events record
+`entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
+large reviews visible in the normal `curator_pass` trail.
 
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it

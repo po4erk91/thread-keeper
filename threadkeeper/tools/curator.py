@@ -5,9 +5,9 @@ mutates skill_usage state). These tools are about the *LLM-driven*
 audit pass:
 
   curator_review(force=False, dry_run=False)
-    Trigger one curator pass NOW. Spawns a slim child with the inventory
-    of every lesson + skill, child writes a REPORT.md with KEEP / PATCH
-    / CONSOLIDATE / PRUNE recommendations.
+    Trigger one curator pass NOW. Spawns bounded slim-child batches over
+    the lesson + skill + concept inventory; each child writes a REPORT.md
+    with KEEP / PATCH / CONSOLIDATE / PRUNE recommendations.
 
   curator_review_status()
     Diagnostic: env config, last cursor, last 5 passes, latest REPORT
@@ -49,9 +49,9 @@ def curator_review(force: bool = False, dry_run: bool = False) -> str:
     Use for one-shot triage or testing the prompt.
 
     `dry_run=True` short-circuits before the spawn — returns the
-    inventory that WOULD be passed plus n_lessons/n_skills. No spawn,
-    no cursor advance. Use to inspect what the curator child would see
-    before paying for the spawn.
+    capped inventory preview plus n_lessons/n_skills. No spawn, no cursor
+    advance. Use to inspect the inventory shape before paying for the
+    batched spawn.
     """
     conn = get_db()
     _ensure_session(conn)

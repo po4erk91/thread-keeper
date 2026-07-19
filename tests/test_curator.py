@@ -16,12 +16,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
+
+
+def _write_bulk_lessons(path: Path, count: int) -> None:
+    now = int(time.time()) - 90 * 86400
+    sections = [
+        "# thread-keeper lessons\n\n"
+        "Procedural knowledge accumulated across sessions.\n\n"
+    ]
+    for i in range(count):
+        slug = f"bulk-lesson-{i:04d}"
+        body = "body " + ("x" * 240)
+        sections.append(
+            f"<!-- LESSON:BEGIN slug={slug} ts={now + i} "
+            "source=shadow origin=shadow_review -->\n"
+            f"## {slug}\n"
+            f"> summary {i}\n\n"
+            f"{body}\n"
+            f"<!-- LESSON:END slug={slug} -->\n\n"
+        )
+    path.write_text("".join(sections), encoding="utf-8")
 
 
 def _bootstrap(
@@ -180,6 +201,20 @@ def test_collect_inventory_marks_legacy_and_unknown_skills_protected(
     assert "SKILL unknown-skill [PROTECTED]" in dump
 
 
+def test_collect_inventory_preview_truncates_large_store(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+    conn = pkg["db"].get_db()
+
+    dump, n_lessons, n_skills = pkg["curator"]._collect_inventory(conn)
+
+    assert n_lessons == 1500
+    assert n_skills == 0
+    assert "INVENTORY TRUNCATED" in dump
+    assert "omitted_lessons=" in dump
+    assert "live curator pass reviews complete bounded batches" in dump
+
+
 # ──────────────────────────────────────────────────────────────────────
 # run_curator_pass — dispatch logic
 # ──────────────────────────────────────────────────────────────────────
@@ -266,6 +301,48 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert pkg["reports_dir"].is_dir()
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+
+def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return f"ok task=tk_batch_{len(captured)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out.startswith("spawned batches="), out
+    assert len(captured) > 1
+    seen: list[str] = []
+    for idx, kw in enumerate(captured, start=1):
+        prompt = kw["prompt"]
+        assert f"CURATOR BATCH {idx}/{len(captured)}" in prompt
+        assert (
+            len(prompt.encode("utf-8"))
+            <= spawn_mod.CLAUDE_PROMPT_ARGV_MAX_BYTES
+        )
+        seen.extend(re.findall(r"- LESSON (bulk-lesson-\d{4})", prompt))
+
+    assert len(seen) == 1500
+    assert len(set(seen)) == 1500
+
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind='curator_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert "entries=1500" in row["summary"]
+    assert f"batches={len(captured)}" in row["summary"]
+    assert "batch_entries=" in row["summary"]
 
 
 def test_run_curator_pass_recent_high_water_is_not_due(
