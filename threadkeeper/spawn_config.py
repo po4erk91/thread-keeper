@@ -13,18 +13,23 @@ Agent resolution per role (highest first):
     spawn.loop[role] -> spawn.default -> active CLI -> "claude"
 `"auto"` in loop/default explicitly defers to the active CLI.
 
-Model resolution: spawn.model[role] -> spawn.model[cli] -> "".
+Model and effort resolution: role override -> CLI default -> "".
 
-Roles map to spawn() call-sites: shadow_observer, archivist, curator,
-candidate_reviewer, extract, evolve_reviewer, evolve_applier, probe_runner,
-dialectic_validator. Resolution is case-insensitive.
+Roles map to LLM-backed spawn() call-sites: shadow_observer, archivist,
+candidate_reviewer, curator, dialectic_validator, probe_runner,
+evolve_researcher, evolve_reviewer, and evolve_applier. Mechanical extract and
+other deterministic jobs are intentionally excluded. Resolution is
+case-insensitive.
 """
 from __future__ import annotations
 
+import os
+import json
 import re
 from typing import Optional
 
 from . import config
+from .agent_metadata import AGENT_ROLE_NAMES
 
 # A model name that clearly belongs to Anthropic's Claude family. Used only to
 # warn when such a model is routed to a non-Claude CLI (e.g. `opus` on codex),
@@ -37,22 +42,11 @@ _CLAUDE_MODEL_RE = re.compile(r"^(?:opus|sonnet|haiku|claude)\b", re.IGNORECASE)
 def _looks_like_claude_model(model: str) -> bool:
     return bool(isinstance(model, str) and _CLAUDE_MODEL_RE.match(model.strip()))
 
-SUPPORTED_CLIS = ("claude", "codex", "antigravity", "gemini", "copilot")
+SUPPORTED_CLIS = ("claude", "codex", "antigravity", "copilot")
 CLI_ALIASES = {
     "agy": "antigravity",
 }
-SUMMARY_ROLES = (
-    "archivist",
-    "shadow_observer",
-    "extract",
-    "candidate_reviewer",
-    "curator",
-    "dialectic_validator",
-    "evolve_researcher",
-    "evolve_reviewer",
-    "evolve_applier",
-    "probe_runner",
-)
+SUMMARY_ROLES = AGENT_ROLE_NAMES
 PREDEFINED_ROLE_PROMPTS = (
     "skeptic",
     "generator",
@@ -67,6 +61,14 @@ KNOWN_MODEL_KEYS = (
     | set(SUMMARY_ROLES)
     | set(PREDEFINED_ROLE_PROMPTS)
 )
+KNOWN_EFFORT_KEYS = KNOWN_MODEL_KEYS
+
+EFFORT_OPTIONS = {
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+    "codex": ("low", "medium", "high", "xhigh"),
+    "copilot": ("low", "medium", "high", "xhigh"),
+    "antigravity": (),
+}
 
 
 def _spawn():
@@ -84,6 +86,83 @@ def _norm_cli(v) -> str:
     return CLI_ALIASES.get(cli, cli)
 
 
+def _top_level_spawn_overrides(
+    environ: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """Expand Pydantic's supported ``THREADKEEPER_SPAWN={...}`` JSON form.
+
+    Only the four public spawn-routing fields are surfaced. This keeps the
+    settings metadata useful without reflecting arbitrary process environment
+    content back to the UI.
+    """
+    source = os.environ if environ is None else environ
+    raw = next(
+        (value for key, value in source.items() if key.upper() == "THREADKEEPER_SPAWN"),
+        None,
+    )
+    if raw is None:
+        return {}
+    try:
+        payload = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    rows: dict[str, str] = {}
+    default = payload.get("default")
+    if default is not None:
+        rows["THREADKEEPER_SPAWN__DEFAULT"] = str(default)
+    for section in ("loop", "model", "effort"):
+        values = payload.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if value is None:
+                continue
+            rows[_env_suffix(f"THREADKEEPER_SPAWN__{section.upper()}__", key)] = str(value)
+    return rows
+
+
+def runtime_spawn_overrides(environ: Optional[dict[str, str]] = None) -> list[dict[str, str]]:
+    """Safe spawn-only process overrides visible to the settings client."""
+    source = os.environ if environ is None else environ
+    prefixes = (
+        "THREADKEEPER_SPAWN__LOOP__",
+        "THREADKEEPER_SPAWN__MODEL__",
+        "THREADKEEPER_SPAWN__EFFORT__",
+    )
+    rows = {
+        key: {"key": key, "value": value, "source": "process_environment_json"}
+        for key, value in _top_level_spawn_overrides(source).items()
+    }
+    for key, value in sorted(source.items()):
+        upper = key.upper()
+        if not str(value).strip():
+            continue
+        if upper == "THREADKEEPER_SPAWN__DEFAULT" or upper.startswith(prefixes):
+            rows[upper] = {
+                "key": upper,
+                "value": str(value),
+                "source": "process_environment",
+            }
+    return [rows[key] for key in sorted(rows)]
+
+
+def _process_override_key(*keys: str) -> str:
+    environ = {
+        key.upper(): key for key, value in os.environ.items()
+        if str(value).strip()
+    }
+    for key in keys:
+        if key.upper() in environ:
+            return key.upper()
+    expanded = _top_level_spawn_overrides()
+    if any(key.upper() in expanded for key in keys):
+        return "THREADKEEPER_SPAWN"
+    return ""
+
+
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Which CLI runs the spawned child for this role. Priority:
     spawn.loop[role] -> spawn.default -> active CLI -> 'claude'.
@@ -99,6 +178,18 @@ def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     if active and active in SUPPORTED_CLIS:
         return active
     return "claude"
+
+
+def agent_cli_is_dynamic(role: str, active_cli: Optional[str] = None) -> bool:
+    """Whether routing still depends on the host CLI selected at spawn time."""
+    if _norm_cli(active_cli) in SUPPORTED_CLIS:
+        return False
+    sp = _spawn()
+    role_cli = _norm_cli(sp.loop.get(_norm(role)))
+    if role_cli in SUPPORTED_CLIS:
+        return False
+    default = _norm_cli(sp.default)
+    return default not in SUPPORTED_CLIS
 
 
 def resolve_model(cli: str, role: str = "") -> str:
@@ -122,11 +213,125 @@ def resolve_model(cli: str, role: str = "") -> str:
     return ""
 
 
+def resolve_effort(cli: str, role: str = "") -> str:
+    """Configured effort for a spawn, or empty for the CLI-native default.
+
+    Priority mirrors model resolution: role override, then CLI default.  Agy's
+    ``AGY`` alias is accepted, but Antigravity does not support an independent
+    effort flag; validation warns and adapters intentionally ignore it.
+    """
+    efforts = _spawn().effort
+    if role:
+        value = efforts.get(role.lower())
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    keys = [_norm_cli(cli), _norm(cli)]
+    for key in dict.fromkeys(k for k in keys if k):
+        value = efforts.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    if _norm_cli(cli) == "antigravity":
+        value = efforts.get("agy")
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str, str]:
+    """Effective role settings plus the inheritance source for each value."""
+    sp = _spawn()
+    role_key = _norm(role)
+    cli = resolve_agent(role_key, active_cli)
+    role_cli = _norm_cli(sp.loop.get(role_key))
+    role_cli_key = _env_suffix("THREADKEEPER_SPAWN__LOOP__", role_key)
+    default_key = "THREADKEEPER_SPAWN__DEFAULT"
+    role_cli_process_key = _process_override_key(role_cli_key)
+    default_process_key = _process_override_key(default_key)
+    if role_cli_process_key:
+        cli_source_key = role_cli_process_key
+        cli_source = "process environment"
+    elif role_cli in SUPPORTED_CLIS:
+        cli_source_key = ""
+        cli_source = "role override"
+    elif default_process_key:
+        cli_source_key = default_process_key
+        cli_source = "process environment"
+    elif _norm_cli(sp.default) in SUPPORTED_CLIS and _norm(sp.default) != "auto":
+        cli_source_key = ""
+        cli_source = "CLI default"
+    elif _norm_cli(active_cli) in SUPPORTED_CLIS:
+        cli_source_key = ""
+        cli_source = "active CLI"
+    else:
+        cli_source_key = ""
+        cli_source = "fallback"
+
+    model = resolve_model(cli, role_key)
+    role_model_key = _env_suffix("THREADKEEPER_SPAWN__MODEL__", role_key)
+    cli_model_keys = [
+        _env_suffix("THREADKEEPER_SPAWN__MODEL__", _norm_cli(cli)),
+        _env_suffix("THREADKEEPER_SPAWN__MODEL__", _norm(cli)),
+    ]
+    if cli == "antigravity":
+        cli_model_keys.append("THREADKEEPER_SPAWN__MODEL__AGY")
+    if role_key in sp.model and _norm(sp.model.get(role_key)):
+        model_source_key = _process_override_key(role_model_key)
+        model_source = "process environment" if model_source_key else "role override"
+    elif any(_norm(sp.model.get(key)) for key in (_norm_cli(cli), _norm(cli))):
+        model_source_key = _process_override_key(*cli_model_keys)
+        model_source = "process environment" if model_source_key else "CLI default"
+    elif cli == "antigravity" and _norm(sp.model.get("agy")):
+        model_source_key = _process_override_key(*cli_model_keys)
+        model_source = "process environment" if model_source_key else "CLI default"
+    else:
+        model_source_key = ""
+        model_source = "CLI native default"
+
+    effort = resolve_effort(cli, role_key)
+    role_effort_key = _env_suffix("THREADKEEPER_SPAWN__EFFORT__", role_key)
+    cli_effort_keys = [
+        _env_suffix("THREADKEEPER_SPAWN__EFFORT__", _norm_cli(cli)),
+        _env_suffix("THREADKEEPER_SPAWN__EFFORT__", _norm(cli)),
+    ]
+    if cli == "antigravity":
+        cli_effort_keys.append("THREADKEEPER_SPAWN__EFFORT__AGY")
+    if role_key in sp.effort and _norm(sp.effort.get(role_key)):
+        effort_source_key = _process_override_key(role_effort_key)
+        effort_source = "process environment" if effort_source_key else "role override"
+    elif any(_norm(sp.effort.get(key)) for key in (_norm_cli(cli), _norm(cli))):
+        effort_source_key = _process_override_key(*cli_effort_keys)
+        effort_source = "process environment" if effort_source_key else "CLI default"
+    elif cli == "antigravity" and _norm(sp.effort.get("agy")):
+        effort_source_key = _process_override_key(*cli_effort_keys)
+        effort_source = "process environment" if effort_source_key else "CLI default"
+    elif cli == "antigravity":
+        effort_source_key = ""
+        effort_source = "encoded in model"
+    else:
+        effort_source_key = ""
+        effort_source = "CLI native default"
+    return {
+        "role": role_key,
+        "cli": cli,
+        "cli_source": cli_source,
+        "cli_source_key": cli_source_key,
+        "model": model,
+        "model_source": model_source,
+        "model_source_key": model_source_key,
+        "effort": effort,
+        "effort_source": effort_source,
+        "effort_source_key": effort_source_key,
+    }
+
+
 def _env_suffix(prefix: str, key: str) -> str:
     return f"{prefix}{str(key).upper()}"
 
 
-def _spawn_warnings(active_cli: Optional[str]) -> list[str]:
+def _spawn_warnings(
+    active_cli: Optional[str],
+    advertised_models: Optional[dict[str, list[str]]] = None,
+) -> list[str]:
     """Warnings for configured spawn values that summary_table would ignore."""
     sp = _spawn()
     warnings = []
@@ -182,6 +387,18 @@ def _spawn_warnings(active_cli: Optional[str]) -> list[str]:
             else:
                 effective_cli = ""
             if effective_cli and effective_cli != "claude":
+                advertised = {
+                    item.casefold()
+                    for item in (advertised_models or {}).get(effective_cli, [])
+                }
+                if str(model).strip().casefold() in advertised:
+                    continue
+                # Copilot and Antigravity intentionally advertise
+                # cross-provider Claude models. Their adapter catalog (and
+                # custom-model support) is more authoritative than the family
+                # prefix heuristic; retain the mismatch guard for Codex.
+                if effective_cli in {"copilot", "antigravity"}:
+                    continue
                 warnings.append(
                     "  warning: "
                     f"{_env_suffix('THREADKEEPER_SPAWN__MODEL__', key)}="
@@ -189,6 +406,38 @@ def _spawn_warnings(active_cli: Optional[str]) -> list[str]:
                     f"{effective_cli!r}; that provider will reject it at "
                     "runtime — pin a model that CLI supports"
                 )
+    role_keys = set(SUMMARY_ROLES) | set(PREDEFINED_ROLE_PROMPTS)
+    for key, raw_effort in sorted(sp.effort.items()):
+        model_key = _norm_cli(key)
+        role_key = _norm(key)
+        if model_key not in KNOWN_EFFORT_KEYS and role_key not in KNOWN_EFFORT_KEYS:
+            warnings.append(
+                "  warning: "
+                f"{_env_suffix('THREADKEEPER_SPAWN__EFFORT__', key)}="
+                f"{raw_effort!r} is not used by a supported CLI or startup role"
+            )
+            continue
+        effective_cli = (
+            resolve_agent(role_key, active_cli)
+            if role_key in role_keys
+            else model_key
+        )
+        effort = _norm(raw_effort)
+        allowed = EFFORT_OPTIONS.get(effective_cli, ())
+        if effective_cli == "antigravity":
+            warnings.append(
+                "  warning: "
+                f"{_env_suffix('THREADKEEPER_SPAWN__EFFORT__', key)}="
+                f"{raw_effort!r} is ignored because Antigravity encodes "
+                "reasoning effort in the selected model"
+            )
+        elif effort not in allowed:
+            warnings.append(
+                "  warning: "
+                f"{_env_suffix('THREADKEEPER_SPAWN__EFFORT__', key)}="
+                f"{raw_effort!r} is invalid for CLI {effective_cli!r}; "
+                f"expected one of {', '.join(allowed)}"
+            )
     return warnings
 
 
@@ -197,20 +446,15 @@ def summary_table(active_cli: Optional[str]) -> str:
     sp = _spawn()
     out = []
     for role in SUMMARY_ROLES:
-        chosen = resolve_agent(role, active_cli)
-        if _norm_cli(sp.loop.get(role.lower())) in SUPPORTED_CLIS:
-            src = "spawn config"
-        elif (
-            _norm_cli(sp.default) in SUPPORTED_CLIS
-            and _norm(sp.default) != "auto"
-        ):
-            src = "spawn default"
-        elif active_cli:
-            src = "active CLI"
-        else:
-            src = "fallback"
-        model = resolve_model(chosen, role)
+        detail = resolution_details(role, active_cli)
+        chosen = detail["cli"]
+        src = detail["cli_source"]
+        model = detail["model"]
         model_suffix = f" model={model}" if model else ""
-        out.append(f"  {role:<18} → {chosen:<8}{model_suffix} ({src})")
+        effort = detail["effort"]
+        effort_suffix = f" effort={effort}" if effort else ""
+        out.append(
+            f"  {role:<18} → {chosen:<11}{model_suffix}{effort_suffix} ({src})"
+        )
     out.extend(_spawn_warnings(active_cli))
     return "\n".join(out)

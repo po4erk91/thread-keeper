@@ -10,8 +10,8 @@ stat per target per tick — cheap):
 
 1. **The universal env-file** (`~/.threadkeeper/.env`, overridable via
    `THREADKEEPER_ENV_FILE`). Every host's `Settings()` reads this file, so it
-   is the one layer that hot-reloads config for ALL seven CLIs (Claude Code /
-   Desktop, Codex, Antigravity, Gemini, Copilot, VS Code) — not just Claude.
+   is the one layer that hot-reloads config for all six registered clients (Claude Code /
+   Desktop, Codex, Antigravity, Copilot, VS Code) — not just Claude.
    On change we call `config.reload_settings()` with NO os.environ mirroring:
    pydantic re-reads the file natively and real spawn-time env vars keep their
    precedence (env var > .env file > default). No precedence inversion.

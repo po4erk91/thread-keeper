@@ -33,8 +33,8 @@ READ_TOOLS = {
     "memory_guard_status", "mp_dashboard", "mp_health", "neighbors", "peers",
     "pending_distillates", "pickup_candidates", "reliability_for",
     "review_candidates", "run_probe", "search", "shadow_review_status",
-    "skill_list", "spawn_budget_status", "spawn_status", "sync_peers",
-    "sync_status", "task_logs",
+    "skill_list", "skill_validate", "spawn_budget_status", "spawn_status",
+    "sync_peers", "sync_status", "task_logs",
     "task_thread", "tasks", "weak_spots", "whoami",
 }
 
@@ -49,7 +49,8 @@ DELETE_CLASS_TOOLS = {
 WRITE_TOOLS = {
     "accept_candidate", "ask", "auto_review_trigger", "broadcast",
     "candidate_review_run", "claim_pickup", "close_thread", "config_reload",
-    "convene_panel", "core_set", "curator_review", "db_compact", "dialectic_claim",
+    "convene_panel", "core_set", "curator_report_write", "curator_review",
+    "db_compact", "dialectic_claim",
     "dialectic_evidence", "dialectic_mine_run", "dialectic_observation_resolve",
     "dialectic_supersede", "dialectic_validate_run", "distill", "evolve_apply",
     "evolve_apply_conflicted_pr", "evolve_apply_curator_report",

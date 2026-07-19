@@ -40,7 +40,6 @@ def _bootstrap(tmp_path, monkeypatch):
         claude_desktop as cd_mod,
         codex as codex_mod,
         antigravity as agy_mod,
-        gemini as gem_mod,
         copilot as cop_mod,
         vscode as vsc_mod,
     )
@@ -52,7 +51,6 @@ def _bootstrap(tmp_path, monkeypatch):
         "claude_desktop": cd_mod.ADAPTER,
         "codex": codex_mod.ADAPTER,
         "antigravity": agy_mod.ADAPTER,
-        "gemini": gem_mod.ADAPTER,
         "copilot": cop_mod.ADAPTER,
         "vscode": vsc_mod.ADAPTER,
     }
@@ -62,12 +60,12 @@ def _bootstrap(tmp_path, monkeypatch):
 # Registry shape
 # ---------------------------------------------------------------------
 
-def test_registry_lists_seven_adapters(tmp_path, monkeypatch):
+def test_registry_lists_supported_adapters(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     names = {a.name for a in pkg["ADAPTERS"]}
     assert names == {
         "claude-code", "claude-desktop", "codex", "antigravity",
-        "gemini", "copilot", "vscode",
+        "copilot", "vscode",
     }
 
 
@@ -131,6 +129,13 @@ def test_claude_iter_messages_parses_jsonl(tmp_path, monkeypatch):
     assert msgs[0].role == "assistant"
     assert msgs[1].content == "hi back"
     assert msgs[1].role == "user"
+
+
+def test_claude_discovered_model_sanitizes_terminal_fragments():
+    from threadkeeper.adapters.claude_code import _clean_discovered_model
+
+    assert _clean_discovered_model("claude-fable-5[1m]") == "claude-fable-5"
+    assert _clean_discovered_model("\x1b[1msonnet\x1b[0m") == "sonnet"
 
 
 # ---------------------------------------------------------------------
@@ -356,6 +361,26 @@ def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
     assert "--dangerously-bypass-approvals-and-sandbox" in argv_bypass
 
 
+def test_codex_spawn_argv_enables_native_search_for_curator(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv(
+        "deep audit",
+        extra_allowed_tools="Read,WebSearch,WebFetch",
+    )
+
+    assert argv is not None
+    assert argv[:4] == [
+        "/usr/local/bin/codex", "--search", "exec", "--skip-git-repo-check",
+    ]
+
+
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"
@@ -557,43 +582,6 @@ def test_antigravity_register_mcp_accepts_empty_config_file(tmp_path, monkeypatc
     ]
 
 
-# Gemini legacy
-# ---------------------------------------------------------------------
-
-def test_gemini_register_mcp_writes_settings_json(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch)
-    cfg = tmp_path / "settings.json"
-    monkeypatch.setattr(pkg["gemini"], "config_path", cfg)
-    result = pkg["gemini"].register_mcp_server(
-        name="thread-keeper",
-        command="/opt/python",
-        args=["-m", "threadkeeper.server"],
-        env={"PYTHONPATH": "/repo"},
-    )
-    body = json.loads(cfg.read_text())
-    assert body["mcpServers"]["thread-keeper"]["command"] == "/opt/python"
-    assert body["mcpServers"]["thread-keeper"]["env"]["PYTHONPATH"] == "/repo"
-
-
-def test_gemini_iter_messages_normalizes_types(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch)
-    fp = tmp_path / "session-2026-05-14T10-00-id.jsonl"
-    fp.write_text("\n".join([
-        json.dumps({"sessionId": "g-sess", "projectHash": "abc",
-                    "startTime": "2026-05-14T10:00:00Z"}),
-        json.dumps({"id": "g-info", "timestamp": "2026-05-14T10:00:01Z",
-                    "type": "info", "content": "warmup"}),  # skipped
-        json.dumps({"id": "g-u", "timestamp": "2026-05-14T10:00:02Z",
-                    "type": "user", "content": "hi gemini"}),
-        json.dumps({"id": "g-a", "timestamp": "2026-05-14T10:00:03Z",
-                    "type": "model", "content": "hi back"}),
-    ]) + "\n")
-    msgs = list(pkg["gemini"].iter_messages(fp))
-    assert [m.uuid for m in msgs] == ["g-u", "g-a"]
-    assert msgs[1].role == "assistant"  # "model" → "assistant"
-    assert msgs[0].session_id == "g-sess"
-
-
 # ---------------------------------------------------------------------
 # Copilot
 # ---------------------------------------------------------------------
@@ -642,7 +630,7 @@ def test_copilot_register_mcp_migrates_legacy_servers_key(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------
-# Hooks: shared Claude-style format used by claude-code, gemini legacy, copilot
+# Hooks: shared Claude-style format used by Claude Code and Copilot
 # ---------------------------------------------------------------------
 
 def _specs():
@@ -665,16 +653,6 @@ def test_claude_register_hooks_writes_settings_json(tmp_path, monkeypatch):
     assert body["hooks"]["PostToolUse"][0]["matcher"] == "mcp__thread-keeper__.*"
     # Idempotency
     assert "already current" in pkg["claude"].register_hooks(_specs())
-
-
-def test_gemini_register_hooks_writes_settings_json(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch)
-    sp = tmp_path / "gemini-settings.json"
-    monkeypatch.setattr(pkg["gemini"], "config_path", sp)
-    assert pkg["gemini"].hooks_supported()
-    pkg["gemini"].register_hooks(_specs())
-    body = json.loads(sp.read_text())
-    assert "SessionStart" in body["hooks"]
 
 
 def test_copilot_register_hooks_writes_hooks_json(tmp_path, monkeypatch):

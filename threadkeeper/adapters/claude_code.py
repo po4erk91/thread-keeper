@@ -9,11 +9,19 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage
+from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+
+
+def _clean_discovered_model(value: str) -> str:
+    """Remove terminal-style fragments sometimes persisted in Claude metadata."""
+    cleaned = re.sub(r"\x1b\[[0-9;]*m", "", value).strip()
+    return re.sub(r"\[[0-9]+(?:;[0-9]+)*m\]?$", "", cleaned).strip()
 
 
 def _ts(s: str) -> int:
@@ -76,13 +84,86 @@ class ClaudeCodeAdapter(CLIAdapter):
     def supports_spawn(self) -> bool:
         return True
 
+    def discover_models(self, timeout_s: float = 5.0) -> dict:
+        """Read models exposed in Claude Code's local account metadata.
+
+        Claude Code has no non-interactive list-models command.  Its local
+        metadata contains account-gated additional options; standard aliases
+        are therefore left to CLI default/custom entry rather than hard-coded.
+        """
+        path = Path("~/.claude.json").expanduser()
+        models: list[str] = []
+        binary = find_cli_executable("claude")
+        help_error = None
+        if binary:
+            try:
+                result = subprocess.run(
+                    [binary, "--help"], capture_output=True, text=True,
+                    timeout=max(0.5, timeout_s), check=False,
+                )
+                help_text = result.stdout or result.stderr or ""
+                model_help = re.search(
+                    r"--model\s+<model>.*?(?=\n\s{0,6}--|\Z)",
+                    help_text, re.DOTALL,
+                )
+                if model_help:
+                    for raw_value in re.findall(r"'([^']+)'", model_help.group(0)):
+                        value = _clean_discovered_model(raw_value)
+                        if (
+                            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:\-\[\]]+", value)
+                            and value not in models
+                        ):
+                            models.append(value)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                help_error = f"Claude help lookup failed: {exc}"
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text())
+                caches = (
+                    payload.get("additionalModelOptionsCache", []),
+                    payload.get("modelAccessCache", []),
+                )
+                for cache in caches:
+                    if isinstance(cache, dict):
+                        cache = list(cache.values())
+                    if not isinstance(cache, list):
+                        continue
+                    for item in cache:
+                        if isinstance(item, str):
+                            value = _clean_discovered_model(item)
+                        elif isinstance(item, dict):
+                            value = _clean_discovered_model(str(
+                                item.get("value") or item.get("model")
+                                or item.get("id") or ""
+                            ))
+                        else:
+                            value = ""
+                        if value and value not in models:
+                            models.append(value)
+            except (OSError, ValueError, TypeError) as exc:
+                return {
+                    "models": [],
+                    "source": "claude --help aliases + local account metadata",
+                    "source_updated_at": int(path.stat().st_mtime),
+                    "error": f"Could not read local model metadata: {exc}",
+                }
+        return {
+            "models": models,
+            "source": "claude --help aliases + local account metadata",
+            "source_updated_at": int(path.stat().st_mtime) if path.exists() else None,
+            "error": (
+                help_error if help_error else (None if models else
+                "Claude Code does not expose a complete non-interactive model list; "
+                "use CLI default or enter a custom model.")
+            ),
+        }
+
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
-                   extra_allowed_tools="", mcp_config_path=None):
+                   effort="", extra_allowed_tools="", mcp_config_path=None):
         """Construct `claude -p` argv. Tool list is the canonical
         thread-keeper allowlist plus any caller-supplied extras."""
-        import shutil
         claude_bin = (os.environ.get("CLAUDE_CODE_EXECPATH")
-                      or shutil.which("claude"))
+                      or find_cli_executable("claude"))
         if not claude_bin:
             return None
         argv = [claude_bin, "-p", prompt,
@@ -94,6 +175,8 @@ class ClaudeCodeAdapter(CLIAdapter):
             argv += ["--allowedTools", extra_allowed_tools]
         if model:
             argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
         if mcp_config_path:
             argv += ["--mcp-config", str(mcp_config_path),
                      "--strict-mcp-config"]
@@ -117,7 +200,7 @@ class ClaudeCodeAdapter(CLIAdapter):
         # least once) OR the executable is on PATH.
         if self.projects_dir.exists():
             return True
-        return shutil.which("claude") is not None
+        return bool(find_cli_executable("claude"))
 
     # ----------------------------- mcp -----------------------------------
     def register_mcp_server(

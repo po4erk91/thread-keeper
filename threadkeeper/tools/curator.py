@@ -19,6 +19,9 @@ audit pass:
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import time
 
 from .._mcp import read_tool, write_tool
@@ -33,12 +36,18 @@ from ..curator import (
     run_curator_pass,
 )
 from ..curator_snapshots import restore_lesson, restore_skill, snapshots_root
+from ..skill_audit import build_skill_audit
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_MANAGE_FOREGROUND_SKILLS,
 )
+
+
+_PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_MAX_REPORT_CHARS = 2_000_000
 
 
 @write_tool()
@@ -56,8 +65,11 @@ def curator_review(force: bool = False, dry_run: bool = False) -> str:
     conn = get_db()
     _ensure_session(conn)
     if dry_run:
-        inventory, n_lessons, n_skills = _collect_inventory(conn)
-        below = n_lessons < CURATOR_MIN_LESSONS
+        audit = build_skill_audit(conn, include_archived=True)
+        inventory, n_lessons, n_skills = _collect_inventory(
+            conn, skill_audit=audit,
+        )
+        below = n_lessons < CURATOR_MIN_LESSONS and n_skills == 0
         head = inventory[:2000]
         suffix = "…(truncated for display)" if len(inventory) > 2000 else ""
         return (
@@ -89,6 +101,7 @@ def curator_review_status() -> str:
         f"interval_s={CURATOR_INTERVAL_S:.0f} "
         f"min_lessons={CURATOR_MIN_LESSONS} "
         f"mode={mode} "
+        f"manage_foreground_skills={int(CURATOR_MANAGE_FOREGROUND_SKILLS)} "
         f"reports_dir={CURATOR_REPORTS_DIR}",
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
@@ -142,6 +155,18 @@ def curator_review_status() -> str:
         lines.append(f"latest_report={reports[0]}")
     else:
         lines.append("latest_report=(none yet)")
+    try:
+        manifests = sorted(
+            CURATOR_REPORTS_DIR.glob("AUDIT-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except FileNotFoundError:
+        manifests = []
+    lines.append(
+        f"latest_audit_manifest={manifests[0]}"
+        if manifests else "latest_audit_manifest=(none yet)"
+    )
     root = snapshots_root(CURATOR_REPORTS_DIR)
     try:
         snaps = sorted(
@@ -156,6 +181,128 @@ def curator_review_status() -> str:
     else:
         lines.append("latest_snapshot=(none yet)")
     return "\n".join(lines)
+
+
+@read_tool()
+def skill_validate(name: str = "", include_archived: bool = True) -> str:
+    """Validate ThreadKeeper-managed skills across supported CLI consumers.
+
+    With `name`, returns the complete deterministic record for one logical
+    skill, including ThreadKeeper/Claude Code/Codex/Agent Skills validation,
+    mirror hashes, local-link findings, exact duplicates, and semantic
+    candidates involving that skill. Curator must call this after every skill
+    mutation. Without `name`, returns a compact complete numbered inventory.
+    Semantic candidates are leads, never automatic delete decisions.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    manifest = build_skill_audit(conn, include_archived=include_archived)
+    requested = name.strip()
+    if requested:
+        record = next(
+            (item for item in manifest["skills"] if item["name"] == requested),
+            None,
+        )
+        if record is None:
+            return f"ERR skill_not_found={requested}"
+        exact = [
+            group for group in manifest["exact_duplicate_groups"]
+            if requested in group["skills"]
+        ]
+        candidates = [
+            pair for pair in manifest["semantic_candidates"]
+            if requested in {pair["left"], pair["right"]}
+        ]
+        return json.dumps(
+            {
+                "schema_version": manifest["schema_version"],
+                "skill": record,
+                "exact_duplicate_groups": exact,
+                "semantic_candidates": candidates,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+
+    rows = []
+    for index, record in enumerate(manifest["skills"], start=1):
+        rows.append({
+            "index": index,
+            "name": record["name"],
+            "state": record["state"],
+            "protected": record["protected"],
+            "source_path": record["source_path"],
+            "validators": record["validators"],
+            "mirrors": record["mirrors"],
+            "findings": record["findings"],
+        })
+    return json.dumps(
+        {
+            "schema_version": manifest["schema_version"],
+            "summary": manifest["summary"],
+            "skills": rows,
+            "exact_duplicate_groups": manifest["exact_duplicate_groups"],
+            "semantic_candidates": manifest["semantic_candidates"],
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+@write_tool(idempotent=True)
+def curator_report_write(
+    pass_id: str,
+    content: str,
+    batch_index: int = 0,
+    batch_total: int = 0,
+) -> str:
+    """Atomically write one Curator report inside the configured report dir.
+
+    This narrow tool is the cross-CLI alternative to direct filesystem Write:
+    Codex workspace sandboxes cannot write ``~/.threadkeeper/curator`` when the
+    project is elsewhere. ``pass_id`` is filename-safe and cannot select an
+    arbitrary path. A bounded multi-child pass supplies ``batch_index`` and
+    ``batch_total`` so children cannot overwrite each other's reports. Repeated
+    calls replace the same pass/batch report so the Curator can persist its
+    plan before mutation and then add actual validation/rollback results.
+    """
+    clean_id = pass_id.strip()
+    if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
+        return "ERR invalid_pass_id"
+    try:
+        batch_index = int(batch_index)
+        batch_total = int(batch_total)
+    except (TypeError, ValueError):
+        return "ERR invalid_batch"
+    if bool(batch_index) != bool(batch_total):
+        return "ERR invalid_batch"
+    if batch_index and not (1 <= batch_index <= batch_total <= 9999):
+        return "ERR invalid_batch"
+    if len(content) > _MAX_REPORT_CHARS:
+        return f"ERR report_too_large max_chars={_MAX_REPORT_CHARS}"
+    if not content.strip():
+        return "ERR empty_report"
+    CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    if batch_index:
+        report_name = (
+            f"REPORT-{clean_id}-batch-{batch_index:03d}-of-{batch_total:03d}.md"
+        )
+    else:
+        report_name = f"REPORT-{clean_id}.md"
+    target = CURATOR_REPORTS_DIR / report_name
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
+        temporary.replace(target)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return f"ERR report_write_failed={exc}"
+    return f"ok path={target} chars={len(content)}"
 
 
 @write_tool(destructive=True, idempotent=True)

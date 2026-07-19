@@ -16,11 +16,12 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage
+from .base import CLIAdapter, NormalizedMessage, find_cli_executable
 
 _FORCED_CID_RE = re.compile(
     r"Your own cid is ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
@@ -222,8 +223,77 @@ class CodexAdapter(CLIAdapter):
     def supports_spawn(self) -> bool:
         return True
 
+    def discover_models(self, timeout_s: float = 5.0) -> dict:
+        """Ask Codex for its account-aware model catalog; cache is fallback."""
+        path = self._skills_dir.parent / "models_cache.json"
+        models: list[str] = []
+        effort_options: list[str] = []
+        model_efforts: dict[str, list[str]] = {}
+        error = None
+        source_at = None
+        binary = find_cli_executable("codex")
+        if binary:
+            try:
+                result = subprocess.run(
+                    [binary, "debug", "models"], capture_output=True, text=True,
+                    timeout=max(0.5, timeout_s), check=False,
+                )
+                if result.returncode != 0:
+                    raise ValueError((result.stderr or "codex debug models failed")[:300])
+                payload = json.loads(result.stdout)
+                for item in payload.get("models", []):
+                    if not isinstance(item, dict):
+                        continue
+                    value = str(item.get("slug") or item.get("id") or "").strip()
+                    if value and value not in models:
+                        models.append(value)
+                    per_model: list[str] = []
+                    for level in item.get("supported_reasoning_levels", []):
+                        effort = str(level.get("effort", "")).strip().lower()
+                        if effort and effort not in effort_options:
+                            effort_options.append(effort)
+                        if effort and effort not in per_model:
+                            per_model.append(effort)
+                    if value:
+                        model_efforts[value] = per_model
+                source_at = int(__import__("time").time())
+            except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as exc:
+                error = f"Native Codex model refresh failed: {exc}"
+        if not models and path.exists():
+            try:
+                payload = json.loads(path.read_text())
+                source_at = int(path.stat().st_mtime)
+                for item in payload.get("models", []):
+                    if not isinstance(item, dict):
+                        continue
+                    value = str(item.get("slug") or item.get("id") or "").strip()
+                    if value and value not in models:
+                        models.append(value)
+                    per_model = []
+                    for level in item.get("supported_reasoning_levels", []):
+                        effort = str(level.get("effort", "")).strip().lower()
+                        if effort and effort not in effort_options:
+                            effort_options.append(effort)
+                        if effort and effort not in per_model:
+                            per_model.append(effort)
+                    if value:
+                        model_efforts[value] = per_model
+                error = f"{error}; using local cache" if error else None
+            except (OSError, ValueError, TypeError) as exc:
+                error = f"Could not read Codex model cache: {exc}"
+        if not models and not error:
+            error = "Codex returned no models and has no readable local cache."
+        return {
+            "models": models,
+            "source": "codex debug models" if models and binary and not error else "Codex local models cache",
+            "source_updated_at": source_at,
+            "error": error,
+            "effort_options": effort_options,
+            "model_efforts": model_efforts,
+        }
+
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
-                   extra_allowed_tools="", mcp_config_path=None):
+                   effort="", extra_allowed_tools="", mcp_config_path=None):
         """Codex non-interactive: `codex exec --skip-git-repo-check [-m MODEL] -`.
         Codex reads MCP servers from ~/.codex/config.toml which the
         thread-keeper-setup installer already wires up — no
@@ -244,12 +314,27 @@ class CodexAdapter(CLIAdapter):
         map Claude's `bypassPermissions` request to Codex's explicit
         no-sandbox flag.
         """
-        bin_path = shutil.which("codex")
+        bin_path = find_cli_executable("codex")
         if not bin_path:
             return None
-        argv = [bin_path, "exec", "--skip-git-repo-check"]
+        # `--search` is a Codex global flag (it must precede `exec`). Curator
+        # requests Claude-style WebSearch/WebFetch capability through the
+        # adapter-neutral allowlist; translate that request to Codex's native
+        # web-search switch instead of silently launching a research-blind
+        # validator.
+        requested_tools = {
+            item.strip().lower()
+            for item in extra_allowed_tools.split(",")
+            if item.strip()
+        }
+        argv = [bin_path]
+        if {"websearch", "webfetch"} & requested_tools:
+            argv.append("--search")
+        argv += ["exec", "--skip-git-repo-check"]
         if model:
             argv += ["-m", model]
+        if effort:
+            argv += ["-c", f'model_reasoning_effort="{effort}"']
         if permission_mode == "bypassPermissions":
             argv.append("--dangerously-bypass-approvals-and-sandbox")
         else:
@@ -263,7 +348,7 @@ class CodexAdapter(CLIAdapter):
     def is_installed(self) -> bool:
         if self.config_path.exists() or self.sessions_dir.exists():
             return True
-        return shutil.which("codex") is not None
+        return bool(find_cli_executable("codex"))
 
     # ----- MCP registration ---------------------------------------------
     def register_mcp_server(

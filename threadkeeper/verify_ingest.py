@@ -25,15 +25,10 @@ layer.
 
 Adapter slots
 -------------
-The project targets four CLI families. Google's slot is special: the
-legacy ``gemini`` CLI is superseded by Antigravity (``agy``), and both
-live under ``~/.gemini``. Either adapter satisfies the Google slot, so a
-machine that has migrated from Gemini legacy to Antigravity still counts
-as covering the slot. (Note: the ``antigravity`` adapter does not yet
-parse its sqlite/protobuf conversation store, so on current builds the
-Google slot has no ingestible production source — that is a documented
-adapter gap, tracked under the "more adapters" roadmap item, not a
-verification failure of this harness.)
+The production ingest contract targets the three currently ingestible CLI
+families below. Antigravity (``agy``) is supported for MCP and spawning, but
+its sqlite/protobuf conversation store is not parsed yet; it is therefore
+reported as a capability gap rather than an impossible required ingest slot.
 """
 from __future__ import annotations
 
@@ -41,8 +36,8 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
 
-# Canonical CLI slots the multi-CLI rebuild targets. Order is display order.
-CANONICAL_SLOTS: tuple[str, ...] = ("claude-code", "codex", "copilot", "google")
+# Canonical slots with a production transcript parser. Order is display order.
+CANONICAL_SLOTS: tuple[str, ...] = ("claude-code", "codex", "copilot")
 
 # dialog_messages.source value -> canonical slot it satisfies.
 SLOT_BY_SOURCE: dict[str, str] = {
@@ -50,8 +45,8 @@ SLOT_BY_SOURCE: dict[str, str] = {
     "claude-desktop": "claude-code",  # same vendor surface, Claude slot
     "codex": "codex",
     "copilot": "copilot",
-    "gemini": "google",       # legacy Gemini CLI
-    "antigravity": "google",  # agy — successor path, same ~/.gemini root
+    # Antigravity is supported for MCP/spawn but its protobuf/sqlite transcript
+    # format is not ingestible yet, so it is intentionally not a required slot.
 }
 
 # A source with at least this many live rows counts as production-verified

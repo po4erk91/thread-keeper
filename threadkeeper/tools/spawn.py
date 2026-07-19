@@ -34,6 +34,7 @@ from ..tool_schemas import (
     SpawnTaskRss,
     SpawnStatus,
     CliCapability,
+    SpawnRoleResolution,
 )
 from ..helpers import fmt_age, q, alive
 from .. import identity  # noqa: F401  (kept for future identity.* attr access)
@@ -469,8 +470,6 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if not Path(cwd).exists():
         return f"ERR cwd_not_found={cwd}"
     bin_ = _claude_bin()
-    if not bin_:
-        return "ERR claude_cli_not_found (set CLAUDE_CODE_EXECPATH or install claude)"
     if _permission_mode_is_bypass(permission_mode) and not _bypass_permissions_allowed(
         role, write_origin
     ):
@@ -600,7 +599,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # Resolve which CLI agent should run this child. Claude is the
     # historical default and the only path with full MCP-config
     # injection + session-id + append-system-prompt translation; for
-    # codex/antigravity/gemini/copilot we take a simpler path via the adapter's
+    # codex/antigravity/copilot we take a simpler path via the adapter's
     # spawn_argv that builds basic argv only.
     from .. import spawn_config as _sc, identity as _id
     cli_clean = _sc.CLI_ALIASES.get(cli.strip().lower(), cli.strip().lower())
@@ -608,6 +607,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         return f"ERR spawn_unsupported cli={cli}"
     chosen_cli = cli_clean or _sc.resolve_agent(role or "", _id.active_cli())
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
+    chosen_effort = effort or _sc.resolve_effort(chosen_cli, role or "")
+    if chosen_cli == "claude" and not bin_:
+        return "ERR claude_cli_not_found (set CLAUDE_CODE_EXECPATH or install claude)"
     # Cross-provider egress (issue #74): tell the child which LLM vendor will
     # consume its brief() so render_brief gates personal-class memory
     # deterministically on the spawn path — not relying on the child's own
@@ -631,6 +633,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         cmd = _ad.spawn_argv(
             full_prompt,
             model=chosen_model,
+            effort=chosen_effort,
             permission_mode=permission_mode,
             extra_allowed_tools=extra_allowed_tools,
         )
@@ -717,8 +720,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         cmd += ["--allowedTools"] + allow
         if chosen_model:
             cmd += ["--model", chosen_model]
-        if effort:
-            cmd += ["--effort", effort]
+        if chosen_effort:
+            cmd += ["--effort", chosen_effort]
         slim_cfg = None
         # slim=True: load ONLY thread-keeper MCP server. Skips context7,
         # figma, stitch and every other MCP from ~/.claude.json —
@@ -770,7 +773,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
                 extra_allowed_tools, 1 if capture_output else 0,
-                1 if visible else 0, 1 if slim else 0, chosen_model, effort,
+                1 if visible else 0, 1 if slim else 0, chosen_model, chosen_effort,
                 append_system, chosen_cli, retry_of or None,
                 retry_root or None, int(retry_attempt or 0),
             ),
@@ -1314,10 +1317,13 @@ def spawn_status() -> SpawnStatus:
     Manual model pinning:
       • THREADKEEPER_SPAWN__MODEL__<CLI-or-ROLE>=<model>
 
+    Manual reasoning effort:
+      • THREADKEEPER_SPAWN__EFFORT__<CLI-or-ROLE>=<level>
+
     Returns structuredContent (SpawnStatus) plus the legacy text block.
     """
     from .. import spawn_config as _sc, identity as _id
-    from ..adapters import get_adapter
+    from ..model_catalog import settings_catalog
     active = _id.active_cli()
     role_resolution = _sc.summary_table(active)
     lines = [
@@ -1328,25 +1334,27 @@ def spawn_status() -> SpawnStatus:
         "",
         "spawn capability by CLI:",
     ]
+    catalog = settings_catalog(refresh=False)
     capabilities: list[CliCapability] = []
-    for cli in _sc.SUPPORTED_CLIS:
-        adapter = get_adapter(cli)
-        if not adapter:
-            capabilities.append(CliCapability(cli=cli, available=False, note="no adapter"))
-            lines.append(f"  {cli:<8} no adapter")
-            continue
-        argv = adapter.spawn_argv("test", model="")
-        if argv is None:
-            capabilities.append(CliCapability(cli=cli, available=False, note="not on PATH"))
-            lines.append(f"  {cli:<8} not on PATH")
-        else:
-            bin_short = argv[0].split("/")[-1]
-            capabilities.append(CliCapability(cli=cli, available=True, bin=bin_short))
-            lines.append(f"  {cli:<8} ok bin={bin_short}")
+    for item in catalog["clis"]:
+        capability = CliCapability(
+            cli=item["id"], available=item["installed"],
+            bin=(item.get("executable") or "").split("/")[-1] or None,
+            **{k: v for k, v in item.items() if k not in {"id", "installed", "name"}},
+        )
+        capabilities.append(capability)
+        state = "ok" if capability.available else "not on PATH"
+        lines.append(
+            f"  {capability.cli:<12} {state} version={capability.version or '-'} "
+            f"models={len(capability.models)} source={capability.model_source}"
+        )
+    roles = [SpawnRoleResolution(**item) for item in catalog["agent_roles"]]
     model = SpawnStatus(
         active_cli=active or None,
         role_resolution=role_resolution,
         capabilities=capabilities,
+        roles=roles,
+        catalog_generated_at=catalog["generated_at"],
     )
     return structured_result("\n".join(lines), model)
 

@@ -80,6 +80,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",     # disable search_proxy daemon
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",  # disable shadow daemon
         "THREADKEEPER_CURATOR_INTERVAL_S": "0",       # disable curator daemon
+        "THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS": "0",
         "THREADKEEPER_EXTRACT_INTERVAL_S": "0",       # disable extract daemon
         "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",  # disable candidate-reviewer daemon
         "THREADKEEPER_PROBE_INTERVAL_S": "0",         # disable probe daemon

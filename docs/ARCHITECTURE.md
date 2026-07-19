@@ -87,7 +87,7 @@ writes inside `site-packages`. Installed bundles store a source fingerprint in
 force a rebuild even when file mtimes make an older helper look newer than the
 packaged source. The menu-bar app uses AppKit `NSStatusItem` for an icon-only
 status-bar item and a SwiftUI popover for the panel. It polls
-`tk-agent-status --json` every 15 seconds off the main actor, receives loops
+`tk-agent-status --json` every two minutes off the main actor, receives loops
 sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
 backlog as due objective probes only, updates the idle chip / running gears
 directly on the status button, keeps loop counts in the popover/tooltip, and
@@ -96,14 +96,33 @@ popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
 a one-click pause/resume path for autonomous loops. The
 popover header gear opens a separate AppKit window
-for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`): SwiftUI guided
-controls cover common daemon, memory, and spawn-routing knobs, an advanced tab
-preserves raw `.env` text, three presets are stored in `UserDefaults`, and
-Save & Restart writes the file before terminating live `threadkeeper.server`
-processes so MCP hosts restart them with the new environment. Spawn routing UI
-stores `antigravity` as the canonical CLI key (`agy` is the executable alias),
-keeps `gemini` as a legacy Gemini CLI key, and uses exact dropdown values for
-model pins instead of free-text model strings.
+for editing `~/.threadkeeper/.env` (or `THREADKEEPER_ENV_FILE`). The SwiftUI
+sidebar separates CLI Agents, LLM-backed Learning Loop Agents, deterministic
+System Automation, Memory & Budgets, and Advanced raw editing. The app reads
+`tk-agent-status --settings-catalog`: adapter-owned discovery supplies current
+models, installed version, latest version from each vendor's official cloud
+source, source timestamp/freshness, supported efforts, and honest fallback when
+enumeration is unavailable. Version mismatches expose a confirmed Update button
+backed by the allowlisted `tk-agent-status --update-cli` path; no shell string is
+accepted from Swift. Python-owned
+agent metadata supplies the nine spawn roles and their read/write impact, so
+Swift does not carry a second drifting role list. Unknown raw keys, comments,
+ordering, duplicate assignments, and preset raw text are preserved. Guided
+controls are dropdown-only and render `_S` schedules as hours while retaining
+seconds in `.env` for compatibility; non-catalog values are edited only in
+Advanced `.env`. Guided and Advanced editing reconcile into one draft on every edit/navigation/save;
+catalog refresh preserves that draft. Active `AGY` model aliases migrate to
+canonical `ANTIGRAVITY`. Runtime chains come from Python rather than Swift
+re-resolution: process overrides are explicit, an unpinned helper reports
+`Active host CLI (fallback Claude)`, and draft values are labelled as a pending
+preview. Codex retains per-model reasoning levels so effort choices follow the
+selected model. Role effort keys remain canonical during cold catalog
+hydration, and process override banners include both nested spawn variables and
+the expanded `THREADKEEPER_SPAWN={...}` JSON form. Gemini Legacy keys are
+retained only as visible unsupported warnings. Reload/preset actions guard
+unsaved drafts, a reopened retained window does not reload over dirty state,
+and agent-specific models outside the selected CLI catalog stay visible with a
+provider-compatibility warning.
 Foreground parent MCP sessions also start `auto_update.py` when
 `THREADKEEPER_AUTO_UPDATE_INTERVAL_S>0` (86400 seconds by default). Each due pass
 is single-flight across live servers, records `events.kind='auto_update_pass'`,
@@ -329,8 +348,8 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   with its own mtime cursor (#2, generalized cross-CLI in #133):
   1. the **universal env-file** `~/.threadkeeper/.env` (`config._ENV_FILE`,
      overridable via `THREADKEEPER_ENV_FILE`). Every host's `Settings()` reads
-     this file, so it is the one layer that hot-reloads config for all seven
-     CLIs — not just Claude. On change it calls `config.reload_settings()` with
+     this file, so it is the one layer that hot-reloads config for all six
+     registered clients — not just Claude. On change it calls `config.reload_settings()` with
      **no** `os.environ` mirroring: pydantic re-reads the file natively and
      real spawn-time env vars keep precedence (env var > `.env` > default), so
      there is no precedence inversion.
@@ -421,13 +440,20 @@ moving the high-water forward; `force=True` bypasses this due gate.
   the validator prompt, then spawns one child behind `dialectic-validator.lock`
   plus the running validator-task check. Spawn failures release the just-claimed
   rows; parent crashes leave them under the normal stale-claim lease requeue.
-- **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
-  existing lessons / skills / concepts inventory through bounded slim-child
-  batches. Each batch prompt carries an explicit entry range and per-kind
-  counts; multi-batch runs write `REPORT-<pass>-batch-NNN-of-MMM.md` files.
-  Before spawning, it hashes the stable inventory state and compares it to the
-  last recorded complete/endorsed pass; unchanged snapshots record an
-  `unchanged_inventory` no-op event instead of re-deriving the same report.
+- **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
+  audits lessons, concepts, and every tracked/materialized skill through
+  bounded slim-child batches. A deterministic parent phase writes
+  `AUDIT-<pass-id>.json` with
+  per-consumer validation, link/resource checks, mirror integrity, normalized
+  exact duplicates, and lexical semantic candidates. The child reads each full
+  skill, researches current official docs and comparable public skills, writes
+  a numbered verdict, applies safe repairs/merges/deletes after the report, and
+  revalidates each changed skill. The stable fingerprint includes skill bytes
+  and mirrors. Identical manual calls debounce as `unchanged_inventory`, while
+  scheduled passes still run because external relevance can change without a
+  local-byte change. Each batch prompt carries an explicit entry range and
+  per-kind counts; multi-batch runs write
+  `REPORT-<pass>-batch-NNN-of-MMM.md` files.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
@@ -758,7 +784,7 @@ Python/MCP calls hit the same store as the parent.
 ### Cross-provider memory egress (issue #74)
 
 `spawn()` resolves the child's target CLI via `resolve_agent(role, active_cli)`
-and may route it to a third-party vendor (Codex→OpenAI, Gemini/Antigravity→
+and may route it to a third-party vendor (Codex→OpenAI, Antigravity→
 Google, Copilot→Microsoft). A slim child still loads the thread-keeper MCP, so
 it can call `brief()` and pull the **personal-class** user-model into a prompt
 processed by that vendor. `egress.py` is the control layer:
@@ -1198,7 +1224,6 @@ adapter that reports `hooks_supported()`. The wiring shape is identical
 | CLI            | hooks file                  | open-thread nudge path |
 |----------------|-----------------------------|------------------------|
 | Claude Code    | `~/.claude/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
-| Gemini legacy  | `~/.gemini/settings.json`   | `tk-thread-nudge.sh` (UserPromptSubmit) |
 | Copilot        | `~/.copilot/hooks.json`     | `tk-thread-nudge.sh` (UserPromptSubmit) |
 | Claude Desktop | — (no hook mechanism)       | in-`brief()` fallback  |
 | Codex          | — (no hook mechanism)       | in-`brief()` fallback  |
@@ -1302,7 +1327,7 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (112 total)
+## MCP tools (120 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -1328,7 +1353,7 @@ below).
 | lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 3 | curator_review, curator_review_status, curator_restore |
+| curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
@@ -1619,9 +1644,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick, restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |
+| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | `0` | explicit snapshot-scoped authority to repair/merge/delete foreground skills; pins and untracked provenance remain protected |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |

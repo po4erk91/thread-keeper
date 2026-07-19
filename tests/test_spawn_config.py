@@ -44,7 +44,7 @@ def test_resolve_uses_active_cli_when_no_override(tmp_path, monkeypatch):
     sc = _reset(monkeypatch, tmp_path)
     assert sc.resolve_agent("shadow_observer", "codex") == "codex"
     assert sc.resolve_agent("shadow_observer", "agy") == "antigravity"
-    assert sc.resolve_agent("shadow_observer", "gemini") == "gemini"
+    assert sc.resolve_agent("shadow_observer", "gemini") == "claude"
 
 
 def test_resolve_unknown_active_cli_falls_back_to_claude(tmp_path, monkeypatch):
@@ -92,10 +92,80 @@ def test_resolve_from_dotenv_file(tmp_path, monkeypatch):
 
 def test_resolve_env_beats_dotenv(tmp_path, monkeypatch):
     envf = tmp_path / "tk.env"
-    envf.write_text("THREADKEEPER_SPAWN__LOOP__CURATOR=gemini\n")
+    envf.write_text("THREADKEEPER_SPAWN__LOOP__CURATOR=antigravity\n")
     sc = _reset(monkeypatch, tmp_path,
                 env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "codex"}, env_file=str(envf))
     assert sc.resolve_agent("curator", "claude") == "codex"
+    detail = sc.resolution_details("curator", "claude")
+    assert detail["cli"] == "codex"
+    assert detail["cli_source"] == "process environment"
+    assert detail["cli_source_key"] == "THREADKEEPER_SPAWN__LOOP__CURATOR"
+    assert sc.runtime_spawn_overrides() == [{
+        "key": "THREADKEEPER_SPAWN__LOOP__CURATOR",
+        "value": "codex",
+        "source": "process_environment",
+    }]
+    import threadkeeper.identity as identity
+    import threadkeeper.model_catalog as model_catalog
+
+    monkeypatch.setattr(identity, "active_cli", lambda: None)
+    monkeypatch.setattr(model_catalog, "cli_catalog", lambda refresh=False: [])
+    catalog = model_catalog.settings_catalog()
+    curator = next(
+        item for item in catalog["agent_roles"] if item["role"] == "curator"
+    )
+    assert curator["cli"] == "codex"
+    assert curator["cli_source"] == "process environment"
+    assert catalog["runtime_overrides"][0]["key"].endswith("__CURATOR")
+
+
+def test_top_level_spawn_json_reports_expanded_process_sources(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN": (
+            '{"default":"codex","model":{"codex":"gpt-json"},'
+            '"effort":{"codex":"high"}}'
+        ),
+    })
+    detail = sc.resolution_details("curator", "claude")
+    assert detail["cli"] == "codex"
+    assert detail["cli_source"] == "process environment"
+    assert detail["cli_source_key"] == "THREADKEEPER_SPAWN"
+    assert detail["model"] == "gpt-json"
+    assert detail["model_source"] == "process environment"
+    assert detail["model_source_key"] == "THREADKEEPER_SPAWN"
+    assert detail["effort"] == "high"
+    assert detail["effort_source"] == "process environment"
+    rows = {row["key"]: row for row in sc.runtime_spawn_overrides()}
+    assert rows["THREADKEEPER_SPAWN__DEFAULT"]["value"] == "codex"
+    assert rows["THREADKEEPER_SPAWN__MODEL__CODEX"]["value"] == "gpt-json"
+    assert rows["THREADKEEPER_SPAWN__EFFORT__CODEX"]["value"] == "high"
+    assert {row["source"] for row in rows.values()} == {
+        "process_environment_json"
+    }
+
+
+def test_process_auto_override_suppresses_file_pin_and_remains_visible(
+    tmp_path, monkeypatch,
+):
+    envf = tmp_path / "tk.env"
+    envf.write_text("THREADKEEPER_SPAWN__LOOP__CURATOR=codex\n")
+    sc = _reset(
+        monkeypatch,
+        tmp_path,
+        env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"},
+        env_file=str(envf),
+    )
+    detail = sc.resolution_details("curator", "claude")
+    assert detail["cli"] == "claude"
+    assert detail["cli_source"] == "process environment"
+    assert detail["cli_source_key"] == "THREADKEEPER_SPAWN__LOOP__CURATOR"
+    assert sc.runtime_spawn_overrides() == [{
+        "key": "THREADKEEPER_SPAWN__LOOP__CURATOR",
+        "value": "auto",
+        "source": "process_environment",
+    }]
+    assert sc.agent_cli_is_dynamic("curator", None) is True
+    assert sc.agent_cli_is_dynamic("curator", "claude") is False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -115,12 +185,12 @@ def test_resolve_model_from_dotenv(tmp_path, monkeypatch):
     envf.write_text(
         "THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.4\n"
         'THREADKEEPER_SPAWN__MODEL__AGY="Gemini 3.1 Pro (High)"\n'
-        "THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-2.5-pro\n"
+        "THREADKEEPER_SPAWN__MODEL__GEMINI=removed-model\n"
     )
     sc = _reset(monkeypatch, tmp_path, env_file=str(envf))
     assert sc.resolve_model("codex") == "gpt-5.4"
     assert sc.resolve_model("antigravity") == "Gemini 3.1 Pro (High)"
-    assert sc.resolve_model("gemini") == "gemini-2.5-pro"
+    assert sc.resolve_model("gemini") == "removed-model"  # raw value stays inspectable
     assert sc.resolve_model("claude") == ""  # no entry
 
 
@@ -148,6 +218,23 @@ def test_per_role_model_beats_cli_model(tmp_path, monkeypatch):
     assert sc.resolve_model("claude", "dialectic_validator") == "haiku"
 
 
+def test_effort_resolution_role_then_cli_then_empty(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__EFFORT__CODEX": "high",
+        "THREADKEEPER_SPAWN__EFFORT__CURATOR": "xhigh",
+    })
+    assert sc.resolve_effort("codex", "curator") == "xhigh"
+    assert sc.resolve_effort("codex", "probe_runner") == "high"
+    assert sc.resolve_effort("claude", "probe_runner") == ""
+
+
+def test_effort_agy_alias(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__EFFORT__AGY": "high",
+    })
+    assert sc.resolve_effort("antigravity") == "high"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Active-CLI detection (env override path)
 # ──────────────────────────────────────────────────────────────────────
@@ -170,7 +257,7 @@ def test_active_cli_invalid_env_ignored(tmp_path, monkeypatch):
     from threadkeeper import identity
     identity._active_cli = None
     detected = identity.active_cli()
-    assert detected in (None, "claude", "codex", "antigravity", "gemini", "copilot")
+    assert detected in (None, "claude", "codex", "antigravity", "copilot")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -211,6 +298,16 @@ def test_codex_spawn_argv_uses_exec_subcommand(tmp_path, monkeypatch):
     assert ADAPTER.uses_stdin_prompt is True
 
 
+def test_codex_spawn_argv_applies_native_effort_override(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    from threadkeeper.adapters.codex import ADAPTER
+    argv = ADAPTER.spawn_argv("hello", model="gpt-test", effort="xhigh")
+    if argv is None:
+        pytest.skip("codex binary not installed in test env")
+    assert "-c" in argv
+    assert 'model_reasoning_effort="xhigh"' in argv
+
+
 def test_antigravity_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
     _reset(monkeypatch, tmp_path)
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
@@ -224,19 +321,6 @@ def test_antigravity_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
     assert "Gemini 3.1 Pro (High)" in argv
 
 
-def test_gemini_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
-    _reset(monkeypatch, tmp_path)
-    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
-        del sys.modules[name]
-    from threadkeeper.adapters.gemini import ADAPTER
-    argv = ADAPTER.spawn_argv("hello", model="gemini-2.5-pro")
-    if argv is None:
-        pytest.skip("gemini binary not installed in test env")
-    assert "-p" in argv
-    assert "--model" in argv
-    assert "gemini-2.5-pro" in argv
-
-
 def test_copilot_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
     _reset(monkeypatch, tmp_path)
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
@@ -247,6 +331,16 @@ def test_copilot_spawn_argv_uses_p_flag(tmp_path, monkeypatch):
         pytest.skip("copilot binary not installed in test env")
     assert "-p" in argv
     assert "hello" in argv
+    assert "--allow-all-tools" in argv
+
+
+def test_copilot_spawn_argv_includes_effort(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path)
+    from threadkeeper.adapters.copilot import ADAPTER
+    argv = ADAPTER.spawn_argv("hello", effort="high")
+    if argv is None:
+        pytest.skip("copilot binary not installed in test env")
+    assert argv[-2:] == ["--effort", "high"]
 
 
 def test_vscode_does_not_support_spawn(tmp_path, monkeypatch):
@@ -281,7 +375,7 @@ def test_get_adapter_recognises_short_names(tmp_path, monkeypatch):
     assert get_adapter("codex").name == "codex"
     assert get_adapter("antigravity").name == "antigravity"
     assert get_adapter("agy").name == "antigravity"
-    assert get_adapter("gemini").name == "gemini"
+    assert get_adapter("gemini") is None
     assert get_adapter("copilot").name == "copilot"
     assert get_adapter("claude-desktop").name == "claude-desktop"
     assert get_adapter("vscode").name == "vscode"
@@ -306,7 +400,7 @@ def test_summary_table_shows_overrides(tmp_path, monkeypatch):
     out = sc.summary_table("claude")
     assert "curator" in out
     assert "antigravity" in out
-    assert "spawn config" in out
+    assert "process environment" in out
     assert "warning:" not in out
 
 
@@ -318,8 +412,31 @@ def test_summary_table_includes_dialectic_validator_model(tmp_path, monkeypatch)
     out = sc.summary_table("claude")
     assert "dialectic_validator" in out
     assert "model=opus" in out
-    assert "spawn config" in out
+    assert "process environment" in out
     assert "warning:" not in out
+
+
+def test_summary_table_includes_effective_effort(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": "codex",
+        "THREADKEEPER_SPAWN__EFFORT__CODEX": "high",
+        "THREADKEEPER_SPAWN__EFFORT__CURATOR": "xhigh",
+    })
+    out = sc.summary_table("claude")
+    assert "curator" in out and "effort=xhigh" in out
+    assert "probe_runner" in out and "effort=high" in out
+
+
+def test_summary_table_warns_removed_gemini_and_antigravity_effort(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": "gemini",
+        "THREADKEEPER_SPAWN__MODEL__GEMINI": "old-model",
+        "THREADKEEPER_SPAWN__EFFORT__AGY": "high",
+    })
+    out = sc.summary_table("codex")
+    assert "DEFAULT='gemini' is not a supported CLI" in out
+    assert "MODEL__GEMINI='old-model' is not used" in out
+    assert "Antigravity encodes reasoning effort" in out
 
 
 def test_summary_table_warns_invalid_spawn_cli(tmp_path, monkeypatch):
@@ -386,3 +503,21 @@ def test_summary_table_no_mismatch_for_claude_model_on_claude(tmp_path, monkeypa
     })
     out = sc.summary_table("claude")
     assert "warning:" not in out
+
+
+@pytest.mark.parametrize(
+    ("cli", "model"),
+    [
+        ("copilot", "claude-sonnet-4.6"),
+        ("antigravity", "Claude Opus 4.6 (Thinking)"),
+    ],
+)
+def test_cross_provider_advertised_claude_models_are_not_rejected(
+    tmp_path, monkeypatch, cli, model,
+):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__DEFAULT": cli,
+        f"THREADKEEPER_SPAWN__MODEL__{cli.upper()}": model,
+    })
+    out = sc.summary_table(None)
+    assert "Claude-family model" not in out

@@ -66,7 +66,7 @@ At session start:
     (`~/.threadkeeper/hooks/tk-brief.sh`) auto-injects `brief()` +
     `context()` — and `live_status()` if `live=N>0`.
   * On CLIs without thread-keeper hooks (Codex, Antigravity CLI/`agy`,
-    Gemini legacy, …), call `brief()` and `context()` yourself before
+    Copilot, …), call `brief()` and `context()` yourself before
     the first answer.
     If the user's opening message is substantive, pass it as `query`
     to `brief()` to inline relevant past notes.
@@ -92,7 +92,7 @@ that gives you enough context):
   1. `thread-keeper.search()` — stored partner notes
   2. `thread-keeper.dialog_search()` — full transcripts ingested from
      ALL connected CLIs (Claude Code, Codex, Antigravity CLI/agy,
-     Gemini legacy, Copilot)
+     Copilot)
   3. CLI-native conversation history search (e.g. `conversation_search`
      for Claude Desktop), if available
 
@@ -279,7 +279,7 @@ def _install_managed_block(fp: Path, dry_run: bool) -> str:
 
 def install_instructions(dry_run: bool) -> list[str]:
     """Write the managed thread-keeper block to every detected CLI's
-    per-user instructions file (CLAUDE.md, AGENTS.md, GEMINI.md). CLIs
+    per-user instructions file (CLAUDE.md, AGENTS.md, Copilot instructions). CLIs
     without a global instructions convention are skipped."""
     from .adapters import installed_adapters
     lines: list[str] = []

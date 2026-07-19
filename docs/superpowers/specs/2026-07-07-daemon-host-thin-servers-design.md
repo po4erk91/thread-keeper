@@ -6,7 +6,7 @@
 
 ## Problem
 
-Every CLI session (Claude Code / Desktop, Codex, Antigravity, Gemini, Copilot,
+Every CLI session (Claude Code / Desktop, Codex, Antigravity, Copilot,
 VS Code) launches its own **full** MCP server: `python -m threadkeeper.server`
 → `mcp.run()`. In each such foreground process, `identity._ensure_session`
 starts **all ~15 background daemons** (retention, curator, shadow, extract,

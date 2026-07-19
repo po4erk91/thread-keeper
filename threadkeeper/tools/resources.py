@@ -11,7 +11,7 @@ pull automatically) — for the genuinely read-only memory snapshots:
   * ``memory://agent-status`` — autonomous-loop status snapshot
 
 Why resources and not just the existing tools: on hookless CLIs (Codex /
-Antigravity / Gemini-legacy / Copilot) the managed instructions block asks the
+Antigravity / Copilot) the managed instructions block asks the
 agent to *remember* to call ``brief()`` before answering, and the project's own
 docs note agents focused on their task often skip such calls. A Resource lets
 the host surface the brief as attachable / ``@``-mentionable read-only context

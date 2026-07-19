@@ -344,6 +344,7 @@ def test_spawn_settings_defaults(monkeypatch):
     assert c.settings.spawn.default == ""
     assert c.settings.spawn.loop == {}
     assert c.settings.spawn.model == {}
+    assert c.settings.spawn.effort == {}
 
 
 def test_spawn_nested_env(monkeypatch):
@@ -352,3 +353,23 @@ def test_spawn_nested_env(monkeypatch):
         monkeypatch, env={"THREADKEEPER_SPAWN__MODEL__CLAUDE": "sonnet"}
     )
     assert c.settings.spawn.model.get("claude") == "sonnet"
+
+
+def test_spawn_nested_effort_env(monkeypatch):
+    c = _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_SPAWN__EFFORT__CURATOR": "xhigh"},
+    )
+    assert c.settings.spawn.effort.get("curator") == "xhigh"
+
+
+def test_removed_gemini_nested_keys_warn_as_unknown(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config")
+    _fresh_config(
+        monkeypatch,
+        env={"THREADKEEPER_SPAWN__MODEL__GEMINI": "old-model"},
+    )
+    assert any(
+        "THREADKEEPER_SPAWN__MODEL__GEMINI" in rec.getMessage()
+        for rec in caplog.records
+    )

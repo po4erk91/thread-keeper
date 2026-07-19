@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.po4erk91/thread-keeper",
   "title": "thread-keeper",
-  "description": "Multi-agent shared brain across Claude, Codex, Antigravity, Gemini, Copilot, and VS Code.",
+  "description": "Multi-agent shared brain across Claude, Codex, Antigravity, Copilot, and VS Code.",
   "repository": {
     "url": "https://github.com/po4erk91/thread-keeper",
     "source": "github"
   },
-  "version": "0.15.0",
+  "version": "0.16.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "threadkeeper",
-      "version": "0.15.0",
+      "version": "0.16.0",
       "transport": {
         "type": "stdio"
       }

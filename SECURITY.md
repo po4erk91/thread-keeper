@@ -180,7 +180,7 @@ Out of scope:
 - Issues that require pre-existing local code execution on the user's
   machine (thread-keeper trusts its host process by design)
 - Behavior of the underlying CLIs themselves (Claude Code, Codex,
-  Antigravity CLI, Gemini legacy, Copilot, VS Code) — those have their own
+  Antigravity CLI, Copilot, VS Code) — those have their own
   programs
 
 ## Supported versions

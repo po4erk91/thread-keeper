@@ -141,11 +141,10 @@ remains a live question.
   review spans >1 adapter in one window, and the learning loop fires on
   non-Claude sessions — into a `PASS`/`PARTIAL`/`FAIL` verdict
   (`threadkeeper/verify_ingest.py`). Turns the ad-hoc, one-off manual check
-  into a single reproducible command. Note: the "Google" slot is currently
-  covered by data only when Gemini-legacy transcripts exist; the Antigravity
-  (`agy`) successor adapter does not yet parse its sqlite/protobuf
-  conversation store (tracked below under "more adapters"), so on a
-  migrated-to-`agy` box that slot reports absent until that ingestion lands.
+  into a single reproducible command. Antigravity (`agy`) does not yet parse
+  its sqlite/protobuf conversation store (tracked below under "more
+  adapters"), so it is reported as a capability gap instead of a permanently
+  absent required ingest slot.
 - Dialog transcript secret redaction (#37): live ingest now scrubs common
   credential-shaped values before writing transcript content to
   `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The default-on
@@ -190,8 +189,8 @@ remains a live question.
 ## Open
 
 **More IDE / agent adapters — Cursor, Windsurf, JetBrains, Zed, etc.**
-Current registry covers seven clients (Claude Code / Claude Desktop /
-Codex CLI + desktop / Antigravity CLI `agy` / Gemini legacy / Copilot /
+Current registry covers six clients (Claude Code / Claude Desktop /
+Codex CLI + desktop / Antigravity CLI `agy` / Copilot /
 VS Code). The MCP ecosystem is wider:
 
 - **Cursor** — AI-first VS Code fork, has its own MCP config at
@@ -366,13 +365,16 @@ line.
 Going forward: keep in sync when the set of tools or daemons changes.
 Scope: ongoing.
 
-**Curator policy tuning.** ✅ DONE — superseded the old time-based archive
-heuristic. `curator_run` now spawns a slim child that grades every lesson +
-recently-active skill (and any concepts) against an explicit rubric
-(KEEP / PATCH / CONSOLIDATE / PRUNE), writes an auditable
-`REPORT-<isodate>.md`, and — **destructive-by-default** — applies its own
-PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove` /
-`skill_manage`. `[PROTECTED]` entries are refused server-side:
+**Curator policy tuning.** ✅ DONE — now a three-day deep audit rather than the
+old telemetry-only archive heuristic. A deterministic parent phase inventories
+every tracked/materialized skill and validates CLI compatibility, resources,
+links, mirrors, exact duplicates, and semantic candidates. The child reads
+every full skill, performs current official-doc/comparable-skill web research,
+records numbered KEEP / REPAIR / UPDATE / MERGE / SPLIT / DEPRECATE / DELETE /
+CROSS_LINK / HUMAN_REVIEW verdicts, and revalidates after applying changes.
+`REPORT-<isodate>.md` and `AUDIT-<isodate>.json` provide the audit trail.
+`[PROTECTED]` entries are refused server-side unless the explicit, snapshot-
+scoped foreground-skill authority is enabled:
 `lesson_append` stamps `origin=<THREADKEEPER_WRITE_ORIGIN>` into each lesson
 section, legacy/unknown-origin lessons fail closed, skill deletion refuses
 foreground/unknown provenance, and non-foreground children cannot escalate with
