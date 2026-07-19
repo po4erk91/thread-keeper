@@ -422,9 +422,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   plus the running validator-task check. Spawn failures release the just-claimed
   rows; parent crashes leave them under the normal stale-claim lease requeue.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
-  existing lessons / skills / concepts inventory through one slim child. Before
-  spawning, it hashes the stable inventory state and compares it to the last
-  recorded complete/endorsed pass; unchanged snapshots record an
+  existing lessons / skills / concepts inventory through bounded slim-child
+  batches. Each batch prompt carries an explicit entry range and per-kind
+  counts; multi-batch runs write `REPORT-<pass>-batch-NNN-of-MMM.md` files.
+  Before spawning, it hashes the stable inventory state and compares it to the
+  last recorded complete/endorsed pass; unchanged snapshots record an
   `unchanged_inventory` no-op event instead of re-deriving the same report.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
@@ -432,7 +434,9 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `curator.lock` plus the running curator-task check, so multiple foreground
   servers do not re-read and spawn against the same snapshot.
   `curator_review_status()` exposes the last
-  endorsed `inventory_sha256` and the current inventory hash.
+  endorsed `inventory_sha256` and the current inventory hash. Spawned
+  `curator_pass` events record total entries, batch count, compressed
+  `batch_entries`, and max rendered batch chars.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
   for security/privacy risks, memory leaks, runaway daemons, cost waste,
@@ -817,6 +821,11 @@ optional 24h spawned-child token and dollar ceilings when
   (`0600`), matching the stdin prompt spool. The task spool defaults to
   `~/.threadkeeper/tasks` (`0700`) and configured directories are refused when
   symlinked or owned by another user.
+- Claude prompt argv is capped at 96 KiB. If the prompt exceeds that bound,
+  `spawn()` omits the prompt positional argument, writes the prompt to
+  `<task>.stdin.txt` with the same owner-only spool helper, and feeds it through
+  stdin. This avoids Linux's 128 KiB single-argv-string ceiling while keeping
+  the non-Claude stdin adapter path unchanged.
 - Daemon ticks run only in foreground parent processes and update real RSS via
   `ps`; unreadable RSS samples preserve the last-known `rss_kb`, and every open
   row is swept for dead root pids → `ended_at`.

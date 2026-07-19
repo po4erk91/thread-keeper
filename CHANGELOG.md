@@ -9,6 +9,13 @@ version bumps follow semver per the policy in
 
 ### Fixed
 
+- **Destructive Curator prompts are now bounded (#105).** Curator passes split
+  lessons/skills/concepts inventory into complete batches, report entries /
+  batch counts in `curator_pass`, and cap the dry-run inventory preview with
+  omitted-entry telemetry. Claude `spawn()` also keeps prompt argv under 96 KiB
+  and feeds larger prompts through the owner-only stdin spool to avoid Linux
+  `E2BIG`.
+
 - **Codex transcript ingest keeps timestamp-colliding fallback messages (#97).**
   Fallback message UUIDs now include the rollout line index, and forced child
   cid detection happens during the normal JSONL pass instead of opening each
