@@ -102,8 +102,8 @@ struct UsefulResult: Decodable, Identifiable {
 }
 
 private let panelWidth: CGFloat = 380
-private let settingsWindowWidth: CGFloat = 760
-private let settingsWindowHeight: CGFloat = 720
+private let settingsWindowWidth: CGFloat = 980
+private let settingsWindowHeight: CGFloat = 760
 private let statusPollInterval: TimeInterval = 120.0
 private let disableBackgroundDaemonsKey = "THREADKEEPER_DISABLE_BG_DAEMONS"
 
@@ -116,18 +116,179 @@ private func threadKeeperEnvFileURL() -> URL {
     return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
 }
 
-enum EnvSettingsTab: String, CaseIterable, Identifiable {
-    case guided = "Guided"
-    case raw = "Raw .env"
+enum EnvSettingsSection: String, CaseIterable, Identifiable {
+    case cliAgents = "CLI Agents"
+    case learningAgents = "Learning Loop Agents"
+    case automation = "System Automation"
+    case memory = "Memory & Budgets"
+    case advanced = "Advanced .env"
 
     var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .cliAgents: return "terminal"
+        case .learningAgents: return "brain.head.profile"
+        case .automation: return "gearshape.2"
+        case .memory: return "memorychip"
+        case .advanced: return "doc.text"
+        }
+    }
 }
 
 enum EnvSettingKind {
     case toggle
-    case number
-    case text
     case choice([ChoiceOption])
+    case model([ChoiceOption])
+}
+
+struct SettingsCatalogSnapshot: Decodable {
+    let generatedAt: Int
+    let activeCLI: String?
+    let clis: [CLICatalogEntry]
+    let agentRoles: [LearningAgentDefinition]
+    let mechanicalJobs: [MechanicalJobDefinition]
+    let runtimeOverrides: [RuntimeSpawnOverride]
+    let warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case activeCLI = "active_cli"
+        case clis
+        case agentRoles = "agent_roles"
+        case mechanicalJobs = "mechanical_jobs"
+        case runtimeOverrides = "runtime_overrides"
+        case warnings
+    }
+}
+
+struct RuntimeSpawnOverride: Decodable, Identifiable {
+    let key: String
+    let value: String
+    let source: String
+
+    var id: String { key }
+}
+
+struct CLICatalogEntry: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let installed: Bool
+    let executable: String
+    let version: String
+    let models: [String]
+    let modelSource: String
+    let sourceUpdatedAt: Int?
+    let catalogRefreshedAt: Int
+    let catalogAgeS: Int
+    let stale: Bool
+    let error: String?
+    let configuredModel: String
+    let configuredModelInCatalog: Bool
+    let supportsCustomModel: Bool
+    let effortOptions: [String]
+    let modelEfforts: [String: [String]]
+    let effortMode: String
+    let effortNote: String
+    let configuredEffort: String
+    let latestVersion: String?
+    let latestVersionSource: String?
+    let releaseURL: String?
+    let versionCheckError: String?
+    let updateAvailable: Bool?
+    let updateSupported: Bool?
+    let updateCommandLabel: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, installed, executable, version, models, stale, error
+        case modelSource = "model_source"
+        case sourceUpdatedAt = "source_updated_at"
+        case catalogRefreshedAt = "catalog_refreshed_at"
+        case catalogAgeS = "catalog_age_s"
+        case configuredModel = "configured_model"
+        case configuredModelInCatalog = "configured_model_in_catalog"
+        case supportsCustomModel = "supports_custom_model"
+        case effortOptions = "effort_options"
+        case modelEfforts = "model_efforts"
+        case effortMode = "effort_mode"
+        case effortNote = "effort_note"
+        case configuredEffort = "configured_effort"
+        case latestVersion = "latest_version"
+        case latestVersionSource = "latest_version_source"
+        case releaseURL = "release_url"
+        case versionCheckError = "version_check_error"
+        case updateAvailable = "update_available"
+        case updateSupported = "update_supported"
+        case updateCommandLabel = "update_command_label"
+    }
+}
+
+struct CLIUpdateResult: Decodable {
+    let cli: String
+    let updated: Bool
+    let currentVersion: String
+    let latestVersion: String
+    let command: String
+    let message: String
+    let output: String
+
+    enum CodingKeys: String, CodingKey {
+        case cli, updated, command, message, output
+        case currentVersion = "current_version"
+        case latestVersion = "latest_version"
+    }
+}
+
+struct LearningAgentDefinition: Decodable, Identifiable {
+    let role: String
+    let name: String
+    let description: String
+    let reads: String
+    let writes: String
+    let impact: String
+    let intervalKey: String
+    let cli: String
+    let cliSource: String
+    let model: String
+    let modelSource: String
+    let effort: String
+    let effortSource: String
+    let cliSourceKey: String
+    let modelSourceKey: String
+    let effortSourceKey: String
+    let cliDynamic: Bool
+    let cliInherited: Bool
+    let modelInherited: Bool
+    let effortInherited: Bool
+
+    var id: String { role }
+
+    enum CodingKeys: String, CodingKey {
+        case role, name, description, reads, writes, impact, cli, model, effort
+        case intervalKey = "interval_key"
+        case cliSource = "cli_source"
+        case modelSource = "model_source"
+        case effortSource = "effort_source"
+        case cliSourceKey = "cli_source_key"
+        case modelSourceKey = "model_source_key"
+        case effortSourceKey = "effort_source_key"
+        case cliDynamic = "cli_dynamic"
+        case cliInherited = "cli_inherited"
+        case modelInherited = "model_inherited"
+        case effortInherited = "effort_inherited"
+    }
+}
+
+struct MechanicalJobDefinition: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let description: String
+    let intervalKey: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case intervalKey = "interval_key"
+    }
 }
 
 struct ChoiceOption: Hashable {
@@ -151,177 +312,45 @@ struct EnvSettingDefinition: Identifiable {
     var id: String { key }
 }
 
-private func choiceOptions(_ values: [String]) -> [ChoiceOption] {
-    values.map { ChoiceOption($0) }
+private func choiceOptions(_ values: [String], preserving preserved: [String] = []) -> [ChoiceOption] {
+    var seen: Set<String> = []
+    return (values + preserved).compactMap { value in
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, seen.insert(cleaned).inserted else { return nil }
+        return ChoiceOption(cleaned)
+    }
 }
 
-private let cliChoices = [
-    ChoiceOption("claude"),
-    ChoiceOption("codex"),
-    ChoiceOption("antigravity", label: "antigravity (agy)"),
-    ChoiceOption("gemini", label: "gemini (legacy)"),
-    ChoiceOption("copilot"),
+private let hourScheduleChoices = [
+    ChoiceOption("0", label: "Off"),
+    ChoiceOption("30", label: "0.008 h"),
+    ChoiceOption("60", label: "0.017 h"),
+    ChoiceOption("300", label: "0.083 h"),
+    ChoiceOption("900", label: "0.25 h"),
+    ChoiceOption("1800", label: "0.5 h"),
+    ChoiceOption("3600", label: "1 h"),
+    ChoiceOption("10800", label: "3 h"),
+    ChoiceOption("21600", label: "6 h"),
+    ChoiceOption("43200", label: "12 h"),
+    ChoiceOption("86400", label: "24 h · 1 day"),
+    ChoiceOption("172800", label: "48 h · 2 days"),
+    ChoiceOption("259200", label: "72 h · 3 days"),
+    ChoiceOption("604800", label: "168 h · 7 days"),
+    ChoiceOption("2592000", label: "720 h · 30 days"),
 ]
 
-private let claudeModelChoices = choiceOptions([
-    "opus",
-    "sonnet",
-    "fable",
-    "claude-fable-5",
+private let memoryLimitChoices = choiceOptions([
+    "0", "256", "512", "768", "1024", "1536", "2048", "3072",
+    "4096", "6144", "8192", "12288",
 ])
 
-private let codexModelChoices = choiceOptions([
-    "gpt-5.5",
-    "gpt-5.4-mini",
+private let eventCountChoices = choiceOptions([
+    "1", "2", "5", "10", "20", "50", "100",
 ])
 
-private let antigravityModelChoices = choiceOptions([
-    "Gemini 3.5 Flash (Medium)",
-    "Gemini 3.5 Flash (High)",
-    "Gemini 3.5 Flash (Low)",
-    "Gemini 3.1 Pro (High)",
-    "Gemini 3.1 Pro (Low)",
-    "Claude Opus 4.6 (Thinking)",
-    "Claude Sonnet 4.6 (Thinking)",
-    "GPT-OSS 120B (Medium)",
+private let serverCountChoices = choiceOptions([
+    "1", "2", "3", "4", "6", "8",
 ])
-
-private let geminiLegacyModelChoices = choiceOptions([
-    "auto",
-    "pro",
-    "flash",
-    "flash-lite",
-    "gemini-3.1-pro-preview",
-    "gemini-3-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-])
-
-private let roleModelChoices = (
-    claudeModelChoices
-        + codexModelChoices
-        + antigravityModelChoices
-        + geminiLegacyModelChoices
-).reduce(into: [ChoiceOption]()) { result, option in
-    if !result.contains(where: { $0.value == option.value }) {
-        result.append(option)
-    }
-}
-
-// Every autonomous loop that actually spawns a child agent. The env key
-// suffix is the role token; `activity` fills the human-readable descriptions so
-// the Spawn Routing panel lists every role explicitly (CLI + model per role)
-// instead of a hand-picked subset. Keep in sync with spawn_config.SUMMARY_ROLES
-// (the roles that reach a spawn() call-site).
-private struct SpawnRole {
-    let token: String
-    let label: String
-    let activity: String
-}
-
-private let spawnRoles: [SpawnRole] = [
-    SpawnRole(token: "SHADOW_OBSERVER", label: "Shadow observer",
-              activity: "scans recent dialog for durable lessons and skills"),
-    SpawnRole(token: "ARCHIVIST", label: "Archivist",
-              activity: "materializes a closed thread into a skill"),
-    SpawnRole(token: "CURATOR", label: "Curator",
-              activity: "audits, dedups and prunes the lessons/skills library"),
-    SpawnRole(token: "CANDIDATE_REVIEWER", label: "Candidate reviewer",
-              activity: "triages the extract-candidate queue into skills"),
-    SpawnRole(token: "DIALECTIC_VALIDATOR", label: "Dialectic validator",
-              activity: "turns observations into user-model claims"),
-    SpawnRole(token: "PROBE_RUNNER", label: "Probe runner",
-              activity: "runs self-diagnostic reliability probes"),
-    SpawnRole(token: "EVOLVE_REVIEWER", label: "Evolve reviewer",
-              activity: "audits the repo and files roadmap issues"),
-    SpawnRole(token: "EVOLVE_APPLIER", label: "Evolve applier",
-              activity: "implements a roadmap issue and opens a PR"),
-]
-
-// The full Spawn Routing surface, generated so no knob is missing:
-//   • Spawn Routing            — Default CLI + which CLI runs each role
-//   • Spawn Models (per CLI)   — the model each CLI uses
-//   • Spawn Models (per role)  — optional per-role model override
-private let spawnRoutingDefinitions: [EnvSettingDefinition] =
-    [
-        EnvSettingDefinition(
-            group: "Spawn Routing",
-            key: "THREADKEEPER_SPAWN__DEFAULT",
-            title: "Default CLI",
-            detail: "Agent CLI for every role that has no explicit route below.",
-            defaultValue: "",
-            kind: .choice(cliChoices)
-        )
-    ]
-    + spawnRoles.map { role in
-        EnvSettingDefinition(
-            group: "Spawn Routing",
-            key: "THREADKEEPER_SPAWN__LOOP__\(role.token)",
-            title: "\(role.label) → CLI",
-            detail: "Which CLI runs the loop that \(role.activity). "
-                + "Default = the Default CLI above.",
-            defaultValue: "",
-            kind: .choice(cliChoices)
-        )
-    }
-    + [
-        EnvSettingDefinition(
-            group: "Spawn Models (per CLI)",
-            key: "THREADKEEPER_SPAWN__MODEL__CLAUDE",
-            title: "Claude model",
-            detail: "Model passed to Claude Code --model, for claude-routed roles.",
-            defaultValue: "",
-            kind: .choice(claudeModelChoices)
-        ),
-        EnvSettingDefinition(
-            group: "Spawn Models (per CLI)",
-            key: "THREADKEEPER_SPAWN__MODEL__CODEX",
-            title: "Codex model",
-            detail: "Base model passed to `codex exec -m`, for codex-routed roles.",
-            defaultValue: "",
-            kind: .choice(codexModelChoices)
-        ),
-        EnvSettingDefinition(
-            group: "Spawn Models (per CLI)",
-            key: "THREADKEEPER_SPAWN__MODEL__AGY",
-            title: "Antigravity model",
-            detail: "Model label from `agy models`; agy is the Antigravity executable.",
-            defaultValue: "",
-            kind: .choice(antigravityModelChoices)
-        ),
-        EnvSettingDefinition(
-            group: "Spawn Models (per CLI)",
-            key: "THREADKEEPER_SPAWN__MODEL__GEMINI",
-            title: "Gemini (legacy) model",
-            detail: "Model id or alias passed to the legacy gemini --model.",
-            defaultValue: "",
-            kind: .choice(geminiLegacyModelChoices)
-        ),
-        EnvSettingDefinition(
-            group: "Spawn Models (per CLI)",
-            key: "THREADKEEPER_SPAWN__MODEL__COPILOT",
-            title: "Copilot model",
-            detail: "Model passed to copilot --model, for copilot-routed roles.",
-            defaultValue: "",
-            kind: .text
-        )
-    ]
-    + spawnRoles.map { role in
-        EnvSettingDefinition(
-            group: "Spawn Models (per role)",
-            key: "THREADKEEPER_SPAWN__MODEL__\(role.token)",
-            title: "\(role.label) model",
-            detail: "Overrides this role's model; Default = its CLI's model. "
-                + "Must be valid for the CLI the role runs on.",
-            defaultValue: "",
-            kind: .choice(roleModelChoices)
-        )
-    }
-
-private let envSettingDefinitions: [EnvSettingDefinition] =
-    baseEnvSettingDefinitions + spawnRoutingDefinitions
 
 private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
     EnvSettingDefinition(
@@ -354,15 +383,15 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Menu-bar restart RSS",
         detail: "Restarts this helper at the selected MB threshold; 0 disables.",
         defaultValue: "1024",
-        kind: .number
+        kind: .choice(memoryLimitChoices)
     ),
     EnvSettingDefinition(
         group: "Core",
         key: "THREADKEEPER_AUTO_UPDATE_INTERVAL_S",
-        title: "Auto-update interval",
-        detail: "Seconds between MCP self-update checks; 0 disables.",
+        title: "Auto-update interval (hours)",
+        detail: "Choose the cadence in hours; Off disables package checks.",
         defaultValue: "86400",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Core",
@@ -387,7 +416,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Shadow review interval",
         detail: "Reviews closed work for memory or skill candidates.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -395,7 +424,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Curator interval",
         detail: "Audits and consolidates materialized lessons.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -403,7 +432,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Extract interval",
         detail: "Mines recent dialog for structured memory candidates.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -411,7 +440,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Candidate review interval",
         detail: "Promotes or rejects extracted candidates.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -419,7 +448,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Evolve review interval",
         detail: "Reviews proposed code or docs evolution work.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -427,7 +456,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Evolve apply interval",
         detail: "Applies promoted evolve work; keep deliberate.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -435,15 +464,15 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Thread janitor interval",
         detail: "Closes idle working-memory threads.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
         key: "THREADKEEPER_PROBE_INTERVAL_S",
         title: "Probe interval",
-        detail: "Runs reliability probes; 1800 is a typical active value.",
+        detail: "Runs reliability probes at the selected hourly cadence.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -451,7 +480,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Dialectic mine interval",
         detail: "Finds candidate claims from dialog.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
         group: "Learning Loops",
@@ -459,7 +488,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Dialectic validate interval",
         detail: "Validates queued dialectic claims.",
         defaultValue: "0",
-        kind: .number
+        kind: .choice(hourScheduleChoices)
     ),
 
     EnvSettingDefinition(
@@ -468,7 +497,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Memory nudge interval",
         detail: "Number of events before the memory-save nudge appears.",
         defaultValue: "10",
-        kind: .number
+        kind: .choice(eventCountChoices)
     ),
     EnvSettingDefinition(
         group: "Memory And Budgets",
@@ -476,7 +505,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Skill nudge interval",
         detail: "Number of events before skill-materialization checks.",
         defaultValue: "10",
-        kind: .number
+        kind: .choice(eventCountChoices)
     ),
     EnvSettingDefinition(
         group: "Memory And Budgets",
@@ -484,7 +513,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Spawn budget",
         detail: "Aggregate child-agent RSS budget in MB; 0 disables.",
         defaultValue: "3072",
-        kind: .number
+        kind: .choice(memoryLimitChoices)
     ),
     EnvSettingDefinition(
         group: "Memory And Budgets",
@@ -492,7 +521,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Memory guard warn",
         detail: "Warn threshold per server process, in MB.",
         defaultValue: "1536",
-        kind: .number
+        kind: .choice(memoryLimitChoices)
     ),
     EnvSettingDefinition(
         group: "Memory And Budgets",
@@ -500,7 +529,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Memory guard kill",
         detail: "Kill threshold per server process, in MB.",
         defaultValue: "3072",
-        kind: .number
+        kind: .choice(memoryLimitChoices)
     ),
     EnvSettingDefinition(
         group: "Memory And Budgets",
@@ -508,20 +537,9 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         title: "Target server count",
         detail: "Number of MCP server processes to keep after reclaim.",
         defaultValue: "1",
-        kind: .number
+        kind: .choice(serverCountChoices)
     ),
 ]
-// Spawn Routing sections are generated in `spawnRoutingDefinitions` above so
-// every role/CLI/model knob is listed — see envSettingDefinitions.
-
-private var envSettingGroups: [String] {
-    var groups: [String] = []
-    for definition in envSettingDefinitions where !groups.contains(definition.group) {
-        groups.append(definition.group)
-    }
-    return groups
-}
-
 struct EnvPresetSlot: Codable, Identifiable {
     let slot: Int
     var name: String
@@ -546,6 +564,13 @@ final class EnvSettingsStore: ObservableObject {
     @Published var statusMessage = ""
     @Published var isSaving = false
     @Published var isLoaded = false
+    @Published var catalog: SettingsCatalogSnapshot?
+    @Published var isCatalogLoading = false
+    @Published var catalogError = ""
+    @Published var configurationWarnings: [String] = []
+    @Published var isDraftDirty = false
+    @Published var updatingCLIID = ""
+    @Published var cliUpdateMessage = ""
 
     private weak var agentStore: AgentStatusStore?
     private let presetDefaultsKey = "threadkeeperEnvPresetSlotsV1"
@@ -563,6 +588,136 @@ final class EnvSettingsStore: ObservableObject {
         Self.boolValue(values[disableBackgroundDaemonsKey] ?? "") ?? false
     }
 
+    var cliChoices: [ChoiceOption] {
+        (catalog?.clis ?? []).map { ChoiceOption($0.id, label: $0.name) }
+    }
+
+    var allDefinitions: [EnvSettingDefinition] {
+        var definitions = baseEnvSettingDefinitions
+        let clis = catalog?.clis ?? []
+        let choices = cliChoices
+        if !choices.isEmpty {
+            definitions.append(EnvSettingDefinition(
+                group: "CLI Agents",
+                key: "THREADKEEPER_SPAWN__DEFAULT",
+                title: "Default CLI",
+                detail: "Inherited by every Learning Loop agent without an override.",
+                defaultValue: "",
+                kind: .choice(choices)
+            ))
+        }
+        for cli in clis {
+            let token = cli.id.uppercased()
+            let modelKey = "THREADKEEPER_SPAWN__MODEL__\(token)"
+            let effortKey = "THREADKEEPER_SPAWN__EFFORT__\(token)"
+            definitions.append(EnvSettingDefinition(
+                group: "CLI Agents",
+                key: modelKey,
+                title: "\(cli.name) default model",
+                detail: "CLI default when an agent has no model override.",
+                defaultValue: "CLI default",
+                kind: .model(choiceOptions(
+                    cli.models,
+                    preserving: [values[modelKey] ?? ""]
+                ))
+            ))
+            if cli.effortMode == "independent" {
+                let efforts = effortOptions(
+                    for: cli,
+                    model: values[modelKey] ?? ""
+                )
+                definitions.append(EnvSettingDefinition(
+                    group: "CLI Agents",
+                    key: effortKey,
+                    title: "\(cli.name) default effort",
+                    detail: "CLI effort inherited by agents without an override.",
+                    defaultValue: "CLI default",
+                    kind: .choice(choiceOptions(
+                        efforts,
+                        preserving: [values[effortKey] ?? ""]
+                    ))
+                ))
+            }
+        }
+        for role in catalog?.agentRoles ?? [] {
+            let token = role.role.uppercased()
+            definitions.append(EnvSettingDefinition(
+                group: "Learning Loop Agents",
+                key: "THREADKEEPER_SPAWN__LOOP__\(token)",
+                title: "\(role.name) CLI",
+                detail: "Default inherits the global CLI.",
+                defaultValue: "Inherited",
+                kind: .choice(choices)
+            ))
+            let roleCLI = draftCLI(for: role)
+            let models = catalog?.clis.first(where: { $0.id == roleCLI })?.models ?? []
+            let roleModelKey = "THREADKEEPER_SPAWN__MODEL__\(token)"
+            definitions.append(EnvSettingDefinition(
+                group: "Learning Loop Agents",
+                key: roleModelKey,
+                title: "\(role.name) model",
+                detail: "Default inherits the selected CLI model.",
+                defaultValue: "Inherited",
+                kind: .model(choiceOptions(
+                    models,
+                    preserving: [values[roleModelKey] ?? ""]
+                ))
+            ))
+            // Keep every role effort key in the canonical definition set even
+            // before DEFAULT / role CLI values have been hydrated from raw
+            // .env. Rendering remains conditional in LearningAgentCard, but
+            // cold-load extraction must never miss and later erase an effort
+            // override merely because its CLI was not known on the first pass.
+            let selectedCLI = catalog?.clis.first(where: { $0.id == roleCLI })
+            let roleModel = draftModel(for: role)
+            let efforts = selectedCLI.map {
+                effortOptions(for: $0, model: roleModel)
+            } ?? []
+            let effortKey = "THREADKEEPER_SPAWN__EFFORT__\(token)"
+            let effortKind: EnvSettingKind
+            if selectedCLI?.effortMode == "independent" {
+                effortKind = .choice(choiceOptions(
+                    efforts,
+                    preserving: [values[effortKey] ?? ""]
+                ))
+            } else {
+                // Antigravity encodes effort in its model label. The raw key
+                // stays known/preserved while its independent picker is hidden.
+                effortKind = .choice([])
+            }
+            definitions.append(EnvSettingDefinition(
+                group: "Learning Loop Agents",
+                key: effortKey,
+                title: "\(role.name) effort",
+                detail: "Default inherits the selected CLI effort.",
+                defaultValue: "Inherited",
+                kind: effortKind
+            ))
+            if !role.intervalKey.isEmpty {
+                definitions.append(EnvSettingDefinition(
+                    group: "Learning Loop Agents",
+                    key: role.intervalKey,
+                    title: "\(role.name) schedule (hours)",
+                    detail: "Choose the cadence in hours; Off disables this schedule.",
+                    defaultValue: "0",
+                    kind: .choice(hourScheduleChoices)
+                ))
+            }
+        }
+        for job in catalog?.mechanicalJobs ?? [] {
+            definitions.append(EnvSettingDefinition(
+                group: "System Automation",
+                key: job.intervalKey,
+                title: "\(job.name) schedule (hours)",
+                detail: "Choose the cadence in hours; Off disables this job.",
+                defaultValue: "0",
+                kind: .choice(hourScheduleChoices)
+            ))
+        }
+        var seen: Set<String> = []
+        return definitions.filter { seen.insert($0.key).inserted }
+    }
+
     init(agentStore: AgentStatusStore?) {
         self.agentStore = agentStore
         self.envFileURL = Self.resolveEnvFileURL()
@@ -570,10 +725,80 @@ final class EnvSettingsStore: ObservableObject {
         statusMessage = "Ready."
     }
 
+    func definition(for key: String) -> EnvSettingDefinition? {
+        allDefinitions.first { $0.key == key }
+    }
+
+    func cli(for id: String) -> CLICatalogEntry? {
+        catalog?.clis.first { $0.id == id }
+    }
+
+    func hasRuntimeOverride(for role: LearningAgentDefinition) -> Bool {
+        let token = role.role.uppercased()
+        let roleKeys: Set<String> = [
+            "THREADKEEPER_SPAWN__LOOP__\(token)",
+            "THREADKEEPER_SPAWN__MODEL__\(token)",
+            "THREADKEEPER_SPAWN__EFFORT__\(token)",
+        ]
+        return (catalog?.runtimeOverrides ?? []).contains {
+            roleKeys.contains($0.key.uppercased())
+        }
+    }
+
+    func effortOptions(for cli: CLICatalogEntry, model: String) -> [String] {
+        let selected = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty, let specific = cli.modelEfforts[selected], !specific.isEmpty {
+            return specific
+        }
+        return cli.effortOptions
+    }
+
+    func draftCLI(for role: LearningAgentDefinition) -> String {
+        let roleKey = "THREADKEEPER_SPAWN__LOOP__\(role.role.uppercased())"
+        if let explicit = values[roleKey], !explicit.isEmpty { return explicit }
+        if let fallback = values["THREADKEEPER_SPAWN__DEFAULT"], !fallback.isEmpty {
+            return fallback
+        }
+        return ""
+    }
+
+    func draftModel(for role: LearningAgentDefinition) -> String {
+        let roleKey = "THREADKEEPER_SPAWN__MODEL__\(role.role.uppercased())"
+        if let explicit = values[roleKey], !explicit.isEmpty { return explicit }
+        let cli = draftCLI(for: role)
+        let cliKey = "THREADKEEPER_SPAWN__MODEL__\(cli.uppercased())"
+        if let inherited = values[cliKey], !inherited.isEmpty { return inherited }
+        return "CLI default"
+    }
+
+    func draftEffort(for role: LearningAgentDefinition) -> String {
+        let roleKey = "THREADKEEPER_SPAWN__EFFORT__\(role.role.uppercased())"
+        if let explicit = values[roleKey], !explicit.isEmpty { return explicit }
+        let cli = draftCLI(for: role)
+        let cliKey = "THREADKEEPER_SPAWN__EFFORT__\(cli.uppercased())"
+        if let inherited = values[cliKey], !inherited.isEmpty { return inherited }
+        return "CLI default"
+    }
+
     func binding(for key: String) -> Binding<String> {
         Binding(
             get: { self.values[key] ?? "" },
             set: { self.setValue($0, for: key) }
+        )
+    }
+
+    func rawDraftBinding() -> Binding<String> {
+        Binding(
+            get: { self.rawEnvText },
+            set: { newValue in
+                self.rawEnvText = newValue
+                self.isDraftDirty = true
+                self.values = Self.extractKnownValues(
+                    from: newValue,
+                    definitions: self.allDefinitions
+                )
+                self.validate()
+            }
         )
     }
 
@@ -584,6 +809,14 @@ final class EnvSettingsStore: ObservableObject {
         } else {
             values[key] = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        isDraftDirty = true
+        if isLoaded {
+            rawEnvText = Self.mergeEnvText(
+                raw: rawEnvText,
+                values: values,
+                definitions: allDefinitions
+            )
+        }
         validate()
     }
 
@@ -591,7 +824,7 @@ final class EnvSettingsStore: ObservableObject {
         do {
             if FileManager.default.fileExists(atPath: envFileURL.path) {
                 rawEnvText = try String(contentsOf: envFileURL, encoding: .utf8)
-                values = Self.extractKnownValues(from: rawEnvText)
+                values = Self.extractKnownValues(from: rawEnvText, definitions: allDefinitions)
                 statusMessage = "Loaded \(envFileURL.path)"
             } else {
                 rawEnvText = ""
@@ -602,19 +835,157 @@ final class EnvSettingsStore: ObservableObject {
             statusMessage = "Could not read .env: \(error.localizedDescription)"
         }
         isLoaded = true
+        isDraftDirty = false
         validate()
+        refreshCatalog()
+    }
+
+    func reloadEnvWithConfirmation() {
+        guard confirmDiscardDraft(
+            title: "Reload .env?",
+            message: "Reloading replaces unsaved Guided and Advanced edits with the file on disk."
+        ) else { return }
+        loadEnv()
+    }
+
+    func reloadOnWindowPresentation() {
+        if isDraftDirty {
+            statusMessage = "Reopened with unsaved settings draft preserved."
+            return
+        }
+        loadEnv()
+    }
+
+    func refreshCatalog(force: Bool = false) {
+        guard !isCatalogLoading, let agentStore else { return }
+        isCatalogLoading = true
+        catalogError = ""
+        let arguments = force
+            ? ["--settings-catalog", "--refresh-catalog"]
+            : ["--settings-catalog"]
+        Task { [weak self] in
+            let result = await Task.detached { [agentStore, arguments] in
+                do {
+                    return (try agentStore.runStatusCommand(arguments: arguments), "")
+                } catch {
+                    return (Data(), error.localizedDescription)
+                }
+            }.value
+            guard let self else { return }
+            if !result.1.isEmpty {
+                self.isCatalogLoading = false
+                self.catalogError = result.1
+                self.statusMessage = "CLI capability refresh failed."
+                return
+            }
+            do {
+                let decoded = try JSONDecoder().decode(
+                    SettingsCatalogSnapshot.self, from: result.0
+                )
+                self.catalog = decoded
+                self.isCatalogLoading = false
+                let catalogValues = Self.extractKnownValues(
+                    from: self.rawEnvText,
+                    definitions: self.allDefinitions
+                )
+                // Catalog refresh changes available choices only. Preserve
+                // every unsaved Guided/custom selection and fill only keys
+                // that became known after the initial catalog arrived.
+                for (key, value) in catalogValues where self.values[key] == nil {
+                    self.values[key] = value
+                }
+                self.validate()
+                self.statusMessage = "Loaded current CLI capabilities."
+            } catch {
+                self.isCatalogLoading = false
+                self.catalogError = error.localizedDescription
+                self.statusMessage = "CLI capability refresh failed."
+            }
+        }
+    }
+
+    func updateCLI(_ cli: CLICatalogEntry) {
+        guard cli.updateAvailable == true, updatingCLIID.isEmpty else { return }
+        guard cli.updateSupported == true else {
+            cliUpdateMessage = "No supported updater was detected for \(cli.name)."
+            statusMessage = cliUpdateMessage
+            return
+        }
+        guard confirmCLIUpdate(cli), let agentStore else { return }
+        updatingCLIID = cli.id
+        cliUpdateMessage = "Updating \(cli.name)…"
+        statusMessage = cliUpdateMessage
+        Task { [weak self] in
+            let result = await Task.detached { [agentStore] in
+                do {
+                    let data = try agentStore.runStatusCommand(
+                        arguments: ["--update-cli", cli.id]
+                    )
+                    let decoded = try JSONDecoder().decode(CLIUpdateResult.self, from: data)
+                    return (decoded.message, "")
+                } catch {
+                    return ("", error.localizedDescription)
+                }
+            }.value
+            guard let self else { return }
+            self.updatingCLIID = ""
+            if result.1.isEmpty {
+                self.cliUpdateMessage = result.0
+                self.statusMessage = result.0
+                self.refreshCatalog(force: true)
+            } else {
+                self.cliUpdateMessage = "\(cli.name) update failed: \(result.1)"
+                self.statusMessage = self.cliUpdateMessage
+            }
+        }
+    }
+
+    private func confirmCLIUpdate(_ cli: CLICatalogEntry) -> Bool {
+        let current = cli.version.isEmpty ? "unknown" : cli.version
+        let latest = cli.latestVersion?.isEmpty == false ? cli.latestVersion! : "latest"
+        let command = cli.updateCommandLabel?.isEmpty == false
+            ? "\n\nUpdater: \(cli.updateCommandLabel!)"
+            : ""
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Update \(cli.name)?"
+        alert.informativeText = "Current: \(current)\nLatest: \(latest)\(command)"
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func importRawIntoForm() {
-        values = Self.extractKnownValues(from: rawEnvText)
+        values = Self.extractKnownValues(from: rawEnvText, definitions: allDefinitions)
         validate()
         statusMessage = "Imported raw .env values into the form."
     }
 
     func syncFormToRaw() {
-        rawEnvText = Self.mergeEnvText(raw: rawEnvText, values: values)
+        rawEnvText = Self.mergeEnvText(raw: rawEnvText, values: values, definitions: allDefinitions)
         validate()
         statusMessage = "Updated the raw .env preview from the form."
+    }
+
+    func reconcileDraft(leavingAdvanced: Bool) {
+        if leavingAdvanced {
+            values = Self.extractKnownValues(from: rawEnvText, definitions: allDefinitions)
+        } else {
+            rawEnvText = Self.mergeEnvText(
+                raw: rawEnvText,
+                values: values,
+                definitions: allDefinitions
+            )
+        }
+        validate()
+    }
+
+    @discardableResult
+    func saveDraft(editingAdvanced: Bool, restart: Bool) -> Bool {
+        reconcileDraft(leavingAdvanced: editingAdvanced)
+        // Always persist the reconciled canonical draft. This prevents either
+        // sidebar from saving stale state owned by the other representation.
+        return save(restart: restart)
     }
 
     @discardableResult
@@ -631,13 +1002,14 @@ final class EnvSettingsStore: ObservableObject {
         }
 
         do {
-            let merged = Self.mergeEnvText(raw: rawEnvText, values: values)
+            let merged = Self.mergeEnvText(raw: rawEnvText, values: values, definitions: allDefinitions)
             try FileManager.default.createDirectory(
                 at: envFileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
             try merged.write(to: envFileURL, atomically: true, encoding: .utf8)
             rawEnvText = merged
+            isDraftDirty = false
             statusMessage = "Saved \(envFileURL.path)"
 
             if restart {
@@ -655,37 +1027,7 @@ final class EnvSettingsStore: ObservableObject {
 
     @discardableResult
     func saveRaw(restart: Bool) -> Bool {
-        values = Self.extractKnownValues(from: rawEnvText)
-        validate()
-        guard canSave else {
-            statusMessage = "Fix the highlighted raw .env values before saving."
-            return false
-        }
-
-        isSaving = true
-        defer {
-            isSaving = false
-        }
-
-        do {
-            try FileManager.default.createDirectory(
-                at: envFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try rawEnvText.write(to: envFileURL, atomically: true, encoding: .utf8)
-            statusMessage = "Saved \(envFileURL.path)"
-
-            if restart {
-                try requestThreadKeeperRestart()
-                statusMessage = "Saved and requested ThreadKeeper restart."
-            }
-            agentStore?.refreshThreadKeeperToggleState()
-            agentStore?.refresh()
-            return true
-        } catch {
-            statusMessage = "Save failed: \(error.localizedDescription)"
-            return false
-        }
+        saveDraft(editingAdvanced: true, restart: restart)
     }
 
     @discardableResult
@@ -709,7 +1051,7 @@ final class EnvSettingsStore: ObservableObject {
         guard let index = presetSlots.firstIndex(where: { $0.slot == slot }) else {
             return
         }
-        let merged = Self.mergeEnvText(raw: rawEnvText, values: values)
+        let merged = Self.mergeEnvText(raw: rawEnvText, values: values, definitions: allDefinitions)
         presetSlots[index].values = values
         presetSlots[index].rawEnvText = merged
         if presetSlots[index].name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -725,10 +1067,19 @@ final class EnvSettingsStore: ObservableObject {
         }
         rawEnvText = preset.rawEnvText
         values = preset.values.isEmpty
-            ? Self.extractKnownValues(from: preset.rawEnvText)
+            ? Self.extractKnownValues(from: preset.rawEnvText, definitions: allDefinitions)
             : preset.values
+        isDraftDirty = true
         validate()
         statusMessage = "Loaded \(preset.name)."
+    }
+
+    func loadPresetWithConfirmation(slot: Int) {
+        guard confirmDiscardDraft(
+            title: "Load preset?",
+            message: "Loading a preset replaces unsaved Guided and Advanced edits."
+        ) else { return }
+        loadPreset(slot: slot)
     }
 
     func clearPreset(slot: Int) {
@@ -743,7 +1094,8 @@ final class EnvSettingsStore: ObservableObject {
 
     func validate() {
         var messages: [String] = []
-        for definition in envSettingDefinitions {
+        var warnings = catalog?.warnings ?? []
+        for definition in allDefinitions {
             guard let rawValue = values[definition.key],
                   !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
@@ -758,19 +1110,25 @@ final class EnvSettingsStore: ObservableObject {
                 if !Self.isBoolValue(value) {
                     messages.append("\(definition.title) must be true or false.")
                 }
-            case .number:
-                if Double(value) == nil {
-                    messages.append("\(definition.title) must be a number.")
-                } else if let number = Double(value), number < 0 {
-                    messages.append("\(definition.title) cannot be negative.")
-                }
             case .choice(let choices):
                 if !choices.contains(where: { $0.value == value }) {
-                    let allowed = choices.map(\.value).joined(separator: ", ")
-                    messages.append("\(definition.title) must be one of: \(allowed).")
+                    warnings.append(
+                        "\(definition.title) keeps custom .env value \"\(value)\"; "
+                        + "choose a dropdown option to replace it."
+                    )
                 }
-            case .text:
+            case .model:
                 break
+            }
+        }
+
+        for line in rawEnvText.components(separatedBy: .newlines) {
+            guard let parsed = Self.parseEnvLine(line), !parsed.isCommented else { continue }
+            if parsed.key.hasPrefix("THREADKEEPER_SPAWN__"),
+               parsed.key.hasSuffix("__GEMINI") {
+                warnings.append(
+                    "\(parsed.key) is preserved but unsupported: Gemini Legacy was removed."
+                )
             }
         }
 
@@ -781,6 +1139,7 @@ final class EnvSettingsStore: ObservableObject {
             label: "Memory guard kill"
         )
         validationMessages = messages
+        configurationWarnings = Array(Set(warnings)).sorted()
     }
 
     private func appendThresholdWarning(
@@ -846,53 +1205,106 @@ final class EnvSettingsStore: ObservableObject {
         }
     }
 
+    private func confirmDiscardDraft(title: String, message: String) -> Bool {
+        guard isDraftDirty else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Discard Unsaved Changes")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private static func resolveEnvFileURL() -> URL {
         threadKeeperEnvFileURL()
     }
 
-    private static func extractKnownValues(from text: String) -> [String: String] {
+    private static func extractKnownValues(
+        from text: String,
+        definitions: [EnvSettingDefinition]
+    ) -> [String: String] {
         let definitionsByKey = Dictionary(
-            uniqueKeysWithValues: envSettingDefinitions.map { ($0.key, $0) }
+            uniqueKeysWithValues: definitions.map { ($0.key, $0) }
         )
         var parsedValues: [String: String] = [:]
         for line in text.components(separatedBy: .newlines) {
             guard let parsed = parseEnvLine(line),
-                  !parsed.isCommented,
-                  let definition = definitionsByKey[parsed.key] else {
+                  !parsed.isCommented else {
                 continue
             }
-            parsedValues[parsed.key] = normalizedValue(parsed.value, for: definition)
+            let canonicalKey = canonicalSettingKey(parsed.key)
+            guard let definition = definitionsByKey[canonicalKey] else { continue }
+            // A canonical assignment always wins over the old AGY alias,
+            // regardless of their relative order in the file.
+            if canonicalKey != parsed.key, parsedValues[canonicalKey] != nil {
+                continue
+            }
+            parsedValues[canonicalKey] = normalizedValue(parsed.value, for: definition)
         }
         return parsedValues
     }
 
-    private static func mergeEnvText(raw: String, values: [String: String]) -> String {
-        let knownKeys = Set(envSettingDefinitions.map(\.key))
+    private static func canonicalSettingKey(_ key: String) -> String {
+        switch key {
+        case "THREADKEEPER_SPAWN__MODEL__AGY":
+            return "THREADKEEPER_SPAWN__MODEL__ANTIGRAVITY"
+        case "THREADKEEPER_SPAWN__EFFORT__AGY":
+            return "THREADKEEPER_SPAWN__EFFORT__ANTIGRAVITY"
+        default:
+            return key
+        }
+    }
+
+    private static func mergeEnvText(
+        raw: String,
+        values: [String: String],
+        definitions: [EnvSettingDefinition]
+    ) -> String {
+        let knownKeys = Set(definitions.map(\.key))
+        let rawLines = raw.components(separatedBy: .newlines)
+        let activeCanonicalKeys = Set(rawLines.compactMap { line -> String? in
+            guard let parsed = parseEnvLine(line), !parsed.isCommented,
+                  knownKeys.contains(parsed.key) else { return nil }
+            return parsed.key
+        })
         var seen: Set<String> = []
         var output: [String] = []
 
-        for line in raw.components(separatedBy: .newlines) {
-            guard let parsed = parseEnvLine(line),
-                  knownKeys.contains(parsed.key) else {
+        for line in rawLines {
+            guard let parsed = parseEnvLine(line) else {
                 output.append(line)
                 continue
             }
 
-            guard !seen.contains(parsed.key) else {
-                output.append(parsed.isCommented ? line : "# \(line)")
+            let canonicalKey = canonicalSettingKey(parsed.key)
+            guard knownKeys.contains(canonicalKey) else {
+                output.append(line)
                 continue
             }
-            seen.insert(parsed.key)
 
-            let value = values[parsed.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if parsed.isCommented {
+                output.append(line)
+                continue
+            }
+            if canonicalKey != parsed.key,
+               activeCanonicalKeys.contains(canonicalKey) || seen.contains(canonicalKey) {
+                output.append("# Migrated legacy alias: \(line.trimmingCharacters(in: .whitespaces))")
+                continue
+            }
+            seen.insert(canonicalKey)
+
+            let value = values[canonicalKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let comment = inlineComment(in: line)
+            let commentSuffix = comment.isEmpty ? "" : " \(comment)"
             if value.isEmpty {
-                output.append(parsed.isCommented ? line : "# \(parsed.key)=")
+                output.append("# \(canonicalKey)=\(commentSuffix)")
             } else {
-                output.append("\(parsed.key)=\(formatEnvValue(value))")
+                output.append("\(canonicalKey)=\(formatEnvValue(value))\(commentSuffix)")
             }
         }
 
-        let missing = envSettingDefinitions.filter {
+        let missing = definitions.filter {
             !seen.contains($0.key)
                 && !(values[$0.key]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         }
@@ -976,6 +1388,41 @@ final class EnvSettingsStore: ObservableObject {
         return value.trimmingCharacters(in: .whitespaces)
     }
 
+    private static func inlineComment(in line: String) -> String {
+        guard let equalsIndex = line.firstIndex(of: "=") else { return "" }
+        let valueStart = line.index(after: equalsIndex)
+        let value = line[valueStart...]
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+
+        for index in value.indices {
+            let char = value[index]
+            if escaped {
+                escaped = false
+                continue
+            }
+            if char == "\\" && inDouble {
+                escaped = true
+                continue
+            }
+            if char == "'" && !inDouble {
+                inSingle.toggle()
+                continue
+            }
+            if char == "\"" && !inSingle {
+                inDouble.toggle()
+                continue
+            }
+            if char == "#" && !inSingle && !inDouble {
+                if index == value.startIndex || value[value.index(before: index)].isWhitespace {
+                    return String(value[index...]).trimmingCharacters(in: .whitespaces)
+                }
+            }
+        }
+        return ""
+    }
+
     private static func unquote(_ value: String) -> String {
         guard value.count >= 2 else {
             return value
@@ -1022,6 +1469,12 @@ final class EnvSettingsStore: ObservableObject {
     }
 
     private static func normalizedValue(_ value: String, for definition: EnvSettingDefinition) -> String {
+        if (
+            definition.key == "THREADKEEPER_SPAWN__DEFAULT"
+            || definition.key.hasPrefix("THREADKEEPER_SPAWN__LOOP__")
+        ), value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "agy" {
+            return "antigravity"
+        }
         guard case .toggle = definition.kind else {
             return value
         }
@@ -1035,6 +1488,8 @@ final class EnvSettingsStore: ObservableObject {
         }
     }
 }
+
+extension EnvSettingsStore: @unchecked Sendable {}
 
 @MainActor
 final class AgentStatusStore: ObservableObject {
@@ -1246,7 +1701,7 @@ final class AgentStatusStore: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    func runStatusCommand(arguments: [String]) throws -> Data {
+    nonisolated func runStatusCommand(arguments: [String]) throws -> Data {
         try Self.runStatusCommand(command: statusCommand(), arguments: arguments)
     }
 
@@ -1282,10 +1737,7 @@ final class AgentStatusStore: ObservableObject {
                     domain: "ThreadKeeperAgentStatus",
                     code: 124,
                     userInfo: [
-                        NSLocalizedDescriptionKey: (
-                            "tk-agent-status timed out after "
-                            + "\(Int(timeout)) seconds"
-                        )
+                        NSLocalizedDescriptionKey: "tk-agent-status timed out waiting for exit."
                     ]
                 )
             }
@@ -1375,10 +1827,7 @@ final class AgentStatusStore: ObservableObject {
                 domain: "ThreadKeeperAgentStatus",
                 code: 124,
                 userInfo: [
-                    NSLocalizedDescriptionKey: (
-                        "ThreadKeeper restart request timed out after "
-                        + "\(Int(timeout)) seconds"
-                    )
+                    NSLocalizedDescriptionKey: "ThreadKeeper restart request timed out."
                 ]
             )
         }
@@ -1466,7 +1915,7 @@ final class AgentStatusStore: ObservableObject {
         }
     }
 
-    private func statusCommand() -> (executable: String, arguments: [String]) {
+    nonisolated private func statusCommand() -> (executable: String, arguments: [String]) {
         let env = ProcessInfo.processInfo.environment
         if let override = env["THREADKEEPER_AGENT_STATUS_COMMAND"], !override.isEmpty {
             return (override, [])
@@ -1759,7 +2208,7 @@ final class EnvSettingsWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         if shouldReload {
             DispatchQueue.main.async { [envStore] in
-                envStore.loadEnv()
+                envStore.reloadOnWindowPresentation()
             }
         }
     }
@@ -1767,35 +2216,33 @@ final class EnvSettingsWindowController: NSWindowController {
 
 struct EnvSettingsView: View {
     @ObservedObject var envStore: EnvSettingsStore
-    @State private var selectedTab: EnvSettingsTab = .guided
+    @State private var selectedSection: EnvSettingsSection? = .cliAgents
+    private let agentColumns = [
+        GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 14, alignment: .top)
+    ]
+    private let automationColumns = [
+        GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14, alignment: .top)
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            Picker("", selection: $selectedTab) {
-                ForEach(EnvSettingsTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+            HStack(spacing: 0) {
+                List(EnvSettingsSection.allCases, selection: sectionSelection) { section in
+                    Label(section.rawValue, systemImage: section.icon)
+                        .tag(section)
                 }
+                .listStyle(.sidebar)
+                .frame(width: 205)
+                Divider()
+                sectionContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-
-            Group {
-                switch selectedTab {
-                case .guided:
-                    guidedTab
-                case .raw:
-                    rawTab
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
             Divider()
             footer
         }
-        .frame(minWidth: 680, minHeight: 620)
+        .frame(minWidth: 900, minHeight: 650)
     }
 
     private var header: some View {
@@ -1813,107 +2260,214 @@ struct EnvSettingsView: View {
                     .truncationMode(.middle)
             }
             Spacer()
+            PresetMenu(envStore: envStore)
             Button {
-                envStore.loadEnv()
+                envStore.reloadEnvWithConfirmation()
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 13, weight: .semibold))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Reload .env")
             .help("Reload .env")
+            Button {
+                envStore.refreshCatalog(force: true)
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .disabled(envStore.isCatalogLoading)
+            .accessibilityLabel("Refresh CLI models and capabilities")
+            .help("Refresh CLI models and capabilities")
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
-    private var guidedTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                presetSection
-                ForEach(envSettingGroups, id: \.self) { group in
-                    EnvSettingSection(
-                        title: group,
-                        definitions: envSettingDefinitions.filter { $0.group == group },
-                        envStore: envStore
-                    )
+    @ViewBuilder
+    private var sectionContent: some View {
+        switch selectedSection ?? .cliAgents {
+        case .cliAgents: cliAgentsSection
+        case .learningAgents: learningAgentsSection
+        case .automation: automationSection
+        case .memory: memorySection
+        case .advanced: advancedSection
+        }
+    }
+
+    private var cliAgentsSection: some View {
+        SettingsScroll(title: "CLI Agents", subtitle: "Live capabilities from each installed agent CLI.") {
+            if !runtimeOverrideWarnings.isEmpty {
+                SettingsWarningBox(messages: runtimeOverrideWarnings)
+            }
+            if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__DEFAULT") {
+                EnvSettingSection(title: "Default routing", definitions: [definition], envStore: envStore)
+            }
+            catalogState
+            LazyVGrid(columns: agentColumns, alignment: .leading, spacing: 14) {
+                ForEach(envStore.catalog?.clis ?? []) { cli in
+                    CLISettingsCard(cli: cli, envStore: envStore)
                 }
             }
-            .padding(.bottom, 14)
         }
     }
 
-    private var presetSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Presets", systemImage: "square.grid.3x1.fill")
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(envStore.presetSlots) { preset in
-                    EnvPresetCard(preset: preset, envStore: envStore)
+    private var learningAgentsSection: some View {
+        SettingsScroll(
+            title: "Learning Loop Agents",
+            subtitle: "Each card is an actual LLM-backed role. Model and effort inherit from its selected CLI unless overridden."
+        ) {
+            if !runtimeOverrideWarnings.isEmpty {
+                SettingsWarningBox(messages: runtimeOverrideWarnings)
+            }
+            catalogState
+            LazyVGrid(columns: agentColumns, alignment: .leading, spacing: 14) {
+                ForEach(envStore.catalog?.agentRoles ?? []) { role in
+                    LearningAgentCard(role: role, envStore: envStore)
                 }
             }
         }
     }
 
-    private var rawTab: some View {
+    private var automationSection: some View {
+        SettingsScroll(
+            title: "System Automation",
+            subtitle: "Deterministic background jobs. These jobs do not use an LLM model or reasoning effort."
+        ) {
+            catalogState
+            LazyVGrid(columns: automationColumns, alignment: .leading, spacing: 14) {
+                ForEach(envStore.catalog?.mechanicalJobs ?? []) { job in
+                    AutomationJobCard(job: job, envStore: envStore)
+                }
+            }
+            let mechanicalKeys = Set(
+                (envStore.catalog?.mechanicalJobs ?? []).map(\.intervalKey)
+            )
+            let core = baseEnvSettingDefinitions.filter {
+                $0.group == "Core"
+                    && !mechanicalKeys.contains($0.key)
+                    && $0.key != "THREADKEEPER_NO_EMBEDDINGS"
+            }
+            if !core.isEmpty {
+                EnvSettingSection(title: "Runtime", definitions: core, envStore: envStore)
+            }
+        }
+    }
+
+    private var memorySection: some View {
+        SettingsScroll(
+            title: "Memory & Budgets",
+            subtitle: "Search behavior, memory pressure thresholds, and child-agent budgets."
+        ) {
+            LazyVGrid(columns: automationColumns, alignment: .leading, spacing: 14) {
+                EnvSettingSection(
+                    title: "Search",
+                    definitions: baseEnvSettingDefinitions.filter {
+                        $0.key == "THREADKEEPER_NO_EMBEDDINGS"
+                    },
+                    envStore: envStore
+                )
+                EnvSettingSection(
+                    title: "Memory and resource limits",
+                    definitions: baseEnvSettingDefinitions.filter {
+                        $0.group == "Memory And Budgets"
+                    },
+                    envStore: envStore
+                )
+            }
+        }
+    }
+
+    private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label("Raw .env", systemImage: "doc.text")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Advanced .env")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    Text("Unknown keys, comments, ordering, and duplicate assignments are preserved.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button {
-                    envStore.importRawIntoForm()
-                } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
-                }
-                Button {
-                    envStore.syncFormToRaw()
-                } label: {
-                    Label("Preview", systemImage: "text.badge.checkmark")
-                }
+                Button("Import into form") { envStore.importRawIntoForm() }
+                Button("Preview form changes") { envStore.syncFormToRaw() }
             }
-            TextEditor(text: $envStore.rawEnvText)
+            if !envStore.configurationWarnings.isEmpty {
+                SettingsWarningBox(messages: envStore.configurationWarnings)
+            }
+            TextEditor(text: envStore.rawDraftBinding())
                 .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .frame(minHeight: 470)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.5))
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.6))
                 )
         }
-        .padding(.bottom, 14)
+        .padding(18)
+    }
+
+    @ViewBuilder
+    private var catalogState: some View {
+        if envStore.isCatalogLoading && envStore.catalog == nil {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Reading installed CLIs and current model catalogs…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+        } else if !envStore.catalogError.isEmpty {
+            SettingsWarningBox(messages: [envStore.catalogError])
+        }
     }
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Image(systemName: envStore.validationMessages.isEmpty ? "checkmark.circle" : "exclamationmark.triangle.fill")
-                .foregroundStyle(envStore.validationMessages.isEmpty ? .green : .orange)
+            Image(systemName: footerIcon)
+                .foregroundStyle(footerColor)
             Text(footerMessage)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(envStore.validationMessages.isEmpty ? .secondary : .primary)
                 .lineLimit(2)
             Spacer()
             Button {
-                save(restart: false)
-            } label: {
-                Label("Save", systemImage: "square.and.arrow.down")
-            }
-            .disabled(!envStore.canSave)
-            Button {
                 save(restart: true)
             } label: {
-                Label("Save & Restart", systemImage: "arrow.clockwise.circle")
+                Label("Save & Restart", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!envStore.canSave)
+            Button {
+                save(restart: false)
+            } label: {
+                Label("Save Changes", systemImage: "square.and.arrow.down")
             }
             .keyboardShortcut(.defaultAction)
             .disabled(!envStore.canSave)
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private func save(restart: Bool) {
-        switch selectedTab {
-        case .guided:
-            envStore.save(restart: restart)
-        case .raw:
-            envStore.saveRaw(restart: restart)
-        }
+        envStore.saveDraft(
+            editingAdvanced: selectedSection == .advanced,
+            restart: restart
+        )
+    }
+
+    private var sectionSelection: Binding<EnvSettingsSection?> {
+        Binding(
+            get: { selectedSection },
+            set: { next in
+                let previous = selectedSection ?? .cliAgents
+                if next != selectedSection {
+                    envStore.reconcileDraft(leavingAdvanced: previous == .advanced)
+                }
+                selectedSection = next
+            }
+        )
     }
 
     private var footerMessage: String {
@@ -1921,57 +2475,462 @@ struct EnvSettingsView: View {
             let remaining = envStore.validationMessages.count - 1
             return remaining > 0 ? "\(first) +\(remaining) more" : first
         }
+        if let first = envStore.configurationWarnings.first {
+            let remaining = envStore.configurationWarnings.count - 1
+            return remaining > 0 ? "\(first) +\(remaining) more" : first
+        }
         return envStore.statusMessage
+    }
+
+    private var footerIcon: String {
+        if !envStore.validationMessages.isEmpty { return "xmark.octagon.fill" }
+        if !envStore.configurationWarnings.isEmpty { return "exclamationmark.triangle.fill" }
+        return "checkmark.circle"
+    }
+
+    private var footerColor: Color {
+        if !envStore.validationMessages.isEmpty { return .red }
+        if !envStore.configurationWarnings.isEmpty { return .orange }
+        return .green
+    }
+
+    private var runtimeOverrideWarnings: [String] {
+        (envStore.catalog?.runtimeOverrides ?? []).map { override in
+            "Process environment overrides .env: \(override.key)=\(override.value)"
+        }
     }
 }
 
-struct EnvPresetCard: View {
-    let preset: EnvPresetSlot
+struct SettingsScroll<Content: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder let content: Content
+
+    init(title: String, subtitle: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.subtitle = subtitle
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 18, weight: .semibold, design: .rounded))
+                    Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                content
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
+    }
+}
+
+private extension View {
+    func settingsCardSurface() -> some View {
+        self
+            .padding(14)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+            )
+    }
+}
+
+struct PresetMenu: View {
+    @ObservedObject var envStore: EnvSettingsStore
+
+    var body: some View {
+        Menu {
+            ForEach(envStore.presetSlots) { preset in
+                Menu(preset.name) {
+                    Button("Load") { envStore.loadPresetWithConfirmation(slot: preset.slot) }
+                        .disabled(preset.rawEnvText.isEmpty && preset.values.isEmpty)
+                    Button("Update from current") { envStore.savePreset(slot: preset.slot) }
+                    Button("Clear", role: .destructive) { envStore.clearPreset(slot: preset.slot) }
+                        .disabled(preset.rawEnvText.isEmpty && preset.values.isEmpty)
+                }
+            }
+        } label: {
+            Label("Presets", systemImage: "square.grid.3x1.folder.badge.plus")
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel("Settings presets")
+        .help("Load or update a settings preset")
+    }
+}
+
+struct CLISettingsCard: View {
+    let cli: CLICatalogEntry
+    @ObservedObject var envStore: EnvSettingsStore
+
+    private var modelKey: String { "THREADKEEPER_SPAWN__MODEL__\(cli.id.uppercased())" }
+    private var effortKey: String { "THREADKEEPER_SPAWN__EFFORT__\(cli.id.uppercased())" }
+    private var latestVersion: String { cli.latestVersion ?? "" }
+    private var isUpdating: Bool { envStore.updatingCLIID == cli.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(cli.name).font(.system(size: 14, weight: .semibold))
+                    Text(cli.version.isEmpty ? "Installed version unavailable" : "Installed: \(cli.version)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if !latestVersion.isEmpty {
+                        Text("Latest cloud: \(latestVersion)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(cli.updateAvailable == true ? Color.orange : Color.secondary)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 6) {
+                    StatusBadge(
+                        text: cli.installed ? "Installed" : "Not installed",
+                        color: cli.installed ? .green : .secondary
+                    )
+                    if cli.updateAvailable == true {
+                        Button {
+                            envStore.updateCLI(cli)
+                        } label: {
+                            if isUpdating {
+                                HStack(spacing: 5) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Updating…")
+                                }
+                            } else {
+                                Label("Update", systemImage: "arrow.down.circle")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(isUpdating || cli.updateSupported != true)
+                        .help(
+                            cli.updateSupported == true
+                                ? "Update \(cli.name) to \(latestVersion) with \(cli.updateCommandLabel ?? "its official updater")"
+                                : "A newer version exists, but no supported updater was detected."
+                        )
+                        .accessibilityLabel("Update \(cli.name) to \(latestVersion)")
+                    }
+                }
+            }
+            if !cli.executable.isEmpty {
+                Text(cli.executable)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Divider()
+            if let model = envStore.definition(for: modelKey) {
+                EnvSettingRow(definition: model, envStore: envStore, showKey: false)
+            }
+            if cli.effortMode == "independent",
+               let effort = envStore.definition(for: effortKey) {
+                EnvSettingRow(definition: effort, envStore: envStore, showKey: false)
+            } else if !cli.effortNote.isEmpty {
+                Label(cli.effortNote, systemImage: "info.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            if let configuredEffort = envStore.values[effortKey],
+               !configuredEffort.isEmpty,
+               !envStore.effortOptions(
+                    for: cli,
+                    model: envStore.values[modelKey] ?? ""
+               ).contains(configuredEffort) {
+                Label(
+                    "Effort \"\(configuredEffort)\" is kept, but the selected model does not advertise it.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+            }
+            HStack {
+                Text("Models: \(cli.models.count) · \(cli.modelSource)")
+                Spacer()
+                Text(cli.catalogAgeS == 0 ? "just refreshed" : "refreshed \(humanInterval(Double(cli.catalogAgeS))) ago")
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(cli.stale ? Color.orange : Color.secondary)
+            if let error = cli.error, !error.isEmpty {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+            }
+            if let versionError = cli.versionCheckError, !versionError.isEmpty {
+                Label(versionError, systemImage: "icloud.slash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+            }
+            if !cli.configuredModel.isEmpty && !cli.configuredModelInCatalog {
+                Label("Configured model \"\(cli.configuredModel)\" is kept as a custom value but is not in the current catalog.", systemImage: "pin")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .settingsCardSurface()
+        .opacity(cli.installed ? 1 : 0.72)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(cli.name) CLI settings")
+    }
+}
+
+struct LearningAgentCard: View {
+    let role: LearningAgentDefinition
+    @ObservedObject var envStore: EnvSettingsStore
+
+    private var token: String { role.role.uppercased() }
+    private var roleModelKey: String { "THREADKEEPER_SPAWN__MODEL__\(token)" }
+    private var draftCLI: String { envStore.draftCLI(for: role) }
+    private var cli: CLICatalogEntry? { envStore.cli(for: draftCLI) }
+    private var runtimeCLI: CLICatalogEntry? { envStore.cli(for: role.cli) }
+    private var runtimeCLIText: String {
+        role.cliDynamic || role.cli.isEmpty
+            ? "Active host CLI (fallback Claude)"
+            : role.cli
+    }
+    private var runtimeModelText: String { role.model.isEmpty ? "CLI default" : role.model }
+    private var runtimeEffortText: String { role.effort.isEmpty ? "CLI default" : role.effort }
+    private var draftCLIText: String {
+        draftCLI.isEmpty ? "Active host CLI (fallback Claude)" : draftCLI
+    }
+    private var hasPendingPreview: Bool {
+        let differs = draftCLIText != runtimeCLIText
+            || envStore.draftModel(for: role) != runtimeModelText
+            || (cli?.effortMode == "independent"
+                && envStore.draftEffort(for: role) != runtimeEffortText)
+        return differs && (envStore.isDraftDirty || hasProcessOverride)
+    }
+    private var hasProcessOverride: Bool {
+        [role.cliSource, role.modelSource, role.effortSource]
+            .contains("process environment")
+            || envStore.hasRuntimeOverride(for: role)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(role.name).font(.system(size: 14, weight: .semibold))
+                    Text(role.description).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                ImpactBadge(impact: role.impact)
+            }
+            HStack(alignment: .top, spacing: 18) {
+                ImpactLine(icon: "book", label: "Reads", value: role.reads)
+                ImpactLine(icon: "square.and.pencil", label: "Writes", value: role.writes)
+            }
+            Divider()
+            if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__LOOP__\(token)") {
+                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+            }
+            if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__MODEL__\(token)") {
+                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+            }
+            if cli?.effortMode == "independent",
+               let definition = envStore.definition(for: "THREADKEEPER_SPAWN__EFFORT__\(token)") {
+                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+            } else if let cli, !cli.effortNote.isEmpty {
+                Label(cli.effortNote, systemImage: "slider.horizontal.below.square.filled.and.square")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            if !role.intervalKey.isEmpty,
+               let schedule = envStore.definition(for: role.intervalKey) {
+                EnvSettingRow(definition: schedule, envStore: envStore, showKey: false)
+                ScheduleHint(value: envStore.values[role.intervalKey] ?? "")
+            } else {
+                Label("Runs on demand; no autonomous schedule.", systemImage: "hand.tap")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                Text("Current runtime:").foregroundStyle(.secondary)
+                Text(runtimeCLIText).fontWeight(.semibold)
+                Text("→").foregroundStyle(.tertiary)
+                Text(runtimeModelText).fontWeight(.semibold)
+                if runtimeCLI?.effortMode == "independent" {
+                    Text("→").foregroundStyle(.tertiary)
+                    Text(runtimeEffortText).fontWeight(.semibold)
+                }
+                Spacer()
+                Text("\(role.cliSource) · \(role.modelSource) · \(role.effortSource)")
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 10))
+            if hasProcessOverride {
+                Label(
+                    "Overridden by process environment; saving .env will not take precedence until that override is removed.",
+                    systemImage: "exclamationmark.shield"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            }
+            if let runtimeCLI,
+               !role.effort.isEmpty,
+               !envStore.effortOptions(
+                    for: runtimeCLI,
+                    model: role.model
+               ).contains(role.effort) {
+                Label(
+                    "Current runtime effort \"\(role.effort)\" is not advertised by model \"\(runtimeModelText)\".",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            }
+            if hasPendingPreview {
+                HStack(spacing: 6) {
+                    Text(envStore.isDraftDirty ? "Pending draft preview:" : "File configuration:")
+                        .foregroundStyle(.secondary)
+                    Text(draftCLIText).fontWeight(.semibold)
+                    Text("→").foregroundStyle(.tertiary)
+                    Text(envStore.draftModel(for: role)).fontWeight(.semibold)
+                    if cli?.effortMode == "independent" {
+                        Text("→").foregroundStyle(.tertiary)
+                        Text(envStore.draftEffort(for: role)).fontWeight(.semibold)
+                    }
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.blue)
+            }
+            if let cli,
+               let selectedModel = envStore.values[roleModelKey],
+               !selectedModel.isEmpty,
+               !cli.models.contains(selectedModel) {
+                Label(
+                    "Model \"\(selectedModel)\" is kept as a custom value, but \(cli.name) does not advertise it. Verify provider compatibility before saving.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            }
+            if let cli,
+               let effort = envStore.values["THREADKEEPER_SPAWN__EFFORT__\(token)"],
+               !effort.isEmpty,
+               !envStore.effortOptions(
+                    for: cli,
+                    model: envStore.draftModel(for: role)
+               ).contains(effort) {
+                Label(
+                    "Effort \"\(effort)\" is kept, but the selected model does not advertise it.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            }
+        }
+        .settingsCardSurface()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(role.name) Learning Loop agent")
+    }
+}
+
+struct AutomationJobCard: View {
+    let job: MechanicalJobDefinition
     @ObservedObject var envStore: EnvSettingsStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField(
-                "Preset name",
-                text: Binding(
-                    get: { preset.name },
-                    set: { envStore.renamePreset(slot: preset.slot, name: $0) }
-                )
-            )
-            .font(.system(size: 12, weight: .medium))
-            .textFieldStyle(.roundedBorder)
-            Text(preset.values.isEmpty ? "Empty" : "\(preset.values.count) settings")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                Button {
-                    envStore.loadPreset(slot: preset.slot)
-                } label: {
-                    Image(systemName: "tray.and.arrow.down")
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(job.name).font(.system(size: 13, weight: .semibold))
+                    Text(job.description).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .disabled(preset.values.isEmpty && preset.rawEnvText.isEmpty)
-                .help("Load preset")
-                Button {
-                    envStore.savePreset(slot: preset.slot)
-                } label: {
-                    Image(systemName: "tray.and.arrow.up")
-                }
-                .buttonStyle(.plain)
-                .help("Save current settings to preset")
-                Button {
-                    envStore.clearPreset(slot: preset.slot)
-                } label: {
-                    Image(systemName: "xmark.circle")
-                }
-                .buttonStyle(.plain)
-                .disabled(preset.values.isEmpty && preset.rawEnvText.isEmpty)
-                .help("Clear preset")
+                Spacer()
+                StatusBadge(text: "Mechanical", color: .secondary)
+            }
+            if let definition = envStore.definition(for: job.intervalKey) {
+                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+                ScheduleHint(value: envStore.values[job.intervalKey] ?? "")
             }
         }
+        .settingsCardSurface()
+    }
+}
+
+struct ImpactLine: View {
+    let icon: String
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 11)).lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct ScheduleHint: View {
+    let value: String
+
+    var body: some View {
+        Label(humanSchedule(value), systemImage: "clock")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.leading, 10)
+            .accessibilityLabel("Schedule: \(humanSchedule(value))")
+    }
+}
+
+struct ImpactBadge: View {
+    let impact: String
+
+    var body: some View {
+        let presentation: (String, Color) = {
+            switch impact {
+            case "read_only": return ("Read only", .blue)
+            case "memory_write": return ("Memory write", .orange)
+            case "external_write": return ("GitHub write", .purple)
+            case "code_write": return ("Code & PR write", .red)
+            default: return (impact, .secondary)
+            }
+        }()
+        StatusBadge(text: presentation.0, color: presentation.1)
+    }
+}
+
+struct StatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+struct SettingsWarningBox: View {
+    let messages: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(messages, id: \.self) { message in
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+            }
+        }
+        .foregroundStyle(.orange)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -2000,6 +2959,7 @@ struct EnvSettingSection: View {
 struct EnvSettingRow: View {
     let definition: EnvSettingDefinition
     @ObservedObject var envStore: EnvSettingsStore
+    var showKey = true
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -2010,14 +2970,16 @@ struct EnvSettingRow: View {
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                Text(definition.key)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                if showKey {
+                    Text(definition.key)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 12)
             control
-                .frame(width: 180)
+                .frame(width: showKey ? 240 : 190)
             Button {
                 envStore.setValue("", for: definition.key)
             } label: {
@@ -2026,6 +2988,7 @@ struct EnvSettingRow: View {
             }
             .buttonStyle(.plain)
             .disabled((envStore.values[definition.key] ?? "").isEmpty)
+            .accessibilityLabel("Use default for \(definition.title)")
             .help("Use default")
         }
         .padding(.horizontal, 10)
@@ -2043,25 +3006,80 @@ struct EnvSettingRow: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-        case .number:
-            TextField(definition.defaultValue, text: envStore.binding(for: definition.key))
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-        case .text:
-            TextField(definition.defaultValue, text: envStore.binding(for: definition.key))
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
         case .choice(let choices):
             Picker("", selection: envStore.binding(for: definition.key)) {
                 Text("Default").tag("")
-                ForEach(choices, id: \.value) { choice in
+                ForEach(choicesIncludingCurrent(choices), id: \.value) { choice in
                     Text(choice.label).tag(choice.value)
                 }
             }
             .labelsHidden()
             .pickerStyle(.menu)
+        case .model(let choices):
+            VStack(alignment: .trailing, spacing: 4) {
+                Picker("", selection: envStore.binding(for: definition.key)) {
+                    Text("CLI default").tag("")
+                    ForEach(choicesIncludingCurrent(choices), id: \.value) { choice in
+                        Text(choice.label).tag(choice.value)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                Text("Custom values: Advanced .env")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
+
+    private func choicesIncludingCurrent(_ choices: [ChoiceOption]) -> [ChoiceOption] {
+        guard let current = envStore.values[definition.key],
+              !current.isEmpty,
+              !choices.contains(where: { $0.value == current }) else {
+            return choices
+        }
+        let label = definition.key.hasSuffix("_S")
+            ? "From .env · \(hourChoiceLabel(current))"
+            : "From .env · \(current)"
+        return choices + [ChoiceOption(current, label: label)]
+    }
+}
+
+private func formattedHours(_ hours: Double) -> String {
+    var text = String(format: "%.3f", hours)
+    while text.contains(".") && text.last == "0" { text.removeLast() }
+    if text.last == "." { text.removeLast() }
+    return text
+}
+
+private func hourChoiceLabel(_ rawSeconds: String) -> String {
+    guard let seconds = Double(rawSeconds), seconds.isFinite, seconds >= 0 else {
+        return "Custom .env value"
+    }
+    guard seconds > 0 else { return "Off" }
+    let hours = seconds / 3600
+    let hourText = "\(formattedHours(hours)) h"
+    if hours >= 24, hours.truncatingRemainder(dividingBy: 24) == 0 {
+        let days = Int(hours / 24)
+        return "\(hourText) · \(days) \(days == 1 ? "day" : "days")"
+    }
+    return hourText
+}
+
+private func humanInterval(_ seconds: Double) -> String {
+    if seconds <= 0 { return "just now" }
+    if seconds < 3600 { return "<1 h" }
+    return hourChoiceLabel(String(seconds))
+}
+
+private func humanSchedule(_ rawValue: String) -> String {
+    let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !raw.isEmpty else { return "Uses default schedule" }
+    guard let seconds = Double(raw), seconds.isFinite else {
+        return "Custom schedule is managed in Advanced .env"
+    }
+    guard seconds > 0 else { return "Off" }
+    return "Every \(hourChoiceLabel(raw))"
 }
 
 struct AgentStatusMenu: View {
@@ -2094,6 +3112,7 @@ struct AgentStatusMenu: View {
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Open ThreadKeeper Settings")
                 .help("Settings")
             }
             .padding(.horizontal, 12)
@@ -2137,6 +3156,7 @@ struct AgentStatusMenu: View {
                         .font(.system(size: 14, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clean ThreadKeeper memory")
                 .help("Clean memory")
                 Button {
                     NSApplication.shared.terminate(nil)
@@ -2145,6 +3165,7 @@ struct AgentStatusMenu: View {
                         .font(.system(size: 14, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Quit ThreadKeeper")
                 .help("Quit")
             }
             .padding(.horizontal, 12)
@@ -2201,6 +3222,11 @@ final class StatusItemController: NSObject {
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
+    func openSettings() {
+        popover.performClose(nil)
+        store.openEnvSettings()
+    }
+
     private func configureStatusButton() {
         guard let button = statusItem.button else {
             return
@@ -2209,6 +3235,8 @@ final class StatusItemController: NSObject {
         button.action = #selector(togglePopover(_:))
         button.imagePosition = .imageOnly
         button.font = .systemFont(ofSize: 14, weight: .medium)
+        button.toolTip = "ThreadKeeper status"
+        button.setAccessibilityLabel("ThreadKeeper status")
     }
 
     private func configurePopover() {
@@ -2358,6 +3386,12 @@ final class StatusItemController: NSObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
 
+    func openSettings() {
+        Task { @MainActor in
+            statusItemController?.openSettings()
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             statusItemController = StatusItemController()
@@ -2372,6 +3406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+#if !THREADKEEPER_SETTINGS_TEST
 @main
 struct ThreadKeeperAgentStatusApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -2380,5 +3415,14 @@ struct ThreadKeeperAgentStatusApp: App {
         Settings {
             EmptyView()
         }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appDelegate.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
+#endif

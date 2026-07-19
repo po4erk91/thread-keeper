@@ -19,31 +19,23 @@ from threadkeeper.verify_ingest import (
 )
 
 
-def test_slot_mapping_groups_gemini_and_antigravity():
-    # Gemini legacy and Antigravity (agy) both satisfy the single Google slot.
-    assert slot_for_source("gemini") == "google"
-    assert slot_for_source("antigravity") == "google"
+def test_slot_mapping_excludes_non_ingestible_and_removed_adapters():
+    assert slot_for_source("gemini") is None
+    assert slot_for_source("antigravity") is None
     assert slot_for_source("claude-code") == "claude-code"
     assert slot_for_source("vscode") is None  # not a canonical slot
 
 
 def test_coverage_status_verified_thin_absent():
     cov = evaluate_coverage(
-        {"claude-code": 200, "codex": 50, "copilot": 2, "gemini": 0},
+        {"claude-code": 200, "codex": 50, "copilot": 2},
         thin_threshold=5,
     )
     assert cov["claude-code"]["status"] == "verified"
     assert cov["codex"]["status"] == "verified"
     assert cov["copilot"]["status"] == "thin"   # 2 rows, below threshold
-    assert cov["google"]["status"] == "absent"  # gemini=0, no antigravity rows
     # every canonical slot is represented even when no source mapped to it
     assert set(cov) == set(CANONICAL_SLOTS)
-
-
-def test_coverage_antigravity_fills_google_slot():
-    cov = evaluate_coverage({"antigravity": 42}, thin_threshold=5)
-    assert cov["google"]["status"] == "verified"
-    assert cov["google"]["sources"] == {"antigravity": 42}
 
 
 def test_verdict_pass_when_all_criteria_met():
@@ -60,16 +52,14 @@ def test_verdict_pass_when_all_criteria_met():
     assert rep["criteria"]["learning_loop_non_claude"]["pass"] is True
 
 
-def test_verdict_partial_three_of_four_slots():
-    # This is the real shape on a dev box: claude/codex/copilot present,
-    # google slot empty, but cross-adapter window + non-claude loop confirmed.
+def test_verdict_pass_for_all_ingestible_supported_slots():
     rep = evaluate_verdict(
         source_counts={"claude-code": 200000, "codex": 11000, "copilot": 10},
         window_sources=["claude-code", "codex"],
         shadow_passes=2567,
     )
-    assert rep["verdict"] == "PARTIAL"
-    assert rep["criteria"]["all_sources_present"]["pass"] is False
+    assert rep["verdict"] == "PASS"
+    assert rep["criteria"]["all_sources_present"]["pass"] is True
     assert rep["criteria"]["all_sources_present"]["verified_slots"] == [
         "claude-code", "codex", "copilot",
     ]
@@ -157,6 +147,6 @@ def test_format_report_renders_verdict_and_slots():
     rep["db_path"] = "/tmp/x.sqlite"
     rep["signals"] = {"window_hours": 24}
     text = format_report(rep)
-    assert "VERDICT: PARTIAL" in text
+    assert "VERDICT: PASS" in text
     assert "claude-code" in text
     assert "learning_loop_non_claude" in text

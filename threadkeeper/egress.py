@@ -68,6 +68,8 @@ CATEGORY_CLASS: dict[str, str] = {
 CLI_VENDOR: dict[str, str] = {
     "claude": "anthropic",
     "codex": "openai",
+    # Historical transcripts retain this source tag after the legacy adapter
+    # was removed. Keep classification so old rows remain policy-gated.
     "gemini": "google",
     "antigravity": "google",
     "copilot": "microsoft",

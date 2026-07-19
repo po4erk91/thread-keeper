@@ -41,6 +41,7 @@ class SpawnSettings(BaseModel):
     default: str = ""           # "" = no pin -> resolve_agent uses the active CLI
     loop: dict[str, str] = {}   # role -> cli
     model: dict[str, str] = {}  # cli/role -> model
+    effort: dict[str, str] = {}  # cli/role -> reasoning effort
 
 
 # ── Main Settings class ──────────────────────────────────────────────────────
@@ -539,11 +540,15 @@ _THREADKEEPER_NESTED_ENV_KEYS = {
     "THREADKEEPER_SPAWN__DEFAULT",
     "THREADKEEPER_SPAWN__LOOP",
     "THREADKEEPER_SPAWN__MODEL",
+    "THREADKEEPER_SPAWN__EFFORT",
 }
 _THREADKEEPER_NESTED_ENV_PREFIXES = (
     "THREADKEEPER_SPAWN__LOOP__",
     "THREADKEEPER_SPAWN__MODEL__",
+    "THREADKEEPER_SPAWN__EFFORT__",
 )
+
+_UNSUPPORTED_NESTED_ENV_SUFFIXES = {"GEMINI"}
 
 
 def _alias_strings(validation_alias) -> list[str]:
@@ -578,6 +583,13 @@ def unknown_threadkeeper_env_keys(environ: Optional[dict] = None) -> list[str]:
         if not upper.startswith("THREADKEEPER_"):
             continue
         if upper in known:
+            continue
+        if any(
+            upper.startswith(prefix)
+            and upper.removeprefix(prefix) in _UNSUPPORTED_NESTED_ENV_SUFFIXES
+            for prefix in _THREADKEEPER_NESTED_ENV_PREFIXES
+        ):
+            unknown.append(key)
             continue
         if any(
             upper.startswith(prefix)

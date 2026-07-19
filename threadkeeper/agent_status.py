@@ -18,6 +18,7 @@ from .task_spool import open_spool_binary_read
 from .db import get_db
 from .github_budget import format_github_budget, github_budget_state
 from .helpers import alive, fmt_age
+from .agent_metadata import role_metadata
 
 
 _ROLE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -913,6 +914,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="print JSON")
     parser.add_argument(
+        "--settings-catalog",
+        action="store_true",
+        help="print the CLI/model/effort and learning-agent settings catalog as JSON",
+    )
+    parser.add_argument(
+        "--refresh-catalog",
+        action="store_true",
+        help="with --settings-catalog, bypass the runtime model cache",
+    )
+    parser.add_argument(
+        "--update-cli",
+        metavar="CLI",
+        help="update one supported agent CLI through its vendor-supported updater",
+    )
+    parser.add_argument(
         "--no-refresh",
         action="store_true",
         help="use cached RSS values instead of measuring live processes",
@@ -950,6 +966,23 @@ def main(argv: list[str] | None = None) -> int:
         help="with --cleanup-memory, use SIGKILL for orphan cleanup",
     )
     args = parser.parse_args(argv)
+
+    if args.update_cli:
+        from .model_catalog import update_cli
+        try:
+            result = update_cli(args.update_cli)
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.settings_catalog:
+        from .model_catalog import settings_catalog
+        print(json.dumps(
+            settings_catalog(refresh=args.refresh_catalog),
+            ensure_ascii=False, sort_keys=True,
+        ))
+        return 0
 
     if args.cleanup_memory:
         result = memory_cleanup(dry_run=args.dry_run, force=args.force)

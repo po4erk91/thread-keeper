@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import platform
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 def test_menubar_packaged_assets_are_available(fresh_mp):
@@ -106,42 +112,192 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "~/.threadkeeper/.env" in swift
     assert "threadkeeperEnvPresetSlotsV1" in swift
     assert "(1...3).map" in swift
-    assert "EnvPresetCard" in swift
+    assert "struct PresetMenu" in swift
     assert "mergeEnvText(raw:" in swift
-    assert "EnvSettingsTab" in swift
-    assert "case .raw:" in swift
+    assert "inlineComment(in line: String)" in swift
+    assert "enum EnvSettingsSection" in swift
+    for section in (
+        "CLI Agents", "Learning Loop Agents", "System Automation",
+        "Memory & Budgets", "Advanced .env",
+    ):
+        assert section in swift
     assert "saveRaw(restart:" in swift
-    assert ".onChange(of: envStore.rawEnvText)" not in swift
-    assert "syncRawEditsIntoForm" not in swift
-    assert 'ChoiceOption("antigravity", label: "antigravity (agy)")' in swift
-    assert 'ChoiceOption("agy")' not in swift
-    assert 'ChoiceOption("gemini", label: "gemini (legacy)")' in swift
-    assert "antigravityModelChoices" in swift
-    assert "geminiLegacyModelChoices" in swift
-    assert '"Gemini 3.1 Pro (High)"' in swift
-    assert '"Gemini 3.5 Flash (Medium)"' in swift
-    assert '"gemini-3.1-pro-preview"' in swift
-    assert '"gemini-3.1-pro"' not in swift
-    assert "THREADKEEPER_SPAWN__MODEL__CODEX" in swift
-    assert "THREADKEEPER_SPAWN__MODEL__GEMINI" in swift
+    assert "--settings-catalog" in swift
+    assert "--refresh-catalog" in swift
+    assert "struct CLICatalogEntry" in swift
+    assert "modelSource" in swift
+    assert "catalogAgeS" in swift
+    assert "configuredModelInCatalog" in swift
+    assert "TextField(" not in swift
+    assert "Custom values: Advanced .env" in swift
+    assert "geminiLegacyModelChoices" not in swift
+    assert "THREADKEEPER_SPAWN__MODEL__GEMINI" not in swift
+    assert 'hasSuffix("__GEMINI")' in swift
+    assert "Gemini Legacy was removed" in swift
+    assert 'canonicalSettingKey(_ key: String)' in swift
+    assert 'THREADKEEPER_SPAWN__MODEL__AGY' in swift
+    assert 'return "antigravity"' in swift
     assert "THREADKEEPER_DISABLE_BG_DAEMONS" in swift
     assert "setThreadKeeperDisabled(_ disabled: Bool, restart: Bool)" in swift
     assert "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S" in swift
-    # Spawn routing is generated from the spawn-role list, so per-role keys are
-    # interpolated (THREADKEEPER_SPAWN__{LOOP,MODEL}__<token>) rather than
-    # literal. Assert the generators plus every role token, so the panel is
-    # verified to expose a CLI + model knob for all eight spawn roles.
-    assert "THREADKEEPER_SPAWN__LOOP__\\(role.token)" in swift
-    assert "THREADKEEPER_SPAWN__MODEL__\\(role.token)" in swift
-    for _role_token in (
-        "SHADOW_OBSERVER", "ARCHIVIST", "CURATOR", "CANDIDATE_REVIEWER",
-        "DIALECTIC_VALIDATOR", "PROBE_RUNNER", "EVOLVE_REVIEWER",
-        "EVOLVE_APPLIER",
-    ):
-        assert f'token: "{_role_token}"' in swift
-    assert "THREADKEEPER_SPAWN__MODEL__COPILOT" in swift
-    assert 'Label("Save & Restart", systemImage: "arrow.clockwise.circle")' in swift
+    assert "THREADKEEPER_SPAWN__LOOP__\\(token)" in swift
+    assert "THREADKEEPER_SPAWN__MODEL__\\(token)" in swift
+    assert "THREADKEEPER_SPAWN__EFFORT__\\(token)" in swift
+    assert "LearningAgentCard" in swift
+    assert "AutomationJobCard" in swift
+    assert "ImpactBadge" in swift
+    assert "ScheduleHint" in swift
+    assert "hourScheduleChoices" in swift
+    assert 'ChoiceOption("1800", label: "0.5 h")' in swift
+    assert 'return "Every \\(hourChoiceLabel(raw))"' in swift
+    assert "LazyVGrid(columns: agentColumns" in swift
+    assert "LazyVGrid(columns: automationColumns" in swift
+    assert "settingsCardSurface()" in swift
+    assert "latestVersion" in swift
+    assert "updateAvailable" in swift
+    assert 'arguments: ["--update-cli", cli.id]' in swift
+    assert 'Label("Update", systemImage: "arrow.down.circle")' in swift
+    assert 'Text("Latest cloud: \\(latestVersion)")' in swift
+    assert "Current runtime:" in swift
+    assert "Pending draft preview:" in swift
+    assert "Overridden by process environment" in swift
+    assert "Process environment overrides .env:" in swift
+    assert "hasRuntimeOverride(for role:" in swift
+    assert "Active host CLI (fallback Claude)" in swift
+    assert "modelEfforts" in swift
+    assert "effortOptions(for cli:" in swift
+    assert "rawDraftBinding()" in swift
+    assert "reconcileDraft(leavingAdvanced:" in swift
+    assert "saveDraft(editingAdvanced:" in swift
+    assert "reloadEnvWithConfirmation()" in swift
+    assert "reloadOnWindowPresentation()" in swift
+    assert "loadPresetWithConfirmation(slot:" in swift
+    assert "Discard Unsaved Changes" in swift
+    assert "sectionSelection" in swift
+    assert "# Migrated legacy alias:" in swift
+    assert 'CommandGroup(replacing: .appSettings)' in swift
+    assert '.accessibilityLabel("Settings presets")' in swift
+    assert '.accessibilityLabel("Refresh CLI models and capabilities")' in swift
+    assert '.accessibilityLabel("Use default for \\(definition.title)")' in swift
+    assert 'Label("Save Changes", systemImage: "square.and.arrow.down")' in swift
+    assert 'Label("Save & Restart", systemImage: "arrow.clockwise")' in swift
     assert 'process.arguments = ["-TERM", "-f", "threadkeeper.server"]' in swift
+    assert "Verify provider compatibility before saving." in swift
+    assert "preserving: [values[roleModelKey] ?? \"\"]" in swift
+
+    present_start = swift.index("    func present()")
+    present_end = swift.index("struct EnvSettingsView", present_start)
+    present_body = swift[present_start:present_end]
+    assert "reloadOnWindowPresentation()" in present_body
+    assert "envStore.loadEnv()" not in present_body
+
+    refresh_start = swift.index("    func refreshCatalog(force:")
+    refresh_end = swift.index("    func importRawIntoForm()", refresh_start)
+    refresh_body = swift[refresh_start:refresh_end]
+    assert "self.values = Self.extractKnownValues" not in refresh_body
+    assert "where self.values[key] == nil" in refresh_body
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None,
+    reason="Swift/AppKit regression harness requires macOS",
+)
+def test_cold_catalog_hydration_preserves_role_effort_override(tmp_path):
+    """Exercise the real Swift store with catalog arriving after raw .env."""
+    repo = Path(__file__).resolve().parents[1]
+    source = repo / "apps" / "macos-agent-status" / "ThreadKeeperAgentStatus.swift"
+    harness = tmp_path / "SettingsHydrationRegression.swift"
+    binary = tmp_path / "settings-hydration-regression"
+    harness.write_text(
+        r'''
+import Foundation
+
+@main
+struct SettingsHydrationRegression {
+    static func main() throws {
+        let catalogJSON = #"""
+        {
+          "generated_at": 0,
+          "active_cli": "codex",
+          "clis": [{
+            "id": "codex", "name": "Codex", "installed": true,
+            "executable": "", "version": "", "models": ["gpt-test"],
+            "model_source": "test", "source_updated_at": null,
+            "catalog_refreshed_at": 0, "catalog_age_s": 0,
+            "stale": false, "error": null, "configured_model": "",
+            "configured_model_in_catalog": true, "supports_custom_model": true,
+            "effort_options": ["low", "xhigh"],
+            "model_efforts": {"gpt-test": ["low", "xhigh"]},
+            "effort_mode": "independent", "effort_note": "",
+            "configured_effort": ""
+          }],
+          "agent_roles": [{
+            "role": "curator", "name": "Curator", "description": "test",
+            "reads": "lessons", "writes": "skills", "impact": "memory_write",
+            "interval_key": "", "cli": "codex", "cli_source": "CLI default",
+            "model": "", "model_source": "CLI native default", "effort": "",
+            "effort_source": "CLI native default", "cli_source_key": "",
+            "model_source_key": "", "effort_source_key": "",
+            "cli_dynamic": false, "cli_inherited": true,
+            "model_inherited": true, "effort_inherited": true
+          }],
+          "mechanical_jobs": [], "runtime_overrides": [], "warnings": []
+        }
+        """#
+        let catalog = try JSONDecoder().decode(
+            SettingsCatalogSnapshot.self,
+            from: Data(catalogJSON.utf8)
+        )
+        let store = EnvSettingsStore(agentStore: nil)
+        store.rawEnvText = """
+        THREADKEEPER_SPAWN__DEFAULT=codex
+        THREADKEEPER_SPAWN__LOOP__CURATOR=codex
+        THREADKEEPER_SPAWN__EFFORT__CURATOR=xhigh
+        """
+        store.values = [:]
+        store.catalog = catalog
+        store.importRawIntoForm()
+        guard store.values["THREADKEEPER_SPAWN__EFFORT__CURATOR"] == "xhigh" else {
+            throw NSError(domain: "SettingsHydrationRegression", code: 1)
+        }
+        store.isLoaded = true
+        store.setValue("gpt-test", for: "THREADKEEPER_SPAWN__MODEL__CURATOR")
+        guard store.values["THREADKEEPER_SPAWN__EFFORT__CURATOR"] == "xhigh",
+              store.rawEnvText.contains("THREADKEEPER_SPAWN__EFFORT__CURATOR=xhigh") else {
+            throw NSError(domain: "SettingsHydrationRegression", code: 2)
+        }
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    target = f"{platform.machine()}-apple-macos13.0"
+    subprocess.run(
+        [
+            shutil.which("swiftc"), "-Onone", "-parse-as-library",
+            "-D", "THREADKEEPER_SETTINGS_TEST", "-target", target,
+            "-framework", "SwiftUI", "-framework", "AppKit",
+            str(source), str(harness), "-o", str(binary),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    subprocess.run([str(binary)], check=True, timeout=15)
+
+
+def test_settings_role_taxonomy_comes_from_shared_python_metadata():
+    from threadkeeper.agent_metadata import AGENT_ROLE_NAMES, MECHANICAL_JOBS
+
+    assert AGENT_ROLE_NAMES == (
+        "shadow_observer", "archivist", "candidate_reviewer", "curator",
+        "dialectic_validator", "probe_runner", "evolve_researcher",
+        "evolve_reviewer", "evolve_applier",
+    )
+    mechanical = {item["id"] for item in MECHANICAL_JOBS}
+    assert {"ingest", "extract", "dialectic_miner", "thread_janitor"} <= mechanical
+    assert not mechanical.intersection(AGENT_ROLE_NAMES)
 
 
 def test_menubar_source_falls_back_to_packaged_assets(fresh_mp, tmp_path, monkeypatch):

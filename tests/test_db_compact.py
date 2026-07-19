@@ -88,7 +88,9 @@ def test_db_compact_survives_rowid_renumbering(fresh_mp):
     assert conn.execute(
         "SELECT COUNT(*) FROM dialog_fts_docsize"
     ).fetchone()[0] == 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+        fresh_mp["db"].CURRENT_SCHEMA_VERSION
+    )
 
 
 def test_db_compact_single_flight(fresh_mp):

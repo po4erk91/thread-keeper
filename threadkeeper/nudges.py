@@ -259,7 +259,7 @@ def compute_thread_nudge(conn: sqlite3.Connection,
                          session_id: str) -> Optional[str]:
     """Open-thread nudge for clients WITHOUT a UserPromptSubmit hook
     (Claude Desktop, Codex, Antigravity CLI, VS Code). On hook-capable CLIs
-    (Claude Code, Gemini legacy, Copilot) the `tk-thread-nudge.sh` hook covers
+    (Claude Code and Copilot) the `tk-thread-nudge.sh` hook covers
     this, and the SessionStart hook sets THREADKEEPER_BRIEF_NO_THREAD_NUDGE so
     render_brief suppresses it — so in practice this only surfaces when the
     agent calls brief() directly, which is exactly what hook-less clients are

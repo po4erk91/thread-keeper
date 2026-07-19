@@ -70,6 +70,30 @@ class CliCapability(_Lenient):
     available: bool = False
     bin: str | None = None
     note: str | None = None
+    version: str = ""
+    executable: str = ""
+    models: list[str] = Field(default_factory=list)
+    model_source: str = ""
+    source_updated_at: int | None = None
+    catalog_refreshed_at: int | None = None
+    catalog_age_s: int = 0
+    stale: bool = False
+    error: str | None = None
+    configured_model: str = ""
+    configured_effort: str = ""
+    effort_options: list[str] = Field(default_factory=list)
+    effort_mode: str = "independent"
+    effort_note: str = ""
+
+
+class SpawnRoleResolution(_Lenient):
+    role: str
+    cli: str
+    cli_source: str = ""
+    model: str = ""
+    model_source: str = ""
+    effort: str = ""
+    effort_source: str = ""
 
 
 class SpawnStatus(BaseModel):
@@ -78,6 +102,8 @@ class SpawnStatus(BaseModel):
     active_cli: str | None = None
     role_resolution: str = ""
     capabilities: list[CliCapability] = Field(default_factory=list)
+    roles: list[SpawnRoleResolution] = Field(default_factory=list)
+    catalog_generated_at: int | None = None
 
 
 # --- mp_health ---------------------------------------------------------------

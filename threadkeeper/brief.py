@@ -408,7 +408,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             out.append(f"  {t['id']} out={q((t['outcome'] or '-')[:120])}")
 
     # ── thread_hint (open-thread nudge for hook-less clients) ─────────────
-    # Claude Code / Gemini legacy / Copilot get the open-thread reminder from the
+    # Claude Code / Copilot get the open-thread reminder from the
     # UserPromptSubmit hook (tk-thread-nudge.sh); their SessionStart hook
     # sets THREADKEEPER_BRIEF_NO_THREAD_NUDGE so this path stays quiet and
     # doesn't double-fire. Clients with NO hook mechanism (Claude Desktop,

@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import time
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage
+from .base import CLIAdapter, NormalizedMessage, find_cli_executable
 
 
 class AntigravityAdapter(CLIAdapter):
@@ -44,14 +46,49 @@ class AntigravityAdapter(CLIAdapter):
     def supports_spawn(self) -> bool:
         return True
 
+    def discover_models(self, timeout_s: float = 5.0) -> dict:
+        """Use Antigravity's native, account-aware ``agy models`` command."""
+        bin_path = find_cli_executable("agy", "antigravity")
+        if not bin_path:
+            return {
+                "models": [], "source": "agy models",
+                "source_updated_at": None, "error": "Antigravity is not on PATH.",
+            }
+        try:
+            result = subprocess.run(
+                [bin_path, "models"], capture_output=True, text=True,
+                timeout=max(0.5, timeout_s), check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "models": [], "source": "agy models",
+                "source_updated_at": None, "error": f"Model refresh failed: {exc}",
+            }
+        models = []
+        for line in result.stdout.splitlines():
+            value = line.strip().lstrip("-*• ").strip()
+            if value and value not in models:
+                models.append(value)
+        error = None
+        if result.returncode != 0:
+            error = (result.stderr or result.stdout or "agy models failed").strip()[:300]
+        elif not models:
+            error = "agy models returned no models; use CLI default or custom entry."
+        return {
+            "models": models,
+            "source": "agy models",
+            "source_updated_at": int(time.time()),
+            "error": error,
+        }
+
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
-                   extra_allowed_tools="", mcp_config_path=None):
+                   effort="", extra_allowed_tools="", mcp_config_path=None):
         """Antigravity non-interactive: `agy -p <prompt> [--model X]`.
 
         Antigravity reads MCP servers from ~/.gemini/config/mcp_config.json,
         which thread-keeper-setup wires up.
         """
-        bin_path = shutil.which("agy") or shutil.which("antigravity")
+        bin_path = find_cli_executable("agy", "antigravity")
         if not bin_path:
             return None
         argv = [bin_path, "-p", prompt]
@@ -69,8 +106,7 @@ class AntigravityAdapter(CLIAdapter):
         ):
             return True
         return (
-            shutil.which("agy") is not None
-            or shutil.which("antigravity") is not None
+            bool(find_cli_executable("agy", "antigravity"))
         )
 
     # ----- MCP registration ---------------------------------------------

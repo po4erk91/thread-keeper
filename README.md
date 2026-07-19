@@ -4,16 +4,16 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/threadkeeper.svg)](https://pypi.org/project/threadkeeper/)
-[![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Antigravity%20%7C%20Gemini%20legacy%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
+[![CLIs](https://img.shields.io/badge/CLIs-Claude%20%7C%20Codex%20%7C%20Antigravity%20%7C%20Copilot%20%7C%20VS%20Code-green)](#multi-cli-integration)
 
 **Multi-agent shared brain across Claude Code/Desktop, Codex,
-Antigravity CLI (`agy`), Gemini legacy, Copilot, and VS Code.**
+Antigravity CLI (`agy`), Copilot, and VS Code.**
 Cross-session memory, self-improving skill loops, and inter-agent signaling —
 one local MCP server turns parallel agent instances into a coordinated
 multi-agent system instead of N isolated chats.
 
 Every connected client (Claude Code, Claude Desktop, Codex CLI + desktop,
-Antigravity CLI, Gemini legacy, Copilot, every MCP-aware VS Code extension)
+Antigravity CLI, Copilot, every MCP-aware VS Code extension)
 shares one SQLite store, one set of threads, one user model, and one learning
 loop that improves the skill library autonomously over time.
 
@@ -86,11 +86,11 @@ pipx install 'threadkeeper[semantic]' && thread-keeper-setup
 
 `thread-keeper-setup` detects every CLI you have installed (Claude
 Code / Claude Desktop / Codex CLI + desktop / Antigravity CLI `agy` /
-Gemini legacy / Copilot / VS Code), registers the MCP server in each one's
+Copilot / VS Code), registers the MCP server in each one's
 config, copies hooks to
 `~/.threadkeeper/hooks/`, and writes a managed instructions block into
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
-`GEMINI.md` / `copilot-instructions.md` — Claude Desktop and VS Code
+`copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
@@ -146,7 +146,6 @@ thread-keeper-setup --dry-run
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` `mcpServers` (macOS); `%APPDATA%\Claude\…` (Win); `~/.config/Claude/…` (Linux) | none (GUI-only) | not supported by the app | none — chats live in Electron IndexedDB |
 | Codex (CLI + desktop) | `~/.codex/config.toml` `[mcp_servers]` (shared between CLI and `Codex.app`) | `~/.codex/AGENTS.md` | not supported | `~/.codex/sessions/**/rollout-*.jsonl` |
 | Antigravity CLI (`agy`) | `~/.gemini/config/mcp_config.json` `mcpServers` | `~/.gemini/config/AGENTS.md` | not wired yet | not yet parsed — sqlite/protobuf under `~/.gemini/antigravity-cli/conversations/*.db` |
-| Gemini legacy | `~/.gemini/settings.json` `mcpServers` | `~/.gemini/GEMINI.md` | `~/.gemini/settings.json` `hooks` | `~/.gemini/tmp/<user>/chats/session-*.jsonl` |
 | Copilot | `~/.copilot/mcp-config.json` `mcpServers` | `~/.copilot/copilot-instructions.md` | `~/.copilot/hooks.json` | `~/.copilot/session-store.db` (sqlite) |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` `servers` (macOS); `%APPDATA%\Code\User\mcp.json` (Win); `~/.config/Code/User/mcp.json` (Linux) | none (per-workspace only) | not supported | none — extensions own their history |
 
@@ -212,7 +211,7 @@ quotes and the `dialectic` user-model (claims *about you*: style, values,
 workflow) — is rendered into every `brief()`, and `brief()` is consumed by
 **whichever LLM vendor backs the active or spawned CLI.** So by default, a quote
 you said to Claude, or a trait inferred about you, can be transmitted to OpenAI
-(Codex), Google (Gemini / Antigravity), or Microsoft-GitHub (Copilot) on the
+(Codex), Google (Antigravity), or Microsoft-GitHub (Copilot) on the
 next session-start or spawn under that CLI. This is a deliberate default, not a
 leak — but it's worth stating plainly, and it's controllable.
 
@@ -332,13 +331,16 @@ poll only marks existing results as seen, so old completions do not spam
 notifications. Status polling and cleanup commands run off the main actor, so
 opening the popover does not wait for `tk-agent-status --json`. The header gear
 opens a separate Settings window for
-`~/.threadkeeper/.env`: common knobs are grouped into guided controls, the raw
-`.env` remains editable for advanced values, three local presets can be saved
-and loaded, and Save & Restart writes the file then asks existing
-`threadkeeper.server` processes to exit so MCP hosts reconnect with the new
-configuration. Spawn CLI selectors collapse `agy` into canonical `antigravity`
-while keeping `gemini` as legacy, and model selectors use dropdowns with exact
-CLI model ids/labels instead of free-text fields. Probe backlog is due objective
+`~/.threadkeeper/.env`: a sidebar separates CLI Agents, LLM-backed Learning
+Loop Agents, mechanical System Automation, Memory & Budgets, and Advanced
+`.env`. Model catalogs come from installed CLIs at runtime and show installed
+and latest official cloud versions, source, freshness, and discovery errors;
+an Update button appears only when those versions differ and runs the CLI's
+allowlisted vendor updater after confirmation. Each agent has its own CLI,
+provider-filtered model, effort, inherited effective values, schedule, and
+read/write impact. Guided controls are dropdown-only, with schedules labelled
+in hours; custom values and raw unknown keys remain editable in Advanced `.env`
+alongside three compact presets. Probe backlog is due objective
 probes only, not every registered probe, so a healthy cooldown shows `0 due
 probes` instead of looking stuck. On macOS, `python -m threadkeeper.server`
 automatically installs and launches it on MCP startup. The installed app records
@@ -483,8 +485,8 @@ known/configured skills root — `~/.claude/skills/`, `~/.codex/skills/`,
 `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
 optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 `~/.threadkeeper/skills/` mirror), with `~/.threadkeeper/lessons.md` as a
-CLI-agnostic fallback for clients without a native skills loader (Gemini
-legacy, Copilot, bare MCP).
+CLI-agnostic fallback for clients without a native skills loader (Copilot and
+bare MCP clients).
 
 **Harvest boundary (issue #36).** The dialog-reading loops share
 `threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
@@ -1077,7 +1079,7 @@ Hot-config reload is implemented (shipped in #2, generalized cross-CLI in
 #133): the `config_watcher` daemon re-applies changed `THREADKEEPER_*` knobs
 in-process within ~2 s, with no CLI restart. It watches two layers — the
 universal `~/.threadkeeper/.env` (read by every host's `Settings()`, so an edit
-hot-reloads on all seven CLIs and stays precedence-correct: real env > `.env` >
+hot-reloads on all six registered clients and stays precedence-correct: real env > `.env` >
 default) and the host CLI's own env-block file (Claude Code →
 `~/.claude/settings.json`, resolved via host identity; a key a higher scope
 pinned at spawn is never overridden by the lower-priority user file). Toggle via
@@ -1100,24 +1102,26 @@ keys are lowercased:
 # default agent for roles with no explicit pin ("" / unset = use the active CLI)
 THREADKEEPER_SPAWN__DEFAULT=claude
 # per-role CLI:  THREADKEEPER_SPAWN__LOOP__<ROLE>=<cli>
-# supported CLI keys: claude, codex, antigravity (agy executable), gemini (legacy), copilot
+# supported CLI keys: claude, codex, antigravity (agy executable), copilot
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=claude   # heaviest reasoning → keep on Claude
 THREADKEEPER_SPAWN__LOOP__CURATOR=codex            # weekly audit → Codex is fine
 THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = follow active CLI
 # model pin per CLI or per role:  THREADKEEPER_SPAWN__MODEL__<KEY>=<model>
 THREADKEEPER_SPAWN__MODEL__CLAUDE=opus
 THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.5
-THREADKEEPER_SPAWN__MODEL__AGY="Gemini 3.1 Pro (High)"
-THREADKEEPER_SPAWN__MODEL__GEMINI=gemini-3.1-pro-preview
+THREADKEEPER_SPAWN__MODEL__ANTIGRAVITY="Gemini 3.1 Pro (High)"
 THREADKEEPER_SPAWN__MODEL__DIALECTIC_VALIDATOR=opus
+# effort pin per CLI or per role (role override → CLI default → native default)
+THREADKEEPER_SPAWN__EFFORT__CLAUDE=high
+THREADKEEPER_SPAWN__EFFORT__CODEX=xhigh
+THREADKEEPER_SPAWN__EFFORT__CURATOR=xhigh
 ```
 
 Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI →
 `claude`; `"auto"` (or unset) defers to the active CLI. Real environment
 variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
-`gemini`, `copilot`). `agy` is normalized to `antigravity`; `gemini` remains a
-legacy Gemini CLI adapter for old installs/enterprise paths. See `.env.example`
+`copilot`). `agy` is normalized to `antigravity`. See `.env.example`
 for the full knob list. `spawn_status()` includes warnings when a configured
 spawn CLI is unsupported or a model key does not match a supported CLI/startup
 role, while keeping the same fallback resolution.
@@ -1415,14 +1419,14 @@ Two read-only checks:
   (1) every targeted CLI *slot* has production rows, (2) shadow-review
   sees more than one adapter in the same recent window, (3) the learning
   loop has fired on non-Claude sessions. Emits a `PASS` / `PARTIAL` /
-  `FAIL` verdict. The four slots are `claude-code`, `codex`, `copilot`,
-  and `google` — where the Google slot is satisfied by *either* the
-  legacy `gemini` adapter or its successor Antigravity (`agy`), since
-  both live under `~/.gemini`.
+  `FAIL` verdict. The currently ingestible required slots are `claude-code`,
+  `codex`, and `copilot`. Antigravity remains MCP/spawn-capable, but its
+  sqlite/protobuf transcript format is not parsed yet and therefore does not
+  create a permanent false failure in this ingest-only check.
 
 `--strict` makes the process exit non-zero unless the live verdict is
 `PASS`, so it can gate CI; `PARTIAL` (e.g. a box that doesn't run all
-four CLIs) is a valid real-world state and exits 0 by default. The
+three ingestible CLIs) is a valid real-world state and exits 0 by default. The
 reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 
 ---
@@ -1565,10 +1569,9 @@ threadkeeper/
 │   ├── claude_desktop.py
 │   ├── codex.py
 │   ├── antigravity.py
-│   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @read_tool()/@write_tool() entries — 115 of them
+└── tools/                # @read_tool()/@write_tool() entries — 120 of them
     ├── threads.py
     ├── peers.py
     ├── spawn.py

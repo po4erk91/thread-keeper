@@ -419,13 +419,13 @@ def test_spawned_dialog_session_pending_observations_are_terminally_skipped(
     pkg = _bootstrap(tmp_path, monkeypatch, min_n="1", batch_size="3")
     conn = pkg["db"].get_db()
     now = int(time.time())
-    session_id = "gemini-child-session"
+    session_id = "copilot-child-session"
     conn.execute(
         "INSERT INTO dialog_messages (uuid, source, project, session_id, role, "
         "content, created_at) VALUES (?,?,?,?,?,?,?)",
         (
             "prompt-row",
-            "gemini",
+            "copilot",
             "workspace",
             session_id,
             "user",
@@ -438,7 +438,7 @@ def test_spawned_dialog_session_pending_observations_are_terminally_skipped(
         "content, created_at) VALUES (?,?,?,?,?,?,?)",
         (
             "child-context-row",
-            "gemini",
+            "copilot",
             "workspace",
             session_id,
             "user",

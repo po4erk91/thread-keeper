@@ -19,6 +19,7 @@ def test_codex_spawn_uses_stdin_file(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_config, "resolve_agent", lambda role, active_cli=None: "codex")
     monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "gpt-test")
     monkeypatch.setattr(codex_mod.shutil, "which", lambda name: "/fake/bin/codex")
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: None)
 
     captured: dict[str, object] = {}
 

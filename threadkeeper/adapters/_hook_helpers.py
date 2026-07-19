@@ -1,5 +1,5 @@
 """Shared helpers for installing Claude-Code-style hooks into a JSON
-config file. Claude Code and Gemini legacy both honor the same shape
+config file. Claude Code and Copilot both honor the same shape
 (`settings.json["hooks"]`), so the merging logic is identical — only
 the target file path differs. Pulled out so both adapters can call it
 without code duplication.

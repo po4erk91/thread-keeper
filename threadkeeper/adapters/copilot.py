@@ -1,7 +1,7 @@
 """GitHub Copilot CLI adapter.
 
 Config: ~/.copilot/mcp-config.json — JSON with a top-level `mcpServers`
-section (same key as Claude / Gemini, contrary to older bundles that
+section (same key as Claude, contrary to older bundles that
 shipped an unused `servers` key).
 
 Instructions: Copilot doesn't have a stable single "global" file. Its
@@ -31,11 +31,13 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage
+from .base import CLIAdapter, NormalizedMessage, find_cli_executable
 
 
 def _ts(s: str) -> int:
@@ -71,17 +73,61 @@ class CopilotAdapter(CLIAdapter):
     def supports_spawn(self) -> bool:
         return True
 
+    def discover_models(self, timeout_s: float = 5.0) -> dict:
+        """Return only model values Copilot itself persisted in config.
+
+        Copilot 1.x documents ``--model`` but provides no headless enumeration
+        command.  Do not scrape a versioned JS bundle or ship a stale list.
+        """
+        models: list[str] = []
+        effort_options: list[str] = []
+        binary = find_cli_executable("copilot")
+        error = None
+        if binary:
+            try:
+                config_result = subprocess.run(
+                    [binary, "help", "config"], capture_output=True, text=True,
+                    timeout=max(0.5, timeout_s), check=False,
+                )
+                block = re.search(
+                    r"`model`:.*?(?=\n\s*`[^`]+`:|\Z)",
+                    config_result.stdout or "", re.DOTALL,
+                )
+                if block:
+                    models = re.findall(r'^\s*-\s+"([^"]+)"', block.group(0), re.MULTILINE)
+                help_result = subprocess.run(
+                    [binary, "--help"], capture_output=True, text=True,
+                    timeout=max(0.5, timeout_s), check=False,
+                )
+                effort_match = re.search(
+                    r"--(?:effort|reasoning-effort).*?choices:\s*([^\n]+(?:\n\s+[^-\n]+)?)",
+                    help_result.stdout or "", re.DOTALL,
+                )
+                if effort_match:
+                    effort_options = re.findall(r'"([a-z]+)"', effort_match.group(0))
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                error = f"Copilot model refresh failed: {exc}"
+        return {
+            "models": models,
+            "source": "copilot help config",
+            "source_updated_at": int(__import__("time").time()) if models else None,
+            "error": error or (None if models else "Copilot returned no advertised models."),
+            "effort_options": effort_options,
+        }
+
     def spawn_argv(self, prompt, *, model="", permission_mode="auto",
-                   extra_allowed_tools="", mcp_config_path=None):
+                   effort="", extra_allowed_tools="", mcp_config_path=None):
         """Copilot non-interactive: `copilot -p <prompt> [--model X]`.
         Copilot reads MCP servers from ~/.copilot/mcp-config.json which
         the thread-keeper-setup installer wires up."""
-        bin_path = shutil.which("copilot")
+        bin_path = find_cli_executable("copilot")
         if not bin_path:
             return None
-        argv = [bin_path, "-p", prompt]
+        argv = [bin_path, "-p", prompt, "--allow-all-tools"]
         if model:
             argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
         return argv
 
     def hooks_supported(self) -> bool:
@@ -97,7 +143,7 @@ class CopilotAdapter(CLIAdapter):
         if self.config_path.exists() or self.session_db.exists():
             return True
         return (
-            shutil.which("copilot") is not None
+            bool(find_cli_executable("copilot"))
             or shutil.which("gh") is not None
         )
 
@@ -114,7 +160,7 @@ class CopilotAdapter(CLIAdapter):
         else:
             cfg = {}
         # Copilot v1.0.43+ schema validates the top-level `mcpServers`
-        # key (same as Claude/Gemini). Older bundles shipped with
+        # key (same as Claude). Older bundles shipped with
         # `servers` documented; the validator now rejects that file.
         # If we see a legacy `servers` block, migrate its contents into
         # `mcpServers` AND drop the legacy key so the file is valid.

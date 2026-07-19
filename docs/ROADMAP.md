@@ -141,11 +141,10 @@ remains a live question.
   review spans >1 adapter in one window, and the learning loop fires on
   non-Claude sessions — into a `PASS`/`PARTIAL`/`FAIL` verdict
   (`threadkeeper/verify_ingest.py`). Turns the ad-hoc, one-off manual check
-  into a single reproducible command. Note: the "Google" slot is currently
-  covered by data only when Gemini-legacy transcripts exist; the Antigravity
-  (`agy`) successor adapter does not yet parse its sqlite/protobuf
-  conversation store (tracked below under "more adapters"), so on a
-  migrated-to-`agy` box that slot reports absent until that ingestion lands.
+  into a single reproducible command. Antigravity (`agy`) does not yet parse
+  its sqlite/protobuf conversation store (tracked below under "more
+  adapters"), so it is reported as a capability gap instead of a permanently
+  absent required ingest slot.
 - Dialog transcript secret redaction (#37): live ingest now scrubs common
   credential-shaped values before writing transcript content to
   `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The default-on
@@ -190,8 +189,8 @@ remains a live question.
 ## Open
 
 **More IDE / agent adapters — Cursor, Windsurf, JetBrains, Zed, etc.**
-Current registry covers seven clients (Claude Code / Claude Desktop /
-Codex CLI + desktop / Antigravity CLI `agy` / Gemini legacy / Copilot /
+Current registry covers six clients (Claude Code / Claude Desktop /
+Codex CLI + desktop / Antigravity CLI `agy` / Copilot /
 VS Code). The MCP ecosystem is wider:
 
 - **Cursor** — AI-first VS Code fork, has its own MCP config at

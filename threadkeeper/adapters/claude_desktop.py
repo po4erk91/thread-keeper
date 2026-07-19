@@ -9,7 +9,7 @@ The two share a vendor but not a config or transcript location:
                         %APPDATA%/Claude/... on Windows;
                         ~/.config/Claude/... on Linux.
 
-Config shape mirrors Gemini/Copilot:
+Config shape mirrors Copilot:
 
     {"mcpServers": {"<name>": {"command": "...", "args": [...], "env": {...}}}}
 

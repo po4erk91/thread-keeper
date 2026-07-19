@@ -7,12 +7,68 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.16.0 — 2026-07-19
+
+### Added
+
+- **Curator v2 deep skill-validation pipeline.** The three-day Curator now
+  produces an exhaustive numbered `AUDIT-<pass-id>.json` for every skill
+  tracked or materialized by ThreadKeeper, validates ThreadKeeper/Claude Code/
+  Codex/Agent Skills compatibility, links/resources and mirror hashes, and
+  separates normalized exact duplicates from lexical semantic candidates. The
+  child must read every complete skill, research current official guidance and
+  comparable public skills, issue semantic KEEP/REPAIR/UPDATE/MERGE/SPLIT/
+  DEPRECATE/DELETE/CROSS_LINK/HUMAN_REVIEW verdicts, and call the new
+  `skill_validate` tool after changes. Codex curator spawns translate web-tool
+  access to native `codex --search`. Scheduled passes re-check external
+  freshness even when local bytes are unchanged; manual duplicates still
+  debounce. Snapshot-scoped foreground consolidation is available through the
+  explicit `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` opt-in.
+  Reports use the path-scoped `curator_report_write` MCP tool so Codex and
+  other workspace sandboxes can persist the audit outside the project without
+  receiving arbitrary filesystem-write authority.
+
+- **Settings now model CLIs and learning agents explicitly.** The macOS editor
+  has dedicated CLI Agents, Learning Loop Agents, System Automation, Memory &
+  Budgets, and Advanced `.env` sections. Runtime adapter-owned catalogs report
+  executable/version, current model options, source/freshness/error, custom
+  fallback, and supported reasoning efforts. Each of the nine real LLM-backed
+  roles has independent CLI/model/effort inheritance, schedule, purpose, and
+  read/write-risk context; deterministic jobs are kept separate. Guided fields
+  are dropdown-only, schedules are presented in hours, per-tab cards use
+  adaptive layouts, and installed CLIs expose a confirmed Update action only
+  when their version differs from the latest official cloud release.
+- **Per-CLI and per-role spawn effort.** `THREADKEEPER_SPAWN__EFFORT__<KEY>`
+  resolves role override → CLI default → native default and is propagated to
+  Claude Code, Codex, and Copilot. Antigravity reports effort as model-encoded.
+
 ### Fixed
 
 - **Codex transcript ingest keeps timestamp-colliding fallback messages (#97).**
   Fallback message UUIDs now include the rollout line index, and forced child
   cid detection happens during the normal JSONL pass instead of opening each
   Codex rollout twice.
+
+- **Schema-v3 startup compatibility restored after the SQLite concurrency
+  refactor.** The shared database may already contain the additive sync/HLC
+  tables and columns from schema v3. `main` again declares and migrates that
+  schema instead of rejecting the live database as newer than supported, so a
+  normal ThreadKeeper restart cannot strand every MCP client.
+
+- **Settings draft and runtime-source safety.** Guided and Advanced editing now
+  share one canonical draft; catalog refresh and cold hydration preserve custom
+  model/effort values and legacy AGY alias migration cannot leave two active
+  assignments. Reload/preset actions guard unsaved edits. Process overrides,
+  including the top-level `THREADKEEPER_SPAWN={...}` JSON form and fallthrough
+  `auto` values, are surfaced explicitly. Codex effort choices follow the
+  selected model, while unadvertised custom models/efforts remain visible with
+  compatibility warnings.
+
+### Removed
+
+- **Gemini Legacy adapter and spawn route.** Claude Code, Codex, Antigravity,
+  and Copilot remain supported spawn CLIs. Existing Gemini Legacy `.env` keys
+  stay intact as explicit unsupported warnings rather than being silently used.
 
 ## v0.15.0 — 2026-07-15
 

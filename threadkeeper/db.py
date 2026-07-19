@@ -33,7 +33,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -581,6 +581,31 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_ori
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 
+-- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
+-- Node identity + Hybrid Logical Clock singleton.
+CREATE TABLE IF NOT EXISTS sync_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    node_id      TEXT NOT NULL,
+    hlc_phys_ms  INTEGER NOT NULL DEFAULT 0,
+    hlc_counter  INTEGER NOT NULL DEFAULT 0,
+    -- Gate for the opt-in re-id migration. 0 = not migrated; the sync feature
+    -- stays dormant until its own migration advances this value.
+    sync_schema_version INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sync_oplog (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tbl          TEXT NOT NULL,
+    gid          TEXT NOT NULL,
+    op           TEXT NOT NULL,
+    hlc          TEXT NOT NULL,
+    origin_node  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_oplog_hlc ON sync_oplog(hlc);
+CREATE TABLE IF NOT EXISTS sync_peer_vv (
+    origin_node  TEXT PRIMARY KEY,
+    max_hlc      TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     content, content='notes', content_rowid='id'
 );
@@ -667,6 +692,21 @@ POST_SCHEMA_INDEXES = (
     "ON tasks(retry_root)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_retry_of "
     "ON tasks(retry_of)",
+)
+
+# Additive v3 sync metadata. The sync feature can remain dormant; retaining
+# these columns/tables keeps newer shared databases readable by every CLI.
+_SYNC_REPLICATED_TABLES = (
+    "threads", "notes", "verbatim", "dialog_messages", "core_memory",
+    "concepts", "distill", "distill_votes", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "edges", "skill_usage",
+    "reliability", "probes", "probe_results", "evolve", "style",
+)
+
+_SYNC_COLUMN_DEFS = (
+    "ADD COLUMN hlc TEXT",
+    "ADD COLUMN origin_node TEXT",
+    "ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
 )
 
 
@@ -805,7 +845,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1):
+    if from_version not in (0, 1, 2):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -814,17 +854,25 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     # v2 (external-content dialog_fts): drop the old content-storing table
     # and scrub legacy raw-secret rows BEFORE the SCHEMA pass creates the
     # new table + its triggers, so the scrub UPDATEs fire no FTS triggers.
-    _drop_legacy_dialog_fts(conn)
-    _scrub_legacy_dialog_rows(conn)
+    if from_version < 2:
+        _drop_legacy_dialog_fts(conn)
+        _scrub_legacy_dialog_rows(conn)
 
     for statement in _iter_sql_statements(SCHEMA):
         conn.execute(statement)
     for ddl in LEGACY_COLUMN_MIGRATIONS:
         _apply_column_migration(conn, ddl)
+    for table in _SYNC_REPLICATED_TABLES:
+        for column_definition in _SYNC_COLUMN_DEFS:
+            _apply_column_migration(
+                conn,
+                f"ALTER TABLE {table} {column_definition}",
+            )
     _backfill_schema_data(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
-    _rebuild_dialog_fts_if_needed(conn)
+    if from_version < 2:
+        _rebuild_dialog_fts_if_needed(conn)
     _set_user_version(conn, CURRENT_SCHEMA_VERSION)
 
 

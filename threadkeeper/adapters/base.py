@@ -15,6 +15,36 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
+import re
+import shutil
+
+
+def find_cli_executable(*names: str) -> str:
+    """Find a CLI even when a sandboxed macOS app has a minimal PATH."""
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    home = Path.home()
+    roots = [
+        home / ".local/bin",
+        home / ".volta/bin",
+        home / ".bun/bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ]
+    nvm_root = home / ".nvm/versions/node"
+    if nvm_root.is_dir():
+        def node_version(path: Path) -> tuple[int, ...]:
+            return tuple(int(part) for part in re.findall(r"\d+", path.parent.name))
+
+        roots.extend(sorted(nvm_root.glob("*/bin"), key=node_version, reverse=True))
+    for root in roots:
+        for name in names:
+            candidate = root / name
+            if candidate.is_file() and candidate.stat().st_mode & 0o111:
+                return str(candidate)
+    return ""
 
 
 @dataclass
@@ -119,7 +149,7 @@ class CLIAdapter(ABC):
     def supports_spawn(self) -> bool:
         """True iff this CLI can be spawned non-interactively from a
         thread-keeper daemon. Implies a working headless invocation
-        (`claude -p` / `codex exec` / `agy -p` / `gemini -p` /
+        (`claude -p` / `codex exec` / `agy -p` /
         `copilot -p`) AND
         a way to inject our MCP server config so the spawned child
         can call back into thread-keeper. Default: False (loops will
@@ -128,6 +158,7 @@ class CLIAdapter(ABC):
 
     def spawn_argv(self, prompt: str, *,
                    model: str = "",
+                   effort: str = "",
                    permission_mode: str = "auto",
                    extra_allowed_tools: str = "",
                    mcp_config_path: Optional[Path] = None,
@@ -139,6 +170,21 @@ class CLIAdapter(ABC):
         Default returns None — concrete adapters override."""
         return None
 
+    def discover_models(self, timeout_s: float = 5.0) -> dict:
+        """Return the CLI-owned model catalog, when it exposes one safely.
+
+        Shape: ``models`` (list[str]), ``source`` (human label),
+        ``source_updated_at`` (epoch seconds or ``None``), and ``error``.
+        The default is deliberately honest: callers still offer CLI default
+        and custom entry instead of inventing a stale hard-coded list.
+        """
+        return {
+            "models": [],
+            "source": "CLI does not expose model enumeration",
+            "source_updated_at": None,
+            "error": "Use the CLI default or enter a custom model.",
+        }
+
     def skills_dir(self) -> Optional[Path]:
         """Root directory under which this CLI auto-discovers Skill.md
         files (Anthropic-style skill format: YAML frontmatter +
@@ -149,7 +195,7 @@ class CLIAdapter(ABC):
             Antigravity CLI (agy)     → ~/.gemini/config/skills/
 
         Return None when the CLI doesn't natively consume Skills
-        (Gemini legacy, Copilot, generic MCP clients) — those fall
+        (Copilot and generic MCP clients) — those fall
         back to the CLI-agnostic ~/.threadkeeper/lessons.md store.
 
         Multi-mirror writes in skill_manage use this to propagate one
