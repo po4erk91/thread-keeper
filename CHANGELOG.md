@@ -16,17 +16,24 @@ version bumps follow semver per the policy in
   tracked or materialized by ThreadKeeper, validates ThreadKeeper/Claude Code/
   Codex/Agent Skills compatibility, links/resources and mirror hashes, and
   separates normalized exact duplicates from lexical semantic candidates. The
-  child must read every complete skill, research current official guidance and
-  comparable public skills, issue semantic KEEP/REPAIR/UPDATE/MERGE/SPLIT/
-  DEPRECATE/DELETE/CROSS_LINK/HUMAN_REVIEW verdicts, and call the new
+  bounded children collectively read every complete skill, research current
+  official guidance and comparable public skills, issue semantic
+  KEEP/REPAIR/UPDATE/MERGE/SPLIT/DEPRECATE/DELETE/CROSS_LINK/HUMAN_REVIEW
+  verdicts, and call the new
   `skill_validate` tool after changes. Codex curator spawns translate web-tool
   access to native `codex --search`. Scheduled passes re-check external
   freshness even when local bytes are unchanged; manual duplicates still
   debounce. Snapshot-scoped foreground consolidation is available through the
   explicit `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` opt-in.
-  Reports use the path-scoped `curator_report_write` MCP tool so Codex and
-  other workspace sandboxes can persist the audit outside the project without
-  receiving arbitrary filesystem-write authority.
+  Reports use the path-scoped `curator_report_write` MCP tool with distinct
+  batch targets so Codex and other workspace sandboxes can persist the audit
+  outside the project without receiving arbitrary filesystem-write authority
+  or overwriting a sibling batch.
+
+- **Active-active cross-machine sync.** The opt-in sync layer adds stable node
+  identity, HLC-stamped change capture, version vectors, authenticated push/pull
+  transport, deterministic last-writer-wins merges, and dry-run-first migration
+  and node-reset commands while keeping derived FTS/vector indexes local.
 
 - **Settings now model CLIs and learning agents explicitly.** The macOS editor
   has dedicated CLI Agents, Learning Loop Agents, System Automation, Memory &
@@ -43,6 +50,13 @@ version bumps follow semver per the policy in
   Claude Code, Codex, and Copilot. Antigravity reports effort as model-encoded.
 
 ### Fixed
+
+- **Destructive Curator prompts are now bounded (#105).** Curator passes split
+  lessons/skills/concepts inventory into complete batches, report entries /
+  batch counts in `curator_pass`, and cap the dry-run inventory preview with
+  omitted-entry telemetry. Claude `spawn()` also keeps prompt argv under 96 KiB
+  and feeds larger prompts through the owner-only stdin spool to avoid Linux
+  `E2BIG`.
 
 - **Codex transcript ingest keeps timestamp-colliding fallback messages (#97).**
   Fallback message UUIDs now include the rollout line index, and forced child

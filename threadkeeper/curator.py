@@ -11,14 +11,15 @@ minutes, the Curator REVIEWS THE STORE every few days:
   4. Writes AUDIT-<isodate>.json: an exhaustive numbered skill manifest with
      consumer validation, link/resource findings, exact duplicate groups, and
      semantic-review candidates.
-  5. Spawns a slim child with web research plus the manifest/checklist.
-  6. Child reads every full skill, researches current official guidance and
-     comparable skills, then chooses KEEP / REPAIR / UPDATE / MERGE / SPLIT /
-     DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
+  5. Spawns one or more slim children with bounded inventory batches, web
+     research, and the shared manifest/checklist.
+  6. Children collectively read every full skill, research current official
+     guidance and comparable skills, then choose KEEP / REPAIR / UPDATE / MERGE
+     / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
   7. In destructive mode, parent writes a pre-mutation snapshot before
      spawning the child; child tool calls add tombstones/action telemetry.
-  8. Parent records `curator_pass` event with high-water timestamp and
-     inventory fingerprint.
+  8. Parent records `curator_pass` event with high-water timestamp,
+     inventory fingerprint, and batch coverage.
 
 Design choices:
 
@@ -57,6 +58,7 @@ import re
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 
 from .config import (
     CURATOR_INTERVAL_S,
@@ -110,8 +112,9 @@ CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
 
 CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
 library. This is a deep audit, not a filename or character-count scan. You
-receive every skill ThreadKeeper tracks or materializes, including archived
-records and untracked primary-store skills, plus usage telemetry.
+receive one complete bounded inventory batch from a pass that covers every
+skill ThreadKeeper tracks or materializes, including archived records and
+untracked primary-store skills, plus lessons, concepts, and usage telemetry.
 
 Where the shadow_review observer LOOKS FOR new class-level learning,
 your role is the inverse: review the EXISTING store for quality, dedup,
@@ -287,6 +290,35 @@ CONSTRAINTS:
 INVENTORY
 =========
 """
+
+
+# Bounded curator slices. The spawn layer has its own argv safety net; these
+# limits keep each curator child reviewing a complete, context-sized slice.
+CURATOR_BATCH_MAX_ENTRIES = 200
+CURATOR_BATCH_MAX_CHARS = 55_000
+CURATOR_INVENTORY_PREVIEW_MAX_CHARS = 80_000
+
+
+@dataclass(frozen=True)
+class _InventoryEntry:
+    kind: str
+    key: str
+    text: str
+
+
+@dataclass(frozen=True)
+class _InventoryBatch:
+    index: int
+    total: int
+    start_entry: int
+    end_entry: int
+    total_entries: int
+    text: str
+    entry_count: int
+    lesson_count: int
+    skill_count: int
+    concept_count: int
+    char_count: int
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -558,6 +590,18 @@ def _format_skill(row: dict) -> str:
     )
 
 
+def _format_stale_lesson_row(row: dict) -> str:
+    age = int(row["age_days"])
+    return (
+        f"- {row['slug']} score={row['decay_score']:.6f} "
+        f"freq={row['access_frequency']:.4f}/d "
+        f"pulls={row['pull_count']} uses={row['use_count']} "
+        f"views={row['view_count']} last_access={age}d_ago "
+        f"tier={row['tier']} pinned={row['pinned']} "
+        f"source={row['source'] or '?'}"
+    )
+
+
 def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
     """Build the advisory stale-lessons decay section.
 
@@ -577,16 +621,63 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
         lines.append("(none)")
         return "\n".join(lines), 0
     for r in rows:
-        age = int(r["age_days"])
-        lines.append(
-            f"- {r['slug']} score={r['decay_score']:.6f} "
-            f"freq={r['access_frequency']:.4f}/d "
-            f"pulls={r['pull_count']} uses={r['use_count']} "
-            f"views={r['view_count']} last_access={age}d_ago "
-            f"tier={r['tier']} pinned={r['pinned']} "
-            f"source={r['source'] or '?'}"
-        )
+        lines.append(_format_stale_lesson_row(r))
     return "\n".join(lines), len(rows)
+
+
+def _collect_inventory_entry_groups(
+    conn: sqlite3.Connection,
+    skill_audit: dict | None = None,
+) -> tuple[list[_InventoryEntry], list[_InventoryEntry], str, int, int]:
+    """Collect exhaustive lesson/skill entries without rendering one prompt."""
+    lesson_entries: list[_InventoryEntry] = []
+    try:
+        usage = lessons.lesson_usage_map(conn)
+        for item in lessons.iter_lessons():
+            slug = item.get("slug") or ""
+            lesson_entries.append(
+                _InventoryEntry(
+                    "lesson",
+                    slug,
+                    _format_lesson(item, usage.get(slug)),
+                )
+            )
+    except Exception:
+        logger.debug("curator: iter_lessons failed", exc_info=True)
+
+    audit = skill_audit or build_skill_audit(conn, include_archived=True)
+    checklist_lines = format_skill_checklist(audit).splitlines()[2:]
+    skill_entries = [
+        _InventoryEntry("skill", record["name"], line)
+        for record, line in zip(audit["skills"], checklist_lines)
+    ]
+
+    stale_text, _n_stale = _collect_stale_lessons(conn)
+    return (
+        lesson_entries,
+        skill_entries,
+        stale_text,
+        len(lesson_entries),
+        len(skill_entries),
+    )
+
+
+def _append_entries_with_char_cap(
+    parts: list[str],
+    entries: list[_InventoryEntry],
+    *,
+    used_chars: int,
+    max_chars: int,
+) -> tuple[int, int]:
+    dropped = 0
+    for entry in entries:
+        cost = len(entry.text) + 1
+        if used_chars + cost > max_chars:
+            dropped += 1
+            continue
+        parts.append(entry.text)
+        used_chars += cost
+    return used_chars, dropped
 
 
 def _collect_inventory(
@@ -597,32 +688,89 @@ def _collect_inventory(
 
     Returns (dump_text, lesson_count, skill_count). The dump format is
     plain text — `_format_lesson` and `_format_skill` produce one line
-    per entry, grouped into LESSONS and SKILLS sections.
+    per entry, grouped into LESSONS and SKILLS sections. This preview is
+    char-capped as a defensive floor; the real curator pass uses complete
+    bounded batches from `_collect_inventory_batches`.
     """
-    # ---- Lessons ----
-    lesson_lines: list[str] = []
-    n_lessons = 0
-    try:
-        usage = lessons.lesson_usage_map(conn)
-        for item in lessons.iter_lessons():
-            lesson_lines.append(_format_lesson(item, usage.get(item["slug"])))
-            n_lessons += 1
-    except Exception:
-        logger.debug("curator: iter_lessons failed", exc_info=True)
-
-    # ---- Skills ----
-    audit = skill_audit or build_skill_audit(conn, include_archived=True)
-    skill_checklist = format_skill_checklist(audit)
-    n_skills = int(audit["summary"]["total"])
+    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+        _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
+    )
 
     parts: list[str] = []
+    used = 0
     parts.append(f"## LESSONS (n={n_lessons})\n")
-    parts.extend(lesson_lines if lesson_lines else ["(none)"])
-    stale_text, _n_stale = _collect_stale_lessons(conn)
+    used += len(parts[-1]) + 1
+    if lesson_entries:
+        used, dropped_lessons = _append_entries_with_char_cap(
+            parts,
+            lesson_entries,
+            used_chars=used,
+            max_chars=CURATOR_INVENTORY_PREVIEW_MAX_CHARS,
+        )
+    else:
+        parts.append("(none)")
+        used += len(parts[-1]) + 1
+        dropped_lessons = 0
     parts.append("\n" + stale_text)
-    parts.append("\n" + skill_checklist)
+    used += len(parts[-1]) + 1
+    parts.append(
+        f"\n## SKILLS (n={n_skills}) — DEEP AUDIT CHECKLIST\n"
+        "Full deterministic manifest is at AUDIT_MANIFEST_PATH below."
+    )
+    used += len(parts[-1]) + 1
+    if skill_entries:
+        used, dropped_skills = _append_entries_with_char_cap(
+            parts,
+            skill_entries,
+            used_chars=used,
+            max_chars=CURATOR_INVENTORY_PREVIEW_MAX_CHARS,
+        )
+    else:
+        parts.append("(none)")
+        dropped_skills = 0
+
+    dropped_total = dropped_lessons + dropped_skills
+    if dropped_total:
+        parts.append(
+            "\n## INVENTORY TRUNCATED\n"
+            f"omitted_entries={dropped_total} "
+            f"omitted_lessons={dropped_lessons} "
+            f"omitted_skills={dropped_skills} "
+            f"preview_char_cap={CURATOR_INVENTORY_PREVIEW_MAX_CHARS}. "
+            "The live curator pass reviews complete bounded batches."
+        )
 
     return ("\n".join(parts), n_lessons, n_skills)
+
+
+def _collect_concept_entries(conn: sqlite3.Connection) -> tuple[list[_InventoryEntry], int]:
+    try:
+        rows = conn.execute(
+            "SELECT id, description, confidence, registered_at, "
+            "last_evidence_at FROM concepts "
+            "ORDER BY COALESCE(last_evidence_at, registered_at) ASC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return [], 0
+    if not rows:
+        return [], 0
+    now_t = int(time.time())
+    entries: list[_InventoryEntry] = []
+    for r in rows:
+        last = r["last_evidence_at"] or r["registered_at"]
+        age_d = max(0, (now_t - last) // 86400)
+        desc = (r["description"] or "").replace("\n", " ")[:200]
+        cid = r["id"] or ""
+        entries.append(
+            _InventoryEntry(
+                "concept",
+                cid,
+                f"- {cid} conf={r['confidence']} "
+                f"last_evidence={age_d}d_ago\n"
+                f"    {desc}",
+            )
+        )
+    return entries, len(rows)
 
 
 def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
@@ -634,28 +782,160 @@ def _collect_concepts(conn: sqlite3.Connection) -> tuple[str, int]:
     confidence band and days since last corroboration — the two signals
     the curator rubric uses to flag low-confidence/never-corroborated
     concepts as false positives."""
-    try:
-        rows = conn.execute(
-            "SELECT id, description, confidence, registered_at, "
-            "last_evidence_at FROM concepts "
-            "ORDER BY COALESCE(last_evidence_at, registered_at) ASC"
-        ).fetchall()
-    except sqlite3.OperationalError:
+    entries, count = _collect_concept_entries(conn)
+    if not entries:
         return "", 0
-    if not rows:
-        return "", 0
-    now_t = int(time.time())
-    lines = [f"## CONCEPTS (n={len(rows)})\n"]
-    for r in rows:
-        last = r["last_evidence_at"] or r["registered_at"]
-        age_d = max(0, (now_t - last) // 86400)
-        desc = (r["description"] or "").replace("\n", " ")[:200]
-        lines.append(
-            f"- {r['id']} conf={r['confidence']} "
-            f"last_evidence={age_d}d_ago\n"
-            f"    {desc}"
+    lines = [f"## CONCEPTS (n={count})\n"]
+    lines.extend(entry.text for entry in entries)
+    return "\n".join(lines), count
+
+
+def _entry_cost(entry: _InventoryEntry) -> int:
+    return len(entry.text) + 1
+
+
+def _chunk_inventory_entries(
+    entries: list[_InventoryEntry],
+    *,
+    max_entries: int = CURATOR_BATCH_MAX_ENTRIES,
+    max_chars: int = CURATOR_BATCH_MAX_CHARS,
+) -> list[list[_InventoryEntry]]:
+    entry_limit = max(1, int(max_entries))
+    char_limit = max(1_000, int(max_chars))
+    batches: list[list[_InventoryEntry]] = []
+    current: list[_InventoryEntry] = []
+    current_chars = 0
+    for entry in entries:
+        cost = _entry_cost(entry)
+        should_flush = (
+            current
+            and (
+                len(current) >= entry_limit
+                or current_chars + cost > char_limit
+            )
         )
-    return "\n".join(lines), len(rows)
+        if should_flush:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(entry)
+        current_chars += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _render_batch_inventory(
+    batch_entries: list[_InventoryEntry],
+    *,
+    index: int,
+    total: int,
+    start_entry: int,
+    total_entries: int,
+    stale_text: str,
+    n_lessons: int,
+    n_skills: int,
+    n_concepts: int,
+) -> _InventoryBatch:
+    lesson_entries = [e for e in batch_entries if e.kind == "lesson"]
+    skill_entries = [e for e in batch_entries if e.kind == "skill"]
+    concept_entries = [e for e in batch_entries if e.kind == "concept"]
+    end_entry = start_entry + len(batch_entries) - 1
+    parts = [
+        f"## CURATOR BATCH {index}/{total}",
+        (
+            f"Coverage: entries {start_entry}-{end_entry} of "
+            f"{total_entries}; batch_entries={len(batch_entries)} "
+            f"lessons={len(lesson_entries)}/{n_lessons} "
+            f"skills={len(skill_entries)}/{n_skills} "
+            f"concepts={len(concept_entries)}/{n_concepts}."
+        ),
+        (
+            "Review ONLY the entries in this batch. Other curator children "
+            "receive the remaining bounded slices for the same inventory "
+            "fingerprint, so do not infer that omitted entries are absent."
+        ),
+        (
+            "For CONSOLIDATE, only merge entries whose full lines appear in "
+            "this batch; otherwise recommend a future cross-batch review."
+        ),
+        f"\n## LESSONS (n={len(lesson_entries)})\n",
+    ]
+    parts.extend(entry.text for entry in lesson_entries)
+    if not lesson_entries:
+        parts.append("(none)")
+    if lesson_entries:
+        parts.append("\n" + stale_text)
+    parts.append(f"\n## SKILLS (n={len(skill_entries)})\n")
+    parts.extend(entry.text for entry in skill_entries)
+    if not skill_entries:
+        parts.append("(none)")
+    parts.append(f"\n## CONCEPTS (n={len(concept_entries)})\n")
+    parts.extend(entry.text for entry in concept_entries)
+    if not concept_entries:
+        parts.append("(none)")
+    text = "\n".join(parts)
+    return _InventoryBatch(
+        index=index,
+        total=total,
+        start_entry=start_entry,
+        end_entry=end_entry,
+        total_entries=total_entries,
+        text=text,
+        entry_count=len(batch_entries),
+        lesson_count=len(lesson_entries),
+        skill_count=len(skill_entries),
+        concept_count=len(concept_entries),
+        char_count=len(text),
+    )
+
+
+def _collect_inventory_batches(
+    conn: sqlite3.Connection,
+    skill_audit: dict | None = None,
+) -> tuple[list[_InventoryBatch], int, int, int]:
+    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+        _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
+    )
+    concept_entries, n_concepts = _collect_concept_entries(conn)
+    entries = lesson_entries + skill_entries + concept_entries
+    chunks = _chunk_inventory_entries(entries)
+    total = len(chunks)
+    batches: list[_InventoryBatch] = []
+    cursor = 1
+    for idx, chunk in enumerate(chunks, start=1):
+        batch = _render_batch_inventory(
+            chunk,
+            index=idx,
+            total=total,
+            start_entry=cursor,
+            total_entries=len(entries),
+            stale_text=stale_text,
+            n_lessons=n_lessons,
+            n_skills=n_skills,
+            n_concepts=n_concepts,
+        )
+        batches.append(batch)
+        cursor += len(chunk)
+    return batches, n_lessons, n_skills, n_concepts
+
+
+def _summarize_batch_entries(batches: list[_InventoryBatch]) -> str:
+    counts = [b.entry_count for b in batches]
+    if not counts:
+        return "0"
+    runs: list[str] = []
+    current = counts[0]
+    run_len = 1
+    for value in counts[1:]:
+        if value == current:
+            run_len += 1
+            continue
+        runs.append(f"{current}x{run_len}" if run_len > 1 else str(current))
+        current = value
+        run_len = 1
+    runs.append(f"{current}x{run_len}" if run_len > 1 else str(current))
+    return "+".join(runs)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -725,7 +1005,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
       - 'curator_running n=…' — a curator child is already running; skip
       - 'below_threshold' — fewer than CURATOR_MIN_LESSONS lessons; skip
       - 'unchanged_inventory' — latest complete inventory already reviewed
-      - 'spawned task_id=…' — curator child launched
+      - 'spawned task_id=…' or 'spawned batches=…' — child launches
       - 'spawn_error: …'  — spawn() rejected
     """
     if CURATOR_INTERVAL_S <= 0 and not force:
@@ -794,16 +1074,13 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 f"fingerprint={fingerprint[:12]}{ts_part}"
             )
 
-        inventory, _n_lessons, _n_skills = _collect_inventory(
-            conn, skill_audit=skill_audit,
-        )
-
         # Concepts enrich the review but do NOT lower the lesson threshold —
         # a curator pass is only worth a child spawn when there's a real
-        # lesson/skill inventory to audit; concepts ride along.
-        concepts_text, _n_concepts = _collect_concepts(conn)
-        if concepts_text:
-            inventory = inventory + "\n\n" + concepts_text
+        # lesson/skill inventory to audit; concepts ride along in the bounded
+        # batches.
+        batches, _n_lessons, _n_skills, _n_concepts = (
+            _collect_inventory_batches(conn, skill_audit=skill_audit)
+        )
 
         # Ensure reports dir exists before the child tries to Write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -902,36 +1179,59 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "Read,WebSearch,WebFetch"
             )
 
-        full_prompt = (
-            CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
-            + inventory
-            + "\n\n"
-            + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
-            f"{pass_id}.md\n"
-            + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
-            + f"PASS_ID = {pass_id}\n"
-            + "Persist the REPORT through curator_report_write using PASS_ID; "
-            + "REPORT_PATH is informational and must not be written directly."
-        )
-
         from .tools.spawn import spawn  # type: ignore
         old_pass = os.environ.get(PASS_ID_ENV)
         old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
         if CURATOR_DESTRUCTIVE:
             os.environ[PASS_ID_ENV] = pass_id
             os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
+        results: list[str] = []
         try:
             try:
-                result = spawn(
-                    prompt=full_prompt,
-                    visible=False,
-                    capture_output=True,
-                    permission_mode="auto",
-                    role="curator",
-                    write_origin="curator",
-                    slim=True,
-                    extra_allowed_tools=allowed_tools,
-                )
+                for batch in batches:
+                    if len(batches) == 1:
+                        report_name = f"REPORT-{pass_id}.md"
+                    else:
+                        report_name = (
+                            f"REPORT-{pass_id}-batch-"
+                            f"{batch.index:03d}-of-{batch.total:03d}.md"
+                        )
+                    full_prompt = (
+                        CURATOR_PROMPT.replace(
+                            "{DESTRUCTIVE_CLAUSE}",
+                            destructive_clause,
+                        )
+                        + batch.text
+                        + "\n\n"
+                        + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
+                        + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
+                        + f"PASS_ID = {pass_id}\n"
+                        + f"BATCH_INDEX = {batch.index}\n"
+                        + f"BATCH_TOTAL = {batch.total}\n"
+                        + "Persist the report through curator_report_write "
+                        + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
+                        + "REPORT_PATH is "
+                        + "informational and must not be written directly."
+                    )
+                    result = spawn(
+                        prompt=full_prompt,
+                        visible=False,
+                        capture_output=True,
+                        permission_mode="auto",
+                        role="curator",
+                        write_origin="curator",
+                        slim=True,
+                        extra_allowed_tools=allowed_tools,
+                    )
+                    result_s = str(result)
+                    if result_s.startswith("ERR "):
+                        out = (
+                            f"spawn_error batch={batch.index}/{batch.total}: "
+                            f"{result_s}"
+                        )
+                        _record_curator_pass(conn, now, out)
+                        return out
+                    results.append(result_s)
             finally:
                 if old_pass is None:
                     os.environ.pop(PASS_ID_ENV, None)
@@ -945,16 +1245,25 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_curator_pass(conn, now, f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
+        batch_entries = _summarize_batch_entries(batches)
+        max_batch_chars = max((b.char_count for b in batches), default=0)
+        total_entries = sum(b.entry_count for b in batches)
         _record_curator_pass(
             conn, now,
             f"spawned {INVENTORY_FINGERPRINT_KEY}={fingerprint} "
-            f"lessons={n_lessons} skills={n_skills} "
-            f"concepts={n_concepts} "
+            f"entries={total_entries} batches={len(batches)} "
+            f"batch_entries={batch_entries} max_batch_chars={max_batch_chars} "
+            f"lessons={n_lessons} skills={n_skills} concepts={n_concepts} "
             f"manifest={manifest_path.name} "
             f"snapshot={pass_id if snapshot_dir else '-'} "
-            f":: {str(result)[:140]}",
+            f":: {' | '.join(results)[:140]}",
         )
-        return str(result)
+        if len(results) == 1:
+            return results[0]
+        return (
+            f"spawned batches={len(results)} batch_entries={batch_entries} "
+            f":: {' | '.join(results)[:180]}"
+        )
 
 
 def _serve_loop() -> None:

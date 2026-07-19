@@ -68,6 +68,7 @@ from .tools import forget  # noqa: F401
 # without the resources/prompts capability fall back to the tool-only surface.
 from .tools import resources  # noqa: F401
 from .tools import prompts  # noqa: F401
+from .tools import sync  # noqa: F401
 
 
 if __name__ == "__main__":

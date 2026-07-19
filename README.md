@@ -272,6 +272,11 @@ CLI emits a recognizable usage trailer. Optional daily ceilings
 `THREADKEEPER_SPAWN_COST_BUDGET_USD` admission-deny new children once the
 recorded 24h spend reaches the configured limit; both default to `0`
 (disabled), so existing installs behave the same until a budget is set.
+Claude children keep their positional prompt argv under a conservative
+96 KiB byte ceiling; larger prompts are written to
+`THREADKEEPER_TASK_LOG_DIR/<task>.stdin.txt` with owner-only permissions and
+fed on stdin, so Linux's per-argument `MAX_ARG_STRLEN` limit cannot turn a large
+curator/reviewer prompt into an opaque `E2BIG` spawn failure.
 
 Visible (`visible=True`, Terminal.app) children persist `pid=0`, so the
 daemon resolves their live pid from the `--session-id` it carries in `ps`
@@ -620,9 +625,9 @@ locks.
 #### 5. Autonomous Curator
 
 Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default `259200`, three days)
-spawns a slim child for a deep audit of the existing lessons, concepts, and
-**every skill tracked or materialized by ThreadKeeper**. Before the child
-starts, a deterministic validator writes
+reviews the existing lessons, concepts, and **every skill tracked or
+materialized by ThreadKeeper** through bounded slim-child batches. Before the
+children start, a deterministic validator writes
 `~/.threadkeeper/curator/AUDIT-<isodate>.json`: one logical record per skill
 (physical CLI mirrors are grouped), full source path, telemetry, frontmatter,
 ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
@@ -633,12 +638,13 @@ rows with no real `SKILL.md` remain explicit orphans. The child reads every
 complete skill and relevant support file, performs current web research against
 official docs and comparable
 public skills, then writes numbered per-skill verdicts to
-`REPORT-<isodate>.md`: KEEP / REPAIR / UPDATE / MERGE / SPLIT / DEPRECATE /
-DELETE / CROSS_LINK / HUMAN_REVIEW. Similar names and cosine scores are only
-candidates; merge/delete decisions compare intent, workflow, inputs, outcomes,
-and unique details.
-
-The pass is
+`~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
+`REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
+UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
+Similar names and cosine scores are only candidates; merge/delete decisions
+compare intent, workflow, inputs, outcomes, and unique details. Pinned and
+foreground-authored entries are marked `[PROTECTED]`, and delete-class tools
+enforce the same boundary server-side. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
@@ -653,7 +659,10 @@ trees, validators, and mirror state. Repeated manual calls over identical bytes
 return `unchanged_inventory`; the scheduled three-day pass still runs because
 CLI behavior, official guidance, and external alternatives can change without
 local file changes. `curator_review_status()` shows the inventory hash plus the
-latest report, deterministic audit manifest, and recovery snapshot.
+latest report, deterministic audit manifest, recovery snapshot, last endorsed
+`inventory_sha256`, and the current inventory hash. Spawned pass events record
+`entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
+large reviews visible in the normal `curator_pass` trail.
 
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it

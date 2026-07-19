@@ -30,11 +30,15 @@ class ForgetPlan:
     selector: str
     selector_type: str
     dialog_uuids: list[str] = field(default_factory=list)
-    note_ids: list[int] = field(default_factory=list)
+    # notes/verbatim/dialectic_* are re-id'd INTEGER->TEXT by the sync migration,
+    # so their ids are strings post-migration (and plain str(int) pre-migration,
+    # which SQLite matches against an INTEGER column via affinity). Node-local
+    # tables (signals/events/extract_candidates) stay integer-keyed below.
+    note_ids: list[str] = field(default_factory=list)
     thread_ids: list[str] = field(default_factory=list)
-    verbatim_ids: list[int] = field(default_factory=list)
-    observation_ids: list[int] = field(default_factory=list)
-    evidence_ids: list[int] = field(default_factory=list)
+    verbatim_ids: list[str] = field(default_factory=list)
+    observation_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
     claim_ids: list[str] = field(default_factory=list)
     extract_candidate_ids: list[int] = field(default_factory=list)
     task_ids: list[str] = field(default_factory=list)
@@ -193,14 +197,14 @@ def _notes(
     conn: sqlite3.Connection,
     selector: str,
     selector_type: str,
-) -> tuple[list[int], list[str]]:
+) -> tuple[list[str], list[str]]:
     if selector_type == "thread_id":
         return (
             _fetch_col(
                 conn,
                 "SELECT id FROM notes WHERE thread_id=?",
                 (selector,),
-                cast=int,
+                cast=str,
             ),
             [selector],
         )
@@ -210,7 +214,7 @@ def _notes(
                 conn,
                 "SELECT id FROM notes WHERE session_id=?",
                 (selector,),
-                cast=int,
+                cast=str,
             ),
             [],
         )
@@ -221,20 +225,20 @@ def _verbatim_ids(
     conn: sqlite3.Connection,
     selector: str,
     selector_type: str,
-) -> list[int]:
+) -> list[str]:
     if selector_type == "thread_id":
         return _fetch_col(
             conn,
             "SELECT id FROM verbatim WHERE thread_id=?",
             (selector,),
-            cast=int,
+            cast=str,
         )
     if selector_type == "session_id":
         return _fetch_col(
             conn,
             "SELECT id FROM verbatim WHERE session_id=?",
             (selector,),
-            cast=int,
+            cast=str,
         )
     return []
 
@@ -303,7 +307,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
             conn,
             "SELECT id FROM dialectic_observations WHERE source_cid=?",
             (plan.selector,),
-            cast=int,
+            cast=str,
         )
     )
     obs_ids.update(
@@ -313,7 +317,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
             "dialog_uuid",
             plan.dialog_uuids,
             "id",
-            cast=int,
+            cast=str,
         )
     )
     plan.observation_ids = sorted(obs_ids)
@@ -331,7 +335,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
                 tuple(batch),
             ).fetchall()
         )
-    evidence_ids = {int(r["id"]) for r in evidence_rows}
+    evidence_ids = {str(r["id"]) for r in evidence_rows}
     affected_claim_ids = {str(r["claim_id"]) for r in evidence_rows}
 
     claim_ids = set()
@@ -350,7 +354,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
                 conn,
                 "SELECT id FROM dialectic_evidence WHERE claim_id=?",
                 (claim_id,),
-                cast=int,
+                cast=str,
             )
             if all_ids and set(all_ids).issubset(evidence_ids):
                 claim_ids.add(claim_id)
@@ -363,7 +367,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
                 "claim_id",
                 claim_ids,
                 "id",
-                cast=int,
+                cast=str,
             )
         )
     plan.evidence_ids = sorted(evidence_ids)
@@ -579,8 +583,35 @@ def _count_docsize(conn: sqlite3.Connection, table: str, ids: list[int]) -> int:
     return _count_vec_rows(conn, table, "id", ids)
 
 
+def _note_rowids(conn: sqlite3.Connection, note_ids: list[str]) -> list[int]:
+    """Resolve note ids (TEXT gids post-migration, ints pre-) to notes.rowid,
+    the integer key used by notes_fts (content_rowid) and — pre-migration —
+    notes_vec."""
+    return _fetch_where_in(conn, "notes", "id", note_ids, "rowid", cast=int)
+
+
+def _count_notes_vec(conn: sqlite3.Connection, note_ids: list[str]) -> tuple[int, int]:
+    """(notes_vec rows, notes_vec_map rows) for the given notes. Post-migration
+    notes_vec is keyed by an integer rowid resolved through notes_vec_map.gid;
+    pre-migration it is keyed directly by the integer note id."""
+    from .embeddings import _notes_mapped
+    if _notes_mapped(conn):
+        rowids = _fetch_where_in(
+            conn, "notes_vec_map", "gid", note_ids, "rowid", cast=int,
+        )
+        return _count_vec_rows(conn, "notes_vec", "rowid", rowids), len(rowids)
+    return _count_vec_rows(conn, "notes_vec", "id", note_ids), 0
+
+
+def _count_notes_fts(conn: sqlite3.Connection, note_ids: list[str]) -> int:
+    """notes_fts_docsize rows for the given notes, counted by notes.rowid (the
+    FTS content_rowid) — NOT the TEXT note id."""
+    return _count_docsize(conn, "notes_fts_docsize", _note_rowids(conn, note_ids))
+
+
 def _populate_counts(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
     dialog_vec, dialog_vec_map = _count_dialog_vec(conn, plan.dialog_uuids)
+    _notes_vec_count, _notes_vec_map_count = _count_notes_vec(conn, plan.note_ids)
     counts = {
         "dialog_messages": len(plan.dialog_uuids),
         "dialog_fts": _count_docsize(
@@ -598,8 +629,9 @@ def _populate_counts(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
         "dialog_vec": dialog_vec,
         "dialog_vec_map": dialog_vec_map,
         "notes": len(plan.note_ids),
-        "notes_fts": _count_docsize(conn, "notes_fts_docsize", plan.note_ids),
-        "notes_vec": _count_vec_rows(conn, "notes_vec", "id", plan.note_ids),
+        "notes_fts": _count_notes_fts(conn, plan.note_ids),
+        "notes_vec": _notes_vec_count,
+        "notes_vec_map": _notes_vec_map_count,
         "threads": len(plan.thread_ids) if plan.selector_type == "thread_id" else 0,
         "verbatim": len(plan.verbatim_ids),
         "dialectic_observations": len(plan.observation_ids),
@@ -678,8 +710,22 @@ def _delete_dialog_sidecars(
     return vec_deleted, map_deleted
 
 
-def _delete_note_sidecars(conn: sqlite3.Connection, note_ids: list[int]) -> int:
-    return _delete_where_in(conn, "notes_vec", "id", note_ids)
+def _delete_note_sidecars(
+    conn: sqlite3.Connection,
+    note_ids: list[str],
+) -> tuple[int, int]:
+    """Delete a note's vec sidecars. Returns (notes_vec, notes_vec_map). Post-
+    migration notes_vec is keyed by an integer rowid via notes_vec_map.gid;
+    pre-migration it is keyed directly by the integer note id (no map)."""
+    from .embeddings import _notes_mapped
+    if not _notes_mapped(conn):
+        return _delete_where_in(conn, "notes_vec", "id", note_ids), 0
+    rowids = _fetch_where_in(
+        conn, "notes_vec_map", "gid", note_ids, "rowid", cast=int,
+    )
+    vec_deleted = _delete_where_in(conn, "notes_vec", "rowid", rowids)
+    map_deleted = _delete_where_in(conn, "notes_vec_map", "gid", note_ids)
+    return vec_deleted, map_deleted
 
 
 def _recompute_claims(conn: sqlite3.Connection, claim_ids: set[str]) -> None:
@@ -737,7 +783,9 @@ def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
         )
         deleted["dialog_vec"] = dialog_vec
         deleted["dialog_vec_map"] = dialog_vec_map
-        deleted["notes_vec"] = _delete_note_sidecars(conn, plan.note_ids)
+        notes_vec, notes_vec_map = _delete_note_sidecars(conn, plan.note_ids)
+        deleted["notes_vec"] = notes_vec
+        deleted["notes_vec_map"] = notes_vec_map
         deleted["dialectic_observations"] = _delete_where_in(
             conn,
             "dialectic_observations",
@@ -837,6 +885,7 @@ def _orphan_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "dialog_vec_map_orphans": 0,
         "notes_fts_orphans": 0,
         "notes_vec_orphans": 0,
+        "notes_vec_map_orphans": 0,
     }
     try:
         if _table_exists(conn, "dialog_fts_docsize"):
@@ -878,22 +927,43 @@ def _orphan_counts(conn: sqlite3.Connection) -> dict[str, int]:
         if _table_exists(conn, "notes_fts_docsize"):
             out["notes_fts_orphans"] = int(
                 conn.execute(
+                    # docsize.id is the FTS content_rowid == notes.rowid, NOT the
+                    # (post-migration TEXT) notes.id.
                     "SELECT COUNT(*) FROM notes_fts_docsize ds "
-                    "LEFT JOIN notes n ON n.id=ds.id "
-                    "WHERE n.id IS NULL"
+                    "LEFT JOIN notes n ON n.rowid=ds.id "
+                    "WHERE n.rowid IS NULL"
                 ).fetchone()[0]
             )
     except sqlite3.OperationalError:
         pass
     try:
+        from .embeddings import _notes_mapped
         if _table_exists(conn, "notes_vec"):
-            out["notes_vec_orphans"] = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM notes_vec v "
-                    "LEFT JOIN notes n ON n.id=v.id "
-                    "WHERE n.id IS NULL"
-                ).fetchone()[0]
-            )
+            if _notes_mapped(conn):
+                # notes_vec.rowid -> notes_vec_map.rowid -> gid -> notes.id
+                out["notes_vec_orphans"] = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM notes_vec v "
+                        "LEFT JOIN notes_vec_map m ON m.rowid=v.rowid "
+                        "LEFT JOIN notes n ON n.id=m.gid "
+                        "WHERE n.id IS NULL"
+                    ).fetchone()[0]
+                )
+                out["notes_vec_map_orphans"] = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM notes_vec_map m "
+                        "LEFT JOIN notes n ON n.id=m.gid "
+                        "WHERE n.id IS NULL"
+                    ).fetchone()[0]
+                )
+            else:
+                out["notes_vec_orphans"] = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM notes_vec v "
+                        "LEFT JOIN notes n ON n.id=v.id "
+                        "WHERE n.id IS NULL"
+                    ).fetchone()[0]
+                )
     except sqlite3.OperationalError:
         pass
     return out

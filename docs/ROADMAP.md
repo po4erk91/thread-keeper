@@ -384,9 +384,17 @@ a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
 Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); bounding the curator/candidate_reviewer prompt
-argv so the full inventory dump can't hit `E2BIG` — the single-flight half of
-#24 has landed but the argv bound has not (#24). Scope: S–M each.
+plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
+its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
+Scope: S–M each.
+
+✅ DONE (#105): destructive Curator passes no longer dump the entire
+lessons/skills/concepts inventory into one child prompt. The pass now renders
+bounded inventory batches, records `entries` / `batches` / `batch_entries` /
+`max_batch_chars` in the `curator_pass` event, and keeps the dry-run preview
+char-capped with explicit omitted-entry counts. Claude spawn also has a 96 KiB
+prompt-argv guard that falls back to the private stdin spool instead of risking
+Linux `E2BIG`.
 
 ✅ DONE (#91): lesson-store append/remove/restore mutations now serialize on a
 blocking `lessons.md.lock` flock around the file creation/read/mutate/write
@@ -574,12 +582,12 @@ the three bare-`time.sleep` loops onto it), pruning `_last_notify_at` of
 past-cooldown / dead-pid entries each `_maybe_notify`, and collapsing
 consecutive no-op janitor passes into a single recorded row. Scope: S.
 
-**Daemon robustness under load.** ✅ PARTIAL (#24/#53). Curator single-flight
-has landed, and #53 unified the fcntl single-flight helper across the spawning
-daemon family. The remaining #24 work is bounding the
-`candidate_reviewer`/`curator` queue/inventory prompt payloads so a full dump
-cannot hit `E2BIG` (the class already fixed for `dialectic_validator`).
-Scope: S.
+**Daemon robustness under load.** ✅ PARTIAL (#24/#53/#105). Curator
+single-flight has landed, #53 unified the fcntl single-flight helper across the
+spawning daemon family, and #105 bounds Curator inventory prompts plus the
+Claude prompt argv path. The remaining #24 work is bounding the
+`candidate_reviewer` queue prompt payload so a full dump cannot hit `E2BIG`
+(the class already fixed for `dialectic_validator`). Scope: S.
 
 **Spawn cost accounting.** ✅ DONE (#25, extends #6). The spawn budget now
 tracks more than child RSS: `_spawn_wrap.py` parses JSON or human-readable CLI

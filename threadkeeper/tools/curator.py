@@ -5,9 +5,9 @@ mutates skill_usage state). These tools are about the *LLM-driven*
 audit pass:
 
   curator_review(force=False, dry_run=False)
-    Trigger one curator pass NOW. Spawns a slim child with the inventory
-    of every lesson + skill, child writes a REPORT.md with KEEP / PATCH
-    / CONSOLIDATE / PRUNE recommendations.
+    Trigger one curator pass NOW. Spawns bounded slim-child batches over
+    the lesson + skill + concept inventory; each child writes a REPORT.md
+    with KEEP / PATCH / CONSOLIDATE / PRUNE recommendations.
 
   curator_review_status()
     Diagnostic: env config, last cursor, last 5 passes, latest REPORT
@@ -58,9 +58,9 @@ def curator_review(force: bool = False, dry_run: bool = False) -> str:
     Use for one-shot triage or testing the prompt.
 
     `dry_run=True` short-circuits before the spawn — returns the
-    inventory that WOULD be passed plus n_lessons/n_skills. No spawn,
-    no cursor advance. Use to inspect what the curator child would see
-    before paying for the spawn.
+    capped inventory preview plus n_lessons/n_skills. No spawn, no cursor
+    advance. Use to inspect the inventory shape before paying for the
+    batched spawn.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -252,25 +252,46 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
 
 
 @write_tool(idempotent=True)
-def curator_report_write(pass_id: str, content: str) -> str:
+def curator_report_write(
+    pass_id: str,
+    content: str,
+    batch_index: int = 0,
+    batch_total: int = 0,
+) -> str:
     """Atomically write one Curator report inside the configured report dir.
 
     This narrow tool is the cross-CLI alternative to direct filesystem Write:
     Codex workspace sandboxes cannot write ``~/.threadkeeper/curator`` when the
     project is elsewhere. ``pass_id`` is filename-safe and cannot select an
-    arbitrary path. Repeated calls replace the same pass report so the Curator
-    can persist its plan before mutation and then add actual validation/
-    rollback results afterward.
+    arbitrary path. A bounded multi-child pass supplies ``batch_index`` and
+    ``batch_total`` so children cannot overwrite each other's reports. Repeated
+    calls replace the same pass/batch report so the Curator can persist its
+    plan before mutation and then add actual validation/rollback results.
     """
     clean_id = pass_id.strip()
     if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
         return "ERR invalid_pass_id"
+    try:
+        batch_index = int(batch_index)
+        batch_total = int(batch_total)
+    except (TypeError, ValueError):
+        return "ERR invalid_batch"
+    if bool(batch_index) != bool(batch_total):
+        return "ERR invalid_batch"
+    if batch_index and not (1 <= batch_index <= batch_total <= 9999):
+        return "ERR invalid_batch"
     if len(content) > _MAX_REPORT_CHARS:
         return f"ERR report_too_large max_chars={_MAX_REPORT_CHARS}"
     if not content.strip():
         return "ERR empty_report"
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    target = CURATOR_REPORTS_DIR / f"REPORT-{clean_id}.md"
+    if batch_index:
+        report_name = (
+            f"REPORT-{clean_id}-batch-{batch_index:03d}-of-{batch_total:03d}.md"
+        )
+    else:
+        report_name = f"REPORT-{clean_id}.md"
+    target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(content.rstrip() + "\n", encoding="utf-8")

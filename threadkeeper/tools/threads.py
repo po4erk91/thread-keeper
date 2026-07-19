@@ -16,9 +16,19 @@ from ..db import get_db, read_db, run_write
 from ..helpers import gen_thread_id, fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
-from ..embeddings import _embed, _vec_upsert_note, embed_tag
+from ..embeddings import _embed, _vec_upsert_note, _notes_mapped, embed_tag
 from ..retrieval import retrieve_notes
 from ..brief import render_brief, render_context
+
+
+def _note_gid(conn, rowid):
+    """The note's sync id for the vec mirror: on a migrated DB the note's TEXT
+    global id (resolved from the just-inserted rowid), else the integer rowid."""
+    if _notes_mapped(conn):
+        r = conn.execute("SELECT id FROM notes WHERE rowid=?", (rowid,)).fetchone()
+        if r is not None:
+            return r[0]
+    return rowid
 
 
 @read_tool()
@@ -115,7 +125,7 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
             (thread_id, content, kind, now, identity._session_id,
              emb, embed_tag(emb)),
         )
-        note_id = cur.lastrowid
+        note_id = _note_gid(conn, cur.lastrowid)
         _vec_upsert_note(conn, note_id, emb)
         conn.execute(
             "UPDATE threads SET last_touched_at=?, last_move=?, "
@@ -218,7 +228,7 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
             (thread_id, note_body, "move", now, identity._session_id,
              emb, embed_tag(emb)),
         )
-        _vec_upsert_note(conn, cur.lastrowid, emb)
+        _vec_upsert_note(conn, _note_gid(conn, cur.lastrowid), emb)
         conn.execute(
             "UPDATE threads SET last_touched_at=?, last_move=? WHERE id=?",
             (now, note_body[:90], thread_id),

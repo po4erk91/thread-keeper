@@ -157,7 +157,7 @@ def test_migration_rerun_is_noop(tmp_path, monkeypatch):
     )
     conn.close()
 
-    conn2 = tk_db.get_db()  # second connect: current version → fast path
+    conn2 = tk_db.get_db()  # second connect: version already current → fast path
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == (
         tk_db.CURRENT_SCHEMA_VERSION
     )
