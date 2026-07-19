@@ -25,14 +25,20 @@ def _reimport(monkeypatch, tmp_path, **env):
     return importlib.import_module("threadkeeper.config")
 
 
-def test_defaults_are_dark(monkeypatch, tmp_path):
+def test_daemon_host_on_by_default(monkeypatch, tmp_path):
     cfg = _reimport(monkeypatch, tmp_path)
-    assert cfg.DAEMON_HOST_ENABLED is False
+    assert cfg.DAEMON_HOST_ENABLED is True
     assert cfg.PROCESS_ROLE == "server"
     assert cfg.THIN_EMBED_FALLBACK == "fts"
     assert cfg.HOST_SOCK_PATH == (tmp_path / "host.sock")
     assert cfg.HOST_LOCK_PATH == (tmp_path / "host.lock")
     assert cfg.HOST_HEARTBEAT_TTL_S > 0
+
+
+def test_daemon_host_explicit_opt_out(monkeypatch, tmp_path):
+    cfg = _reimport(monkeypatch, tmp_path, THREADKEEPER_DAEMON_HOST="0")
+    assert cfg.DAEMON_HOST_ENABLED is False
+    assert cfg.PROCESS_ROLE == "server"
 
 
 def test_flag_and_role_and_sock_override(monkeypatch, tmp_path):

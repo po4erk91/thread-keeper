@@ -37,6 +37,10 @@ def test_ensure_host_running_sanitizes_spawned_child_env(monkeypatch, tmp_path):
         THREADKEEPER_SPAWNED_CHILD="1",
         THREADKEEPER_WRITE_ORIGIN="background_review",
     )
+    # The test env keeps THREADKEEPER_DISABLE_BG_DAEMONS=1 so the import stays
+    # quiet; clear the derived flag so ensure_host_running() reaches the spawn
+    # whose env this test is about.
+    monkeypatch.setattr(host.config, "DISABLE_BG_DAEMONS", False)
     monkeypatch.setattr(host, "_host_alive", lambda: False)
 
     captured: dict = {}
@@ -53,3 +57,22 @@ def test_ensure_host_running_sanitizes_spawned_child_env(monkeypatch, tmp_path):
     assert "THREADKEEPER_SPAWNED_CHILD" not in env
     assert env.get("THREADKEEPER_WRITE_ORIGIN") == "foreground"
     assert env.get("THREADKEEPER_ROLE") == "host"
+
+
+def test_ensure_host_running_skips_when_daemons_disabled(monkeypatch, tmp_path):
+    """An explicit operator pause must not spawn a (loop-less) host.
+
+    The spawned-host env sanitization below deliberately clears
+    THREADKEEPER_DISABLE_BG_DAEMONS for the child, so the pause gate has to
+    fire before the spawn — otherwise the menu-bar power button would be a
+    no-op under daemon-host mode."""
+    host = _reimport(monkeypatch, tmp_path)
+    assert host.config.DISABLE_BG_DAEMONS is True  # from the test env
+    monkeypatch.setattr(host, "_host_alive", lambda: False)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("paused install must not spawn a host")
+
+    monkeypatch.setattr(host.subprocess, "Popen", _boom)
+
+    assert host.ensure_host_running() is False

@@ -702,9 +702,11 @@ still permits only one writer.
 
 ### Daemon-host + thin servers (Phase 1)
 
-Behind `THREADKEEPER_DAEMON_HOST` (`0` by default — dark; no CLI config
-change), the daemon block above moves out of the per-session server and into
-one always-on headless process per machine:
+With `THREADKEEPER_DAEMON_HOST` on (`1` — the default; `0` reverts to the
+legacy per-process daemon threads), the daemon block above moves out of the
+per-session server and into one always-on headless process per machine.
+An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause gates `ensure_host_running`
+itself — a paused install spawns no host at all instead of a loop-less one:
 
 - **Election** — `python -m threadkeeper.host` (`host.main()`) takes
   `HOST_LOCK_PATH` (`<db dir>/host.lock`) via `single_flight_lock`. A second

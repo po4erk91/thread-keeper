@@ -7,6 +7,23 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- **Daemon-host mode is now the default** (`THREADKEEPER_DAEMON_HOST=1`).
+  One elected headless host per machine (`python -m threadkeeper.host`) runs
+  the background loops, the warm embedding model, and the embed socket;
+  per-session MCP servers go thin (no daemon threads, no local ONNX) and are
+  spawned-host-supervised via the existing heartbeat/`memory_guard` path.
+  This removes the per-process daemon herds (N sessions × ~18 loops), the
+  start-of-process empty-tick telemetry, and duplicate warm models. Set
+  `THREADKEEPER_DAEMON_HOST=0` to revert to the legacy per-process behavior.
+  Long-lived sessions started before the upgrade keep their in-process loops
+  until restart; the shared `daemon_state` cadence gate serializes the
+  transition. An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause now gates
+  `ensure_host_running` itself, so a paused install spawns no host at all
+  (previously the pause flag was stripped from the spawned host's env,
+  which would have made the menu-bar pause a no-op under host mode).
+
 ### Fixed
 
 - **Evolve applier: abandoned WIP no longer blocks the whole backlog.** A

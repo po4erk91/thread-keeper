@@ -131,8 +131,12 @@ class Settings(BaseSettings):
     auto_update_expected_publisher_workflow: str = "publish.yml"
     auto_update_expected_publisher_environment: str = "pypi"
 
-    # ── Phase 1: daemon-host + thin servers (dark by default) ──
-    daemon_host: bool = False              # THREADKEEPER_DAEMON_HOST
+    # ── Phase 1: daemon-host + thin servers (ON by default) ──
+    # One elected headless host per machine owns the background loops, the
+    # warm embedding model, and the embed socket; per-session servers run
+    # thin. THREADKEEPER_DAEMON_HOST=0 reverts to the legacy per-process
+    # daemon threads.
+    daemon_host: bool = True               # THREADKEEPER_DAEMON_HOST
     role: str = "server"                   # THREADKEEPER_ROLE: server | host
     host_sock: str = ""                    # "" -> <db dir>/host.sock
     host_heartbeat_ttl_s: float = 120.0
