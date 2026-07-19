@@ -38,10 +38,13 @@ import yaml
 from .._mcp import read_tool, write_tool
 from ..config import (
     CLAUDE_SKILLS_DIR,
+    CURATOR_MANAGE_FOREGROUND_SKILLS,
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
     WRITE_ORIGIN,
 )
 from ..curator_snapshots import (
+    PASS_ID_ENV,
+    SNAPSHOT_DIR_ENV,
     capture_skill_tombstone,
     record_curator_action,
 )
@@ -901,7 +904,16 @@ def _action_delete(name: str, *, force: bool = False) -> str:
         protected_reason = "unknown_origin"
     elif origin not in CURATABLE_SKILL_ORIGINS:
         protected_reason = f"unknown_origin:{origin}"
-    effective_force = bool(force and WRITE_ORIGIN == FOREGROUND_ORIGIN)
+    snapshotted_curator_authority = bool(
+        WRITE_ORIGIN == "curator"
+        and CURATOR_MANAGE_FOREGROUND_SKILLS
+        and os.environ.get(PASS_ID_ENV)
+        and os.environ.get(SNAPSHOT_DIR_ENV)
+    )
+    effective_force = bool(
+        (force and WRITE_ORIGIN == FOREGROUND_ORIGIN)
+        or snapshotted_curator_authority
+    )
     if protected_reason and not effective_force:
         force_note = (
             f" force_ignored_origin={WRITE_ORIGIN}"

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -44,6 +45,7 @@ def _bootstrap(
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
         "THREADKEEPER_CURATOR_INTERVAL_S": interval,
+        "THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS": "0",
         "THREADKEEPER_CURATOR_MIN_LESSONS": min_lessons,
         "THREADKEEPER_CURATOR_REPORTS_DIR": str(tmp_path / "curator"),
         "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
@@ -260,10 +262,19 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "skill_manage" in allowed
     assert "evolve_format" in allowed
     assert "Read" in allowed
-    assert "Write" in allowed
+    assert "curator_report_write" in allowed
+    assert "Write" not in allowed
+    assert "WebSearch" in allowed
+    assert "WebFetch" in allowed
+    assert "skill_validate" in allowed
+    assert "curator_restore" in allowed
     assert "Bash" not in allowed
     # REPORTS_DIR was created so the child has a place to write
     assert pkg["reports_dir"].is_dir()
+    manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
+    assert len(manifests) == 1
+    assert json.loads(manifests[0].read_text())["schema_version"] == 1
+    assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
 
@@ -486,6 +497,203 @@ def test_run_curator_pass_skips_unchanged_inventory(
     third = pkg["curator"].run_curator_pass(force=True)
     assert "fake-curator-2" in third
     assert len(captured) == 2
+
+
+def test_scheduled_curator_researches_unchanged_inventory_after_interval(
+    tmp_path, monkeypatch,
+):
+    """Local bytes can stay unchanged while CLI docs and alternatives age."""
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, interval="3600", min_lessons="2",
+    )
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return f"spawn task_id=scheduled-{len(captured)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    first = pkg["curator"].run_curator_pass(force=True)
+    first_ts = int(time.time())
+    monkeypatch.setattr(pkg["curator"].time, "time", lambda: first_ts + 4000)
+
+    second = pkg["curator"].run_curator_pass(scheduled=True)
+
+    assert "scheduled-1" in first
+    assert "scheduled-2" in second
+    assert len(captured) == 2
+
+
+def _write_audit_skill(root: Path, name: str, body: str, description: str = "test"):
+    path = root / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_skill_validator_is_exhaustive_and_semantic(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    mirror = tmp_path / "codex-skills"
+    first = _write_audit_skill(
+        primary, "first-skill",
+        "# Workflow\nInspect release metadata, validate the package, then publish.",
+    )
+    second = _write_audit_skill(
+        primary, "second-skill",
+        "# Workflow\nInspect release metadata, validate the package, then publish.",
+    )
+    broken = _write_audit_skill(
+        primary, "bad_name", "Read [missing](references/missing.md).",
+        description="Use <tool> safely",
+    )
+    shutil.copytree(first.parent, mirror / "first-skill")
+    shutil.copytree(second.parent, mirror / "second-skill")
+    shutil.copytree(broken.parent, mirror / "bad_name")
+    (mirror / "second-skill" / "SKILL.md").write_text("drift", encoding="utf-8")
+
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    for name, state in (
+        ("first-skill", "active"),
+        ("second-skill", "archived"),
+        ("bad_name", "stale"),
+    ):
+        conn.execute(
+            "INSERT INTO skill_usage "
+            "(name, created_at, created_by_origin, state) VALUES (?, ?, ?, ?)",
+            (name, now, "background_review", state),
+        )
+    conn.commit()
+
+    import threadkeeper.tools.skills as skill_tools
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary, mirror])
+    from threadkeeper.skill_audit import build_skill_audit, format_skill_checklist
+
+    audit = build_skill_audit(conn, include_archived=True)
+    by_name = {record["name"]: record for record in audit["skills"]}
+
+    assert list(sorted(by_name)) == ["bad_name", "first-skill", "second-skill"]
+    assert audit["summary"]["total"] == 3
+    assert audit["summary"]["archived"] == 1
+    assert audit["exact_duplicate_groups"][0]["skills"] == [
+        "first-skill", "second-skill",
+    ]
+    assert by_name["bad_name"]["validators"]["threadkeeper"] == "PASS"
+    assert by_name["bad_name"]["validators"]["codex"].startswith("FAIL:")
+    assert "dangling_relative_link:references/missing.md" in by_name["bad_name"]["findings"]
+    assert "mirror_drift" in by_name["second-skill"]["findings"]
+    checklist = format_skill_checklist(audit)
+    assert "1. SKILL bad_name" in checklist
+    assert "2. SKILL first-skill" in checklist
+    assert "3. SKILL second-skill" in checklist
+
+
+def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    _write_audit_skill(primary, "cross-cli-skill", "# Steps\nDo the work.")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, state) VALUES (?, ?, ?, ?)",
+        ("cross-cli-skill", int(time.time()), "curator", "active"),
+    )
+    conn.commit()
+    import threadkeeper.tools.skills as skill_tools
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary])
+    from threadkeeper._mcp import mcp
+
+    result = mcp._tool_manager._tools["skill_validate"].fn(
+        name="cross-cli-skill",
+    )
+    payload = json.loads(result)
+
+    assert payload["skill"]["name"] == "cross-cli-skill"
+    assert payload["skill"]["validators"] == {
+        "agentskills": "PASS",
+        "claude_code": "PASS",
+        "codex": "PASS",
+        "threadkeeper": "PASS",
+    }
+
+
+def test_curator_report_write_is_path_scoped_and_replaceable(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    from threadkeeper._mcp import mcp
+    write_report = mcp._tool_manager._tools["curator_report_write"].fn
+
+    assert write_report(pass_id="../escape", content="x") == (
+        "ERR invalid_pass_id"
+    )
+    first = write_report(pass_id="20260719T120000", content="# Plan")
+    second = write_report(
+        pass_id="20260719T120000",
+        content="# Results\n\nCURATOR_PASS_COMPLETE",
+    )
+
+    report = pkg["reports_dir"] / "REPORT-20260719T120000.md"
+    assert first.startswith("ok path=")
+    assert second.startswith("ok path=")
+    assert report.read_text() == "# Results\n\nCURATOR_PASS_COMPLETE\n"
+    assert not (tmp_path / "escape").exists()
+
+
+def test_skill_validator_resolves_namespaced_external_plugin_skill(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    external = tmp_path / "plugin-cache" / "systematic-debugging"
+    source = _write_audit_skill(
+        external.parent,
+        "systematic-debugging",
+        "# Debugging\nReproduce, isolate, and verify the fix. "
+        "See [plugin resource](plugin://superpowers/debugging).",
+    )
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, state) VALUES (?, ?, ?, ?)",
+        (
+            "superpowers:systematic-debugging",
+            int(time.time()),
+            "foreground",
+            "active",
+        ),
+    )
+    conn.commit()
+    import threadkeeper.tools.skills as skill_tools
+    import threadkeeper.skill_audit as skill_audit
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary])
+    monkeypatch.setattr(
+        skill_audit,
+        "_external_skill_index",
+        lambda: {"systematic-debugging": [source]},
+    )
+
+    audit = skill_audit.build_skill_audit(conn)
+    record = audit["skills"][0]
+
+    assert record["name"] == "superpowers:systematic-debugging"
+    assert record["source_path"] == str(source)
+    assert record["source_kind"] == "external_plugin"
+    assert record["protected"] is True
+    assert "source_missing" not in record["findings"]
+    assert not any(
+        finding.startswith("dangling_relative_link:")
+        for finding in record["findings"]
+    )
+    assert record["mirrors"][0]["status"] == "external_read_only"
+    assert audit["summary"]["external_plugin"] == 1
 
 
 def test_curator_wakeup_coalesces_before_rereading_inflight_snapshot(

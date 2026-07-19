@@ -617,14 +617,26 @@ locks.
 
 #### 5. Autonomous Curator
 
-Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default off, 604800
-= 7 days recommended) spawns a slim child that reviews the EXISTING
-`lessons.md` + `lesson_usage` + `skill_usage` inventory and writes
-`~/.threadkeeper/curator/REPORT-<isodate>.md` with KEEP / PATCH /
-CONSOLIDATE / PRUNE recommendations. Pinned and foreground-authored
-entries are marked `[PROTECTED]` in the inventory so the curator
-never proposes destructive changes against them, and delete-class tools
-enforce the same boundary server-side. The pass is
+Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default `259200`, three days)
+spawns a slim child for a deep audit of the existing lessons, concepts, and
+**every skill tracked or materialized by ThreadKeeper**. Before the child
+starts, a deterministic validator writes
+`~/.threadkeeper/curator/AUDIT-<isodate>.json`: one logical record per skill
+(physical CLI mirrors are grouped), full source path, telemetry, frontmatter,
+ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
+findings, mirror hashes, exact-body duplicate groups, and lexical candidates
+for semantic review. System and installed-plugin sources are resolved from
+their read-only caches rather than misreported as missing mirrors; telemetry
+rows with no real `SKILL.md` remain explicit orphans. The child reads every
+complete skill and relevant support file, performs current web research against
+official docs and comparable
+public skills, then writes numbered per-skill verdicts to
+`REPORT-<isodate>.md`: KEEP / REPAIR / UPDATE / MERGE / SPLIT / DEPRECATE /
+DELETE / CROSS_LINK / HUMAN_REVIEW. Similar names and cosine scores are only
+candidates; merge/delete decisions compare intent, workflow, inputs, outcomes,
+and unique details.
+
+The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
@@ -634,19 +646,22 @@ non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
 
-Before spawning, the scheduler hashes the stable inventory state (lessons,
-lesson usage, active/stale skills, and concepts). If the hash matches the last
-recorded complete/endorsed curator pass, the wake-up records an
-`unchanged_inventory` no-op event and endorses the last report instead of
-asking another child to re-grade the same snapshot. `curator_review_status()`
-shows both the last endorsed `inventory_sha256` and the current inventory hash
-so operators can tell whether the store is quiescent.
+Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
+trees, validators, and mirror state. Repeated manual calls over identical bytes
+return `unchanged_inventory`; the scheduled three-day pass still runs because
+CLI behavior, official guidance, and external alternatives can change without
+local file changes. `curator_review_status()` shows the inventory hash plus the
+latest report, deterministic audit manifest, and recovery snapshot.
 
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
 can actually prune and consolidate duplicate lessons). Set
-`THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. It never touches
-`[PROTECTED]` / foreground / user / pinned / validated entries. Lessons are
+`THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. Pinned and
+untracked skills remain protected. Foreground-authored skills are protected by
+default; set `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` to grant the
+Curator explicit snapshot-scoped authority to repair, merge, and delete those
+skills too. The opt-in never overrides pins and is accepted only inside a real
+Curator pass carrying both pass-id and snapshot-dir context. Lessons are
 stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
 appended; missing, legacy, or unknown lesson provenance is protected by
 default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
@@ -993,7 +1008,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 (off) | curator daemon tick (s), restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
+| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
@@ -1552,7 +1568,7 @@ threadkeeper/
 │   ├── gemini.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @read_tool()/@write_tool() entries — 113 of them
+└── tools/                # @read_tool()/@write_tool() entries — 115 of them
     ├── threads.py
     ├── peers.py
     ├── spawn.py

@@ -247,7 +247,20 @@ class CodexAdapter(CLIAdapter):
         bin_path = shutil.which("codex")
         if not bin_path:
             return None
-        argv = [bin_path, "exec", "--skip-git-repo-check"]
+        # `--search` is a Codex global flag (it must precede `exec`). Curator
+        # requests Claude-style WebSearch/WebFetch capability through the
+        # adapter-neutral allowlist; translate that request to Codex's native
+        # web-search switch instead of silently launching a research-blind
+        # validator.
+        requested_tools = {
+            item.strip().lower()
+            for item in extra_allowed_tools.split(",")
+            if item.strip()
+        }
+        argv = [bin_path]
+        if {"websearch", "webfetch"} & requested_tools:
+            argv.append("--search")
+        argv += ["exec", "--skip-git-repo-check"]
         if model:
             argv += ["-m", model]
         if permission_mode == "bypassPermissions":

@@ -4,15 +4,17 @@ Where shadow_review LOOKS FOR NEW class-level learning every few
 minutes, the Curator REVIEWS THE STORE every few days:
 
   1. Daemon thread wakes every CURATOR_INTERVAL_S seconds (0 = off).
-  2. Fingerprints the stable inventory snapshot: lessons, lesson_usage,
-     skills, and concepts.
-  3. If that fingerprint matches the last recorded complete/endorsed pass,
-     records an unchanged/no-op event instead of spawning another child.
-  4. Collects inventory: every lesson slug + every recently-touched
-     skill + usage telemetry + advisory lesson decay ranking.
-  5. Spawns slim child with CURATOR_PROMPT + inventory dump.
-  6. Child grades each entry, suggests KEEP / PATCH / CONSOLIDATE /
-     PRUNE, and writes REPORT-<isodate>.md under CURATOR_REPORTS_DIR.
+  2. Fingerprints lessons, concepts, every tracked/materialized skill body,
+     support-file tree, validator result, and mirror state.
+  3. Manual duplicate invocations debounce an unchanged inventory; scheduled
+     passes still run so web-backed freshness is re-checked every interval.
+  4. Writes AUDIT-<isodate>.json: an exhaustive numbered skill manifest with
+     consumer validation, link/resource findings, exact duplicate groups, and
+     semantic-review candidates.
+  5. Spawns a slim child with web research plus the manifest/checklist.
+  6. Child reads every full skill, researches current official guidance and
+     comparable skills, then chooses KEEP / REPAIR / UPDATE / MERGE / SPLIT /
+     DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
   7. In destructive mode, parent writes a pre-mutation snapshot before
      spawning the child; child tool calls add tombstones/action telemetry.
   8. Parent records `curator_pass` event with high-water timestamp and
@@ -25,9 +27,8 @@ Design choices:
   • **Defense-in-depth** — protected lessons/skills are listed in the
     inventory as PROTECTED and delete-class MCP tools refuse them
     server-side unless a foreground writer explicitly forces the action.
-  • **Scoped toolset** — child gets only lesson_*/skill_*/concept_*/
-    Read/Write. No shell, no web, no spawn. Curator can't sprawl into
-    anything else.
+  • **Scoped toolset** — child gets library tools, Read/Write, deterministic
+    skill_validate, WebSearch/WebFetch, and snapshot restore. No shell/spawn.
   • **Per-run REPORT.md** — every pass leaves an auditable trail.
   • **Destructive-by-default (Phase 2)** — parent first writes a recoverable
     snapshot under CURATOR_REPORTS_DIR/snapshots/<pass-id>. The child writes
@@ -62,6 +63,7 @@ from .config import (
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_MANAGE_FOREGROUND_SKILLS,
     CURATOR_SNAPSHOT_RETENTION,
 )
 from .db import get_db
@@ -71,6 +73,11 @@ from .curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
     create_curator_snapshot,
+)
+from .skill_audit import (
+    build_skill_audit,
+    format_skill_checklist,
+    write_skill_audit_manifest,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,17 +109,68 @@ _CURATABLE_SKILL_ORIGINS = {
 CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
 
 CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
-library. You read the inventory below — every lesson slug, every
-recently-touched skill, usage telemetry — and decide what to keep,
-patch, consolidate, or prune.
+library. This is a deep audit, not a filename or character-count scan. You
+receive every skill ThreadKeeper tracks or materializes, including archived
+records and untracked primary-store skills, plus usage telemetry.
 
 Where the shadow_review observer LOOKS FOR new class-level learning,
 your role is the inverse: review the EXISTING store for quality, dedup,
 and freshness.
 
-OUTPUT: write a REPORT.md to ~/.threadkeeper/curator/REPORT-<isodate>.md
-via Write tool. The REPORT.md is your sole user-visible output; the
-human reads it later and decides which recommendations to apply.
+DEEP SKILL VALIDATOR — complete every numbered skill in order. Read the full
+SKILL.md and relevant support files from `source_path`; the compact inventory
+line is never sufficient. Also read AUDIT_MANIFEST_PATH, which contains
+deterministic ThreadKeeper/Claude Code/Codex/Agent Skills validation, mirror
+hashes, dangling links, exact-body duplicates, and lexical candidate pairs.
+
+For EACH skill, put a numbered row in REPORT.md with:
+  name | relevance/currentness | actual capability | uniqueness | consumer
+  compatibility | web evidence | verdict | action/result.
+Use one of these verdicts: KEEP, REPAIR, UPDATE, MERGE, SPLIT, DEPRECATE,
+DELETE, CROSS_LINK, HUMAN_REVIEW. No skill may be omitted. A lexical score,
+similar name, or matching character count is only a lead — decide overlap by
+intent, inputs, workflow, and expected outcome after reading both full bodies.
+
+WEB RESEARCH is mandatory for every skill (researching a coherent cluster in
+one search is allowed). Prefer current official product/CLI documentation,
+standards, source repositories, release notes, and then reputable public skill
+catalogs. Search for comparable external skills and current alternatives. Cite
+the URLs and access date in the per-skill row or its cluster note. Never copy
+third-party text verbatim; use research to verify currency and identify missing
+capabilities. Search queries must contain only generic capability/product terms:
+never send private paths, source excerpts, secrets, user/project names, or
+internal identifiers to the web. If web access fails, use HUMAN_REVIEW with
+`research_unavailable` rather than claiming the skill is current.
+
+CROSS-CLI REPAIR is mandatory when the manifest flags a supported consumer.
+For a curatable skill, repair frontmatter/body/resources through skill_manage,
+then call skill_validate(name=...) and require every supported consumer plus
+all mirrors to pass. If post-change validation fails, restore that skill from
+PASS_ID with curator_restore and record the rollback. For a protected or
+external skill, do not mutate it; emit an exact HUMAN_REVIEW repair plan.
+
+MERGE/DELETE safety:
+  • Merge only when the skills have the same practical job or one fully
+    subsumes the other. Preserve all unique procedures, caveats, triggers,
+    examples, references, telemetry context, and useful support files in the
+    umbrella skill before deleting anything.
+  • DELETE only exact duplicates, fully superseded entries with no unique
+    value, or demonstrably irrelevant/broken skills. Prefer CROSS_LINK or
+    SPLIT when scopes are adjacent rather than identical.
+  • Physical mirrors are copies of one logical skill, never duplicates.
+  • Protected skills may receive a HUMAN_REVIEW recommendation but may not be
+    edited/deleted automatically.
+  • Write REPORT.md before mutation. A parent snapshot already exists in
+    destructive mode. Revalidate every affected skill after mutation and
+    record PASS/FAIL/ROLLED_BACK in REPORT.md.
+
+OUTPUT: persist REPORT.md through
+`curator_report_write(pass_id=PASS_ID, content=<full markdown>)`. Do NOT use
+the filesystem Write tool for the report: sandboxed CLIs may not write outside
+their project. REPORT.md is the durable human audit trail. In destructive mode,
+write the complete planned report once before mutations, apply only the safe,
+authorized actions below, then call curator_report_write again with actual
+PASS/FAIL/ROLLED_BACK results and the final `CURATOR_PASS_COMPLETE` line.
 
 EVOLVE CANDIDATES — if a lesson or skill reveals an important improvement for
 thread-keeper itself (security, privacy, memory leaks, daemon/cost waste,
@@ -131,8 +189,8 @@ not improve thread-keeper itself. Also include a short `EVOLVE_CANDIDATE:` line
 in the REPORT.md for every candidate you created so the human audit trail shows
 why it was filed.
 
-RUBRIC (per-entry decision matrix — answer for every lesson and every
-recently-active skill):
+LESSON RUBRIC (answer for every lesson; skills use the deep validator and
+verdicts above):
 
   KEEP — entry is class-level, in use, accurate. Note "KEEP: <slug>".
 
@@ -199,10 +257,10 @@ destructive changes freely. Priorities specific to concepts:
   `last_evidence` age means the concept was recently re-corroborated, not
   merely recently registered.
 
-INVENTORY ORDERING — entries marked [PROTECTED] are pinned or
-foreground-authored. NEVER suggest PATCH/CONSOLIDATE/PRUNE on those —
-only KEEP. Always-OK to RECOMMEND that the user manually review them,
-but the curator must not propose destructive changes.
+PROTECTION — lessons marked [PROTECTED] are pinned or foreground-authored:
+only KEEP them. Protected skills are also never auto-mutated, but unlike
+lessons they still require a complete audit row; use HUMAN_REVIEW with a
+concrete repair/merge/deprecation recommendation when appropriate.
 
 PRIORITY ORDER inside the REPORT.md:
   1. CONSOLIDATE recommendations first (highest leverage — merging two
@@ -283,7 +341,10 @@ def _stable_int(value) -> int | None:
         return None
 
 
-def _curator_inventory_snapshot(conn: sqlite3.Connection) -> dict:
+def _curator_inventory_snapshot(
+    conn: sqlite3.Connection,
+    skill_audit: dict | None = None,
+) -> dict:
     """Canonical, time-stable inventory state for debounce fingerprinting.
 
     Human prompt text includes relative ages and decay scores, so hashing the
@@ -294,6 +355,7 @@ def _curator_inventory_snapshot(conn: sqlite3.Connection) -> dict:
     snapshot: dict[str, list[dict]] = {
         "lessons": [],
         "skills": [],
+        "skill_files": [],
         "concepts": [],
     }
 
@@ -350,6 +412,23 @@ def _curator_inventory_snapshot(conn: sqlite3.Connection) -> dict:
                      exc_info=True)
 
     try:
+        audit = skill_audit or build_skill_audit(conn, include_archived=True)
+        snapshot["skill_files"] = [
+            {
+                "name": record["name"],
+                "state": record["state"],
+                "source_path": record["source_path"],
+                "content_sha256": record["content_sha256"],
+                "normalized_body_sha256": record["normalized_body_sha256"],
+                "mirrors": record["mirrors"],
+                "findings": record["findings"],
+            }
+            for record in audit["skills"]
+        ]
+    except Exception:
+        logger.debug("curator: deep skill snapshot failed", exc_info=True)
+
+    try:
         rows = conn.execute(
             "SELECT id, description, confidence, registered_at, "
             "last_evidence_at FROM concepts ORDER BY id"
@@ -381,12 +460,13 @@ def _inventory_fingerprint(snapshot: dict) -> str:
 
 def _current_inventory_fingerprint(
     conn: sqlite3.Connection,
+    skill_audit: dict | None = None,
 ) -> tuple[str, int, int, int]:
-    snapshot = _curator_inventory_snapshot(conn)
+    snapshot = _curator_inventory_snapshot(conn, skill_audit=skill_audit)
     return (
         _inventory_fingerprint(snapshot),
         len(snapshot["lessons"]),
-        len(snapshot["skills"]),
+        len(snapshot["skill_files"]) or len(snapshot["skills"]),
         len(snapshot["concepts"]),
     )
 
@@ -509,7 +589,10 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
     return "\n".join(lines), len(rows)
 
 
-def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
+def _collect_inventory(
+    conn: sqlite3.Connection,
+    skill_audit: dict | None = None,
+) -> tuple[str, int, int]:
     """Build the inventory dump the curator child will read.
 
     Returns (dump_text, lesson_count, skill_count). The dump format is
@@ -528,31 +611,16 @@ def _collect_inventory(conn: sqlite3.Connection) -> tuple[str, int, int]:
         logger.debug("curator: iter_lessons failed", exc_info=True)
 
     # ---- Skills ----
-    skill_lines: list[str] = []
-    n_skills = 0
-    try:
-        rows = conn.execute(
-            "SELECT name, created_at, created_by_origin, last_used_at, "
-            "last_viewed_at, last_patched_at, use_count, view_count, "
-            "patch_count, pinned, state "
-            "FROM skill_usage "
-            "WHERE state IN ('active', 'stale') "
-            "ORDER BY COALESCE(last_used_at, last_viewed_at, "
-            "                  last_patched_at, created_at) DESC"
-        ).fetchall()
-        for r in rows:
-            skill_lines.append(_format_skill(dict(r)))
-            n_skills += 1
-    except sqlite3.OperationalError:
-        logger.debug("curator: skill_usage scan failed", exc_info=True)
+    audit = skill_audit or build_skill_audit(conn, include_archived=True)
+    skill_checklist = format_skill_checklist(audit)
+    n_skills = int(audit["summary"]["total"])
 
     parts: list[str] = []
     parts.append(f"## LESSONS (n={n_lessons})\n")
     parts.extend(lesson_lines if lesson_lines else ["(none)"])
     stale_text, _n_stale = _collect_stale_lessons(conn)
     parts.append("\n" + stale_text)
-    parts.append(f"\n## SKILLS (n={n_skills})\n")
-    parts.extend(skill_lines if skill_lines else ["(none)"])
+    parts.append("\n" + skill_checklist)
 
     return ("\n".join(parts), n_lessons, n_skills)
 
@@ -688,10 +756,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_curator_pass(conn, now, out)
             return out
 
+        try:
+            skill_audit = build_skill_audit(conn, include_archived=True)
+        except Exception as exc:
+            out = f"skill_audit_error: {exc}"
+            _record_curator_pass(conn, now, out)
+            return out
         fingerprint, n_lessons, n_skills, n_concepts = (
-            _current_inventory_fingerprint(conn)
+            _current_inventory_fingerprint(conn, skill_audit=skill_audit)
         )
-        if n_lessons < CURATOR_MIN_LESSONS:
+        if n_lessons < CURATOR_MIN_LESSONS and n_skills == 0:
             _record_curator_pass(
                 conn, now,
                 f"below_threshold lessons={n_lessons} skills={n_skills}",
@@ -701,7 +775,10 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         last_fingerprint, last_fingerprint_ts = _last_inventory_fingerprint(
             conn
         )
-        if last_fingerprint == fingerprint:
+        # Scheduled passes deliberately re-run unchanged content: relevance,
+        # CLI behavior, and external alternatives can change even when local
+        # bytes do not. Manual duplicate calls still debounce for safety/cost.
+        if last_fingerprint == fingerprint and not scheduled:
             ts_part = (
                 f" endorsed_ts={last_fingerprint_ts}"
                 if last_fingerprint_ts else ""
@@ -717,7 +794,9 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 f"fingerprint={fingerprint[:12]}{ts_part}"
             )
 
-        inventory, _n_lessons, _n_skills = _collect_inventory(conn)
+        inventory, _n_lessons, _n_skills = _collect_inventory(
+            conn, skill_audit=skill_audit,
+        )
 
         # Concepts enrich the review but do NOT lower the lesson threshold —
         # a curator pass is only worth a child spawn when there's a real
@@ -729,6 +808,10 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # Ensure reports dir exists before the child tries to Write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         pass_id = time.strftime('%Y%m%dT%H%M%S')
+        manifest_path = write_skill_audit_manifest(
+            skill_audit,
+            CURATOR_REPORTS_DIR / f"AUDIT-{pass_id}.json",
+        )
         snapshot_dir = None
 
         if CURATOR_DESTRUCTIVE:
@@ -747,6 +830,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
         # to advisory REPORT-only (read-only toolset).
         if CURATOR_DESTRUCTIVE:
+            foreground_clause = (
+                "This pass has explicit, snapshot-scoped authority to mutate "
+                "foreground-authored skills when the manifest does not mark "
+                "them protected. Pinned and untracked skills remain protected."
+                if CURATOR_MANAGE_FOREGROUND_SKILLS else
+                "Foreground-authored, pinned, and untracked skills remain "
+                "protected and require HUMAN_REVIEW."
+            )
             destructive_clause = (
                 "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
                 "the REPORT.md you MUST apply your own PATCH / PRUNE / "
@@ -766,9 +857,8 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "false-positive concept; concept_manage(action='set_confidence', "
                 "concept_id=<id>, confidence='low|medium|high') applies a "
                 "confidence review.\n"
-                "NEVER pass force=True to lesson_remove or skill_manage — "
-                "protected foreground/legacy/unknown entries are refused "
-                "server-side, and non-foreground force is ignored. NEVER touch "
+                "NEVER pass force=True to lesson_remove or skill_manage. "
+                f"{foreground_clause} NEVER touch "
                 "any entry marked [PROTECTED], even in destructive mode. Apply "
                 "changes ONLY after the REPORT.md is "
                 "written (audit trail first, mutation second). A recovery "
@@ -781,11 +871,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__lesson_remove,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_manage,"
+                "mcp__thread-keeper__skill_validate,"
+                "mcp__thread-keeper__curator_report_write,"
+                "mcp__thread-keeper__curator_restore,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__concept_manage,"
                 "mcp__thread-keeper__evolve_format,"
-                "Read,Write"
+                "Read,WebSearch,WebFetch"
             )
         else:
             destructive_clause = (
@@ -801,10 +894,12 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__lesson_list,"
                 "mcp__thread-keeper__lesson_get,"
                 "mcp__thread-keeper__skill_list,"
+                "mcp__thread-keeper__skill_validate,"
+                "mcp__thread-keeper__curator_report_write,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__evolve_format,"
-                "Read,Write"
+                "Read,WebSearch,WebFetch"
             )
 
         full_prompt = (
@@ -813,7 +908,10 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             + "\n\n"
             + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/REPORT-"
             f"{pass_id}.md\n"
-            + "Write the REPORT.md to that exact path."
+            + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
+            + f"PASS_ID = {pass_id}\n"
+            + "Persist the REPORT through curator_report_write using PASS_ID; "
+            + "REPORT_PATH is informational and must not be written directly."
         )
 
         from .tools.spawn import spawn  # type: ignore
@@ -852,6 +950,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             f"spawned {INVENTORY_FINGERPRINT_KEY}={fingerprint} "
             f"lessons={n_lessons} skills={n_skills} "
             f"concepts={n_concepts} "
+            f"manifest={manifest_path.name} "
             f"snapshot={pass_id if snapshot_dir else '-'} "
             f":: {str(result)[:140]}",
         )

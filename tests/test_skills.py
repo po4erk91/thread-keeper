@@ -42,6 +42,7 @@ def _bootstrap_skills(tmp_path, monkeypatch, write_origin="foreground"):
         "THREADKEEPER_SEARCH_PROXY_POLL_S": "0",
         "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
         "THREADKEEPER_CURATOR_INTERVAL_S": "0",
+        "THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS": "0",
         "THREADKEEPER_EXTRACT_INTERVAL_S": "0",
         "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",
         "THREADKEEPER_PROBE_INTERVAL_S": "0",
@@ -338,6 +339,30 @@ def test_loop_origin_cannot_force_delete_foreground_skill(
     assert f"force_ignored_origin={write_origin}" in result
     assert (pkg["skills_root"] / "human-skill").exists()
     assert not (pkg["tmp"] / "curator" / "trash").exists()
+
+
+def test_curator_can_delete_foreground_only_with_explicit_snapshot_authority(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill(pkg, name="foreground-duplicate")
+    _set_skill_origin(pkg, "foreground-duplicate", "foreground")
+    import threadkeeper.tools.skills as skills_mod
+    monkeypatch.setattr(skills_mod, "CURATOR_MANAGE_FOREGROUND_SKILLS", True)
+    snapshot = tmp_path / "curator" / "snapshots" / "pass-1"
+    snapshot.mkdir(parents=True)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "pass-1")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snapshot))
+    sm = _tool(pkg, "skill_manage")
+
+    result = sm(action="delete", name="foreground-duplicate")
+
+    assert result == "ok"
+    assert not (pkg["skills_root"] / "foreground-duplicate").exists()
+    assert (
+        snapshot / "tombstones" / "skills" / "skill_deleted"
+        / "foreground-duplicate" / "SKILL.md"
+    ).is_file()
 
 
 # ──────────────────────────────────────────────────────────────────────

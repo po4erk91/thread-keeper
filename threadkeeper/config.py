@@ -288,7 +288,9 @@ class Settings(BaseSettings):
     shadow_review_min_chars: int = 500
 
     # ── Curator daemon ───────────────────────────────────────────────────────
-    curator_interval_s: float = 0.0
+    # Deep library audit every three days by default. The pass snapshots before
+    # mutation and can be disabled explicitly with interval 0.
+    curator_interval_s: float = 259_200.0
     curator_min_lessons: int = 3
     # THREADKEEPER_CURATOR_REPORTS_DIR — default is relative to db dir; computed post-init
     curator_reports_dir: Optional[Path] = None
@@ -298,6 +300,10 @@ class Settings(BaseSettings):
     # for advisory REPORT-only. [PROTECTED] (foreground/user/pinned/validated)
     # entries are never mutated regardless.
     curator_destructive: bool = True
+    # Optional explicit authority for a snapshotted Curator pass to repair,
+    # merge, or delete foreground-authored skills. Off by default globally;
+    # users who want full autonomous consolidation opt in deliberately.
+    curator_manage_foreground_skills: bool = False
     # Keep the last N destructive curator snapshots under
     # CURATOR_REPORTS_DIR/snapshots. The current pass is always retained, so
     # values below 1 behave as 1.
@@ -718,6 +724,7 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
+        "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
         "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
         "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,

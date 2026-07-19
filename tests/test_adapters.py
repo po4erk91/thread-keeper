@@ -356,6 +356,26 @@ def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
     assert "--dangerously-bypass-approvals-and-sandbox" in argv_bypass
 
 
+def test_codex_spawn_argv_enables_native_search_for_curator(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv(
+        "deep audit",
+        extra_allowed_tools="Read,WebSearch,WebFetch",
+    )
+
+    assert argv is not None
+    assert argv[:4] == [
+        "/usr/local/bin/codex", "--search", "exec", "--skip-git-repo-check",
+    ]
+
+
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"

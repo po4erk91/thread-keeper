@@ -366,13 +366,16 @@ line.
 Going forward: keep in sync when the set of tools or daemons changes.
 Scope: ongoing.
 
-**Curator policy tuning.** ✅ DONE — superseded the old time-based archive
-heuristic. `curator_run` now spawns a slim child that grades every lesson +
-recently-active skill (and any concepts) against an explicit rubric
-(KEEP / PATCH / CONSOLIDATE / PRUNE), writes an auditable
-`REPORT-<isodate>.md`, and — **destructive-by-default** — applies its own
-PATCH/PRUNE/CONSOLIDATE directly via `lesson_append` / `lesson_remove` /
-`skill_manage`. `[PROTECTED]` entries are refused server-side:
+**Curator policy tuning.** ✅ DONE — now a three-day deep audit rather than the
+old telemetry-only archive heuristic. A deterministic parent phase inventories
+every tracked/materialized skill and validates CLI compatibility, resources,
+links, mirrors, exact duplicates, and semantic candidates. The child reads
+every full skill, performs current official-doc/comparable-skill web research,
+records numbered KEEP / REPAIR / UPDATE / MERGE / SPLIT / DEPRECATE / DELETE /
+CROSS_LINK / HUMAN_REVIEW verdicts, and revalidates after applying changes.
+`REPORT-<isodate>.md` and `AUDIT-<isodate>.json` provide the audit trail.
+`[PROTECTED]` entries are refused server-side unless the explicit, snapshot-
+scoped foreground-skill authority is enabled:
 `lesson_append` stamps `origin=<THREADKEEPER_WRITE_ORIGIN>` into each lesson
 section, legacy/unknown-origin lessons fail closed, skill deletion refuses
 foreground/unknown provenance, and non-foreground children cannot escalate with

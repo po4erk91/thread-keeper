@@ -421,11 +421,17 @@ moving the high-water forward; `force=True` bypasses this due gate.
   the validator prompt, then spawns one child behind `dialectic-validator.lock`
   plus the running validator-task check. Spawn failures release the just-claimed
   rows; parent crashes leave them under the normal stale-claim lease requeue.
-- **curator** — once per `CURATOR_INTERVAL_S` (default 0 = off) audits the
-  existing lessons / skills / concepts inventory through one slim child. Before
-  spawning, it hashes the stable inventory state and compares it to the last
-  recorded complete/endorsed pass; unchanged snapshots record an
-  `unchanged_inventory` no-op event instead of re-deriving the same report.
+- **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
+  audits lessons, concepts, and every tracked/materialized skill through one
+  slim child. A deterministic parent phase writes `AUDIT-<pass-id>.json` with
+  per-consumer validation, link/resource checks, mirror integrity, normalized
+  exact duplicates, and lexical semantic candidates. The child reads each full
+  skill, researches current official docs and comparable public skills, writes
+  a numbered verdict, applies safe repairs/merges/deletes after the report, and
+  revalidates each changed skill. The stable fingerprint includes skill bytes
+  and mirrors. Identical manual calls debounce as `unchanged_inventory`, while
+  scheduled passes still run because external relevance can change without a
+  local-byte change.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
@@ -1293,7 +1299,7 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (112 total)
+## MCP tools (114 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -1319,7 +1325,7 @@ below).
 | lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 3 | curator_review, curator_review_status, curator_restore |
+| curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
@@ -1610,9 +1616,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
-| `THREADKEEPER_CURATOR_INTERVAL_S` | 0 | curator daemon tick, restart-throttled by the last `curator_pass`; 604800 = 7d recommended |
+| `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |
+| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | `0` | explicit snapshot-scoped authority to repair/merge/delete foreground skills; pins and untracked provenance remain protected |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 | probe daemon tick; 1800 = 30 min recommended for prompt answer grading |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category objective probe cooldown; 86400 = 1d recommended for active reliability tracking |
