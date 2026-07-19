@@ -3088,8 +3088,7 @@ struct EnvSettingRow: View {
     private var control: some View {
         switch definition.kind {
         case .toggle:
-            Picker("", selection: envStore.binding(for: definition.key)) {
-                Text(inheritedDefaultLabel(for: definition)).tag("")
+            Picker("", selection: effectiveToggleSelection) {
                 Text("On").tag("true")
                 Text("Off").tag("false")
             }
@@ -3121,6 +3120,18 @@ struct EnvSettingRow: View {
         }
     }
 
+    private var effectiveToggleSelection: Binding<String> {
+        Binding(
+            get: {
+                let explicit = envStore.values[definition.key] ?? ""
+                return normalizedToggleValue(explicit)
+                    ?? normalizedToggleValue(definition.defaultValue)
+                    ?? "false"
+            },
+            set: { envStore.setValue($0, for: definition.key) }
+        )
+    }
+
     private func choicesIncludingCurrent(_ choices: [ChoiceOption]) -> [ChoiceOption] {
         guard let current = envStore.values[definition.key],
               !current.isEmpty,
@@ -3131,6 +3142,14 @@ struct EnvSettingRow: View {
             ? "From .env · \(hourChoiceLabel(current))"
             : "From .env · \(current)"
         return choices + [ChoiceOption(current, label: label)]
+    }
+}
+
+private func normalizedToggleValue(_ raw: String) -> String? {
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "1", "true", "yes", "on": return "true"
+    case "0", "false", "no", "off": return "false"
+    default: return nil
     }
 }
 

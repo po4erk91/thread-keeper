@@ -151,6 +151,14 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert 'Text("Default")' not in swift
     assert 'Text("CLI default")' not in swift
     assert "inheritedDefaultLabel(for: definition)" in swift
+    control_start = swift.index("    private var control: some View")
+    toggle_start = swift.index("case .toggle:", control_start)
+    toggle_end = swift.index("case .choice", toggle_start)
+    toggle_control = swift[toggle_start:toggle_end]
+    assert "selection: effectiveToggleSelection" in toggle_control
+    assert 'Text("On").tag("true")' in toggle_control
+    assert 'Text("Off").tag("false")' in toggle_control
+    assert '.tag("")' not in toggle_control
     assert '"THREADKEEPER_INGEST_INTERVAL_S": "3"' in swift
     assert '"THREADKEEPER_CURATOR_INTERVAL_S": "259200"' in swift
     assert '"THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "302400"' in swift
