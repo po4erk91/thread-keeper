@@ -339,6 +339,23 @@ private let hourScheduleChoices = [
     ChoiceOption("2592000", label: "720 h · 30 days"),
 ]
 
+private let scheduleDefaultValues: [String: String] = [
+    "THREADKEEPER_INGEST_INTERVAL_S": "3",
+    "THREADKEEPER_RETENTION_INTERVAL_S": "0",
+    "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": "86400",
+    "THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "302400",
+    "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "0",
+    "THREADKEEPER_CURATOR_INTERVAL_S": "259200",
+    "THREADKEEPER_EXTRACT_INTERVAL_S": "0",
+    "THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S": "0",
+    "THREADKEEPER_PROBE_INTERVAL_S": "0",
+    "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": "0",
+    "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S": "0",
+    "THREADKEEPER_THREAD_JANITOR_INTERVAL_S": "0",
+    "THREADKEEPER_DIALECTIC_MINE_INTERVAL_S": "0",
+    "THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S": "0",
+]
+
 private let memoryLimitChoices = choiceOptions([
     "0", "256", "512", "768", "1024", "1536", "2048", "3072",
     "4096", "6144", "8192", "12288",
@@ -423,7 +440,7 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         key: "THREADKEEPER_CURATOR_INTERVAL_S",
         title: "Curator interval",
         detail: "Audits and consolidates materialized lessons.",
-        defaultValue: "0",
+        defaultValue: "259200",
         kind: .choice(hourScheduleChoices)
     ),
     EnvSettingDefinition(
@@ -596,13 +613,16 @@ final class EnvSettingsStore: ObservableObject {
         var definitions = baseEnvSettingDefinitions
         let clis = catalog?.clis ?? []
         let choices = cliChoices
+        let activeCLI = catalog?.activeCLI
+            ?? clis.first(where: \.installed)?.id
+            ?? "claude"
         if !choices.isEmpty {
             definitions.append(EnvSettingDefinition(
                 group: "CLI Agents",
                 key: "THREADKEEPER_SPAWN__DEFAULT",
                 title: "Default CLI",
                 detail: "Inherited by every Learning Loop agent without an override.",
-                defaultValue: "",
+                defaultValue: activeCLI,
                 kind: .choice(choices)
             ))
         }
@@ -615,7 +635,7 @@ final class EnvSettingsStore: ObservableObject {
                 key: modelKey,
                 title: "\(cli.name) default model",
                 detail: "CLI default when an agent has no model override.",
-                defaultValue: "CLI default",
+                defaultValue: "CLI managed",
                 kind: .model(choiceOptions(
                     cli.models,
                     preserving: [values[modelKey] ?? ""]
@@ -631,7 +651,7 @@ final class EnvSettingsStore: ObservableObject {
                     key: effortKey,
                     title: "\(cli.name) default effort",
                     detail: "CLI effort inherited by agents without an override.",
-                    defaultValue: "CLI default",
+                    defaultValue: "CLI managed",
                     kind: .choice(choiceOptions(
                         efforts,
                         preserving: [values[effortKey] ?? ""]
@@ -646,7 +666,7 @@ final class EnvSettingsStore: ObservableObject {
                 key: "THREADKEEPER_SPAWN__LOOP__\(token)",
                 title: "\(role.name) CLI",
                 detail: "Default inherits the global CLI.",
-                defaultValue: "Inherited",
+                defaultValue: role.cli.isEmpty ? activeCLI : role.cli,
                 kind: .choice(choices)
             ))
             let roleCLI = draftCLI(for: role)
@@ -657,7 +677,7 @@ final class EnvSettingsStore: ObservableObject {
                 key: roleModelKey,
                 title: "\(role.name) model",
                 detail: "Default inherits the selected CLI model.",
-                defaultValue: "Inherited",
+                defaultValue: role.model.isEmpty ? "CLI managed" : role.model,
                 kind: .model(choiceOptions(
                     models,
                     preserving: [values[roleModelKey] ?? ""]
@@ -690,7 +710,7 @@ final class EnvSettingsStore: ObservableObject {
                 key: effortKey,
                 title: "\(role.name) effort",
                 detail: "Default inherits the selected CLI effort.",
-                defaultValue: "Inherited",
+                defaultValue: role.effort.isEmpty ? "CLI managed" : role.effort,
                 kind: effortKind
             ))
             if !role.intervalKey.isEmpty {
@@ -699,7 +719,7 @@ final class EnvSettingsStore: ObservableObject {
                     key: role.intervalKey,
                     title: "\(role.name) schedule (hours)",
                     detail: "Choose the cadence in hours; Off disables this schedule.",
-                    defaultValue: "0",
+                    defaultValue: scheduleDefaultValues[role.intervalKey] ?? "0",
                     kind: .choice(hourScheduleChoices)
                 ))
             }
@@ -710,7 +730,7 @@ final class EnvSettingsStore: ObservableObject {
                 key: job.intervalKey,
                 title: "\(job.name) schedule (hours)",
                 detail: "Choose the cadence in hours; Off disables this job.",
-                defaultValue: "0",
+                defaultValue: scheduleDefaultValues[job.intervalKey] ?? "0",
                 kind: .choice(hourScheduleChoices)
             ))
         }
@@ -2746,7 +2766,10 @@ struct LearningAgentCard: View {
             if !role.intervalKey.isEmpty,
                let schedule = envStore.definition(for: role.intervalKey) {
                 EnvSettingRow(definition: schedule, envStore: envStore, showKey: false)
-                ScheduleHint(value: envStore.values[role.intervalKey] ?? "")
+                ScheduleHint(
+                    value: envStore.values[role.intervalKey] ?? "",
+                    defaultValue: schedule.defaultValue
+                )
             } else {
                 Label("Runs on demand; no autonomous schedule.", systemImage: "hand.tap")
                     .font(.system(size: 11))
@@ -2851,7 +2874,10 @@ struct AutomationJobCard: View {
             if let definition = envStore.definition(for: job.intervalKey) {
                 Divider()
                 AutomationScheduleRow(definition: definition, envStore: envStore)
-                ScheduleHint(value: envStore.values[job.intervalKey] ?? "")
+                ScheduleHint(
+                    value: envStore.values[job.intervalKey] ?? "",
+                    defaultValue: definition.defaultValue
+                )
             }
         }
         .settingsCardSurface()
@@ -2870,7 +2896,7 @@ struct AutomationScheduleRow: View {
                 .layoutPriority(1)
             Spacer(minLength: 8)
             Picker("Schedule (hours)", selection: envStore.binding(for: definition.key)) {
-                Text("Default").tag("")
+                Text(inheritedDefaultLabel(for: definition)).tag("")
                 ForEach(choicesIncludingCurrent, id: \.value) { choice in
                     Text(choice.label).tag(choice.value)
                 }
@@ -2886,8 +2912,10 @@ struct AutomationScheduleRow: View {
             }
             .buttonStyle(.plain)
             .disabled((envStore.values[definition.key] ?? "").isEmpty)
-            .accessibilityLabel("Use default for \(jobLabel)")
-            .help("Use default")
+            .accessibilityLabel(
+                "Use inherited \(concreteDefaultLabel(for: definition)) for \(jobLabel)"
+            )
+            .help("Use inherited value: \(concreteDefaultLabel(for: definition))")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2929,13 +2957,19 @@ struct ImpactLine: View {
 
 struct ScheduleHint: View {
     let value: String
+    let defaultValue: String
 
     var body: some View {
-        Label(humanSchedule(value), systemImage: "clock")
+        let explicit = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let effectiveValue = explicit ? value : defaultValue
+        let label = explicit
+            ? humanSchedule(effectiveValue)
+            : "\(humanSchedule(effectiveValue)) · inherited"
+        Label(label, systemImage: "clock")
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(.secondary)
             .padding(.leading, 10)
-            .accessibilityLabel("Schedule: \(humanSchedule(value))")
+            .accessibilityLabel("Schedule: \(label)")
     }
 }
 
@@ -3041,8 +3075,10 @@ struct EnvSettingRow: View {
             }
             .buttonStyle(.plain)
             .disabled((envStore.values[definition.key] ?? "").isEmpty)
-            .accessibilityLabel("Use default for \(definition.title)")
-            .help("Use default")
+            .accessibilityLabel(
+                "Use inherited \(concreteDefaultLabel(for: definition)) for \(definition.title)"
+            )
+            .help("Use inherited value: \(concreteDefaultLabel(for: definition))")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -3053,7 +3089,7 @@ struct EnvSettingRow: View {
         switch definition.kind {
         case .toggle:
             Picker("", selection: envStore.binding(for: definition.key)) {
-                Text("Default").tag("")
+                Text(inheritedDefaultLabel(for: definition)).tag("")
                 Text("On").tag("true")
                 Text("Off").tag("false")
             }
@@ -3061,7 +3097,7 @@ struct EnvSettingRow: View {
             .pickerStyle(.segmented)
         case .choice(let choices):
             Picker("", selection: envStore.binding(for: definition.key)) {
-                Text("Default").tag("")
+                Text(inheritedDefaultLabel(for: definition)).tag("")
                 ForEach(choicesIncludingCurrent(choices), id: \.value) { choice in
                     Text(choice.label).tag(choice.value)
                 }
@@ -3071,7 +3107,7 @@ struct EnvSettingRow: View {
         case .model(let choices):
             VStack(alignment: .trailing, spacing: 4) {
                 Picker("", selection: envStore.binding(for: definition.key)) {
-                    Text("CLI default").tag("")
+                    Text(inheritedDefaultLabel(for: definition)).tag("")
                     ForEach(choicesIncludingCurrent(choices), id: \.value) { choice in
                         Text(choice.label).tag(choice.value)
                     }
@@ -3096,6 +3132,30 @@ struct EnvSettingRow: View {
             : "From .env · \(current)"
         return choices + [ChoiceOption(current, label: label)]
     }
+}
+
+private func concreteDefaultLabel(for definition: EnvSettingDefinition) -> String {
+    let raw = definition.defaultValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch definition.kind {
+    case .toggle:
+        if raw.lowercased() == "true" { return "On" }
+        if raw.lowercased() == "false" { return "Off" }
+        return raw.isEmpty ? "Off" : raw
+    case .choice(let choices):
+        if let option = choices.first(where: { $0.value == raw }) {
+            return option.label
+        }
+        if definition.key.hasSuffix("_S") {
+            return hourChoiceLabel(raw)
+        }
+        return raw.isEmpty ? "Inherited" : raw
+    case .model:
+        return raw.isEmpty ? "CLI managed" : raw
+    }
+}
+
+private func inheritedDefaultLabel(for definition: EnvSettingDefinition) -> String {
+    "\(concreteDefaultLabel(for: definition)) · inherited"
 }
 
 private func formattedHours(_ hours: Double) -> String {

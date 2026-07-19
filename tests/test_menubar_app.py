@@ -148,6 +148,13 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "AutomationScheduleRow" in swift
     assert 'Text("Schedule (hours)")' in swift
     assert "GridItem(.adaptive(minimum: 340, maximum: 520)" in swift
+    assert 'Text("Default")' not in swift
+    assert 'Text("CLI default")' not in swift
+    assert "inheritedDefaultLabel(for: definition)" in swift
+    assert '"THREADKEEPER_INGEST_INTERVAL_S": "3"' in swift
+    assert '"THREADKEEPER_CURATOR_INTERVAL_S": "259200"' in swift
+    assert '"THREADKEEPER_SKILL_UPDATE_INTERVAL_S": "302400"' in swift
+    assert '"\\(humanSchedule(effectiveValue)) · inherited"' in swift
     automation_card = swift[
         swift.index("struct AutomationJobCard"):
         swift.index("struct AutomationScheduleRow")
@@ -186,7 +193,7 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert 'CommandGroup(replacing: .appSettings)' in swift
     assert '.accessibilityLabel("Settings presets")' in swift
     assert '.accessibilityLabel("Refresh CLI models and capabilities")' in swift
-    assert '.accessibilityLabel("Use default for \\(definition.title)")' in swift
+    assert '"Use inherited \\(concreteDefaultLabel(for: definition)) for \\(definition.title)"' in swift
     assert 'Label("Save Changes", systemImage: "square.and.arrow.down")' in swift
     assert 'Label("Save & Restart", systemImage: "arrow.clockwise")' in swift
     assert 'process.arguments = ["-TERM", "-f", "threadkeeper.server"]' in swift
