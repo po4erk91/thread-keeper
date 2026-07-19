@@ -127,22 +127,17 @@ def _enqueue(conn, kind, source_uuid, source_cid, content, rationale):
     return cur.lastrowid
 
 
-def _extract_recent_from_cutoff(
-    cutoff: int,
-    *,
-    window_min: int = 60,
-    max_messages: int = 500,
-) -> str:
-    """Shared extract implementation for wall-clock and cursor-based scans.
+def _fetch_extract_rows(
+    conn,
+    where_sql: str,
+    where_params: tuple,
+    order_sql: str,
+    max_messages: int,
+):
+    """Fetch heuristic-eligible dialog rows for one extract scan.
 
-    H1 user_want         → verbatim (normative phrasing)
-    H2 long_insight      → distill (assistant ≥500ch + ## headers + conclusion marker)
-    H3 example_regularity→ concept (bullets≥3 OR example-marker≥2 + abstract frame)
-    H4 paraphrase_repeat → note (≥3 msgs cosine ≥0.80 within same session)"""
-    conn = get_db()
-    _ensure_session(conn)
-    window_min = max(1, int(window_min))
-    cutoff = int(cutoff)
+    Shared by the wall-clock (created_at) MCP path and the ingest-order
+    (rowid) daemon path — only the predicate and ordering differ."""
     # Exclude autonomous review/audit lineage before applying heuristics.
     from ..harvest import harvest_exclusion_cte
 
@@ -156,11 +151,12 @@ def _extract_recent_from_cutoff(
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
     dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
-    rows = conn.execute(
+    return conn.execute(
         exclusion_cte +
-        "SELECT d.uuid, d.role, d.content, d.session_id, d.created_at, "
+        "SELECT d.rowid AS rowid, d.uuid, d.role, d.content, d.session_id, "
+        "       d.created_at, "
         f"       {dialog_embedding} AS embedding "
-        f"FROM dialog_messages d {dialog_join} WHERE d.created_at >= ? "
+        f"FROM dialog_messages d {dialog_join} WHERE {where_sql} "
         "AND coalesce(d.project, '') != 'subagents' "
         "AND d.role IN ('user','assistant') "
         "AND d.content NOT LIKE '[tool_result]%' AND d.content NOT LIKE '[Image%' "
@@ -169,12 +165,63 @@ def _extract_recent_from_cutoff(
         "AND d.session_id NOT IN ("
         "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
-        "ORDER BY d.created_at ASC LIMIT ?",
-        (*exclusion_params, cutoff, *msg_noise_params,
+        f"ORDER BY {order_sql} LIMIT ?",
+        (*exclusion_params, *where_params, *msg_noise_params,
          max(10, int(max_messages))),
     ).fetchall()
+
+
+def _extract_recent_from_cutoff(
+    cutoff: int,
+    *,
+    window_min: int = 60,
+    max_messages: int = 500,
+) -> str:
+    """Wall-clock extract scan (manual MCP path).
+
+    H1 user_want         → verbatim (normative phrasing)
+    H2 long_insight      → distill (assistant ≥500ch + ## headers + conclusion marker)
+    H3 example_regularity→ concept (bullets≥3 OR example-marker≥2 + abstract frame)
+    H4 paraphrase_repeat → note (≥3 msgs cosine ≥0.80 within same session)"""
+    conn = get_db()
+    _ensure_session(conn)
+    window_min = max(1, int(window_min))
+    rows = _fetch_extract_rows(
+        conn, "d.created_at >= ?", (int(cutoff),), "d.created_at ASC",
+        max_messages,
+    )
     if not rows:
         return f"no_dialog window={window_min}m"
+    return _apply_extract_heuristics(conn, rows, window_min)
+
+
+def _extract_from_rowid(
+    floor_rowid: int,
+    *,
+    window_min: int = 60,
+    max_messages: int = 500,
+) -> tuple[str, int]:
+    """Ingest-order extract scan for the daemon cursor (issue #69).
+
+    Scans dialog rows with rowid > `floor_rowid` so a late/out-of-order
+    ingested message (old created_at, fresh rowid) is harvested exactly once
+    instead of falling below a wall-clock cutoff. Returns
+    (status, high_water_rowid); a capped batch drains on the next pass —
+    unfetched rows all sit above the returned high-water mark."""
+    conn = get_db()
+    _ensure_session(conn)
+    window_min = max(1, int(window_min))
+    rows = _fetch_extract_rows(
+        conn, "d.rowid > ?", (int(floor_rowid),), "d.rowid ASC", max_messages,
+    )
+    if not rows:
+        return (f"no_dialog window={window_min}m", int(floor_rowid))
+    high_water = max(int(r["rowid"]) for r in rows)
+    return (_apply_extract_heuristics(conn, rows, window_min), high_water)
+
+
+def _apply_extract_heuristics(conn, rows, window_min: int) -> str:
+    """Run H1-H4 over fetched rows, enqueue candidates, emit telemetry."""
     counts = {"verbatim": 0, "distill": 0, "concept": 0, "note": 0}
     skipped = 0
     for r in rows:

@@ -4,11 +4,16 @@ from dialog_messages into the extract_candidates queue.
 Architecture mirror of shadow_review:
 
   1. Daemon thread wakes every EXTRACT_INTERVAL_S seconds (0 = off).
-  2. Runs the same extraction logic as extract_recent(), but floors the scan
-     at the previous successful pass when the interval is wider than the base
-     window so dialog cannot fall between ticks.
+  2. Runs the same heuristics as extract_recent(), but scans by the
+     ingest-order rowid cursor (issue #69, same scheme as shadow_review and
+     dialectic_miner): nothing falls between ticks, a capped batch drains on
+     the next pass, and a late/out-of-order ingested message (old created_at,
+     fresh rowid) is harvested exactly once instead of falling below a
+     wall-clock cutoff.
   3. Records events.kind='extract_pass' with the per-pass counters so
-     `extract_review_status()` can show health at a glance.
+     `extract_review_status()` can show health at a glance; `target` carries
+     the rowid high-water mark (legacy created_at watermarks are translated
+     once on first read).
 
 Where shadow_review extracts CLASS-LEVEL durable RULES (skills, lessons),
 extract harvests PER-INCIDENT DECISION-SHAPED utterances and adds them
@@ -31,7 +36,11 @@ import time
 
 from .config import EXTRACT_INTERVAL_S, EXTRACT_WINDOW_MIN
 from .db import get_db
-from .helpers import daemon_sleep
+from .helpers import (
+    daemon_sleep,
+    dialog_rowid_at_or_before,
+    resolve_ingest_watermark,
+)
 from . import daemon_state, identity
 
 logger = logging.getLogger(__name__)
@@ -39,8 +48,15 @@ logger = logging.getLogger(__name__)
 _started = False
 
 
-def _last_extract_ts(conn: sqlite3.Connection) -> int:
-    """Timestamp cursor from the most recent extract pass, or 0."""
+def _last_extract_rowid(conn: sqlite3.Connection) -> int:
+    """Ingest-order rowid high-water mark for the extract daemon (issue #69).
+
+    The watermark in the latest `events.kind='extract_pass'.target` is a
+    dialog_messages rowid (ingest order), not a transcript timestamp, so a
+    late/out-of-order ingested message can't fall below it — a created_at
+    cursor silently stepped over post-downtime backfills and freshly-installed
+    adapters. A pre-migration watermark held a created_at timestamp; it is
+    translated to the matching rowid once. Returns 0 when no prior pass."""
     try:
         row = conn.execute(
             "SELECT target FROM events WHERE kind='extract_pass' "
@@ -51,9 +67,10 @@ def _last_extract_ts(conn: sqlite3.Connection) -> int:
     if not row or not row["target"]:
         return 0
     try:
-        return int(row["target"])
+        stored = int(row["target"])
     except (ValueError, TypeError):
         return 0
+    return resolve_ingest_watermark(conn, stored)
 
 
 def _record_extract_pass(conn: sqlite3.Connection,
@@ -71,19 +88,6 @@ def _record_extract_pass(conn: sqlite3.Connection,
         logger.debug("extract_daemon: failed to record pass", exc_info=True)
 
 
-def _extract_scan_cutoff(now: int, last_cursor: int) -> int:
-    """Earliest dialog timestamp this pass must scan.
-
-    The MCP tool keeps its simple sliding wall-clock window. The daemon adds a
-    cursor so interval > window does not leave an uncovered gap between the
-    previous pass end and the next pass's window start.
-    """
-    window_cutoff = int(now) - max(1, int(EXTRACT_WINDOW_MIN)) * 60
-    if int(last_cursor) <= 0:
-        return window_cutoff
-    return min(window_cutoff, int(last_cursor))
-
-
 def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one extract pass synchronously. Used by the daemon AND by
     the MCP tool for manual triggering.
@@ -92,7 +96,7 @@ def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
     window=… scanned=… verbatim=… distill=… concept=… note=…
     skipped_existing=…" or "no_dialog window=…m"), or 'not_due' for a
     scheduled tick when another server already ran this loop within the
-    interval. Plus advances the `extract_pass` cursor for telemetry.
+    interval. Plus advances the `extract_pass` rowid cursor.
     """
     if EXTRACT_INTERVAL_S <= 0 and not force:
         return "disabled"
@@ -102,20 +106,25 @@ def run_extract_pass(force: bool = False, *, scheduled: bool = False) -> str:
         return "not_due"
     conn = get_db()
     started_at = int(time.time())
-    last_cursor = _last_extract_ts(conn)
-    cutoff = _extract_scan_cutoff(started_at, last_cursor)
+    floor = _last_extract_rowid(conn)
+    if floor <= 0:
+        # First-ever pass: seed the floor from the lookback window so a
+        # long-running install doesn't replay its whole transcript history.
+        floor = dialog_rowid_at_or_before(
+            conn, started_at - max(1, int(EXTRACT_WINDOW_MIN)) * 60,
+        )
     # Late import — tools.extract registers MCP tools at import time, and
     # the daemon module loads before all tools are registered.
-    from .tools.extract import _extract_recent_from_cutoff
+    from .tools.extract import _extract_from_rowid
     try:
-        result = _extract_recent_from_cutoff(
-            cutoff, window_min=EXTRACT_WINDOW_MIN,
+        result, high_water = _extract_from_rowid(
+            floor, window_min=EXTRACT_WINDOW_MIN,
         )
     except Exception as e:
         logger.debug("extract_daemon: pass failed", exc_info=True)
-        _record_extract_pass(conn, last_cursor, f"error: {e}")
+        _record_extract_pass(conn, floor, f"error: {e}")
         return f"error: {e}"
-    _record_extract_pass(conn, started_at, str(result)[:200])
+    _record_extract_pass(conn, high_water, str(result)[:200])
     return str(result)
 
 

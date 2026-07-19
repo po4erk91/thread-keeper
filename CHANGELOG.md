@@ -61,6 +61,39 @@ version bumps follow semver per the policy in
   echoed into child logs. Enumerated/bulleted lines, tool-name mentions, and
   placeholder fragments are now excluded, while genuine `MATERIALIZED:`
   verdicts and prose results still surface.
+- **VACUUM can no longer corrupt the rowid cursors or FTS indexes.**
+  `dialog_messages` and `notes` have TEXT primary keys, so their implicit
+  rowids may be renumbered by a VACUUM once deletions left gaps — silently
+  breaking the shadow/miner/extract ingest cursors and the external-content
+  `dialog_fts`/`notes_fts` mappings if dialog retention was ever enabled.
+  Both VACUUM paths (retention threshold and the manual `db_compact` tool)
+  now rebase the rowid cursors to created_at form first (translated back to
+  rowids on the next read) and rebuild both FTS indexes afterwards
+  (`db_compact` previously rebuilt only `dialog_fts` and never protected the
+  cursors).
+- **Shadow review no longer drops sparse dialog.** A below-`MIN_CHARS`
+  window used to advance the cursor, permanently skipping quiet-day dialog
+  one under-sized 15-minute slice at a time. `too_short` now keeps the
+  cursor so the window accumulates across ticks (edge-triggered telemetry —
+  no per-tick event flood) and is reviewed anyway once its oldest message
+  ages past `THREADKEEPER_SHADOW_REVIEW_FLUSH_AGE_S` (default 6h,
+  0 = accumulate until the char threshold).
+- **Extract daemon moved to the ingest-order rowid cursor (issue #69).**
+  The wall-clock created_at cursor silently skipped late-ingested dialog —
+  post-downtime backfills, freshly installed adapters, resumed sessions —
+  whose timestamps predated the sliding window. The daemon now scans
+  `rowid > cursor` like shadow_review and dialectic_miner: nothing falls
+  between ticks, a capped batch drains on the next pass, and legacy
+  created_at watermarks translate once on first read. The manual
+  `extract_recent()` tool keeps its wall-clock window contract.
+- **Review thresholds gained an age-flush so weak signal streams are not
+  starved.** A lone strong observation/candidate below
+  `DIALECTIC_VALIDATE_MIN` / `CANDIDATE_REVIEW_MIN` used to wait until the
+  30-day stale window terminally dropped it unreviewed. Undersized queues
+  are now processed anyway once their oldest entry ages past
+  `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` /
+  `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` (default 3 days, 0 =
+  threshold only).
 
 ## v0.16.2 — 2026-07-19
 

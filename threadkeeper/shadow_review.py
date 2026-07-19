@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (
+    SHADOW_REVIEW_FLUSH_AGE_S,
     SHADOW_REVIEW_INTERVAL_S,
     SHADOW_REVIEW_MIN_CHARS,
     SHADOW_REVIEW_WINDOW_S,
@@ -179,6 +180,18 @@ def _record_shadow_pass(conn: sqlite3.Connection,
         logger.debug("shadow: failed to record pass", exc_info=True)
 
 
+def _last_shadow_pass_summary(conn: sqlite3.Connection) -> str:
+    """Summary of the most recent shadow_review_pass row, or ''."""
+    try:
+        row = conn.execute(
+            "SELECT summary FROM events WHERE kind='shadow_review_pass' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    return (row["summary"] or "") if row else ""
+
+
 def _running_shadow_children(conn: sqlite3.Connection) -> list[str]:
     """Return running shadow-observer task ids, refreshing dead rows.
 
@@ -271,15 +284,17 @@ _COLLECT_ROW_CAP = 4000
 
 def _collect_window(conn: sqlite3.Connection,
                     floor_rowid: int,
-                    window_s: int) -> tuple[str, int, int]:
+                    window_s: int) -> tuple[str, int, int, int]:
     """Pull dialog messages ingested after `floor_rowid` (ingest order, #69),
     excluding any session whose opening user prompt is one of our own
     internal spawn prompts (shadow-observer or close_thread reviewer).
 
-    Returns (dump_text, high_water_rowid, char_count).
+    Returns (dump_text, high_water_rowid, char_count, oldest_ts).
       - dump_text: human-readable rendering ready for the shadow prompt
       - high_water_rowid: largest rowid seen (== floor for next tick)
       - char_count: total visible char length (input to MIN_CHARS guard)
+      - oldest_ts: created_at of the oldest row contributing content (0 when
+        none) — input to the accumulate-vs-flush decision for short windows
 
     The cursor is the ingest-order rowid, not the transcript `created_at`, so
     a late/out-of-order ingested message (old created_at, fresh rowid) lands
@@ -311,10 +326,11 @@ def _collect_window(conn: sqlite3.Connection,
         (*exclusion_params, floor_rowid, _COLLECT_ROW_CAP),
     ).fetchall()
     if not rows:
-        return ("", floor_rowid, 0)
+        return ("", floor_rowid, 0, 0)
     lines: list[str] = []
     char_count = 0
     high_water = floor_rowid
+    oldest_ts = 0
     for r in rows:
         body = _strip_tool_noise(r["content"] or "")
         if not body:
@@ -328,9 +344,11 @@ def _collect_window(conn: sqlite3.Connection,
             body = body[:1500] + "…"
         char_count += len(body)
         high_water = max(high_water, int(r["rowid"]))
+        if not oldest_ts:
+            oldest_ts = int(r["created_at"] or 0)
         sid = (r["session_id"] or "?")[-6:]
         lines.append(f"[{r['role']} @{sid}]\n{body}\n")
-    return ("\n".join(lines), high_water, char_count)
+    return ("\n".join(lines), high_water, char_count, oldest_ts)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -539,15 +557,30 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
     ):
         return "not_due"
     floor = _last_shadow_rowid(conn)
-    dump, high_water, n_chars = _collect_window(
+    dump, high_water, n_chars, oldest_ts = _collect_window(
         conn, floor, SHADOW_REVIEW_WINDOW_S,
     )
     if n_chars == 0:
         _record_shadow_pass(conn, high_water, "no_window")
         return "no_window"
     if n_chars < SHADOW_REVIEW_MIN_CHARS:
-        _record_shadow_pass(conn, high_water, "too_short")
-        return "too_short"
+        flush_age = float(SHADOW_REVIEW_FLUSH_AGE_S or 0)
+        window_age = int(time.time()) - oldest_ts if oldest_ts else 0
+        if not (flush_age > 0 and window_age >= flush_age):
+            # Keep the cursor: sparse dialog ACCUMULATES until it clears
+            # MIN_CHARS (or ages past the flush knob) instead of being
+            # permanently skipped one under-sized window at a time. Record
+            # the outcome edge-triggered so the accumulation ticks don't
+            # write one telemetry row per interval.
+            prev = _last_shadow_pass_summary(conn)
+            if not prev.startswith("too_short"):
+                _record_shadow_pass(
+                    conn, floor,
+                    f"too_short accumulating n_chars={n_chars}",
+                )
+            return "too_short"
+        # Age-flush: the window stayed under MIN_CHARS for flush_age —
+        # review what accumulated rather than dropping a slow day's dialog.
 
     with single_flight_lock("shadow-review") as locked:
         if not locked:

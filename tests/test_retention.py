@@ -227,3 +227,64 @@ def test_prune_then_vacuum_checkpoint_round_trip(fresh_mp, monkeypatch):
     )
     conn.commit()
     assert _count(conn, "notes", "content='after prune'") == 1
+
+
+def test_vacuum_rebases_dialog_cursors_and_rebuilds_fts(fresh_mp, monkeypatch):
+    """VACUUM may renumber dialog_messages' implicit rowids once dialog rows
+    were pruned. The retention vacuum must rebase the rowid ingest cursors to
+    created_at form (translated back on next read) and rebuild the
+    external-content FTS indexes so search and the shadow/miner/extract loops
+    survive the renumbering."""
+    from threadkeeper import retention
+    from threadkeeper.helpers import LEGACY_TS_FLOOR, resolve_ingest_watermark
+
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    old = now - 90 * 86400
+    for i in range(3):
+        _insert_dialog(conn, f"old-{i}", old + i)
+    _insert_dialog(conn, "keep-1", now - 120)
+    _insert_dialog(conn, "keep-2", now - 60)
+    keep1_rowid = conn.execute(
+        "SELECT rowid FROM dialog_messages WHERE uuid='keep-1'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('s', 'shadow_review_pass', ?, 'spawned earlier', ?)",
+        (str(keep1_rowid), now),
+    )
+    conn.commit()
+
+    _retention_config(
+        monkeypatch,
+        retention,
+        DIALOG_RETENTION_DAYS=30,
+        RETENTION_VACUUM_AFTER_ROWS=1,
+    )
+    out = retention.run_retention_pass(force=True)
+
+    assert "dialog=3" in out, out
+    assert "vacuum=ok" in out, out
+    assert "rebased_cursors=1" in out, out
+    assert "fts_rebuild=dialog_fts+notes_fts" in out, out
+    # The rebased cursor is stored in legacy created_at form…
+    row = conn.execute(
+        "SELECT target FROM events WHERE kind='shadow_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert int(row[0]) >= LEGACY_TS_FLOOR
+    # …and resolves to keep-1's post-vacuum rowid regardless of whether this
+    # build actually renumbered: keep-2 stays above the cursor (unreviewed),
+    # keep-1 and everything below are not re-reviewed.
+    resolved = resolve_ingest_watermark(conn, int(row[0]))
+    new_keep1 = conn.execute(
+        "SELECT rowid FROM dialog_messages WHERE uuid='keep-1'"
+    ).fetchone()[0]
+    new_keep2 = conn.execute(
+        "SELECT rowid FROM dialog_messages WHERE uuid='keep-2'"
+    ).fetchone()[0]
+    assert resolved == new_keep1
+    assert new_keep2 > resolved
+    # FTS still maps the surviving rows correctly after prune+vacuum+rebuild.
+    assert _fts_has(conn, "keep-1")
+    assert _fts_has(conn, "keep-2")

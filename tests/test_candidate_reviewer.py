@@ -427,3 +427,52 @@ def test_mcp_candidate_review_status(tmp_path, monkeypatch):
     assert "interval_s=0" in out
     assert "pending_now=1" in out
     assert "below_threshold" in out
+
+
+def _seed_candidate(conn, content, age_s):
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO extract_candidates (kind, source_uuid, source_cid, "
+        "content, rationale, status, created_at) "
+        "VALUES ('verbatim', ?, 'sess', ?, 'H1 user_want pattern', 'pending', ?)",
+        (f"u-{abs(hash(content)) % 99999}", content, now - age_s),
+    )
+
+
+def test_below_threshold_age_flush_reviews_anyway(tmp_path, monkeypatch):
+    """A lone candidate older than the flush age is reviewed instead of
+    waiting for the min-count gate until the 30-day stale window drops it."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="3")
+    conn = pkg["db"].get_db()
+    _seed_candidate(
+        conn, "I want the aged lone candidate reviewed anyway", 5 * 86400,
+    )
+    conn.commit()
+    captured = []
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "ok task=tk_flush pid=0",
+    )
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+
+    assert out.startswith("ok task="), out
+    assert captured, "age-flush must spawn the reviewer child"
+
+
+def test_below_threshold_fresh_queue_stays_pending(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="3")
+    conn = pkg["db"].get_db()
+    _seed_candidate(conn, "I want a fresh lone candidate to wait", 3600)
+    conn.commit()
+
+    def _boom(**kw):
+        raise AssertionError("fresh below-threshold queue must not spawn")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+
+    assert out == "below_threshold n=1"

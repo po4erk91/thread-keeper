@@ -291,6 +291,11 @@ class Settings(BaseSettings):
     shadow_review_interval_s: float = 0.0
     shadow_review_window_s: int = 900
     shadow_review_min_chars: int = 500
+    # Age-flush for the accumulating shadow window: a below-min-chars window
+    # is retried (cursor kept) until its oldest eligible message is this old,
+    # then reviewed anyway so sparse dialog is never silently dropped.
+    # 0 = never flush (accumulate until min_chars).
+    shadow_review_flush_age_s: float = 21600.0
 
     # ── Curator daemon ───────────────────────────────────────────────────────
     # Deep library audit every three days by default. The pass snapshots before
@@ -325,6 +330,10 @@ class Settings(BaseSettings):
     # ── Candidate reviewer daemon ─────────────────────────────────────────────
     candidate_review_interval_s: float = 0.0
     candidate_review_min: int = 3
+    # Age-flush for the review threshold: an undersized pending queue is still
+    # reviewed once its oldest candidate is this old, so a trickle of signal
+    # is not starved by the min-count gate. 0 = threshold only.
+    candidate_review_flush_age_s: float = 259200.0
     learning_loop_skill_create_limit: int = 2
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
@@ -418,6 +427,11 @@ class Settings(BaseSettings):
     dialectic_mine_interval_s: float = 0.0
     dialectic_validate_interval_s: float = 0.0
     dialectic_validate_min: int = 5
+    # Age-flush for the validate threshold: an undersized observation buffer
+    # is still validated once its oldest eligible row is this old, so a lone
+    # strong signal cannot age out to the 30-day stale skip unvalidated.
+    # 0 = threshold only.
+    dialectic_validate_flush_age_s: float = 259200.0
     dialectic_validate_batch_size: int = 50
     dialectic_max_new_claims: int = 3
     # How many times a claimed observation may be requeued (validator child
@@ -754,6 +768,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SHADOW_REVIEW_INTERVAL_S": s.shadow_review_interval_s,
         "SHADOW_REVIEW_WINDOW_S": s.shadow_review_window_s,
         "SHADOW_REVIEW_MIN_CHARS": s.shadow_review_min_chars,
+        "SHADOW_REVIEW_FLUSH_AGE_S": float(s.shadow_review_flush_age_s),
         "CURATOR_INTERVAL_S": s.curator_interval_s,
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
@@ -766,6 +781,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
         "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
+        "CANDIDATE_REVIEW_FLUSH_AGE_S": float(s.candidate_review_flush_age_s),
         "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,
@@ -795,6 +811,7 @@ def _derive_constants(s: "Settings") -> dict:
         "DIALECTIC_MINE_INTERVAL_S": s.dialectic_mine_interval_s,
         "DIALECTIC_VALIDATE_INTERVAL_S": s.dialectic_validate_interval_s,
         "DIALECTIC_VALIDATE_MIN": s.dialectic_validate_min,
+        "DIALECTIC_VALIDATE_FLUSH_AGE_S": float(s.dialectic_validate_flush_age_s),
         "DIALECTIC_VALIDATE_BATCH_SIZE": s.dialectic_validate_batch_size,
         "DIALECTIC_MAX_NEW_CLAIMS": s.dialectic_max_new_claims,
         "DIALECTIC_OBS_MAX_REQUEUES": s.dialectic_obs_max_requeues,

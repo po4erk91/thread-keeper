@@ -82,7 +82,7 @@ def test_cursor_reads_summary_from_events(tmp_path, monkeypatch):
 def test_collect_window_returns_nothing_when_empty(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
-    dump, hw, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, hw, n_chars, _ = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     assert dump == "" and n_chars == 0
 
 
@@ -100,7 +100,7 @@ def test_collect_window_skips_rows_at_or_below_floor_rowid(tmp_path, monkeypatch
     fresh_rowid = conn.execute(
         "SELECT MAX(rowid) FROM dialog_messages"
     ).fetchone()[0]
-    dump, hw, n_chars = pkg["shadow_review"]._collect_window(conn, floor, 3600)
+    dump, hw, n_chars, _ = pkg["shadow_review"]._collect_window(conn, floor, 3600)
     assert "fresh message" in dump
     assert "old message" not in dump
     assert hw == fresh_rowid
@@ -118,14 +118,14 @@ def test_collect_window_picks_up_late_out_of_order_ingest(tmp_path, monkeypatch)
     _seed_dialog(conn, "user", "fresh forward message advancing the cursor",
                  now - 10)
     conn.commit()
-    dump1, hw1, n1 = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump1, hw1, n1, _ = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     assert "fresh forward message" in dump1
     # Now a late/out-of-order row lands: created_at is far BELOW the cursor's
     # transcript time, but its rowid is higher (ingested later).
     _seed_dialog(conn, "user", "late backfilled resumed-session message",
                  now - 5000, session_id="resumed-sess")
     conn.commit()
-    dump2, hw2, n2 = pkg["shadow_review"]._collect_window(conn, hw1, 3600)
+    dump2, hw2, n2, _ = pkg["shadow_review"]._collect_window(conn, hw1, 3600)
     assert "late backfilled resumed-session message" in dump2
     assert hw2 > hw1
 
@@ -164,7 +164,7 @@ def test_collect_window_excludes_shadow_observer_sessions(
                  now - 14, session_id="review-sess-2")
     conn.commit()
 
-    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, _, n_chars, _ts = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     assert "flaky network in WDA" in dump
     assert "WDA start, read networksetup" in dump
     assert "SHADOW LEARNING OBSERVER" not in dump
@@ -210,7 +210,7 @@ def test_collect_window_excludes_codex_spawned_marker_sessions(
     )
     conn.commit()
 
-    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, _, n_chars, _ts = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     assert "foreground English prompt" in dump
     assert "fake-child-learning" not in dump
     assert "You were spawned" not in dump
@@ -256,7 +256,7 @@ def test_collect_window_excludes_native_agent_parent_lineage(
     )
     conn.commit()
 
-    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, _, n_chars, _ts = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     assert "foreground English prompt" in dump
     assert "fake native-agent preference" not in dump
     assert "Native agent analysis" not in dump
@@ -289,7 +289,7 @@ def test_collect_window_strips_tool_results_keeps_thinking(
                  now - 25, session_id="real")
     conn.commit()
 
-    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, _, n_chars, _ts = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     # Tool results stripped
     assert "[tool_result]" not in dump
     assert "[tool_call]" not in dump
@@ -311,7 +311,7 @@ def test_collect_window_caps_long_messages(tmp_path, monkeypatch):
     huge = "X" * 5000  # well above the 1500-cap per-turn
     _seed_dialog(conn, "user", huge, int(time.time()) - 5)
     conn.commit()
-    dump, _, n_chars = pkg["shadow_review"]._collect_window(conn, 0, 3600)
+    dump, _, n_chars, _ts = pkg["shadow_review"]._collect_window(conn, 0, 3600)
     # capped to 1500 + ellipsis char ≈ 1501
     assert n_chars <= 1502
     assert "…" in dump
@@ -817,3 +817,54 @@ def test_mcp_shadow_review_status_includes_telemetry_and_snapshot(
     md = snap.read_text(encoding="utf-8")
     assert "# Shadow-review telemetry" in md
     assert "| window |" in md
+
+
+def test_too_short_accumulates_until_flush_age(tmp_path, monkeypatch):
+    """A below-min-chars window keeps the cursor so sparse dialog accumulates,
+    then flushes to a review once its oldest message ages past the knob."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_chars="500")
+    sr = pkg["shadow_review"]
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    _seed_dialog(conn, "user", "anchor row reviewed by an earlier pass", now - 7200)
+    conn.commit()
+    anchor = conn.execute("SELECT MAX(rowid) FROM dialog_messages").fetchone()[0]
+    sr._record_shadow_pass(conn, anchor, "spawned earlier")
+    _seed_dialog(conn, "user", "sparse but sharp correction", now - 3600)
+    conn.commit()
+
+    out1 = sr.run_shadow_pass(force=True)
+    assert out1 == "too_short"
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind='shadow_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["target"] == str(anchor)  # cursor preserved — accumulating
+    assert row["summary"].startswith("too_short accumulating")
+
+    # Consecutive accumulation ticks are edge-triggered: no event flood.
+    n_before = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='shadow_review_pass'"
+    ).fetchone()[0]
+    assert sr.run_shadow_pass(force=True) == "too_short"
+    n_after = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='shadow_review_pass'"
+    ).fetchone()[0]
+    assert n_after == n_before
+
+    # Age past the flush knob → the accumulated window is reviewed anyway.
+    monkeypatch.setattr(sr, "SHADOW_REVIEW_FLUSH_AGE_S", 1800.0)
+    captured = []
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "ok task=tk_flush pid=0",
+    )
+    out3 = sr.run_shadow_pass(force=True)
+    assert out3.startswith("ok task="), out3
+    assert captured, "flush must spawn the evaluator child"
+    row = conn.execute(
+        "SELECT target FROM events WHERE kind='shadow_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert int(row["target"]) > anchor  # cursor advanced by the spawn
