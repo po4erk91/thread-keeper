@@ -8,8 +8,9 @@ are numerically *not identical* to sentence-transformers' for the same model
 stored corpus and fresh queries drift into slightly different spaces.
 
 This command re-encodes every stale row (those whose `embed_backend` differs
-from the active generation fingerprint) with the active backend, rewriting
-both the BLOB column and the `vec0` mirror, and stamps the new tag. It is:
+from the active generation fingerprint) with the active backend, writes the
+single canonical store (vec0 when available, otherwise BLOB), and stamps the
+new tag. It is:
 
   * resumable  — only rows still tagged stale are selected, so an interrupted
                  run picks up where it left off (each batch commits);
@@ -33,15 +34,25 @@ from .db import get_db
 from . import embeddings as _emb
 
 
-def _stale_where() -> str:
-    """Predicate for rows that need recomputing under the active backend."""
-    return ("embedding IS NOT NULL "
-            "AND (embed_backend IS NULL OR embed_backend != ?)")
+def _storage_parts(
+    conn: sqlite3.Connection,
+    table: str,
+) -> tuple[str, str, str]:
+    """Return alias, JOINs, and the effective-vector expression."""
+    alias = "e"
+    if table == "notes":
+        join, effective = _emb._note_embedding_parts(conn, alias)
+    else:
+        join, effective = _emb._dialog_embedding_parts(conn, alias)
+    return alias, join, effective
 
 
 def _count_stale(conn: sqlite3.Connection, table: str, active: str) -> int:
+    alias, join, effective = _storage_parts(conn, table)
     return conn.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE {_stale_where()}",
+        f"SELECT COUNT(*) FROM {table} {alias} {join} "
+        f"WHERE {alias}.embed_backend IS NULL "
+        f"OR {alias}.embed_backend != ? OR {effective} IS NULL",
         (active,),
     ).fetchone()[0]
 
@@ -56,9 +67,13 @@ def _migrate_table(conn: sqlite3.Connection, *, table: str, id_col: str,
     done = 0
     started = time.time()
     while True:
+        alias, join, effective = _storage_parts(conn, table)
         rows = conn.execute(
-            f"SELECT {id_col} AS rid, content FROM {table} "
-            f"WHERE {_stale_where()} LIMIT ?",
+            f"SELECT {alias}.{id_col} AS rid, {alias}.content AS content "
+            f"FROM {table} {alias} {join} "
+            f"WHERE {alias}.embed_backend IS NULL "
+            f"OR {alias}.embed_backend != ? OR {effective} IS NULL "
+            f"LIMIT ?",
             (active, batch),
         ).fetchall()
         if not rows:

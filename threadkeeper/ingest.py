@@ -585,8 +585,7 @@ def _backfill_skill_usage_from_jsonls(conn: sqlite3.Connection) -> int:
 
 
 def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
-    """Embed up to `max_n` notes whose embedding column is NULL, and mirror
-    every newly-embedded blob into notes_vec.
+    """Embed up to `max_n` notes with no effective stored vector.
 
     Light spawned children (NO_EMBEDDINGS=1) write notes with embedding=NULL
     because they don't carry the model. A parent process with embeddings
@@ -597,11 +596,13 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
     from .config import SEMANTIC_AVAILABLE
     if not SEMANTIC_AVAILABLE:
         return 0
+    from .embeddings import _note_embedding_parts
+    join, effective_embedding = _note_embedding_parts(conn, "n")
     try:
         rows = conn.execute(
-            "SELECT id, content FROM notes "
-            "WHERE embedding IS NULL "
-            "ORDER BY id DESC LIMIT ?",
+            f"SELECT n.id, n.content FROM notes n {join} "
+            f"WHERE {effective_embedding} IS NULL "
+            "ORDER BY n.id DESC LIMIT ?",
             (max_n,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -638,7 +639,7 @@ def _backfill_note_embeddings(conn: sqlite3.Connection, max_n: int = 20) -> int:
 
 # Replicated embedding-bearing tables: (table, text col, pk col, vec kind,
 # truncate). Embeddings/embed_backend are never shipped over sync, so rows that
-# arrive from a peer carry NULL and must be re-embedded locally from content.
+# arrive from a peer have no effective local vector and must be re-embedded.
 _SYNC_EMBED_TABLES = (
     ("notes", "content", "id", "note", None),
     ("dialog_messages", "content", "uuid", "dialog", 2000),
@@ -651,34 +652,47 @@ def _backfill_sync_embeddings(
     batch: int = 100,
     max_rows: int | None = None,
 ) -> int:
-    """Re-embed replicated rows that arrived over sync without an embedding.
+    """Re-embed replicated rows that lack an effective local vector.
 
     The wire payload omits `embedding`/`embed_backend` (they are local derived
-    state), so synced notes/dialog_messages/concepts land with NULL embeddings
-    and are invisible to semantic search until re-embedded here. Notes/dialog
-    are also mirrored into their vec tables. MUST run under `applying_guard`
+    state), so new synced notes/dialog_messages/concepts are invisible to
+    semantic search until re-embedded here. A NULL base BLOB is otherwise valid
+    when vec0 holds the vector. MUST run under `applying_guard`
     (rebuild_derived does) so the embedding UPDATEs are not captured as fresh
     sync writes. Returns the total re-embedded. No-op without embeddings.
 
     `max_rows` caps the work per call so a request-path caller (e.g. /sync/push)
-    stays bounded and can't time out on a large initial corpus; NULL embeddings
-    are a valid eventual state, so the centralized daemon finishes the remainder
+    stays bounded and can't time out on a large initial corpus; missing vectors
+    are valid eventual state, so the centralized daemon finishes the remainder
     in later bounded ticks. `None` = process everything (background use).
     """
     from .config import SEMANTIC_AVAILABLE
     if not SEMANTIC_AVAILABLE:
         return 0
     from .embeddings import (
-        encode_many, embed_tag, _vec_upsert_note, _vec_upsert_dialog,
+        encode_many, embedding_fingerprint,
+        _vec_upsert_note, _vec_upsert_dialog,
+        _note_embedding_parts, _dialog_embedding_parts,
     )
+    active = embedding_fingerprint()
     total = 0
     for table, text_col, pk_col, vec_kind, trunc in _SYNC_EMBED_TABLES:
         while max_rows is None or total < max_rows:
             lim = batch if max_rows is None else min(batch, max_rows - total)
+            alias = "e"
+            if vec_kind == "note":
+                join, effective_embedding = _note_embedding_parts(conn, alias)
+            elif vec_kind == "dialog":
+                join, effective_embedding = _dialog_embedding_parts(conn, alias)
+            else:
+                join, effective_embedding = "", f"{alias}.embedding"
             try:
                 rows = conn.execute(
-                    f"SELECT {pk_col} AS k, {text_col} AS t FROM {table} "
-                    f"WHERE embedding IS NULL AND {text_col} IS NOT NULL "
+                    f"SELECT {alias}.{pk_col} AS k, {alias}.{text_col} AS t "
+                    f"FROM {table} {alias} {join} "
+                    f"WHERE ({effective_embedding} IS NULL "
+                    f"OR {alias}.embed_backend IS NULL) "
+                    f"AND {alias}.{text_col} IS NOT NULL "
                     f"LIMIT ?",
                     (lim,),
                 ).fetchall()
@@ -700,7 +714,7 @@ def _backfill_sync_embeddings(
                     conn.execute(
                         f"UPDATE {table} SET embedding=?, embed_backend=? "
                         f"WHERE {pk_col}=?",
-                        (emb, embed_tag(emb), r["k"]),
+                        (emb, active, r["k"]),
                     )
                     if vec_kind == "note":
                         _vec_upsert_note(conn, r["k"], emb)
@@ -744,10 +758,10 @@ def _backfill_background_embeddings(
 
 
 def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[int, int]:
-    """One-shot migration: mirror existing notes.embedding and
-    dialog_messages.embedding BLOBs into notes_vec / dialog_vec.
+    """Move legacy base-table embedding BLOBs into notes_vec / dialog_vec.
 
-    Idempotent — `INSERT OR REPLACE` won't duplicate. Returns
+    A successful vec0 write clears the redundant BLOB. Idempotent —
+    `INSERT OR REPLACE` won't duplicate. Returns
     (notes_inserted, dialog_inserted). Called from the background ingester
     tick; bails fast when there's nothing to do.
     """
@@ -766,7 +780,8 @@ def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[in
             rows = conn.execute(
                 "SELECT n.id, n.embedding FROM notes n "
                 "LEFT JOIN notes_vec_map m ON m.gid = n.id "
-                "WHERE n.embedding IS NOT NULL AND m.gid IS NULL "
+                "LEFT JOIN notes_vec v ON v.rowid = m.rowid "
+                "WHERE n.embedding IS NOT NULL AND v.rowid IS NULL "
                 "LIMIT ?",
                 (batch,),
             ).fetchall()
@@ -790,7 +805,8 @@ def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[in
         rows = conn.execute(
             "SELECT d.uuid, d.embedding FROM dialog_messages d "
             "LEFT JOIN dialog_vec_map m ON m.uuid = d.uuid "
-            "WHERE d.embedding IS NOT NULL AND m.uuid IS NULL "
+            "LEFT JOIN dialog_vec v ON v.rowid = m.rowid "
+            "WHERE d.embedding IS NOT NULL AND v.rowid IS NULL "
             "LIMIT ?",
             (batch,),
         ).fetchall()
@@ -838,9 +854,8 @@ def _start_background_ingester() -> None:
                         # UPDATEs never become LWW sync writes; the sync helper
                         # covers light-child notes as well as dialog/concepts.
                         _backfill_background_embeddings(bg_conn, max_rows=200)
-                        # vec0 backfill: mirror legacy BLOB embeddings
-                        # into the vec0 virtual tables in batches so the
-                        # sub-linear index gradually warms up.
+                        # Move legacy BLOB embeddings into vec0 in batches so
+                        # the sub-linear index warms without duplicate storage.
                         _backfill_vec_tables(bg_conn, batch=500)
                     finally:
                         bg_conn.close()

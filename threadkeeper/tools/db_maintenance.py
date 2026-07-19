@@ -14,9 +14,108 @@ import time
 
 from .._mcp import write_tool
 from ..config import DB_PATH
-from ..db import get_db
+from ..db import get_db, vec_available
 from ..helpers import single_flight_lock
 from ..identity import _ensure_session
+
+
+def _embedding_dedup_stats(conn: sqlite3.Connection) -> dict[str, int]:
+    """Count BLOB rows/bytes that already have an equivalent vec0 row."""
+    from ..embeddings import _notes_mapped
+
+    if _notes_mapped(conn):
+        note_join = (
+            "JOIN notes_vec_map m ON m.gid=n.id "
+            "JOIN notes_vec v ON v.rowid=m.rowid"
+        )
+    else:
+        note_join = "JOIN notes_vec v ON v.id=n.id"
+    note = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(length(n.embedding)),0) "
+        f"FROM notes n {note_join} WHERE n.embedding IS NOT NULL"
+    ).fetchone()
+    dialog = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(length(d.embedding)),0) "
+        "FROM dialog_messages d "
+        "JOIN dialog_vec_map m ON m.uuid=d.uuid "
+        "JOIN dialog_vec v ON v.rowid=m.rowid "
+        "WHERE d.embedding IS NOT NULL"
+    ).fetchone()
+    blob = conn.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM notes WHERE embedding IS NOT NULL), "
+        "(SELECT COUNT(*) FROM dialog_messages WHERE embedding IS NOT NULL)"
+    ).fetchone()
+    return {
+        "notes_eligible": int(note[0]),
+        "notes_bytes": int(note[1]),
+        "notes_uncovered": int(blob[0]) - int(note[0]),
+        "dialog_eligible": int(dialog[0]),
+        "dialog_bytes": int(dialog[1]),
+        "dialog_uncovered": int(blob[1]) - int(dialog[0]),
+    }
+
+
+def _format_embedding_dedup(stats: dict[str, int], *, dry_run: bool) -> str:
+    total_rows = stats["notes_eligible"] + stats["dialog_eligible"]
+    total_bytes = stats["notes_bytes"] + stats["dialog_bytes"]
+    uncovered = stats["notes_uncovered"] + stats["dialog_uncovered"]
+    return (
+        f"{'dry_run' if dry_run else 'ok'} embedding_dedup "
+        f"rows={total_rows} bytes={total_bytes} "
+        f"notes={stats['notes_eligible']} dialog={stats['dialog_eligible']} "
+        f"uncovered={uncovered}"
+    )
+
+
+@write_tool(idempotent=True)
+def db_deduplicate_embeddings(dry_run: bool = True) -> str:
+    """Remove base-table embedding BLOBs already represented in sqlite-vec.
+
+    The operation is coverage-gated: rows without a confirmed vec0 mirror keep
+    their BLOB fallback. Defaults to a report-only dry run. Run ``db_compact``
+    afterwards to return the newly freed pages to the filesystem.
+    """
+    with single_flight_lock("db-embedding-dedup") as locked:
+        if not locked:
+            return "db_deduplicate_embeddings already running"
+        conn = get_db()
+        try:
+            _ensure_session(conn)
+            if not vec_available():
+                return "embedding_dedup skipped: sqlite-vec unavailable"
+            before = _embedding_dedup_stats(conn)
+            if dry_run:
+                return _format_embedding_dedup(before, dry_run=True)
+            from ..embeddings import _notes_mapped
+            from ..sync.capture import applying_guard
+
+            with applying_guard(conn):
+                if _notes_mapped(conn):
+                    conn.execute(
+                        "UPDATE notes SET embedding=NULL "
+                        "WHERE embedding IS NOT NULL AND EXISTS ("
+                        "SELECT 1 FROM notes_vec_map m "
+                        "JOIN notes_vec v ON v.rowid=m.rowid "
+                        "WHERE m.gid=notes.id)"
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE notes SET embedding=NULL "
+                        "WHERE embedding IS NOT NULL AND EXISTS ("
+                        "SELECT 1 FROM notes_vec v WHERE v.id=notes.id)"
+                    )
+                conn.execute(
+                    "UPDATE dialog_messages SET embedding=NULL "
+                    "WHERE embedding IS NOT NULL AND EXISTS ("
+                    "SELECT 1 FROM dialog_vec_map m "
+                    "JOIN dialog_vec v ON v.rowid=m.rowid "
+                    "WHERE m.uuid=dialog_messages.uuid)"
+                )
+                conn.commit()
+            return _format_embedding_dedup(before, dry_run=False)
+        finally:
+            conn.close()
 
 
 @write_tool(idempotent=True)

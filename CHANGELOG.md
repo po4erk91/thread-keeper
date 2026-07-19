@@ -7,6 +7,28 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.16.2 — 2026-07-19
+
+### Changed
+
+- **Embedding storage no longer keeps two 400 MB copies.** When sqlite-vec is
+  available, `notes_vec` / `dialog_vec` are the single local vector store and
+  the redundant base-table BLOB is cleared under the sync applying guard.
+  Hosts without sqlite-vec retain the BLOB fallback. Dense fallback consumers,
+  sync rebuilds, migration, extraction, invariant detection, consolidation,
+  health metrics, and backend re-embedding now read the effective store.
+- **Existing databases can reclaim the duplicate safely.** New dry-run-first
+  `db_deduplicate_embeddings()` clears only BLOBs with a confirmed vec0 row;
+  uncovered rows remain intact. Run `db_compact()` afterwards to return those
+  pages to the filesystem.
+
+### Fixed
+
+- **Embedding-only updates no longer rebuild dialog FTS.** Schema v4 replaces
+  the catch-all dialog update trigger with `AFTER UPDATE OF content`, avoiding
+  hundreds of thousands of unnecessary FTS delete/insert operations during
+  migration or deduplication. The sync applying guard is now safely re-entrant.
+
 ## v0.16.1 — 2026-07-19
 
 ### Fixed

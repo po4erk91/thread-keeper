@@ -247,11 +247,13 @@ def _rebuild_derived(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
     except sqlite3.OperationalError:
         pass
-    # Repopulate notes_vec/dialog_vec from the stored embedding BLOBs via the
-    # new maps (idempotent; also runs on every background tick).
+    # Re-embed rows whose old vec tables were invalidated by the id rewrite,
+    # then populate the new maps. This works for both legacy BLOB-backed and
+    # vec-only stores (the latter no longer has a base-table copy to mirror).
     try:
-        from ..ingest import _backfill_vec_tables
-        while _backfill_vec_tables(conn)[0]:
+        from ..ingest import _backfill_sync_embeddings, _backfill_vec_tables
+        _backfill_sync_embeddings(conn)
+        while any(_backfill_vec_tables(conn)):
             pass
     except Exception:
         pass

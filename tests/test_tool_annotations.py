@@ -50,7 +50,7 @@ WRITE_TOOLS = {
     "accept_candidate", "ask", "auto_review_trigger", "broadcast",
     "candidate_review_run", "claim_pickup", "close_thread", "config_reload",
     "convene_panel", "core_set", "curator_report_write", "curator_review",
-    "db_compact", "dialectic_claim",
+    "db_compact", "db_deduplicate_embeddings", "dialectic_claim",
     "dialectic_evidence", "dialectic_mine_run", "dialectic_observation_resolve",
     "dialectic_supersede", "dialectic_validate_run", "distill", "evolve_apply",
     "evolve_apply_conflicted_pr", "evolve_apply_curator_report",

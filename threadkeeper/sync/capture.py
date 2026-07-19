@@ -135,8 +135,15 @@ def applying_guard(conn: sqlite3.Connection):
     concurrent local write elsewhere is still captured and an inner commit in
     the guarded path (e.g. rebuild_derived's backfills) cannot leak suppression.
     The temp table persists across commits on this connection until dropped."""
-    conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {_APPLYING_TABLE} (x)")
+    already_guarded = bool(conn.execute(
+        "SELECT count(*) FROM pragma_table_list "
+        "WHERE schema='temp' AND name=?",
+        (_APPLYING_TABLE,),
+    ).fetchone()[0])
+    if not already_guarded:
+        conn.execute(f"CREATE TEMP TABLE {_APPLYING_TABLE} (x)")
     try:
         yield
     finally:
-        conn.execute(f"DROP TABLE IF EXISTS {_APPLYING_TABLE}")
+        if not already_guarded:
+            conn.execute(f"DROP TABLE IF EXISTS {_APPLYING_TABLE}")

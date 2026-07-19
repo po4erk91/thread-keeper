@@ -1282,17 +1282,19 @@ The daemon-leak in tests (where `tests/` spawned orphan threads via fixture's
 
 - **Available** (`_VEC_AVAILABLE=True`): virtual tables `notes_vec`, `dialog_vec`
   on vec0 are created. KNN ~10× faster than Python-side cosine.
-  Backfill via `_backfill_vec_tables` pulls in existing embedding BLOBs.
+  Backfill via `_backfill_vec_tables` moves existing embedding BLOBs into vec0
+  and clears the redundant base-table copy after a confirmed insert.
 
-- **Not available**: fallback to legacy Python-side cosine — `_cosine_search`
-  reads the entire `notes.embedding BLOB` into memory, computes the dot product.
-  Works, but doesn't scale past ~50k notes.
+- **Not available**: fallback to Python-side cosine — `_cosine_search` reads
+  the retained `notes.embedding` BLOBs and computes the dot product. Works,
+  but doesn't scale past ~50k notes.
 
-Optional — not needed for basic functionality. Embeddings themselves are stored
-as BLOB in `notes.embedding` regardless of vec0 availability.
+Optional — not needed for basic functionality. There is one vector copy: vec0
+when available, otherwise the base-table BLOB. Exact filtered fallback paths on
+a vec-enabled connection read the vector back from vec0.
 
 **vec0 lifecycle (sync + dimension).** The `notes_vec` mirror is kept in sync
-with `notes` *explicitly*, not by trigger: inserts dual-write via
+  with `notes` *explicitly*, not by trigger: inserts write vec0 via
 `_vec_upsert_note`, and deletes (only `consolidate()` merges notes today) call
 `_vec_delete_note` so a removed note can't strand an orphan KNN row — `notes.id`
 is `AUTOINCREMENT` so a stale id is never reclaimed by reuse. As belt-and-braces
@@ -1366,7 +1368,7 @@ below).
 | forget | 1 | forget |
 | invariants | 1 | find_invariants |
 | missed_spawns | 1 | find_missed_spawns |
-| db_maintenance | 1 | db_compact |
+| db_maintenance | 2 | db_compact, db_deduplicate_embeddings |
 | config_watch | 2 | config_watch_status, config_reload |
 | panel | 1 | convene_panel |
 | session | 1 | session_end |

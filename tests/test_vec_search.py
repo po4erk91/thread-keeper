@@ -2,7 +2,7 @@
 
 Verifies that:
 - vec0 virtual tables are created when the extension is available
-- new notes get dual-written (BLOB + vec0)
+- new notes keep one vector copy (vec0, with the redundant BLOB cleared)
 - _cosine_search uses the vec0 path when available
 - search results are correct (right top-k, scores in [-1, 1])
 - legacy fallback still works when vec0 unavailable
@@ -68,6 +68,9 @@ def test_new_note_is_mirrored_into_notes_vec(vec_pkg):
         "SELECT id FROM notes_vec WHERE id=?", (note_row["id"],)
     ).fetchone()
     assert vec_row is not None  # mirrored
+    assert conn.execute(
+        "SELECT embedding FROM notes WHERE id=?", (note_row["id"],)
+    ).fetchone()["embedding"] is None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -164,7 +167,12 @@ def test_backfill_vec_tables_picks_up_legacy_blobs(vec_pkg):
         "SELECT id FROM notes WHERE thread_id=? ORDER BY id DESC LIMIT 1",
         (tid,),
     ).fetchone()["id"]
-    # Simulate legacy state: remove the vec0 mirror
+    # Simulate legacy state: move the canonical vec0 bytes back into the base
+    # BLOB, then remove the vec mirror.
+    legacy_blob = conn.execute(
+        "SELECT embedding FROM notes_vec WHERE id=?", (note_id,)
+    ).fetchone()["embedding"]
+    conn.execute("UPDATE notes SET embedding=? WHERE id=?", (legacy_blob, note_id))
     conn.execute("DELETE FROM notes_vec WHERE id=?", (note_id,))
     conn.commit()
 
@@ -177,6 +185,9 @@ def test_backfill_vec_tables_picks_up_legacy_blobs(vec_pkg):
         "SELECT id FROM notes_vec WHERE id=?", (note_id,)
     ).fetchone()
     assert again is not None
+    assert conn.execute(
+        "SELECT embedding FROM notes WHERE id=?", (note_id,)
+    ).fetchone()["embedding"] is None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -330,6 +341,8 @@ def test_legacy_cosine_still_works_when_vec_absent(mp_with_cid, monkeypatch):
     valid top-k from the Python-side fallback. Verify by patching
     `_vec_on` to False and asserting the result shape + count."""
     pkg = mp_with_cid(_FAKE_CID)
+    from threadkeeper import embeddings as emb_mod
+    monkeypatch.setattr(emb_mod, "_vec_on", lambda: False)
     open_t = _tool(pkg, "open_thread")
     note = _tool(pkg, "note")
     tid = open_t(question="fallback test")
@@ -337,8 +350,6 @@ def test_legacy_cosine_still_works_when_vec_absent(mp_with_cid, monkeypatch):
     note(thread_id=tid, content="beta", kind="insight")
     note(thread_id=tid, content="gamma", kind="insight")
 
-    from threadkeeper import embeddings as emb_mod
-    monkeypatch.setattr(emb_mod, "_vec_on", lambda: False)
     conn = pkg["db"].get_db()
     hits = emb_mod._cosine_search(conn, "alpha", k=2)
     # Fallback returns valid result set with score field

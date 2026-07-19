@@ -25,7 +25,12 @@ from ..config import (
 )
 from ..helpers import fmt_age, q, normalize_text
 from ..identity import _ensure_session, _emit
-from ..embeddings import _get_model, _encode, _vec_delete_note
+from ..embeddings import (
+    _get_model,
+    _encode,
+    _vec_delete_note,
+    _note_embedding_parts,
+)
 from ..task_spool import ensure_task_spool_dir
 
 
@@ -164,18 +169,22 @@ def consolidate(dry_run: bool = True,
             np = None
 
     if np is not None:
+        note_join, note_embedding = _note_embedding_parts(conn, "n")
         thread_ids = [
             r["thread_id"] for r in conn.execute(
-                "SELECT thread_id FROM notes WHERE thread_id IS NOT NULL "
-                "AND embedding IS NOT NULL "
-                "GROUP BY thread_id HAVING COUNT(*) >= 2"
+                f"SELECT n.thread_id FROM notes n {note_join} "
+                "WHERE n.thread_id IS NOT NULL "
+                f"AND {note_embedding} IS NOT NULL "
+                "GROUP BY n.thread_id HAVING COUNT(*) >= 2"
             ).fetchall()
         ]
         for tid in thread_ids:
             ns = conn.execute(
-                "SELECT id, content, embedding, created_at FROM notes "
-                "WHERE thread_id=? AND embedding IS NOT NULL "
-                "ORDER BY created_at ASC", (tid,)
+                "SELECT n.id, n.content, "
+                f"       {note_embedding} AS embedding, n.created_at "
+                f"FROM notes n {note_join} "
+                f"WHERE n.thread_id=? AND {note_embedding} IS NOT NULL "
+                "ORDER BY n.created_at ASC", (tid,)
             ).fetchall()
             if len(ns) < 2:
                 continue

@@ -28,8 +28,8 @@ from .capture import _PK, _COMPOSITE, applying_guard
 _PAYLOAD_EXCLUDE = {"embedding", "embed_backend"}
 # Cap on rows re-embedded synchronously in rebuild_derived (the /sync/push
 # request path). A large initial corpus would otherwise blow the client's ~30s
-# timeout and retry into the same expensive path. NULL embeddings are a valid
-# eventual state; the background ingester finishes the remainder in bounded ticks.
+# timeout and retry into the same expensive path. Missing local vectors are a
+# valid eventual state; the background ingester finishes them in bounded ticks.
 _SYNC_EMBED_PUSH_BUDGET = 200
 _ALL_TABLES = list(_PK) + list(_COMPOSITE)
 # Replicated tables whose embedding is derived from a text column — used to
@@ -168,9 +168,10 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
             if local is not None and hlc <= local:
                 continue  # local copy is newer-or-equal
             # embedding/embed_backend are never shipped, so INSERT OR REPLACE
-            # would NULL any existing local embedding. Preserve it when the row's
-            # embed-source text is unchanged; a content change leaves it NULL for
-            # rebuild_derived to recompute.
+            # would forget the local vector generation. Preserve the local
+            # storage marker when source text is unchanged; the vector itself
+            # may live only in vec0 (embedding=NULL). A content change leaves
+            # the marker NULL so rebuild_derived recomputes the vector.
             etext = _EMBED_TEXT_COL.get(t)
             preserve = None
             if etext is not None:
@@ -178,7 +179,7 @@ def apply_changes(conn: sqlite3.Connection, changes: list[dict]) -> int:
                     f"SELECT {etext} AS tc, embedding, embed_backend "
                     f"FROM {t} WHERE {where}", keyvals
                 ).fetchone()
-                if lr is not None and lr[1] is not None and lr[0] == row.get(etext):
+                if lr is not None and lr[2] is not None and lr[0] == row.get(etext):
                     preserve = (lr[1], lr[2])
             cols = list(row.keys())
             placeholders = ",".join("?" for _ in cols)
@@ -222,11 +223,11 @@ def rebuild_derived(conn: sqlite3.Connection) -> None:
             )
             _backfill_dialog_fts_if_empty(conn)
             # Re-embed synced rows (notes/dialog/concepts) that arrived without
-            # an embedding BEFORE mirroring BLOBs into the vec indexes. Bounded
+            # an effective local vector. Bounded
             # so this request path can't time out on a large corpus; the
             # background ingester finishes the remainder in later ticks.
             _backfill_sync_embeddings(conn, max_rows=_SYNC_EMBED_PUSH_BUDGET)
-            while _backfill_vec_tables(conn)[0]:
+            while any(_backfill_vec_tables(conn)):
                 pass
         except Exception:
             pass

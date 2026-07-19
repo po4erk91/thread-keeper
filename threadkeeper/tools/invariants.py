@@ -18,6 +18,7 @@ from ..db import get_db
 from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q
 from ..identity import _ensure_session
+from ..embeddings import _dialog_embedding_parts
 
 
 @read_tool()
@@ -52,20 +53,22 @@ def find_invariants(window_days: int = 14,
     # Aggressive filter: subagent jsonls (project='subagents') are mostly
     # boilerplate role-intros and pollute clusters. Skip those + common
     # subagent-shape kickoff phrases. We want main-conversation responses.
+    dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
     rows = conn.execute(
-        "SELECT uuid, session_id, content, created_at, embedding "
-        "FROM dialog_messages "
-        "WHERE role='assistant' AND embedding IS NOT NULL "
-        "AND created_at >= ? "
-        "AND project != 'subagents' "
-        "AND content NOT LIKE '[thinking]%' "
-        "AND content NOT LIKE 'I''m Claude Code%' "
-        "AND content NOT LIKE 'Hello! I''m Claude Code%' "
-        "AND content NOT LIKE 'I''ll help you%' "
-        "AND content NOT LIKE 'I understand you want me to%' "
-        "AND content NOT LIKE '<summary>%' "
-        "AND length(content) >= 120 "
-        "ORDER BY created_at DESC LIMIT ?",
+        "SELECT d.uuid, d.session_id, d.content, d.created_at, "
+        f"       {dialog_embedding} AS embedding "
+        f"FROM dialog_messages d {dialog_join} "
+        f"WHERE d.role='assistant' AND {dialog_embedding} IS NOT NULL "
+        "AND d.created_at >= ? "
+        "AND d.project != 'subagents' "
+        "AND d.content NOT LIKE '[thinking]%' "
+        "AND d.content NOT LIKE 'I''m Claude Code%' "
+        "AND d.content NOT LIKE 'Hello! I''m Claude Code%' "
+        "AND d.content NOT LIKE 'I''ll help you%' "
+        "AND d.content NOT LIKE 'I understand you want me to%' "
+        "AND d.content NOT LIKE '<summary>%' "
+        "AND length(d.content) >= 120 "
+        "ORDER BY d.created_at DESC LIMIT ?",
         (cutoff, max(100, int(max_messages))),
     ).fetchall()
     if len(rows) < min_cluster_size:
@@ -121,13 +124,15 @@ def find_invariants(window_days: int = 14,
             sid = r["session_id"]
             if not sid:
                 continue
+            prompt_join, prompt_embedding = _dialog_embedding_parts(conn, "p")
             ur = conn.execute(
-                "SELECT embedding FROM dialog_messages "
-                "WHERE session_id=? AND role='user' AND created_at < ? "
-                "AND embedding IS NOT NULL "
-                "AND content NOT LIKE '[tool_result]%' "
-                "AND content NOT LIKE '[Image%' "
-                "ORDER BY created_at DESC LIMIT 1",
+                f"SELECT {prompt_embedding} AS embedding "
+                f"FROM dialog_messages p {prompt_join} "
+                "WHERE p.session_id=? AND p.role='user' AND p.created_at < ? "
+                f"AND {prompt_embedding} IS NOT NULL "
+                "AND p.content NOT LIKE '[tool_result]%' "
+                "AND p.content NOT LIKE '[Image%' "
+                "ORDER BY p.created_at DESC LIMIT 1",
                 (sid, ts),
             ).fetchone()
             if ur and ur["embedding"]:

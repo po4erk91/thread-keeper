@@ -34,7 +34,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -436,7 +436,7 @@ CREATE TRIGGER IF NOT EXISTS dialog_fts_ad AFTER DELETE ON dialog_messages BEGIN
     INSERT INTO dialog_fts(dialog_fts, rowid, content)
     VALUES('delete', old.rowid, old.content);
 END;
-CREATE TRIGGER IF NOT EXISTS dialog_fts_au AFTER UPDATE ON dialog_messages BEGIN
+CREATE TRIGGER IF NOT EXISTS dialog_fts_au AFTER UPDATE OF content ON dialog_messages BEGIN
     INSERT INTO dialog_fts(dialog_fts, rowid, content)
     VALUES('delete', old.rowid, old.content);
     INSERT INTO dialog_fts(rowid, content) VALUES (new.rowid, new.content);
@@ -869,7 +869,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2):
+    if from_version not in (0, 1, 2, 3):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -883,6 +883,12 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     if from_version < 2:
         _drop_legacy_dialog_fts(conn)
         _scrub_legacy_dialog_rows(conn)
+
+    # v4: embedding-only updates must not delete/reinsert every FTS term.
+    # DROP first because the baseline uses CREATE TRIGGER IF NOT EXISTS and
+    # therefore cannot replace the older catch-all AFTER UPDATE trigger.
+    if from_version < 4:
+        conn.execute("DROP TRIGGER IF EXISTS dialog_fts_au")
 
     for statement in _iter_sql_statements(SCHEMA):
         conn.execute(statement)

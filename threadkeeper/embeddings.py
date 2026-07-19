@@ -4,14 +4,13 @@ over notes and dialog_messages.
 Two cosine paths:
 - Fast: sqlite-vec `vec0` virtual tables (notes_vec, dialog_vec) when the
   extension is loaded. Sub-linear search via the vec0 KNN backend.
-- Fallback: legacy Python-side dot product over BLOB column. Used when
-  sqlite-vec isn't available (extension build disabled / package missing).
-  Correct, just slower at scale.
+- Fallback: Python-side dot product over the single available store. On hosts
+  without sqlite-vec that is the legacy BLOB column; with sqlite-vec it reads
+  vectors back from vec0 for exact filtered fallbacks.
 
-Embeddings are dual-written: every new note/dialog_message gets its
-vector in BOTH the BLOB column AND the vec0 virtual table, so the legacy
-path keeps working and we can roll back without data loss. Old rows are
-backfilled to vec0 lazily by the ingester.
+Embeddings use one durable local copy: vec0 when available, otherwise the
+legacy BLOB column. New and backfilled rows are written to vec0 first and the
+redundant base-table BLOB is then cleared under the sync applying guard.
 """
 import logging
 from importlib import metadata as importlib_metadata
@@ -233,12 +232,15 @@ def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
         except sqlite3.OperationalError:
             return 0
 
+    note_join, note_embedding = _note_embedding_parts(conn, "n")
+    dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
     return {
         "generation": active,
         "notes_total": _count("SELECT COUNT(*) FROM notes"),
         "notes_current": _count(
-            "SELECT COUNT(*) FROM notes WHERE embedding IS NOT NULL "
-            "AND embed_backend=?", (active,),
+            f"SELECT COUNT(*) FROM notes n {note_join} "
+            f"WHERE {note_embedding} IS NOT NULL AND n.embed_backend=?",
+            (active,),
         ),
         # Post-migration notes_vec is keyed by rowid via notes_vec_map.gid;
         # pre-migration it is keyed directly by the integer note id.
@@ -253,8 +255,9 @@ def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
         ),
         "dialog_total": _count("SELECT COUNT(*) FROM dialog_messages"),
         "dialog_current": _count(
-            "SELECT COUNT(*) FROM dialog_messages WHERE embedding IS NOT NULL "
-            "AND embed_backend=?", (active,),
+            f"SELECT COUNT(*) FROM dialog_messages d {dialog_join} "
+            f"WHERE {dialog_embedding} IS NOT NULL AND d.embed_backend=?",
+            (active,),
         ),
         "dialog_vec": _count(
             "SELECT COUNT(*) FROM dialog_messages d "
@@ -293,9 +296,12 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
         except sqlite3.OperationalError:
             pass  # fall through to legacy
     # Legacy Python-side path
+    join, effective_embedding = _note_embedding_parts(conn, "n")
     rows = conn.execute(
-        "SELECT id, content, kind, thread_id, created_at, embedding "
-        "FROM notes WHERE embedding IS NOT NULL AND embed_backend=?",
+        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+        f"       {effective_embedding} AS embedding "
+        f"FROM notes n {join} "
+        f"WHERE {effective_embedding} IS NOT NULL AND n.embed_backend=?",
         (active,),
     ).fetchall()
     if not rows:
@@ -376,13 +382,16 @@ def _dialog_cosine_search(conn, query: str, k: int,
                 return hits
         except sqlite3.OperationalError:
             pass
+    join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
-        "SELECT uuid, role, project, session_id, content, created_at, embedding "
-        "FROM dialog_messages WHERE embedding IS NOT NULL AND embed_backend=?"
+        "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
+        f"       d.created_at, {effective_embedding} AS embedding "
+        f"FROM dialog_messages d {join} "
+        f"WHERE {effective_embedding} IS NOT NULL AND d.embed_backend=?"
     )
     params: tuple = (active,)
     if role:
-        sql += " AND role=?"
+        sql += " AND d.role=?"
         params = (active, role)
     rows = conn.execute(sql, params).fetchall()
     if not rows:
@@ -403,13 +412,89 @@ def _notes_mapped(conn: sqlite3.Connection) -> bool:
     ).fetchone() is not None
 
 
+def _note_embedding_parts(
+    conn: sqlite3.Connection,
+    alias: str = "n",
+) -> tuple[str, str]:
+    """Return (JOIN SQL, effective-vector expression) for a notes alias.
+
+    The expression prefers the legacy BLOB when present so partially migrated
+    databases remain readable, otherwise it reads the canonical vec0 value.
+    """
+    if not _vec_readable(conn, "notes_vec"):
+        return "", f"{alias}.embedding"
+    if _notes_mapped(conn):
+        join = (
+            f"LEFT JOIN notes_vec_map nvm ON nvm.gid={alias}.id "
+            "LEFT JOIN notes_vec nv ON nv.rowid=nvm.rowid"
+        )
+    else:
+        join = f"LEFT JOIN notes_vec nv ON nv.id={alias}.id"
+    return join, f"COALESCE({alias}.embedding, nv.embedding)"
+
+
+def _dialog_embedding_parts(
+    conn: sqlite3.Connection,
+    alias: str = "d",
+) -> tuple[str, str]:
+    """Return (JOIN SQL, effective-vector expression) for a dialog alias."""
+    if not _vec_readable(conn, "dialog_vec"):
+        return "", f"{alias}.embedding"
+    join = (
+        f"LEFT JOIN dialog_vec_map dvm ON dvm.uuid={alias}.uuid "
+        "LEFT JOIN dialog_vec dv ON dv.rowid=dvm.rowid"
+    )
+    return join, f"COALESCE({alias}.embedding, dv.embedding)"
+
+
+def _vec_readable(conn: sqlite3.Connection, table: str) -> bool:
+    """Whether this specific connection can query a vec0 virtual table.
+
+    Normal thread-keeper connections load sqlite-vec individually. Sync tests
+    and external callers can hold raw sqlite3 connections even when another
+    connection made the process-global vec probe succeed, so capability must
+    be verified per connection before emitting a vec JOIN.
+    """
+    if not _vec_on():
+        return False
+    try:
+        conn.execute(f"SELECT embedding FROM {table} LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def _clear_redundant_blob(
+    conn: sqlite3.Connection,
+    table: str,
+    key_column: str,
+    key,
+) -> None:
+    """Clear a base-table BLOB after its vec0 write succeeded.
+
+    Embeddings are derived local state, so suppress sync capture for this
+    storage-only update. ``applying_guard`` is re-entrant because sync rebuilds
+    can already be inside it when they call the vec upsert helpers.
+    """
+    from .sync.capture import applying_guard
+
+    with applying_guard(conn):
+        conn.execute(
+            f"UPDATE {table} SET embedding=NULL "
+            f"WHERE {key_column}=? AND embedding IS NOT NULL",
+            (key,),
+        )
+
+
 def _vec_upsert_note(conn: sqlite3.Connection, note_id,
-                     emb_blob: Optional[bytes]) -> None:
-    """Mirror a note's embedding into notes_vec. No-op when vec0 isn't loaded
-    or the blob is None. Pre-migration: keyed by integer notes.id. Post: keyed
-    by the notes_vec_map rowid resolved from the note's global TEXT id."""
+                     emb_blob: Optional[bytes]) -> bool:
+    """Store a note embedding in vec0 and remove the redundant base BLOB.
+
+    Returns True only when vec0 accepted the vector. Pre-migration it is keyed
+    by integer notes.id; post-migration by notes_vec_map + global TEXT id.
+    """
     if not _vec_on() or emb_blob is None or not _vec_dim_ok(emb_blob):
-        return
+        return False
     try:
         if _notes_mapped(conn):
             gid = str(note_id)
@@ -432,8 +517,10 @@ def _vec_upsert_note(conn: sqlite3.Connection, note_id,
                 "INSERT OR REPLACE INTO notes_vec(id, embedding) VALUES (?, ?)",
                 (note_id, emb_blob),
             )
+        _clear_redundant_blob(conn, "notes", "id", note_id)
+        return True
     except sqlite3.OperationalError:
-        pass  # vec0 table missing on this connection — silent fall-through
+        return False  # vec0 missing on this connection — BLOB remains fallback
 
 
 def _vec_delete_note(conn: sqlite3.Connection, note_id: int) -> None:
@@ -463,12 +550,10 @@ def _vec_delete_note(conn: sqlite3.Connection, note_id: int) -> None:
 
 
 def _vec_upsert_dialog(conn: sqlite3.Connection, uuid: str,
-                       emb_blob: Optional[bytes]) -> None:
-    """Mirror a dialog_message embedding into dialog_vec via the uuid map.
-    Resolves or assigns a rowid for the given uuid in dialog_vec_map, then
-    INSERT-OR-REPLACE keyed by that rowid in dialog_vec."""
+                       emb_blob: Optional[bytes]) -> bool:
+    """Store a dialog embedding in vec0 and remove the redundant base BLOB."""
     if not _vec_on() or emb_blob is None or not _vec_dim_ok(emb_blob):
-        return
+        return False
     try:
         row = conn.execute(
             "SELECT rowid FROM dialog_vec_map WHERE uuid=?", (uuid,)
@@ -484,8 +569,10 @@ def _vec_upsert_dialog(conn: sqlite3.Connection, uuid: str,
             "INSERT OR REPLACE INTO dialog_vec(rowid, embedding) VALUES (?, ?)",
             (vec_rowid, emb_blob),
         )
+        _clear_redundant_blob(conn, "dialog_messages", "uuid", uuid)
+        return True
     except sqlite3.OperationalError:
-        pass
+        return False
 
 
 def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,

@@ -15,7 +15,7 @@ from ..config import SEMANTIC_AVAILABLE
 from ..helpers import fmt_age, q, gen_concept_id, gen_distill_id
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
-from ..embeddings import _embed, embed_tag
+from ..embeddings import _embed, embed_tag, _dialog_embedding_parts
 
 
 # Locale-aware heuristic matchers — patterns live in i18n.py so this
@@ -152,22 +152,24 @@ def _extract_recent_from_cutoff(
     # valid sessions. SQL LIKE with '%' suffix on user-controlled prefix
     # is safe: each pattern is a literal in source code, not user input.
     msg_noise_clauses = " AND ".join(
-        [f"content NOT LIKE ?"] * len(_NOISE_CONTENT_PREFIXES)
+        ["d.content NOT LIKE ?"] * len(_NOISE_CONTENT_PREFIXES)
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
+    dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
     rows = conn.execute(
         exclusion_cte +
-        "SELECT uuid, role, content, session_id, created_at, embedding "
-        "FROM dialog_messages WHERE created_at >= ? "
-        "AND coalesce(project, '') != 'subagents' "
-        "AND role IN ('user','assistant') "
-        "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
+        "SELECT d.uuid, d.role, d.content, d.session_id, d.created_at, "
+        f"       {dialog_embedding} AS embedding "
+        f"FROM dialog_messages d {dialog_join} WHERE d.created_at >= ? "
+        "AND coalesce(d.project, '') != 'subagents' "
+        "AND d.role IN ('user','assistant') "
+        "AND d.content NOT LIKE '[tool_result]%' AND d.content NOT LIKE '[Image%' "
         f"AND {msg_noise_clauses} "
-        "AND length(content) >= 30 "
-        "AND session_id NOT IN ("
+        "AND length(d.content) >= 30 "
+        "AND d.session_id NOT IN ("
         "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
-        "ORDER BY created_at ASC LIMIT ?",
+        "ORDER BY d.created_at ASC LIMIT ?",
         (*exclusion_params, cutoff, *msg_noise_params,
          max(10, int(max_messages))),
     ).fetchall()

@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # a model of a different dimension via THREADKEEPER_EMBED_MODEL, set this to
     # the new width AND drop & recreate the *_vec tables, otherwise every vec0
     # insert mismatches FLOAT[384] and the fast KNN path silently goes dead (the
-    # legacy BLOB cosine path keeps working). See embeddings._vec_dim_ok, which
+    # failed insert keeps the BLOB fallback). See embeddings._vec_dim_ok, which
     # warns loudly on a width mismatch instead of swallowing it.
     embed_dim: int = Field(
         default=384,

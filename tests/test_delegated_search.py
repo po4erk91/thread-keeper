@@ -259,10 +259,17 @@ def test_backfill_note_embeddings_catches_null_rows(mp_with_cid):
     tid = open_t(question="backfill target")
     note(thread_id=tid, content="something interesting", kind="insight")
 
-    # Force the note's embedding to NULL (simulating it was written by
-    # a light child)
+    # Remove both storage forms (simulating a light child that had no model).
     conn = pkg["db"].get_db()
-    conn.execute("UPDATE notes SET embedding=NULL WHERE thread_id=?", (tid,))
+    row = conn.execute(
+        "SELECT id FROM notes WHERE thread_id=? ORDER BY id DESC LIMIT 1", (tid,)
+    ).fetchone()
+    from threadkeeper.embeddings import _vec_delete_note
+    _vec_delete_note(conn, row["id"])
+    conn.execute(
+        "UPDATE notes SET embedding=NULL, embed_backend=NULL WHERE id=?",
+        (row["id"],),
+    )
     conn.commit()
 
     pre = conn.execute(
@@ -275,8 +282,12 @@ def test_backfill_note_embeddings_catches_null_rows(mp_with_cid):
     assert updated >= 1
 
     post = conn.execute(
-        "SELECT embedding FROM notes WHERE thread_id=? "
+        "SELECT id, embedding, embed_backend FROM notes WHERE thread_id=? "
         "ORDER BY id DESC LIMIT 1",
         (tid,),
     ).fetchone()
-    assert post["embedding"] is not None
+    assert post["embedding"] is None
+    assert post["embed_backend"] is not None
+    assert conn.execute(
+        "SELECT 1 FROM notes_vec WHERE id=?", (post["id"],)
+    ).fetchone() is not None

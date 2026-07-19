@@ -1210,6 +1210,10 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
 - **`db_compact()`** — one-shot maintenance: `VACUUM` the SQLite file and
   rebuild `dialog_fts` (mandatory after VACUUM — rowid renumbering).
   Single-flight; fails soft with a retry hint when the DB is busy.
+- **`db_deduplicate_embeddings(dry_run=True)`** — report or remove redundant
+  base-table embedding BLOBs only when a matching sqlite-vec row is confirmed.
+  Rows without vec coverage keep their fallback copy; run `db_compact()` after
+  applying to return the freed pages to the filesystem.
 - **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
   often the daemon fired, the outcome mix (`no_window` / `too_short` /
@@ -1325,6 +1329,16 @@ keeps search correct). Run it once in a quiet window after upgrading to
 the v2 schema to shrink the DB file by roughly the old FTS shadow copy
 (~465 MB on a 2.7 GB DB); day-to-day it is never required.
 
+With sqlite-vec available, embeddings use vec0 as their single local store;
+the base-table BLOB is retained only as a fallback on hosts without the
+extension. Existing dual-copy databases can be converted safely in two steps:
+
+```text
+db_deduplicate_embeddings(dry_run=True)   # coverage + reclaim estimate
+db_deduplicate_embeddings(dry_run=False)  # clear only confirmed duplicates
+db_compact()                              # shrink the SQLite file
+```
+
 Hooks and small runtime artifacts: `~/.threadkeeper/hooks/`.
 
 Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
@@ -1384,7 +1398,7 @@ are created as `FLOAT[EMBED_DIM]`, default 384. If you point
 `THREADKEEPER_EMBED_MODEL` at a model of a different dimension, also set
 `THREADKEEPER_EMBED_DIM` to its width and recreate the `*_vec` tables —
 otherwise every vec0 insert mismatches the schema and the fast KNN path goes
-dead (semantic search still works via the legacy BLOB cosine path). thread-keeper
+dead (the failed insert leaves the BLOB fallback intact). thread-keeper
 logs a one-line warning naming both dimensions and this knob when it detects the
 mismatch, rather than failing silently.
 

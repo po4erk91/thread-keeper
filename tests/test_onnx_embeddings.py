@@ -87,8 +87,13 @@ def test_new_note_carries_backend_tag(sem_pkg):
         "WHERE thread_id=? ORDER BY id DESC LIMIT 1",
         (tid,),
     ).fetchone()
-    assert row["embedding"] is not None
+    assert row["embedding"] is None  # sqlite-vec is the single canonical copy
     assert row["embed_backend"] == active
+    assert conn.execute(
+        "SELECT 1 FROM notes_vec WHERE id=("
+        "SELECT id FROM notes WHERE thread_id=? ORDER BY id DESC LIMIT 1)",
+        (tid,),
+    ).fetchone() is not None
 
 
 # ── migration ────────────────────────────────────────────────────────
