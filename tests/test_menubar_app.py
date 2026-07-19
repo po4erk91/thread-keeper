@@ -147,7 +147,8 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "AutomationJobCard" in swift
     assert "AutomationScheduleRow" in swift
     assert 'Text("Schedule (hours)")' in swift
-    assert "GridItem(.adaptive(minimum: 340, maximum: 520)" in swift
+    assert swift.count("GridItem(.adaptive(minimum: 340, maximum: .infinity)") == 2
+    assert "GridItem(.adaptive(minimum: 340, maximum: 520)" not in swift
     assert 'Text("Default")' not in swift
     assert 'Text("CLI default")' not in swift
     assert "inheritedDefaultLabel(for: definition)" in swift

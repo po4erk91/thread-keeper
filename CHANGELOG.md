@@ -14,6 +14,8 @@ version bumps follow semver per the policy in
 - **System Automation cards keep their schedule controls readable.** Mechanical
   job cards now use a compact hours-based schedule row and a wider adaptive
   grid minimum, preventing labels from collapsing into one-character columns.
+  Settings cards expand to use the available tab width instead of leaving a
+  fixed empty column on the right.
   Empty `.env` selections show their concrete inherited value (`On`, `Off`, or
   the effective hourly cadence) instead of a generic `Default` label. Boolean
   settings remain two-state controls; the reset button restores inheritance.

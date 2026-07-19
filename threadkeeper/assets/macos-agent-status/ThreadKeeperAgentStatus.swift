@@ -2238,10 +2238,10 @@ struct EnvSettingsView: View {
     @ObservedObject var envStore: EnvSettingsStore
     @State private var selectedSection: EnvSettingsSection? = .cliAgents
     private let agentColumns = [
-        GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 14, alignment: .top)
+        GridItem(.adaptive(minimum: 340, maximum: .infinity), spacing: 14, alignment: .top)
     ]
     private let automationColumns = [
-        GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 14, alignment: .top)
+        GridItem(.adaptive(minimum: 340, maximum: .infinity), spacing: 14, alignment: .top)
     ]
 
     var body: some View {
