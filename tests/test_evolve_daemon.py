@@ -736,8 +736,17 @@ def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
 
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("ERR evolve_repo_unavailable="), out
-    # the failed pass is recorded so the daemon throttles retries
-    assert pkg["ed"]._last_evolve_ts(conn) > 0
+    # A no-spawn outcome must not consume the review slot: the cursor stays
+    # unset so the short transient-retry cadence re-checks as soon as the
+    # operator fixes the config, while the outcome row is still recorded for
+    # observability (consecutive same-class rows collapse, so retries can't
+    # flood events).
+    assert pkg["ed"]._last_evolve_ts(conn) == 0
+    summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()["summary"]
+    assert summary.startswith("ERR evolve_repo_unavailable=")
 
 
 def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
@@ -824,3 +833,44 @@ def test_brief_evolve_promoted_marked_dismissed_hidden(tmp_path, monkeypatch):
     assert text.index("★") < text.index("promoted one")
     # promoted sorts before pending
     assert text.index("promoted one") < text.index("pending one")
+
+
+def test_transient_outcome_preserves_review_slot(tmp_path, monkeypatch):
+    """A no-spawn outcome must not consume the weekly review cursor."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    ed = pkg["ed"]
+    ed._record_evolve_pass(conn, 1000, "spawned research file=R.md ok")
+    assert ed._last_evolve_ts(conn) == 1000
+
+    ed._record_transient_evolve_pass(conn, "skipped_dirty_worktree mode=git")
+    assert ed._last_evolve_ts(conn) == 1000  # cursor preserved
+
+    n_before = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+    # Same outcome class collapses (edge-triggered, no hourly retry flood)…
+    ed._record_transient_evolve_pass(conn, "skipped_dirty_worktree mode=git")
+    n_same = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+    assert n_same == n_before
+    # …while a different class still lands, cursor still preserved.
+    ed._record_transient_evolve_pass(conn, "reviewer_running n=1")
+    assert ed._last_evolve_ts(conn) == 1000
+    n_after = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+    assert n_after == n_before + 1
+
+
+def test_last_spawn_phase_not_buried_by_transient_rows(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    ed = pkg["ed"]
+    ed._record_evolve_pass(conn, 1000, "spawned research file=R.md ok")
+    for i in range(40):
+        ed._record_evolve_pass(
+            conn, 1000, f"skipped_dirty_worktree mode=git attempt={i}"
+        )
+    assert ed._last_spawn_phase(conn) == "research"

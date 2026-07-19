@@ -15,9 +15,18 @@ def _reimport(monkeypatch, tmp_path, **env):
     return importlib.import_module("threadkeeper.embeddings")
 
 
+def _allow_host_routing(monkeypatch):
+    # The test env keeps THREADKEEPER_DISABLE_BG_DAEMONS=1 for suite hygiene;
+    # clear the derived pause flag so the socket-routing path under test is
+    # reachable (a paused install deliberately keeps the local model path).
+    from threadkeeper import config as tk_config
+    monkeypatch.setattr(tk_config, "DISABLE_BG_DAEMONS", False)
+
+
 def test_thin_role_uses_socket(monkeypatch, tmp_path):
     emb = _reimport(monkeypatch, tmp_path,
                     THREADKEEPER_DAEMON_HOST="1", THREADKEEPER_ROLE="server")
+    _allow_host_routing(monkeypatch)
     monkeypatch.setattr(emb.host_embed, "embed_via_host",
                         lambda texts, sock, timeout=3.0: [[3.0, 4.0]] * len(texts))
     out = emb._encode(["hello"])
@@ -30,6 +39,7 @@ def test_thin_role_fts_fallback_returns_none(monkeypatch, tmp_path):
     emb = _reimport(monkeypatch, tmp_path,
                     THREADKEEPER_DAEMON_HOST="1", THREADKEEPER_ROLE="server",
                     THREADKEEPER_THIN_EMBED_FALLBACK="fts")
+    _allow_host_routing(monkeypatch)
     monkeypatch.setattr(emb.host_embed, "embed_via_host",
                         lambda texts, sock, timeout=3.0: None)
     assert emb._encode(["hello"]) is None

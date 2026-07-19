@@ -761,3 +761,73 @@ def test_daemon_disabled_at_interval_zero(tmp_path, monkeypatch):
     pkg["dialectic_validator"]._started = False
     pkg["dialectic_validator"].start_dialectic_validator_daemon()
     assert pkg["dialectic_validator"]._started is False
+
+
+def test_requeued_claims_increment_requeue_count(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="1", batch_size="3")
+    conn = pkg["db"].get_db()
+    _seed_obs(conn, "requeue counter наблюдение", age_s=60)
+    now = int(time.time())
+    conn.execute(
+        "UPDATE dialectic_observations SET claimed_at=?, claimed_by_task='tk_done'",
+        (now - 60,),
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, ended_at, return_code) VALUES "
+        "('tk_done', 123, 'p', 'c', '/x', ?, ?, ?, 0)",
+        (
+            "You are a DIALECTIC VALIDATOR for thread-keeper's user model.",
+            now - 120,
+            now - 30,
+        ),
+    )
+    conn.commit()
+
+    assert pkg["dialectic_validator"]._release_finished_claims(conn, now) == 1
+    row = conn.execute(
+        "SELECT requeue_count, status FROM dialectic_observations"
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["requeue_count"] == 1
+
+
+def test_poisoned_observations_terminally_skipped(tmp_path, monkeypatch):
+    """After the requeue cap, an observation stops burning validator spawns."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="1", batch_size="3")
+    dv = pkg["dialectic_validator"]
+    conn = pkg["db"].get_db()
+    _seed_obs(conn, "poison наблюдение всегда must", age_s=60)
+    conn.execute("UPDATE dialectic_observations SET requeue_count=3")
+    conn.commit()
+
+    skipped = dv._resolve_poison_pending(conn)
+
+    assert skipped == 1
+    row = conn.execute(
+        "SELECT status, processed_at FROM dialectic_observations"
+    ).fetchone()
+    assert row["status"] == "processed"
+    assert row["processed_at"] is not None
+    _, batch_n, total_pending, _ids = dv._collect_pending(conn)
+    assert batch_n == 0
+    assert total_pending == 0
+    summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='dialectic_validate_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()["summary"]
+    assert summary == "poison_skip processed=1 max_requeues=3"
+
+
+def test_ensure_requeue_column_idempotent(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    dv = pkg["dialectic_validator"]
+    conn = pkg["db"].get_db()
+    dv._ensure_requeue_column(conn)
+    dv._ensure_requeue_column(conn)
+    cols = [
+        r["name"] for r in conn.execute(
+            "PRAGMA table_info(dialectic_observations)"
+        ).fetchall()
+    ]
+    assert cols.count("requeue_count") == 1

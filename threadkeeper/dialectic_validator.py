@@ -22,6 +22,7 @@ from .config import (
     DIALECTIC_VALIDATE_INTERVAL_S,
     DIALECTIC_VALIDATE_MIN,
     DIALECTIC_MAX_NEW_CLAIMS,
+    DIALECTIC_OBS_MAX_REQUEUES,
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
@@ -119,6 +120,22 @@ def _record_pass(conn: sqlite3.Connection, ts: int, outcome: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("dialectic_validator: record_pass failed", exc_info=True)
+
+
+def _ensure_requeue_column(conn: sqlite3.Connection) -> None:
+    """Add dialectic_observations.requeue_count on pre-existing databases.
+
+    `db.SCHEMA` covers fresh databases; databases already at the current
+    schema version get the column lazily here (same pattern as the evolve
+    reviewer issue ledger)."""
+    try:
+        conn.execute(
+            "ALTER TABLE dialectic_observations "
+            "ADD COLUMN requeue_count INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists (or table missing — later reads no-op)
 
 
 def _resolve_stale_pending(conn: sqlite3.Connection, stale_cutoff: int) -> int:
@@ -242,6 +259,44 @@ def _resolve_duplicate_pending(conn: sqlite3.Connection,
     return len(skip_ids)
 
 
+def _resolve_poison_pending(conn: sqlite3.Connection) -> int:
+    """Terminally skip observations that keep outliving validator children.
+
+    A child that exits without resolving its claimed batch requeues those rows
+    (`claim_requeue` / `claim_requeue_finished`); without a cap the same batch
+    respawns a fresh child every interval forever (observed live: a mini-model
+    child kept finishing without resolving, respawning the same rows hourly).
+    After DIALECTIC_OBS_MAX_REQUEUES requeues an observation is treated as
+    poison for the current model/prompt pair and resolved terminally instead
+    of burning another spawn. 0 disables the cap."""
+    cap = int(DIALECTIC_OBS_MAX_REQUEUES)
+    if cap <= 0:
+        return 0
+    try:
+        rows = conn.execute(
+            "SELECT id FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL "
+            "AND requeue_count >= ?",
+            (cap,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    now_t = int(time.time())
+    ids = [int(r["id"]) for r in rows]
+    conn.executemany(
+        "UPDATE dialectic_observations SET status='processed', processed_at=? "
+        "WHERE id=?",
+        [(now_t, oid) for oid in ids],
+    )
+    _record_pass(
+        conn, now_t,
+        f"poison_skip processed={len(ids)} max_requeues={cap}",
+    )
+    return len(ids)
+
+
 def _resolve_spawned_pending(conn: sqlite3.Connection) -> int:
     """Terminally skip observations from spawned child sessions.
 
@@ -302,7 +357,8 @@ def _release_stale_claims(conn: sqlite3.Connection, now: int) -> int:
         return 0
     ids = [int(r["id"]) for r in rows]
     conn.executemany(
-        "UPDATE dialectic_observations SET claimed_at=NULL, claimed_by_task=NULL "
+        "UPDATE dialectic_observations SET claimed_at=NULL, "
+        "claimed_by_task=NULL, requeue_count=requeue_count+1 "
         "WHERE id=?",
         [(oid,) for oid in ids],
     )
@@ -327,7 +383,8 @@ def _release_finished_claims(conn: sqlite3.Connection, now: int) -> int:
     ids = [int(r["id"]) for r in rows]
     task_count = len({str(r["claimed_by_task"]) for r in rows})
     conn.executemany(
-        "UPDATE dialectic_observations SET claimed_at=NULL, claimed_by_task=NULL "
+        "UPDATE dialectic_observations SET claimed_at=NULL, "
+        "claimed_by_task=NULL, requeue_count=requeue_count+1 "
         "WHERE id=?",
         [(oid,) for oid in ids],
     )
@@ -557,6 +614,7 @@ def run_validate_pass(force: bool = False, *, scheduled: bool = False) -> str:
     ):
         return "not_due"
     _ensure_session(conn)
+    _ensure_requeue_column(conn)
     now = int(time.time())
     _release_finished_claims(conn, now)
     _resolve_spawned_pending(conn)
@@ -573,6 +631,7 @@ def run_validate_pass(force: bool = False, *, scheduled: bool = False) -> str:
         _resolve_noise_pending(conn)
         _resolve_low_value_pending(conn)
         _resolve_duplicate_pending(conn)
+        _resolve_poison_pending(conn)
         _resolve_stale_pending(conn, stale_cutoff)
         _, batch_n, total_pending, batch_ids = _collect_pending(conn)
         if total_pending > 0 and batch_n == 0:

@@ -262,7 +262,9 @@ Steady-state access is split by intent:
    confidence; brief() renders medium+high grouped by domain.
    `dialectic_observations` is the capture buffer: `pending` rows are unclaimed
    backlog, `claimed_at`/`claimed_by_task` means a validator child owns the
-   batch, and `processed` is terminal. Stale claims are requeued.
+   batch, and `processed` is terminal. Stale claims are requeued, bumping
+   `requeue_count`; rows that hit the requeue cap are terminally skipped as
+   poison rather than re-leased forever.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
@@ -440,6 +442,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   the validator prompt, then spawns one child behind `dialectic-validator.lock`
   plus the running validator-task check. Spawn failures release the just-claimed
   rows; parent crashes leave them under the normal stale-claim lease requeue.
+  Every requeue (stale lease TTL or a child that finished without resolving its
+  rows) increments the observation's `requeue_count`; once it reaches
+  `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` (default 3, 0 = uncapped) the row is
+  terminally skipped as poison (`poison_skip` pass event) instead of respawning
+  a fresh child against the same unresolvable batch every interval.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
   audits lessons, concepts, and every tracked/materialized skill through
   bounded slim-child batches. A deterministic parent phase writes
@@ -493,7 +500,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the running-child check and shadow/extract exclusion cover both; dispatch is
   serialized by `evolve-reviewer.lock`. A full research → audit cycle spans two
-  due passes.
+  due passes. Only a real spawn consumes the review slot: no-spawn outcomes
+  (dirty checkout, running child, repo/spawn errors) keep the previous cursor in
+  `events.target`, collapse consecutive same-class rows janitor-style, and the
+  daemon retries them on a short (~1h) cadence — a transient blocker no longer
+  costs a full `EVOLVE_REVIEW_INTERVAL_S` of reviewer availability. The
+  research/audit alternation state is read from the latest actually-`spawned`
+  pass row directly, so accumulated skip rows can never bury it.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest
@@ -648,8 +661,15 @@ moving the high-water forward; `force=True` bypasses this due gate.
   tracked diff as an owner-only (`0600`)
   `DB_PATH.parent/evolve-recovery/stale-merge-pr-*.patch`, then
   hard-resets the disposable checkout and switches it to fresh `origin/main`
-  (or the configured base). Unknown/open/closed-unmerged PR state and explicit
-  operator checkouts remain fail-closed with `skipped_dirty_worktree`.
+  (or the configured base). For merges, unknown/open/closed-unmerged PR state
+  and explicit operator checkouts remain fail-closed with
+  `skipped_dirty_worktree`. Plain uncommitted WIP (no merge in progress) on an
+  applier-owned branch of the managed checkout — the leftovers of a killed
+  implementer child — is likewise auto-recovered: with no PR-producing child
+  running and the branch's PR state readable (any state, including none), the
+  tracked diff is archived as `evolve-recovery/abandoned-wip-*.patch` and the
+  checkout is reset to the fresh base, so one dead child can no longer stall
+  the whole apply backlog behind the dirty gate.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   snapshot-first and report-first: destructive mode writes a recoverable
   snapshot before spawning the child, then the child writes its REPORT before
@@ -682,9 +702,11 @@ still permits only one writer.
 
 ### Daemon-host + thin servers (Phase 1)
 
-Behind `THREADKEEPER_DAEMON_HOST` (`0` by default — dark; no CLI config
-change), the daemon block above moves out of the per-session server and into
-one always-on headless process per machine:
+With `THREADKEEPER_DAEMON_HOST` on (`1` — the default; `0` reverts to the
+legacy per-process daemon threads), the daemon block above moves out of the
+per-session server and into one always-on headless process per machine.
+An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause gates `ensure_host_running`
+itself — a paused install spawns no host at all instead of a loop-less one:
 
 - **Election** — `python -m threadkeeper.host` (`host.main()`) takes
   `HOST_LOCK_PATH` (`<db dir>/host.lock`) via `single_flight_lock`. A second

@@ -616,3 +616,27 @@ def test_agent_status_ready_only_when_due(mp_with_cid):
     loop = {l["id"]: l for l in snap["loops"]}["candidate_reviewer"]
     assert loop["backlog_count"] == 3
     assert loop["status"] == "idle"
+
+
+def test_is_result_line_ignores_prompt_echo_lines(mp_with_cid):
+    mp_with_cid(_FAKE_CID)
+    from threadkeeper.agent_status import _is_result_line
+
+    # Prompt formatting echoed into the child log must never surface as a
+    # completed result (this exact line reached menu-bar notifications live).
+    assert not _is_result_line(
+        "d. Output `MATERIALIZED: <slug-or-skill>` on success."
+    )
+    assert not _is_result_line(
+        "   4. Output `MATERIALIZED: <slug-or-skill>` on success."
+    )
+    assert not _is_result_line(
+        "After any materialization, call mark_skill_materialized("
+        "thread_id, skill_path_or_lessons_md) to close the loop."
+    )
+    # Genuine child verdicts still surface.
+    assert _is_result_line("MATERIALIZED: cross-language-matching-lessons")
+    assert _is_result_line("Processed 2 candidates into durable notes.")
+    assert _is_result_line(
+        "Materialized skill e2e-fresh-install-per-suite with a new section."
+    )

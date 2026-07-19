@@ -408,7 +408,9 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
     created_at   INTEGER NOT NULL,
     processed_at INTEGER,
     claimed_at   INTEGER,
-    claimed_by_task TEXT
+    claimed_by_task TEXT,
+    requeue_count INTEGER NOT NULL DEFAULT 0  -- claim released by a child that
+                                              -- exited without resolving
 );
 
 -- Reciprocal-rank-fusion-friendly FTS over dialog content. External-content

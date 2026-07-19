@@ -261,9 +261,13 @@ def test_aggregate_side_effects_only_run_on_coordinator(mp_with_cid, monkeypatch
 
 
 def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, monkeypatch):
+    # Idle-retire is the legacy (per-process daemons) path; under the
+    # daemon-host default thin servers are never retired, so pin the flag off.
     mp_with_cid(_FAKE_CID)
+    from threadkeeper import config as tk_config
     from threadkeeper import memory_guard, process_health
 
+    monkeypatch.setattr(tk_config, "DAEMON_HOST_ENABLED", False)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 5000)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 6000)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 2000)
@@ -305,9 +309,12 @@ def test_check_apply_retires_idle_candidate_on_aggregate_pressure(mp_with_cid, m
 
 
 def test_check_apply_skips_reused_pid_on_retire(mp_with_cid, monkeypatch):
+    # Legacy idle-retire path — see the pin note in the test above.
     mp_with_cid(_FAKE_CID)
+    from threadkeeper import config as tk_config
     from threadkeeper import memory_guard, process_health
 
+    monkeypatch.setattr(tk_config, "DAEMON_HOST_ENABLED", False)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_WARN_MB", 5000)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_KILL_MB", 6000)
     monkeypatch.setattr(memory_guard, "MEMORY_GUARD_AGG_WARN_MB", 2000)

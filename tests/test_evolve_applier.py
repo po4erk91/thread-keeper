@@ -2569,3 +2569,138 @@ def test_evolve_apply_status_surfaces_stale_merge_recovery(
     out = _tool(pkg, "evolve_apply_status")()
 
     assert "evolve_git_safety: recovered_stale_merge pr=#7" in out
+
+
+def test_managed_checkout_recovers_abandoned_wip_without_merge(
+    tmp_path, monkeypatch,
+):
+    """Plain uncommitted WIP from a dead child must not block the backlog.
+
+    No merge is in progress, so the stale-merge recovery does not apply; the
+    abandoned-WIP recovery archives the tracked diff and returns the managed
+    checkout to the fresh configured base.
+    """
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_git_worktree_precondition",
+        pkg["orig"]["_git_worktree_precondition"],
+    )
+    repo = pkg["ea"]._managed_repo_dir()
+    remote = tmp_path / "remote.git"
+
+    def git(*args, check=True):
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if check and proc.returncode != 0:
+            raise AssertionError(proc.stderr or proc.stdout)
+        return proc
+
+    repo.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (repo / "shared.txt").write_text("base\n", encoding="utf-8")
+    git("add", "shared.txt")
+    git("commit", "-m", "base")
+    git("remote", "add", "origin", str(remote))
+    git("push", "-u", "origin", "main")
+
+    branch = "roadmap/issue-9-abandoned-wip"
+    git("checkout", "-b", branch)
+    (repo / "shared.txt").write_text(
+        "wip left by a dead child\n", encoding="utf-8"
+    )
+    assert git(
+        "status", "--porcelain", "--untracked-files=no"
+    ).stdout.strip() != ""
+
+    monkeypatch.setattr(
+        pkg["ea"], "_prs_for_head_branch",
+        lambda head, repo_root=None: ([], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children", lambda _conn: [],
+    )
+
+    out = pkg["ea"]._git_worktree_precondition(
+        conn, repo, "roadmap_issue"
+    )
+
+    assert out == ""
+    assert git("branch", "--show-current").stdout.strip() == "main"
+    assert git("status", "--porcelain", "--untracked-files=no").stdout == ""
+    backups = list(
+        (tmp_path / "evolve-recovery").glob(
+            "abandoned-wip-roadmap-issue-9-abandoned-wip-*.patch"
+        )
+    )
+    assert len(backups) == 1
+    assert "wip left by a dead child" in backups[0].read_text(encoding="utf-8")
+    assert backups[0].stat().st_mode & 0o777 == 0o600
+    row = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=? ORDER BY id DESC",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert row["target"] == "roadmap_issue"
+    assert "recovered_abandoned_wip" in row["summary"]
+    assert backups[0].name in row["summary"]
+
+
+def test_abandoned_wip_fail_closed_when_pr_state_unreadable(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    branch = "roadmap/issue-9-abandoned-wip"
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_merge_in_progress", lambda repo: (False, ""),
+    )
+    monkeypatch.setattr(pkg["ea"], "_current_branch", lambda repo: (branch, ""))
+    monkeypatch.setattr(
+        pkg["ea"], "_prs_for_head_branch",
+        lambda head, repo_root=None: ([], "gh_pr_list_timeout"),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_archive_abandoned_wip_diff",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("unreadable PR state must never be reset")
+        ),
+    )
+
+    recovered, reason = pkg["ea"]._recover_abandoned_managed_wip(
+        tmp_path / "repo"
+    )
+
+    assert recovered is False
+    assert reason == "abandoned_wip_pr_fetch_failed=gh_pr_list_timeout"
+
+
+def test_abandoned_wip_ignores_non_applier_branch(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_merge_in_progress", lambda repo: (False, ""),
+    )
+    monkeypatch.setattr(pkg["ea"], "_current_branch", lambda repo: ("main", ""))
+
+    recovered, reason = pkg["ea"]._recover_abandoned_managed_wip(
+        tmp_path / "repo"
+    )
+
+    assert recovered is False
+    assert reason == "abandoned_wip_non_applier_branch=main"

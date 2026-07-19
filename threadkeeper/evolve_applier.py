@@ -713,11 +713,11 @@ def _prs_for_head_branch(
     ], ""
 
 
-def _archive_stale_merge_diff(
+def _archive_tracked_diff(
     repo_root: Path,
-    pr_number: int,
+    file_stem: str,
 ) -> tuple[Optional[Path], str]:
-    """Persist the tracked stale-merge diff before resetting managed state."""
+    """Persist the tracked diff vs HEAD under evolve-recovery/ before a reset."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo_root), "diff", "--binary", "HEAD", "--"],
@@ -738,10 +738,10 @@ def _archive_stale_merge_diff(
         )
     diff = proc.stdout or ""
     if len(diff.encode("utf-8")) > STALE_MERGE_BACKUP_MAX_BYTES:
-        return None, "stale_merge_diff_too_large"
+        return None, "tracked_diff_too_large"
     backup_dir = DB_PATH.parent / "evolve-recovery"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    path = backup_dir / f"stale-merge-pr-{int(pr_number)}-{stamp}.patch"
+    path = backup_dir / f"{file_stem}-{stamp}.patch"
     tmp = path.with_suffix(".patch.tmp")
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -754,8 +754,24 @@ def _archive_stale_merge_diff(
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        return None, f"stale_merge_backup_write_failed: {e}"
+        return None, f"tracked_diff_backup_write_failed: {e}"
     return path, ""
+
+
+def _archive_stale_merge_diff(
+    repo_root: Path,
+    pr_number: int,
+) -> tuple[Optional[Path], str]:
+    """Persist the tracked stale-merge diff before resetting managed state."""
+    return _archive_tracked_diff(repo_root, f"stale-merge-pr-{int(pr_number)}")
+
+
+def _archive_abandoned_wip_diff(
+    repo_root: Path,
+    branch: str,
+) -> tuple[Optional[Path], str]:
+    """Persist abandoned uncommitted WIP before resetting the managed checkout."""
+    return _archive_tracked_diff(repo_root, f"abandoned-wip-{_slug(branch, 48)}")
 
 
 def _recover_stale_managed_merge(
@@ -841,6 +857,77 @@ def _recover_stale_managed_merge(
     )
 
 
+def _recover_abandoned_managed_wip(
+    repo_root: Path,
+) -> tuple[bool, str]:
+    """Recover uncommitted WIP a dead applier child left in the managed checkout.
+
+    A killed implementer child can leave plain tracked modifications on its
+    applier branch with no merge in progress; `_recover_stale_managed_merge`
+    does not apply there, and the dirty gate then blocks every future backlog
+    item until a human resets the checkout (observed live: one abandoned
+    `roadmap/issue-…` branch stalled a 43-item backlog for days). Deliberately
+    narrow: managed checkout only, applier-owned branch, no merge in progress,
+    the branch's PR state must be readable (any state — none, open, merged,
+    closed — is safe once the diff is preserved), and the tracked diff is
+    archived before any reset. Uncertain state stays fail-closed for a human.
+
+    The caller has already established that no PR-producing child is running,
+    so the WIP is orphaned rather than owned.
+    """
+    if not _managed_repo_auto_recovery_allowed(repo_root):
+        return False, ""
+    merging, merge_err = _merge_in_progress(repo_root)
+    if merge_err:
+        return False, f"abandoned_wip_probe_failed={_short(merge_err)}"
+    if merging:
+        return False, ""  # _recover_stale_managed_merge owns merge states
+    branch, branch_err = _current_branch(repo_root)
+    if branch_err:
+        return False, f"abandoned_wip_branch_failed={_short(branch_err)}"
+    if not branch.startswith(APPLIER_BRANCH_PREFIXES):
+        return False, f"abandoned_wip_non_applier_branch={_short(branch or '?')}"
+    _prs, pr_err = _prs_for_head_branch(branch, repo_root)
+    if pr_err:
+        return False, f"abandoned_wip_pr_fetch_failed={_short(pr_err)}"
+
+    fetch_err = _run(
+        ["git", "fetch", "origin", _base_branch_name()],
+        timeout=60,
+        cwd=repo_root,
+    )
+    if fetch_err:
+        return False, f"abandoned_wip_fetch_failed={_short(fetch_err)}"
+    backup, backup_err = _archive_abandoned_wip_diff(repo_root, branch)
+    if backup_err or backup is None:
+        return False, f"abandoned_wip_backup_failed={_short(backup_err)}"
+
+    reset_err = _run(
+        ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
+    )
+    if reset_err:
+        return False, f"abandoned_wip_reset_failed={_short(reset_err)}"
+    checkout_err = _run(
+        [
+            "git", "checkout", "-f", "-B", _base_branch_name(),
+            _base_ref(),
+        ],
+        timeout=30,
+        cwd=repo_root,
+    )
+    if checkout_err:
+        return False, f"abandoned_wip_checkout_failed={_short(checkout_err)}"
+    dirty, status_err = _tracked_worktree_status(repo_root)
+    if status_err:
+        return False, f"abandoned_wip_recheck_failed={_short(status_err)}"
+    if dirty:
+        return False, "abandoned_wip_recovery_left_dirty"
+    return True, (
+        f"recovered_abandoned_wip branch={_short(branch, 80)} "
+        f"backup={backup.name}"
+    )
+
+
 def _record_git_safety_event(
     conn: sqlite3.Connection,
     actor: str,
@@ -921,6 +1008,10 @@ def _git_worktree_precondition(
         return outcome
     if dirty:
         recovered, recovery = _recover_stale_managed_merge(repo_root)
+        if not recovered and not recovery:
+            # No merge in progress (and no engaged-but-failed reason): a dead
+            # child may have left plain uncommitted WIP on its applier branch.
+            recovered, recovery = _recover_abandoned_managed_wip(repo_root)
         if recovered:
             _record_git_safety_event(conn, actor, recovery)
             dirty, err = _tracked_worktree_status(repo_root)

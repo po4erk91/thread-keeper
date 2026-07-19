@@ -131,8 +131,12 @@ class Settings(BaseSettings):
     auto_update_expected_publisher_workflow: str = "publish.yml"
     auto_update_expected_publisher_environment: str = "pypi"
 
-    # ── Phase 1: daemon-host + thin servers (dark by default) ──
-    daemon_host: bool = False              # THREADKEEPER_DAEMON_HOST
+    # ── Phase 1: daemon-host + thin servers (ON by default) ──
+    # One elected headless host per machine owns the background loops, the
+    # warm embedding model, and the embed socket; per-session servers run
+    # thin. THREADKEEPER_DAEMON_HOST=0 reverts to the legacy per-process
+    # daemon threads.
+    daemon_host: bool = True               # THREADKEEPER_DAEMON_HOST
     role: str = "server"                   # THREADKEEPER_ROLE: server | host
     host_sock: str = ""                    # "" -> <db dir>/host.sock
     host_heartbeat_ttl_s: float = 120.0
@@ -416,6 +420,10 @@ class Settings(BaseSettings):
     dialectic_validate_min: int = 5
     dialectic_validate_batch_size: int = 50
     dialectic_max_new_claims: int = 3
+    # How many times a claimed observation may be requeued (validator child
+    # exited without resolving it) before it is terminally skipped as poison.
+    # 0 disables the cap (pre-cap behavior: unlimited respawns).
+    dialectic_obs_max_requeues: int = 3
 
     # ── Cross-machine sync (feature-gated; off until re-id migration ran) ──────
     # Symmetric P2P anti-entropy replication of the memory tables across a
@@ -789,6 +797,7 @@ def _derive_constants(s: "Settings") -> dict:
         "DIALECTIC_VALIDATE_MIN": s.dialectic_validate_min,
         "DIALECTIC_VALIDATE_BATCH_SIZE": s.dialectic_validate_batch_size,
         "DIALECTIC_MAX_NEW_CLAIMS": s.dialectic_max_new_claims,
+        "DIALECTIC_OBS_MAX_REQUEUES": s.dialectic_obs_max_requeues,
         "SYNC_INTERVAL_S": s.sync_interval_s,
         "SYNC_PEERS": s.sync_peers,
         "SYNC_LISTEN": s.sync_listen,

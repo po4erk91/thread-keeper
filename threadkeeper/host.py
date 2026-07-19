@@ -126,6 +126,14 @@ def ensure_host_running() -> bool:
     detached and return True; else False. Idempotent under the host lock."""
     if config.PROCESS_ROLE == "host":
         return False
+    if config.DISABLE_BG_DAEMONS:
+        # Explicit operator pause (menu-bar power button, tests). With the
+        # loops disabled there is nothing for a host to do, so don't spawn a
+        # loop-less one. This gate must live HERE, before the spawn: the
+        # sanitized env below deliberately clears the flag for the spawned
+        # host (so a child-initiated spawn still gets a full host), which
+        # would otherwise turn the pause into a no-op under host mode.
+        return False
     if _host_alive():
         return False
     with single_flight_lock("daemon-host-spawn") as locked:

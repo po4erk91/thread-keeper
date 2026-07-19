@@ -7,6 +7,61 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+### Changed
+
+- **Daemon-host mode is now the default** (`THREADKEEPER_DAEMON_HOST=1`).
+  One elected headless host per machine (`python -m threadkeeper.host`) runs
+  the background loops, the warm embedding model, and the embed socket;
+  per-session MCP servers go thin (no daemon threads, no local ONNX) and are
+  spawned-host-supervised via the existing heartbeat/`memory_guard` path.
+  This removes the per-process daemon herds (N sessions × ~18 loops), the
+  start-of-process empty-tick telemetry, and duplicate warm models. Set
+  `THREADKEEPER_DAEMON_HOST=0` to revert to the legacy per-process behavior.
+  Long-lived sessions started before the upgrade keep their in-process loops
+  until restart; the shared `daemon_state` cadence gate serializes the
+  transition. An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause now gates
+  `ensure_host_running` itself, so a paused install spawns no host at all
+  (previously the pause flag was stripped from the spawned host's env,
+  which would have made the menu-bar pause a no-op under host mode). For the
+  same reason a paused thin server keeps the local embedding path instead of
+  routing queries to a host socket that can never exist — pausing the loops
+  does not silently degrade semantic search to FTS.
+
+### Fixed
+
+- **Evolve applier: abandoned WIP no longer blocks the whole backlog.** A
+  killed implementer child that left plain uncommitted changes on its
+  `roadmap/…`/`evolve/…` branch (no merge in progress) previously tripped the
+  dirty-worktree gate on every pass and stalled every queued issue, curator
+  report, and legacy suggestion until a human reset the managed checkout. The
+  parent now archives the tracked diff to
+  `evolve-recovery/abandoned-wip-*.patch` (0600) and resets the disposable
+  checkout to the fresh base — managed checkout and applier-owned branches
+  only, fail-closed when the branch's PR state cannot be read.
+- **Evolve reviewer: transient skips no longer consume the weekly slot.**
+  `skipped_dirty_worktree`, `reviewer_running`, repo-provision and spawn
+  errors used to be recorded as a completed pass, pushing the next audit a
+  full `EVOLVE_REVIEW_INTERVAL_S` (~a week) away. No-spawn outcomes now keep
+  the previous cursor, collapse consecutive same-class telemetry rows
+  (janitor-style), and retry on a ~1h cadence; the research/audit alternation
+  state is read from the latest actually-spawned pass so skip rows cannot
+  bury it.
+- **Dialectic validator: requeue cap stops infinite respawn loops.** A child
+  that exited without resolving its claimed observations requeued them
+  (`claim_requeue_finished`) and the same batch respawned a fresh child every
+  interval forever. Requeues now increment
+  `dialectic_observations.requeue_count` (lazy column add on existing
+  databases); rows reaching `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES`
+  (default 3, 0 = uncapped) are terminally skipped as poison with a
+  `poison_skip` pass event.
+- **Agent status: prompt echoes no longer surface as completed results.**
+  `recent_results` (menu-bar notifications) matched any log line containing
+  "materialized" + "skill", which picked up the shadow prompt's own
+  instruction line ("d. Output `MATERIALIZED: <slug-or-skill>` on success.")
+  echoed into child logs. Enumerated/bulleted lines, tool-name mentions, and
+  placeholder fragments are now excluded, while genuine `MATERIALIZED:`
+  verdicts and prose results still surface.
+
 ## v0.16.2 — 2026-07-19
 
 ### Changed
