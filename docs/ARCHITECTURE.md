@@ -309,7 +309,13 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
 - **retention** — ticks every `RETENTION_INTERVAL_S` (default 0/off). When
   enabled, prunes opted-in aged `dialog_messages`/`tasks`/`signals`/`events`/
   `probe_results`, keeps dialog FTS/vec mirrors consistent, and can run
-  `VACUUM` plus `PRAGMA wal_checkpoint(TRUNCATE)`.
+  `VACUUM` plus `PRAGMA wal_checkpoint(TRUNCATE)`. The VACUUM follows the
+  implicit-rowid safety protocol (dialog_messages/notes have TEXT primary
+  keys, so VACUUM may renumber their rowids once deletions left gaps): the
+  shadow/miner/extract rowid cursors are first rebased to created_at form
+  (translated back to rowids on next read), then after the VACUUM the
+  external-content `dialog_fts`/`notes_fts` indexes are rebuilt. The manual
+  `db_compact` tool runs the same protocol.
 - **search_proxy** — serves `search_via_parent` from slim children via
   signals (see below).
 - **spawn_budget** — in foreground parent processes only, once per
@@ -940,7 +946,12 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
    seeds the floor from now-WINDOW_S) — ALL sessions, not just our own — then
    apply the shared harvest lineage exclusion from `threadkeeper.harvest`.
-3. if n_chars < MIN_CHARS (default 500): write a 'too_short'/'no_window' event, exit.
+3. if n_chars < MIN_CHARS (default 500): KEEP the cursor and exit ('too_short',
+   edge-triggered event) so sparse dialog ACCUMULATES across ticks instead of
+   being dropped one under-sized window at a time; once the window's oldest
+   message ages past SHADOW_REVIEW_FLUSH_AGE_S (default 6h, 0 = never) the
+   accumulated window is reviewed anyway. An empty window still records
+   'no_window'.
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
 5. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
@@ -952,10 +963,10 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
 8. Write events.kind='shadow_review_pass' with the new high-water rowid only
-   after a child is actually spawned or the window was intentionally classified
-   as `no_window`/`too_short`; spawn `ERR ...` rejections, exceptions, and
+   after a child is actually spawned or the window was empty (`no_window`);
+   `too_short`, spawn `ERR ...` rejections, exceptions, and
    already-running-child deferrals keep the old cursor so the same window is
-   retried.
+   retried/accumulated.
 ```
 
 Dedupe — via an **ingest-order** cursor in `events.target` (the rowid of the
@@ -1666,8 +1677,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_SHADOW_REVIEW_FLUSH_AGE_S` | 21600 | review an under-min-chars window once its oldest message is this old (0 = accumulate until min_chars) |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | review an undersized queue once its oldest candidate is this old (0 = threshold only) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |

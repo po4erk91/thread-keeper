@@ -41,6 +41,7 @@ import threading
 import time
 
 from .config import (
+    CANDIDATE_REVIEW_FLUSH_AGE_S,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
 )
@@ -254,6 +255,20 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     return ("\n".join(parts), len(rows))
 
 
+def _oldest_pending_ts(conn: sqlite3.Connection) -> int:
+    """created_at of the oldest surfaced (non-stale) pending candidate, or 0."""
+    stale_cutoff = int(time.time()) - 30 * 86400
+    try:
+        row = conn.execute(
+            "SELECT MIN(created_at) FROM extract_candidates "
+            "WHERE status='pending' AND created_at > ?",
+            (stale_cutoff,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0]) if row and row[0] else 0
+
+
 def _running_reviewer_children(conn: sqlite3.Connection) -> list[str]:
     """Running candidate-review task ids, reaping dead rows.
 
@@ -338,12 +353,22 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
         inventory, n_pending = _collect_pending(conn)
         if n_pending < CANDIDATE_REVIEW_MIN:
-            _record_review_pass(
-                conn, now,
-                f"below_threshold pending={n_pending} "
-                f"min={CANDIDATE_REVIEW_MIN}",
+            flush_age = float(CANDIDATE_REVIEW_FLUSH_AGE_S or 0)
+            oldest = _oldest_pending_ts(conn)
+            aged_out = (
+                n_pending > 0 and flush_age > 0
+                and oldest and now - oldest >= flush_age
             )
-            return f"below_threshold n={n_pending}"
+            if not aged_out:
+                _record_review_pass(
+                    conn, now,
+                    f"below_threshold pending={n_pending} "
+                    f"min={CANDIDATE_REVIEW_MIN}",
+                )
+                return f"below_threshold n={n_pending}"
+            # Age-flush: a trickle of candidates must not be starved by the
+            # min-count gate until the 30-day stale window silently drops
+            # them — review the undersized queue anyway.
 
         active_skills = _active_skills_dump(conn)
         # The harvested candidate `content` snippets are untrusted observed

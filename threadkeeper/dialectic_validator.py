@@ -19,6 +19,7 @@ import time
 
 from .config import (
     DIALECTIC_VALIDATE_BATCH_SIZE,
+    DIALECTIC_VALIDATE_FLUSH_AGE_S,
     DIALECTIC_VALIDATE_INTERVAL_S,
     DIALECTIC_VALIDATE_MIN,
     DIALECTIC_MAX_NEW_CLAIMS,
@@ -392,6 +393,19 @@ def _release_finished_claims(conn: sqlite3.Connection, now: int) -> int:
     return len(ids)
 
 
+def _oldest_pending_ts(conn: sqlite3.Connection, stale_cutoff: int) -> int:
+    """created_at of the oldest unclaimed non-stale pending observation, or 0."""
+    try:
+        row = conn.execute(
+            "SELECT MIN(created_at) FROM dialectic_observations "
+            "WHERE status='pending' AND claimed_at IS NULL AND created_at > ?",
+            (stale_cutoff,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0]) if row and row[0] else 0
+
+
 def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int, int, list[int]]:
     """Inventory of a bounded high-signal pending batch within the last 30 days."""
     now = int(time.time())
@@ -638,10 +652,19 @@ def run_validate_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_pass(conn, now, f"no_eligible pending={total_pending}")
             return f"no_eligible n={total_pending}"
         if total_pending < DIALECTIC_VALIDATE_MIN:
-            _record_pass(conn, now,
-                         f"below_threshold pending={total_pending} "
-                         f"min={DIALECTIC_VALIDATE_MIN}")
-            return f"below_threshold n={total_pending}"
+            flush_age = float(DIALECTIC_VALIDATE_FLUSH_AGE_S or 0)
+            oldest = _oldest_pending_ts(conn, stale_cutoff)
+            aged_out = (
+                total_pending > 0 and flush_age > 0
+                and oldest and now - oldest >= flush_age
+            )
+            if not aged_out:
+                _record_pass(conn, now,
+                             f"below_threshold pending={total_pending} "
+                             f"min={DIALECTIC_VALIDATE_MIN}")
+                return f"below_threshold n={total_pending}"
+            # Age-flush: a lone strong signal must not age out to the 30-day
+            # stale skip unvalidated — validate the undersized buffer anyway.
 
         task_id = _new_validator_task_id()
         claimed_ids = _claim_batch(conn, batch_ids, task_id, now)

@@ -162,12 +162,108 @@ def _checkpoint_wal(conn: sqlite3.Connection) -> str:
     return f"ok busy={row[0]} log={row[1]} checkpointed={row[2]}"
 
 
+# Event kinds whose `target` is a dialog_messages ingest-order rowid watermark
+# (issue #69). dialog_messages has a TEXT primary key, so its rowid is
+# implicit and SQLite's VACUUM contract permits renumbering it once dialog
+# deletions have left gaps — which would silently invalidate these cursors.
+_DIALOG_CURSOR_EVENT_KINDS = (
+    "shadow_review_pass",
+    "dialectic_mine_pass",
+    "extract_pass",
+)
+
+
+def _rebase_dialog_cursors_to_created_at(conn: sqlite3.Connection) -> int:
+    """Rewrite rowid watermarks as legacy created_at values before a VACUUM.
+
+    A created_at value (>= helpers.LEGACY_TS_FLOOR) survives rowid
+    renumbering: the next cursor read runs it through
+    `resolve_ingest_watermark`, which translates it back to the matching
+    post-VACUUM rowid. Granularity note: a late-ingested row whose created_at
+    is below the rebased timestamp is skipped once — the same one-time cost
+    as the original #69 legacy migration — which is why this runs only around
+    an actual VACUUM instead of storing created_at cursors permanently.
+    Returns the number of cursors rebased."""
+    from .helpers import LEGACY_TS_FLOOR, resolve_ingest_watermark
+
+    rebased = 0
+    for kind in _DIALOG_CURSOR_EVENT_KINDS:
+        try:
+            row = conn.execute(
+                "SELECT target FROM events WHERE kind=? ORDER BY id DESC LIMIT 1",
+                (kind,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return rebased
+        target = (row[0] if row else None) or ""
+        try:
+            stored = int(target)
+        except (TypeError, ValueError):
+            continue
+        if stored <= 0:
+            continue
+        rowid = resolve_ingest_watermark(conn, stored)
+        if rowid <= 0:
+            continue
+        try:
+            ts_row = conn.execute(
+                "SELECT MAX(created_at) FROM dialog_messages WHERE rowid <= ?",
+                (rowid,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        ts = ts_row[0] if ts_row else None
+        if ts is None or int(ts) < LEGACY_TS_FLOOR:
+            continue
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (
+                identity._session_id or "",
+                kind,
+                str(int(ts)),
+                f"vacuum_cursor_rebase rowid={rowid}",
+                int(time.time()),
+            ),
+        )
+        rebased += 1
+    if rebased:
+        conn.commit()
+    return rebased
+
+
+def _rebuild_content_fts(conn: sqlite3.Connection) -> str:
+    """Rebuild every external-content FTS index keyed by an implicit rowid."""
+    rebuilt: list[str] = []
+    for fts in ("dialog_fts", "notes_fts"):
+        try:
+            conn.execute(f"INSERT INTO {fts}({fts}) VALUES('rebuild')")
+            rebuilt.append(fts)
+        except sqlite3.OperationalError:
+            continue
+    if rebuilt:
+        conn.commit()
+    return "+".join(rebuilt) or "none"
+
+
 def _vacuum(conn: sqlite3.Connection) -> str:
+    """VACUUM with the implicit-rowid safety protocol.
+
+    dialog_messages and (post re-id migration) notes have TEXT primary keys,
+    so VACUUM may renumber their implicit rowids once deletions left gaps.
+    Three things depend on those rowids: the shadow/miner/extract ingest
+    cursors and the external-content dialog_fts / notes_fts indexes
+    (`content_rowid='rowid'`). Protocol: rebase the cursors to created_at
+    form first, VACUUM, then rebuild the FTS indexes. Mirrors the manual
+    `db_compact` tool."""
+    rebased = _rebase_dialog_cursors_to_created_at(conn)
     try:
+        conn.commit()  # VACUUM cannot run inside a transaction
         conn.execute("VACUUM")
     except sqlite3.OperationalError as e:
         return f"err:{e.__class__.__name__}"
-    return "ok"
+    rebuilt = _rebuild_content_fts(conn)
+    return f"ok rebased_cursors={rebased} fts_rebuild={rebuilt}"
 
 
 def _record_pass(conn: sqlite3.Connection, summary: str) -> None:
