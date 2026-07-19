@@ -652,6 +652,14 @@ def _clean_result_line(line: str) -> str:
     return line
 
 
+# Enumerated / bulleted lines ("d. …", "4) …", "- …") are prompt formatting
+# echoed into the child log, never the child's own final result line. Without
+# this gate the shadow prompt's own instruction — "d. Output `MATERIALIZED:
+# <slug-or-skill>` on success." — matched the materialized heuristic below and
+# surfaced as a completed-result notification.
+_PROMPT_BULLET_RE = re.compile(r"^(?:[a-z0-9]{1,2}[.)]|[-*•])\s")
+
+
 def _is_result_line(line: str) -> bool:
     clean = _clean_result_line(line)
     if not clean:
@@ -659,11 +667,18 @@ def _is_result_line(line: str) -> bool:
     lower = clean.lower()
     if lower.startswith(("skip:", "output", "do,", "hard constraints")):
         return False
+    if _PROMPT_BULLET_RE.match(lower):
+        return False
+    if "mark_skill_materialized" in lower or "<slug" in lower:
+        # Tool-name / placeholder mentions are prompt instructions, not output.
+        return False
     if "write the report.md" in lower or "close with the literal" in lower:
         return False
     if "not inside a trusted directory" in lower:
         return False
     if re.search(r"\bprocessed\s+\d+\s+candidates\b", lower):
+        return True
+    if lower.startswith("materialized:"):
         return True
     if "curator pass complete" in lower:
         return True

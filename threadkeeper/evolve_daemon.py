@@ -287,6 +287,41 @@ def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
     return last <= 0 or now_t >= last + int(EVOLVE_REVIEW_INTERVAL_S)
 
 
+# Retry cadence after a pass that spawned nothing (dirty checkout, running
+# child, spawn rejection). Such outcomes keep the previous cursor, so the
+# review stays due and retries on this short cadence instead of pushing the
+# next audit a full interval away — a transient dirty checkout otherwise cost
+# up to a week of reviewer availability.
+_TRANSIENT_OUTCOME_RETRY_S = 3600.0
+
+
+def _last_evolve_pass_summary(conn: sqlite3.Connection) -> str:
+    """Summary of the most recent recorded evolve_review_pass, or ''."""
+    try:
+        row = conn.execute(
+            "SELECT summary FROM events WHERE kind='evolve_review_pass' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return ""
+    return (row["summary"] or "") if row else ""
+
+
+def _record_transient_evolve_pass(conn: sqlite3.Connection,
+                                  outcome: str) -> None:
+    """Record a no-spawn outcome without consuming the weekly review slot.
+
+    `target` keeps the previous cursor value so `_pass_due` stays due and the
+    daemon retries on `_TRANSIENT_OUTCOME_RETRY_S`. Consecutive rows of the
+    same outcome class collapse into the first one (janitor-style
+    edge-triggered telemetry) so the short retry loop cannot flood `events`
+    while a blocker persists."""
+    prev = _last_evolve_pass_summary(conn)
+    if prev.split(" ", 1)[0] == outcome.split(" ", 1)[0]:
+        return
+    _record_evolve_pass(conn, _last_evolve_ts(conn), outcome)
+
+
 def _pending(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Pending suggestions: not applied, not yet triaged."""
     try:
@@ -1011,21 +1046,24 @@ def _latest_research(now_t: int) -> tuple[Optional[Path], str]:
 
 def _last_spawn_phase(conn: sqlite3.Connection) -> str:
     """'research' or 'audit' for the most recent pass that actually spawned a
-    child; '' when none has. not_due/running/error outcomes are skipped so the
-    research<->audit alternation is driven only by real spawns."""
+    child; '' when none has. Queries the spawned rows directly (instead of
+    scanning a bounded recent window) so however many transient
+    skip/running/error rows accumulate between real spawns, the alternation
+    state can never be buried."""
     try:
-        rows = conn.execute(
+        row = conn.execute(
             "SELECT summary FROM events WHERE kind='evolve_review_pass' "
-            "ORDER BY id DESC LIMIT 30"
-        ).fetchall()
+            "AND (summary LIKE 'spawned research%' "
+            "     OR summary LIKE 'spawned audit%') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
     except sqlite3.OperationalError:
         return ""
-    for r in rows:
-        s = (r["summary"] or "")
-        if s.startswith("spawned research"):
-            return "research"
-        if s.startswith("spawned audit"):
-            return "audit"
+    s = (row["summary"] or "") if row else ""
+    if s.startswith("spawned research"):
+        return "research"
+    if s.startswith("spawned audit"):
+        return "audit"
     return ""
 
 
@@ -1142,18 +1180,18 @@ def run_evolve_pass(force: bool = False) -> str:
     with single_flight_lock("evolve-reviewer") as locked:
         if not locked:
             out = "reviewer_running n=1 (single-flight lock)"
-            _record_evolve_pass(conn, now_t, out)
+            _record_transient_evolve_pass(conn, out)
             return out
 
         running = _running_evolve_children(conn)
         if running:
             out = f"reviewer_running n={len(running)}"
-            _record_evolve_pass(conn, now_t, out)
+            _record_transient_evolve_pass(conn, out)
             return out
 
         repo_root, repo_err = _ensure_repo_ready()
         if repo_err:
-            _record_evolve_pass(conn, now_t, repo_err)
+            _record_transient_evolve_pass(conn, repo_err)
             return repo_err
 
         # Alternate: audit follows a research pass; otherwise (re)research.
@@ -1166,7 +1204,7 @@ def run_evolve_pass(force: bool = False) -> str:
                     conn, repo_root, "evolve_reviewer_audit"
                 )
                 if guard:
-                    _record_evolve_pass(conn, now_t, guard)
+                    _record_transient_evolve_pass(conn, guard)
                     return guard
                 _, research_text = _latest_research(now_t)
                 out = _spawn_audit(repo_root, pending, research_text)
@@ -1174,19 +1212,29 @@ def run_evolve_pass(force: bool = False) -> str:
                 out = _spawn_research(repo_root, now_t)
         except Exception as e:  # noqa: BLE001 — never crash the daemon
             out = f"spawn_error: {e}"
-            _record_evolve_pass(conn, now_t, out)
+            _record_transient_evolve_pass(conn, out)
             return out
+        # A real spawn is the only outcome that consumes the review slot.
         _record_evolve_pass(conn, now_t, out)
         return out
 
 
 def _serve_loop() -> None:
     while True:
+        out = ""
         try:
-            run_evolve_pass()
+            out = run_evolve_pass()
         except Exception:
             logger.debug("evolve_daemon tick failed", exc_info=True)
-        daemon_sleep(EVOLVE_REVIEW_INTERVAL_S)
+        if out.startswith(("spawned ", "not_due", "disabled")):
+            daemon_sleep(EVOLVE_REVIEW_INTERVAL_S)
+        else:
+            # Transient blocker (dirty checkout, running child, spawn error):
+            # the cursor was preserved, so retry on the short cadence instead
+            # of sleeping the full interval.
+            daemon_sleep(
+                min(EVOLVE_REVIEW_INTERVAL_S, _TRANSIENT_OUTCOME_RETRY_S)
+            )
 
 
 def start_evolve_daemon() -> None:
