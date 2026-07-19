@@ -145,6 +145,14 @@ def test_menubar_env_settings_window_edits_env_and_presets():
     assert "THREADKEEPER_SPAWN__EFFORT__\\(token)" in swift
     assert "LearningAgentCard" in swift
     assert "AutomationJobCard" in swift
+    assert "AutomationScheduleRow" in swift
+    assert 'Text("Schedule (hours)")' in swift
+    assert "GridItem(.adaptive(minimum: 340, maximum: 520)" in swift
+    automation_card = swift[
+        swift.index("struct AutomationJobCard"):
+        swift.index("struct AutomationScheduleRow")
+    ]
+    assert "EnvSettingRow(" not in automation_card
     assert "ImpactBadge" in swift
     assert "ScheduleHint" in swift
     assert "hourScheduleChoices" in swift
