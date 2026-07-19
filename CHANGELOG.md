@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.16.1 — 2026-07-19
+
+### Fixed
+
+- **System Automation cards keep their schedule controls readable.** Mechanical
+  job cards now use a compact hours-based schedule row and a wider adaptive
+  grid minimum, preventing labels from collapsing into one-character columns.
+
 ## v0.16.0 — 2026-07-19
 
 ### Added
