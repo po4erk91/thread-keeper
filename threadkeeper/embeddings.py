@@ -151,7 +151,16 @@ def _encode(texts: list[str]):
     """
     global _last_used_at
     from . import config as _cfg  # read live (hot-reloadable flag)
-    if _cfg.DAEMON_HOST_ENABLED and _cfg.PROCESS_ROLE == "server":
+    # Route via the host socket only when a host can actually exist. Under an
+    # explicit THREADKEEPER_DISABLE_BG_DAEMONS pause (menu-bar power button,
+    # test suites) ensure_host_running() never spawns one, so socket routing
+    # could only degrade every query to the fts fallback — keep the local
+    # model path so pausing the loops doesn't silently kill semantic search.
+    if (
+        _cfg.DAEMON_HOST_ENABLED
+        and _cfg.PROCESS_ROLE == "server"
+        and not _cfg.DISABLE_BG_DAEMONS
+    ):
         vecs = host_embed.embed_via_host(list(texts), _cfg.HOST_SOCK_PATH)
         if vecs is None:
             if _cfg.THIN_EMBED_FALLBACK == "local":

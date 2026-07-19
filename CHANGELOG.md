@@ -22,7 +22,10 @@ version bumps follow semver per the policy in
   transition. An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause now gates
   `ensure_host_running` itself, so a paused install spawns no host at all
   (previously the pause flag was stripped from the spawned host's env,
-  which would have made the menu-bar pause a no-op under host mode).
+  which would have made the menu-bar pause a no-op under host mode). For the
+  same reason a paused thin server keeps the local embedding path instead of
+  routing queries to a host socket that can never exist — pausing the loops
+  does not silently degrade semantic search to FTS.
 
 ### Fixed
 

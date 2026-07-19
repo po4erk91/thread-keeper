@@ -47,9 +47,13 @@ def test_thin_search_embeds_via_host_socket(monkeypatch, tmp_path):
             if config.HOST_SOCK_PATH.exists():
                 break
             time.sleep(0.02)
-        # thin side: same DB dir, server role -> _encode must use the socket
+        # thin side: same DB dir, server role -> _encode must use the socket.
+        # Clear the derived pause flag (set for suite hygiene) so the routing
+        # path under test is reachable.
         _reimport(monkeypatch, tmp_path, role="server", host_sock=sock)
+        from threadkeeper import config as thin_config
         from threadkeeper import embeddings as thin_emb
+        monkeypatch.setattr(thin_config, "DISABLE_BG_DAEMONS", False)
         out = thin_emb._encode(["query"])
         assert out is not None
         np.testing.assert_allclose(out[0], [1.0, 0.0], atol=1e-6)
