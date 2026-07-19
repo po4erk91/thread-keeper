@@ -54,7 +54,7 @@ def shadow_review_run(force: bool = False, dry_run: bool = False) -> str:
     _ensure_session(conn)
     if dry_run:
         floor = _last_shadow_rowid(conn)
-        dump, high_water, n_chars = _collect_window(
+        dump, high_water, n_chars, _oldest_ts = _collect_window(
             conn, floor, SHADOW_REVIEW_WINDOW_S,
         )
         if n_chars == 0:

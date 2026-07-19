@@ -70,7 +70,7 @@ def _seed_dialog(conn, role, content, ts, session_id="user-sess",
 def test_cursor_initial_is_zero(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
-    assert pkg["extract_daemon"]._last_extract_ts(conn) == 0
+    assert pkg["extract_daemon"]._last_extract_rowid(conn) == 0
 
 
 def test_cursor_advances_after_pass(tmp_path, monkeypatch):
@@ -78,7 +78,30 @@ def test_cursor_advances_after_pass(tmp_path, monkeypatch):
     conn = pkg["db"].get_db()
     pkg["extract_daemon"]._record_extract_pass(conn, 12345, "no_dialog window=30m")
     pkg["extract_daemon"]._record_extract_pass(conn, 67890, "ok scanned=5")
-    assert pkg["extract_daemon"]._last_extract_ts(conn) == 67890
+    assert pkg["extract_daemon"]._last_extract_rowid(conn) == 67890
+
+
+def test_cursor_translates_legacy_created_at_watermark(tmp_path, monkeypatch):
+    """A pre-migration created_at watermark maps to the matching rowid once."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    uid = _seed_dialog(
+        conn, "user",
+        "I want the already-scanned early row excluded after the cursor "
+        "migration, without replaying history.",
+        now - 600, session_id="old-sess",
+    )
+    conn.commit()
+    rowid = conn.execute(
+        "SELECT rowid FROM dialog_messages WHERE uuid=?", (uid,)
+    ).fetchone()[0]
+    # Legacy watermark: a wall-clock timestamp above the seeded row's
+    # created_at (>= LEGACY_TS_FLOOR, so it is translated, not used as-is).
+    pkg["extract_daemon"]._record_extract_pass(
+        conn, now - 300, "ok window=30m scanned=1",
+    )
+    assert pkg["extract_daemon"]._last_extract_rowid(conn) == rowid
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -127,35 +150,52 @@ def test_run_extract_pass_picks_up_user_want_pattern(tmp_path, monkeypatch):
     assert "verbatim" in kinds, f"got kinds: {kinds}"
 
 
-def test_run_extract_pass_covers_interval_window_gap(tmp_path, monkeypatch):
-    """When interval > window, the daemon must scan back to its cursor so a
-    message after the previous tick but before the next sliding window is kept."""
+def test_run_extract_pass_covers_gap_and_late_ingest(tmp_path, monkeypatch):
+    """The ingest-order cursor keeps both kinds of stragglers (issue #69):
+    messages landing between ticks (interval > window) AND late-ingested rows
+    whose created_at predates the window entirely — a wall-clock cutoff
+    silently dropped the latter."""
     pkg = _bootstrap(tmp_path, monkeypatch, interval="3600", window_min="1")
     conn = pkg["db"].get_db()
-    first_tick = 1_800_000_000
-    next_tick = first_tick + 3600
-    pkg["extract_daemon"]._record_extract_pass(
-        conn, first_tick, "ok window=1m scanned=0",
+    now = int(time.time())
+
+    # Pass 1 scans a baseline row and establishes a real rowid cursor.
+    _seed_dialog(
+        conn, "user",
+        "I want a baseline utterance scanned first so the extract cursor "
+        "lands on a real ingest-order rowid.",
+        now - 45, session_id="base-sess",
     )
+    conn.commit()
+    out1 = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out1
+    assert pkg["extract_daemon"]._last_extract_rowid(conn) > 0
+
+    # Late arrival: created_at hours below the 1-minute window AND below the
+    # cursor's wall-clock — only a fresh rowid keeps it visible.
+    _seed_dialog(
+        conn, "user",
+        "I want you to harvest late-ingested dialog from a post-downtime "
+        "backfill into candidates too, never skip it silently.",
+        now - 7200, session_id="late-sess",
+    )
+    # Gap arrival: an ordinary fresh row between daemon ticks.
     _seed_dialog(
         conn, "user",
         "I want you to always preserve dialog that lands between daemon "
         "ticks, even when the extract interval is longer than the window.",
-        first_tick + 120, session_id="gap-sess",
+        now - 30, session_id="gap-sess",
     )
     conn.commit()
 
-    monkeypatch.setattr(pkg["extract_daemon"].time, "time", lambda: next_tick)
-    out = pkg["extract_daemon"].run_extract_pass(force=True)
-    assert "ok" in out
-    rows = conn.execute(
-        "SELECT source_cid, content FROM extract_candidates WHERE status='pending'"
-    ).fetchall()
-    assert any(
-        r["source_cid"] == "gap-sess"
-        and "between daemon ticks" in r["content"]
-        for r in rows
-    )
+    out2 = pkg["extract_daemon"].run_extract_pass(force=True)
+    assert "ok" in out2
+    cids = {
+        r["source_cid"] for r in conn.execute(
+            "SELECT source_cid FROM extract_candidates WHERE status='pending'"
+        ).fetchall()
+    }
+    assert {"late-sess", "gap-sess"} <= cids
 
 
 def test_extract_filters_noise_content_prefixes(tmp_path, monkeypatch):

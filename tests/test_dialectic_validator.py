@@ -831,3 +831,35 @@ def test_ensure_requeue_column_idempotent(tmp_path, monkeypatch):
         ).fetchall()
     ]
     assert cols.count("requeue_count") == 1
+
+
+def test_below_threshold_age_flush_validates_anyway(tmp_path, monkeypatch):
+    """A lone strong observation older than the flush age is validated
+    instead of aging out to the 30-day stale skip unvalidated."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="5", batch_size="3")
+    conn = pkg["db"].get_db()
+    _seed_obs(conn, "одинокое сильное always правило юзера", age_s=5 * 86400)
+    conn.commit()
+
+    captured: list[dict] = []
+    _patch_validator_spawn(pkg, monkeypatch, captured)
+
+    out = pkg["dialectic_validator"].run_validate_pass(force=True)
+
+    assert captured, "age-flush must spawn the validator child"
+    assert captured[0]["task_id"] in out
+
+
+def test_below_threshold_fresh_buffer_waits(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="5", batch_size="3")
+    conn = pkg["db"].get_db()
+    _seed_obs(conn, "свежее must правило юзера", age_s=60)
+    conn.commit()
+
+    captured: list[dict] = []
+    _patch_validator_spawn(pkg, monkeypatch, captured)
+
+    out = pkg["dialectic_validator"].run_validate_pass(force=True)
+
+    assert out == "below_threshold n=1"
+    assert not captured

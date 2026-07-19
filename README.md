@@ -571,9 +571,12 @@ shadow_review (autonomous child lineage excluded) plus message-level noise
 filter (compaction summaries, SKILL.md
 injections, subagent role prompts, test-runner log dumps). The manual
 `extract_recent()` tool uses the configured sliding window directly; the daemon
-also keeps an `extract_pass` cursor and extends a pass back to the previous
-successful tick when `THREADKEEPER_EXTRACT_INTERVAL_S` is longer than
-`THREADKEEPER_EXTRACT_WINDOW_MIN`, so no dialog falls between ticks.
+scans by an ingest-order rowid cursor (`extract_pass`, same scheme as
+shadow_review and dialectic_miner), so no dialog falls between ticks, a capped
+batch drains on the next pass, and a late/out-of-order ingested message (old
+created_at, fresh rowid — a post-downtime backfill or freshly-installed
+adapter) is harvested exactly once instead of falling below a wall-clock
+cutoff.
 
 Where shadow extracts CLASS-LEVEL durable rules, extract harvests
 PER-INCIDENT decision-shaped utterances. Heuristic, not LLM —
@@ -1015,9 +1018,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
-| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per extract pass (min); daemon runs may scan farther back only to cover an interval/window gap |
+| `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per manual extract pass (min); the daemon's first-ever pass also seeds its rowid cursor from this lookback |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
+| `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | age-flush: an undersized pending queue is still reviewed once its oldest candidate is this old (0 = threshold only) |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
@@ -1058,6 +1062,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
+| `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` | 259200 | age-flush: an undersized observation buffer is still validated once its oldest eligible row is this old (0 = threshold only) |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |

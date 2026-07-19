@@ -231,10 +231,14 @@ def alive(pid: int) -> bool:
 # adapter, or a post-downtime `_ingest_all` backfill lands rows whose
 # `created_at` is BELOW a cursor that fresher sessions already pushed
 # forward), so a created_at cursor silently steps over those late arrivals.
-# `dialog_messages` is append-only (no DELETE / no VACUUM in the package), so
-# its rowid is assigned in strict ingest order — a late row always lands
-# ABOVE the cursor and is evaluated exactly once, and the monotonic advance
-# means shadow_review never re-spawns a window it already saw.
+# `dialog_messages` rowids are assigned in strict ingest order — a late row
+# always lands ABOVE the cursor and is evaluated exactly once, and the
+# monotonic advance means shadow_review never re-spawns a window it already
+# saw. Deletes DO exist behind opt-in knobs (retention's dialog pruning,
+# forget), and VACUUM (retention threshold / db_compact) may then renumber
+# these implicit rowids — both VACUUM paths therefore rebase the stored
+# cursors to created_at (legacy form, translated back on next read) and
+# rebuild the external-content FTS indexes; see retention._vacuum.
 #
 # Pre-#69 deployments stored a created_at unix timestamp in `events.target`.
 # A rowid is orders of magnitude smaller than any real unix timestamp, so a

@@ -134,6 +134,15 @@ def db_compact() -> str:
             _ensure_session(conn)
             before = DB_PATH.stat().st_size
             t0 = time.time()
+            # Rebase the rowid ingest cursors (shadow/miner/extract) to their
+            # created_at form BEFORE the vacuum: renumbered rowids would
+            # silently invalidate them. Harmless if the vacuum then skips —
+            # the legacy-form watermark translates straight back on next read.
+            from ..retention import (
+                _rebase_dialog_cursors_to_created_at,
+                _rebuild_content_fts,
+            )
+            _rebase_dialog_cursors_to_created_at(conn)
             conn.commit()  # VACUUM cannot run inside a transaction
             try:
                 conn.execute("VACUUM")
@@ -142,12 +151,12 @@ def db_compact() -> str:
                     f"vacuum skipped: {e} — DB busy; retry in a quiet window "
                     f"(no rowids were changed, index is still consistent)"
                 )
-            # MANDATORY: VACUUM may have renumbered dialog_messages'
-            # implicit rowids (SQLite's contract permits it; preserved on
-            # the builds we tested); the external-content index maps by
-            # rowid and could now be stale — rebuild is defensive.
-            conn.execute("INSERT INTO dialog_fts(dialog_fts) VALUES('rebuild')")
-            conn.commit()
+            # MANDATORY: VACUUM may have renumbered the implicit rowids of
+            # dialog_messages and notes (both have TEXT primary keys; SQLite's
+            # contract permits it — preserved on the builds we tested); the
+            # external-content indexes map by rowid and could now be stale —
+            # rebuild both defensively.
+            _rebuild_content_fts(conn)
             after = DB_PATH.stat().st_size
             return (
                 f"ok vacuum+fts_rebuild {time.time() - t0:.1f}s "
