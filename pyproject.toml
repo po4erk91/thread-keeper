@@ -30,7 +30,7 @@ dependencies = [
     # (readOnly/destructive/idempotent hints) + structured outputSchema (#67).
     "mcp>=1.10.0",
     "pydantic>=2",
-    "pydantic-settings>=2",
+    "pydantic-settings>=2.14.2",
     "pyyaml>=6.0",
 ]
 
