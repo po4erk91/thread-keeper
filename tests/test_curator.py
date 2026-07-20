@@ -53,6 +53,7 @@ def _bootstrap(
     min_lessons="3",
     destructive=None,
     retention=None,
+    max_destructive=None,
     write_origin="foreground",
 ):
     env = {
@@ -79,6 +80,8 @@ def _bootstrap(
         env["THREADKEEPER_CURATOR_DESTRUCTIVE"] = destructive
     if retention is not None:
         env["THREADKEEPER_CURATOR_SNAPSHOT_RETENTION"] = retention
+    if max_destructive is not None:
+        env["THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS"] = max_destructive
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -450,6 +453,7 @@ def test_run_curator_pass_force_bypasses_recent_high_water(
 def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
     pkg = _bootstrap(
         tmp_path, monkeypatch, min_lessons="2", destructive="0",
+        max_destructive="0",
     )
     pkg["lessons"].append_lesson(
         title="lesson one", body="body one", source="shadow"
@@ -476,6 +480,73 @@ def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
     allowed = captured[0]["extra_allowed_tools"]
     assert "lesson_remove" not in allowed
     assert "skill_manage" not in allowed
+
+
+def test_curator_delete_cap_is_shared_across_lesson_and_skill_deletes(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator", max_destructive="2",
+    )
+    for name in ("first lesson", "second lesson"):
+        pkg["lessons"].append_lesson(
+            title=name, body="loop-authored and eligible for curation", source="shadow",
+        )
+
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import CAP_EVENT, PASS_ID_ENV
+
+    remove = mcp._tool_manager._tools["lesson_remove"].fn
+    manage = mcp._tool_manager._tools["skill_manage"].fn
+    assert manage(
+        action="create",
+        name="cap-target",
+        description="A skill used to verify curator deletion admission.",
+        content="# Cap target\n\nThis is safe test content.",
+    ).startswith("ok")
+
+    monkeypatch.setenv(PASS_ID_ENV, "cap-pass")
+    assert remove(slug="first-lesson") == "ok removed=first-lesson"
+    assert manage(action="delete", name="cap-target") == "ok"
+    blocked = remove(slug="second-lesson")
+
+    assert blocked.startswith("ERR curator_destructive_cap_exceeded"), blocked
+    assert "limit=2" in blocked
+    assert (pkg["skills_dir"] / "cap-target").exists() is False
+    assert "second-lesson" in pkg["lessons_path"].read_text()
+    conn = pkg["db"].get_db()
+    rows = conn.execute(
+        "SELECT summary FROM events WHERE kind=? AND target='cap-pass' "
+        "ORDER BY id",
+        (CAP_EVENT,),
+    ).fetchall()
+    assert ["outcome=admitted" in r["summary"] for r in rows] == [True, True, False]
+    assert "outcome=refused" in rows[-1]["summary"]
+
+
+def test_foreground_deletes_bypass_curator_delete_cap(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, max_destructive="0")
+    pkg["lessons"].append_lesson(
+        title="foreground deletion", body="human-owned content", source="user",
+    )
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import CAP_EVENT
+
+    remove = mcp._tool_manager._tools["lesson_remove"].fn
+    manage = mcp._tool_manager._tools["skill_manage"].fn
+    assert manage(
+        action="create",
+        name="foreground-cap-bypass",
+        description="A skill used to verify foreground deletion behavior.",
+        content="# Foreground\n\nThis is safe test content.",
+    ).startswith("ok")
+
+    assert remove(slug="foreground-deletion", force=True).startswith("ok")
+    assert manage(action="delete", name="foreground-cap-bypass", force=True) == "ok"
+    conn = pkg["db"].get_db()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind=?", (CAP_EVENT,)
+    ).fetchone()[0] == 0
 
 
 def test_curator_snapshot_retention_is_bounded(tmp_path, monkeypatch):

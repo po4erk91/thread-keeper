@@ -19,8 +19,10 @@ from typing import Any
 from . import identity, lessons
 from .config import (
     CLAUDE_SKILLS_DIR,
+    CURATOR_MAX_DESTRUCTIVE_PER_PASS,
     CURATOR_REPORTS_DIR,
     CURATOR_SNAPSHOT_RETENTION,
+    WRITE_ORIGIN,
 )
 from .identity import _ensure_session
 
@@ -29,6 +31,7 @@ PASS_ID_ENV = "THREADKEEPER_CURATOR_PASS_ID"
 SNAPSHOT_DIR_ENV = "THREADKEEPER_CURATOR_SNAPSHOT_DIR"
 ACTION_EVENT = "curator_destructive_action"
 SNAPSHOT_EVENT = "curator_snapshot"
+CAP_EVENT = "curator_destructive_cap"
 
 _SAFE_PASS_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
@@ -244,6 +247,78 @@ def record_curator_action(
     except sqlite3.OperationalError:
         return body_rel
     return body_rel
+
+
+def admit_curator_destructive_action(
+    conn: sqlite3.Connection,
+    *,
+    action: str,
+    artifact: str,
+    key: str,
+) -> str | None:
+    """Reserve one destructive curator operation for the current pass.
+
+    Every bounded-inventory child spawned for a pass inherits the same pass
+    identifier.  The ``BEGIN IMMEDIATE`` reservation serializes those children
+    across MCP server processes, so a prompt cannot race several deletes past
+    the configured total.  The admission row remains even if a later file
+    operation fails; failing closed is preferable to restoring deletion
+    authority after an uncertain partial mutation.
+
+    Returns an error reason when the caller must not mutate, otherwise ``None``.
+    Foreground and other non-curator writers deliberately bypass this guard.
+    """
+    if WRITE_ORIGIN != "curator":
+        return None
+
+    _ensure_session(conn)
+    pass_id = current_pass_id()
+    limit = max(0, int(CURATOR_MAX_DESTRUCTIVE_PER_PASS))
+    if not pass_id:
+        return (
+            "curator_destructive_cap_missing_pass_id "
+            f"action={action} limit={limit}"
+        )
+
+    def record(outcome: str, used: int) -> None:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, strftime('%s','now'))",
+            (
+                identity._session_id or "",
+                CAP_EVENT,
+                pass_id,
+                (
+                    f"outcome={outcome} action={action} artifact={artifact} "
+                    f"key={_safe_name(key)} limit={limit} used={used}"
+                ),
+            ),
+        )
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM events "
+            "WHERE kind=? AND target=? AND summary LIKE 'outcome=admitted %'",
+            (CAP_EVENT, pass_id),
+        ).fetchone()
+        used = int(row["n"] if row else 0)
+        if used >= limit:
+            record("refused", used)
+            conn.commit()
+            return (
+                "curator_destructive_cap_exceeded "
+                f"action={action} limit={limit} used={used}"
+            )
+        record("admitted", used)
+        conn.commit()
+        return None
+    except sqlite3.Error as e:
+        if conn.in_transaction:
+            conn.rollback()
+        # A server-side safety guard must fail closed when accounting cannot
+        # be persisted, rather than silently allowing an unbounded delete.
+        return f"curator_destructive_cap_unavailable action={action}: {e}"
 
 
 def _load_manifest(snapshot_dir: Path) -> dict[str, Any]:

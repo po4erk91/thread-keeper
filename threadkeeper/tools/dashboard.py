@@ -477,6 +477,23 @@ def mp_dashboard(window_days: int = 7) -> str:
         + " ".join(f"{k}={v}" for k, v in action_counts.items())
         + f" ({window_days}d)"
     )
+    cap_admitted = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='curator_destructive_cap' "
+        "AND summary LIKE 'outcome=admitted%' AND created_at>=?",
+        (cut_win,),
+    )
+    cap_refused = _scalar(
+        conn,
+        "SELECT COUNT(*) FROM events WHERE kind='curator_destructive_cap' "
+        "AND summary LIKE 'outcome=refused%' AND created_at>=?",
+        (cut_win,),
+    )
+    out.append(
+        "  curator_destructive_cap "
+        f"admitted={cap_admitted} refused={cap_refused} "
+        f"status={'HIT' if cap_refused else 'ok'} ({window_days}d)"
+    )
     # ── roadmap applier (poison-issue backoff / dead-letter) ───────────
     # Issues the evolve applier has spawned a child for, split by outcome.
     # `stuck` = attempted but neither handed off (PR) nor dead-lettered yet

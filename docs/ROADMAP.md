@@ -394,6 +394,13 @@ plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
 its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
 Scope: S–M each.
 
+✅ DONE (#106): destructive Curator passes now have a server-side shared
+admission ceiling before `lesson_remove` or `skill_manage(action='delete')`
+can mutate. `CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 10, is keyed by the
+spawned pass ID across all batches/processes, and records admitted/refused rows
+so `mp_dashboard` surfaces `curator_destructive_cap status=HIT` instead of a
+silent prune storm. Foreground deletes and advisory passes are unaffected.
+
 ✅ DONE (#105): destructive Curator passes no longer dump the entire
 lessons/skills/concepts inventory into one child prompt. The pass now renders
 bounded inventory batches, records `entries` / `batches` / `batch_entries` /

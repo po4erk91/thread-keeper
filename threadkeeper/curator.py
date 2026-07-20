@@ -65,6 +65,7 @@ from .config import (
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_MAX_DESTRUCTIVE_PER_PASS,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
     CURATOR_SNAPSHOT_RETENTION,
 )
@@ -1135,6 +1136,10 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "concept_id=<id>, confidence='low|medium|high') applies a "
                 "confidence review.\n"
                 "NEVER pass force=True to lesson_remove or skill_manage. "
+                "Across every batch in this pass, the server admits at most "
+                f"{max(0, int(CURATOR_MAX_DESTRUCTIVE_PER_PASS))} combined "
+                "lesson_remove / skill_manage(action='delete') calls; stop "
+                "deleting and record the refusal in the report if that cap is hit. "
                 f"{foreground_clause} NEVER touch "
                 "any entry marked [PROTECTED], even in destructive mode. Apply "
                 "changes ONLY after the REPORT.md is "
