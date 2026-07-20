@@ -6,6 +6,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
+BOT_TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+
 
 def _workflow(name: str) -> dict:
     return yaml.safe_load((WORKFLOWS / name).read_text())
@@ -15,19 +17,39 @@ def _workflow_text(name: str) -> str:
     return (WORKFLOWS / name).read_text()
 
 
-def test_release_readiness_is_read_only_and_does_not_publish():
+def test_release_tag_escalates_only_inside_the_tag_job():
     data = _workflow("release-tag.yml")
     text = _workflow_text("release-tag.yml")
 
+    # Workflow-level permissions stay read-only; only the tag job may
+    # create the tag ref and dispatch publish.yml.
     assert data["permissions"] == {"contents": "read"}
-    assert "actions: write" not in text
-    assert "contents: write" not in text
-    assert "gh workflow run publish.yml" not in text
-    assert 'git push origin "refs/tags/$TAG"' not in text
-    assert "Report maintainer release action" in text
+    tag_job = data["jobs"]["tag"]
+    assert tag_job["permissions"] == {"contents": "write", "actions": "write"}
+
+    # Fires only after a successful tests run for a push to main.
+    assert 'workflows: ["tests"]' in text
+    assert "branches: [main]" in text
+    assert "conclusion == 'success'" in tag_job["if"]
+    assert "event == 'push'" in tag_job["if"]
 
 
-def test_publish_requires_signed_tag_and_pypi_environment():
+def test_release_tag_gates_on_version_and_changelog_before_dispatch():
+    text = _workflow_text("release-tag.yml")
+
+    # Never re-tags an existing version, never tags without release
+    # notes, creates an annotated bot tag via the API, and hands off to
+    # publish.yml explicitly (GITHUB_TOKEN tag pushes don't start
+    # push-triggered runs).
+    assert "git ls-remote --exit-code --tags origin" in text
+    assert "^## v${VERSION} " in text
+    assert "git/tags" in text
+    assert "refs/tags/$TAG" in text
+    assert BOT_TAGGER_EMAIL in text
+    assert "gh workflow run publish.yml" in text
+
+
+def test_publish_requires_signed_or_bot_main_tag_and_pypi_environment():
     data = _workflow("publish.yml")
     text = _workflow_text("publish.yml")
     jobs = data["jobs"]
@@ -42,16 +64,24 @@ def test_publish_requires_signed_tag_and_pypi_environment():
     }
 
     assert "Require v* tag ref" in text
-    assert "Verify signed annotated tag" in text
+    assert "Verify release tag" in text
     assert ".verification.verified" in text
     assert "must be an annotated tag" in text
     assert "Validate release metadata" in text
+
+    # The unsigned path is narrow: explicit dispatch + github-actions[bot]
+    # tagger + tag commit already merged to main. Pushed unsigned tags
+    # must keep failing authorization.
+    assert '"$EVENT" != "workflow_dispatch"' in text
+    assert BOT_TAGGER_EMAIL in text
+    assert "compare/main..." in text
 
 
 def test_releasing_docs_describe_the_approval_flow():
     docs = (ROOT / "docs" / "RELEASING.md").read_text()
 
-    assert "does **not** create a tag" in docs
+    assert "release-tag.yml" in docs
     assert "Add at least one **Required reviewer**" in docs
-    assert "git tag -s v0.4.1 origin/main" in docs
     assert "The output must include a `required_reviewers` rule" in docs
+    # The manual signed-tag path stays documented as backfill/override.
+    assert "git tag -s" in docs

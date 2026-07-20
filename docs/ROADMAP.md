@@ -156,7 +156,13 @@ remains a live question.
   stops before tag creation or workflow dispatch. Publishing is decoupled from
   auto-tagging: `publish.yml` requires a GitHub-verified signed annotated `v*`
   tag, matching release metadata, and the protected `pypi` environment before
-  the Trusted Publisher upload job can run.
+  the Trusted Publisher upload job can run. Later amended (v0.16.3): the
+  signed-tag-only rule stalled releases entirely under PR-driven development,
+  so auto-tagging returned with the human gate moved to the protected `pypi`
+  environment approval — `release-tag.yml` tags green `main` builds and
+  dispatches `publish.yml`, which admits bot tags only on merged `main`
+  commits via that explicit dispatch and still pauses for a required reviewer
+  before upload; signed tags remain the manual override.
 - Unified fcntl single-flight for spawning daemons (#53): the local
   check-running-then-spawn mutex now lives in `helpers.single_flight_lock()`.
   Shadow review, evolve reviewer, probe daemon, candidate reviewer, curator,
