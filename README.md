@@ -933,6 +933,49 @@ degradation: even when agents don't actively contribute, loops 2-5
 keep the library growing from passive observation of the dialog
 stream.
 
+### Notifications
+
+The learning loops spawn paid children. When a loop **can't do its work** — a
+CLI subscription runs out of credits/limits, auth expires, the binary is
+missing, a spawn times out, or a spawned child dies mid-run — thread-keeper
+quietly stops learning. For a memory system that silent degradation is the worst
+failure mode: you keep trusting it while it has stopped. The `notify` daemon
+watches the already-emitted event signals and surfaces this (and, optionally,
+skill/lesson materialization). It is a read-only consumer — no spawn, no model,
+no credit cost.
+
+Three detection sources per tick:
+
+1. **Admission failures / terminal timeouts** — a `<loop>_pass` event whose
+   summary is a spawn/budget failure (e.g. `token_budget_exceeded`,
+   `claude_cli_not_found`), plus `spawn_timeout_retry_failed`.
+2. **Dead children** — a `tasks` row that ended with a non-zero, non-timeout
+   return code. This is the important one: `spawn()` returns `ok task=…` at
+   *launch*, so a `*_pass` summary is a false success when a child later dies
+   from an exhausted subscription; the real outcome only lands in
+   `tasks.return_code`. The reason is read from the child's log tail.
+3. **Materialization** — `skill_materialized` / `skill_create` (skill) and
+   `lesson_append` (lesson).
+
+A per-loop cooldown collapses a lapsed-subscription storm into one actionable
+alert; the first run seeds its cursor to the current position, so historical
+backlog never fires. `events`/`tasks`/`daemon_state` are node-local, so each
+machine notifies about its **own** loops.
+
+```bash
+# off by default — set a poll interval to enable
+THREADKEEPER_NOTIFY_POLL_S=30           # daemon tick (seconds); 0 = off
+THREADKEEPER_NOTIFY_LOOP_FAILURE=true   # alert when a loop fails to run (default on)
+THREADKEEPER_NOTIFY_SKILL_MATERIALIZED=false  # alert on skill materialization
+THREADKEEPER_NOTIFY_LESSON=false        # alert on lesson append
+THREADKEEPER_NOTIFY_CHANNEL=macos,log   # comma list: macos (osascript), log
+THREADKEEPER_NOTIFY_FAILURE_COOLDOWN_S=3600   # min seconds between repeats of one loop's failure
+```
+
+Channels are macOS notifications (`osascript`) and a `[notify]` log line;
+`macos` self-noops off Darwin. A webhook channel (headless Linux / phone push)
+is a planned follow-up.
+
 ### Dialectic user model
 
 A model of you, accumulated as you use the agent. `dialectic_claim`,

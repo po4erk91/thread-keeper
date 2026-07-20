@@ -12,6 +12,10 @@ because replication is transitive (below), any *connected* graph converges.
 Adding a machine = add its address on some node; remove one and the rest keep
 working.
 
+> **Turning it on?** See the step-by-step operator runbook (update, migrate,
+> configure peers, verify) plus the real-world rollout gotchas in
+> [sync-deployment.md](sync-deployment.md).
+
 > Postgres / a central server were rejected: TK is one process per machine, so
 > there is no local write concurrency to solve, and a central server breaks the
 > offline case (a laptop off-network would have no memory at all).

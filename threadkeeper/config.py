@@ -267,6 +267,18 @@ class Settings(BaseSettings):
     # resident while the freed arenas are still mapped). 0 disables the guard.
     memory_guard_embed_hot_s: float = 300.0
 
+    # ── Notifier (issue #257) ────────────────────────────────────────────────
+    # Surfaces silent background-loop degradation (a loop couldn't bring up its
+    # model/CLI — credits/limits exhausted, auth expired, binary missing, spawn
+    # timeout, or a spawned child died) and, optionally, skill/lesson
+    # materialization. Off by default: notify_poll_s=0 disables the daemon.
+    notify_poll_s: float = 0.0            # daemon tick; 0 = notifier off
+    notify_loop_failure: bool = True      # alert when a loop fails to run
+    notify_skill_materialized: bool = False
+    notify_lesson: bool = False
+    notify_channel: str = "macos,log"     # comma list: macos, log (webhook: TODO)
+    notify_failure_cooldown_s: int = 3600  # min seconds between repeats of one loop's failure
+
     # ── Auto-review ──────────────────────────────────────────────────────────
     auto_review: bool = Field(
         default=False,
@@ -769,6 +781,12 @@ def _derive_constants(s: "Settings") -> dict:
         "MEMORY_GUARD_NOTIFY": s.memory_guard_notify,
         "MEMORY_GUARD_COOLDOWN_S": s.memory_guard_cooldown_s,
         "MEMORY_GUARD_EMBED_HOT_S": s.memory_guard_embed_hot_s,
+        "NOTIFY_POLL_S": s.notify_poll_s,
+        "NOTIFY_LOOP_FAILURE": s.notify_loop_failure,
+        "NOTIFY_SKILL_MATERIALIZED": s.notify_skill_materialized,
+        "NOTIFY_LESSON": s.notify_lesson,
+        "NOTIFY_CHANNEL": s.notify_channel,
+        "NOTIFY_FAILURE_COOLDOWN_S": s.notify_failure_cooldown_s,
         "SHADOW_REVIEW_INTERVAL_S": s.shadow_review_interval_s,
         "SHADOW_REVIEW_WINDOW_S": s.shadow_review_window_s,
         "SHADOW_REVIEW_MIN_CHARS": s.shadow_review_min_chars,
