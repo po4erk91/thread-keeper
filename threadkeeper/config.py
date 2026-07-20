@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     role: str = "server"                   # THREADKEEPER_ROLE: server | host
     host_sock: str = ""                    # "" -> <db dir>/host.sock
     host_heartbeat_ttl_s: float = 120.0
+    # Heartbeat staleness beyond which a still-alive lock-holding host is
+    # treated as wedged and SIGTERM/SIGKILL-recovered (issue #223). Must be
+    # comfortably larger than the TTL so transient DB contention never kills
+    # a healthy host; 0 disables the kill path (legacy spawn-only behavior).
+    host_wedge_kill_after_s: float = 600.0
     thin_embed_fallback: str = "fts"       # fts | local
 
     # ── Skill update daemon ─────────────────────────────────────────────────
@@ -719,6 +724,7 @@ def _derive_constants(s: "Settings") -> dict:
         "DAEMON_HOST_ENABLED": bool(s.daemon_host),
         "PROCESS_ROLE": (s.role or "server").strip().lower(),
         "HOST_HEARTBEAT_TTL_S": float(s.host_heartbeat_ttl_s),
+        "HOST_WEDGE_KILL_AFTER_S": float(s.host_wedge_kill_after_s),
         "THIN_EMBED_FALLBACK": (s.thin_embed_fallback or "fts").strip().lower(),
         "SKILL_UPDATE_INTERVAL_S": s.skill_update_interval_s,
         "SKILL_UPDATE_TIMEOUT_S": s.skill_update_timeout_s,

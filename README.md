@@ -1125,6 +1125,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_ROLE` | `server` | process role: `server` (default; per-session MCP server) or `host`. Set to `host` only by `python -m threadkeeper.host` — do not set this by hand |
 | `THREADKEEPER_HOST_SOCK` | (auto) | embed-only unix socket the thin servers dial and the host binds; empty resolves to `<db dir>/host.sock` |
 | `THREADKEEPER_HOST_HEARTBEAT_TTL_S` | 120 | host liveness window (s): how stale the host's presence heartbeat may get before `memory_guard`/a thin server treats it as dead and spawns a replacement |
+| `THREADKEEPER_HOST_WEDGE_KILL_AFTER_S` | 600 | wedged-host recovery (s): heartbeat silence beyond this gets the still-alive lock-holding host SIGTERMed (SIGKILL after a grace period) before the respawn — only after its pid, recorded in `<db dir>/host.pid`, is verified by command line to still be a `threadkeeper.host` process. `0` disables the kill path |
 | `THREADKEEPER_THIN_EMBED_FALLBACK` | `fts` | how a thin server embeds a query when the host is unreachable: `fts` (default) falls back to FTS-only search; `local` lazily loads the ONNX model in-process instead |
 
 Persist them in `~/.threadkeeper/.env` (copy from `.env.example`) — one file,
@@ -1467,7 +1468,12 @@ FTS-only search, `local` lazily loads the model in-process instead. The
 host is elected via a flock and spawned detached by the first thin server that
 needs one; `memory_guard` supervises it — respawning it if its heartbeat goes
 stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S` — instead of idle-retiring it
-the way a thin server would be. See `docs/ARCHITECTURE.md` for the full design.
+the way a thin server would be. A host that wedges while still alive (stale
+heartbeat, lock still held) is recovered too: after
+`THREADKEEPER_HOST_WEDGE_KILL_AFTER_S` (default 600 s) of silence the
+supervisor verifies the pid recorded in `<db dir>/host.pid` still belongs to a
+`threadkeeper.host` process, SIGTERMs it (SIGKILL after a grace period), and
+spawns a fresh host. See `docs/ARCHITECTURE.md` for the full design.
 
 ---
 

@@ -748,13 +748,23 @@ itself — a paused install spawns no host at all instead of a loop-less one:
   daemon threads) and are excluded from aggregate idle-retire while the flag
   is on (`_idle_retire_candidates`); instead `supervise_host()` calls
   `host.ensure_host_running()` once the host's presence heartbeat has gone
-  stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S`. That respawn only takes
-  effect when no live host still holds the election lock (`host.main()`
-  exits 0 immediately otherwise), so end-to-end this recovers a fully-dead
-  host; a thin session's own `ensure_host_running()` call at session start
-  (below) is the primary recovery path. Recovering a wedged-but-alive host
-  (stale heartbeat, process still up, lock still held) via SIGTERM-by-pid is
-  not yet implemented — tracked as a pre-enable follow-up.
+  stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S`. A fully-dead host releases
+  the election lock, so the replacement wins it directly. A
+  **wedged-but-alive** host (stale heartbeat, process still up, lock still
+  held) is recovered by `ensure_host_running()` itself (#223): `host.main()`
+  records `{pid, started_at}` in `<db dir>/host.pid` next to the lock, and
+  when the heartbeat has been silent past
+  `THREADKEEPER_HOST_WEDGE_KILL_AFTER_S` (default 600 s, well above the TTL
+  so transient DB contention never triggers it) the supervisor SIGTERMs the
+  recorded pid — but only after verifying via `ps` that the pid's command
+  line still is a `threadkeeper.host` process (pid-recycling guard),
+  escalating to SIGKILL after a grace period, then spawns the replacement.
+  A pidfile younger than the wedge threshold is treated as a booting host
+  and left alone, which also bounds kill frequency to one per threshold per
+  host generation. Both actions emit `host_wedged_sigterm` /
+  `host_wedged_sigkill` events. `0` disables the kill path (legacy
+  spawn-only). A thin session's `ensure_host_running()` call at session
+  start (below) is the primary recovery path.
 - **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`
   calls `host.ensure_host_running()` on every session start: a no-op if a
   live heartbeat already exists, otherwise a **detached** spawn
@@ -762,8 +772,9 @@ itself — a paused install spawns no host at all instead of a loop-less one:
   host outlives the session that spawned it and a closing CLI can never HUP
   it. The host then runs forever — no idle-exit — because the loops (daily
   retention, weekly curator, probe, …) must keep ticking with no active
-  session; it exits only on SIGTERM (sent manually today — see the
-  supervision caveat above) or failing to acquire the host lock at startup.
+  session; it exits only on SIGTERM (sent manually, or by wedged-host
+  recovery — see the supervision bullet above) or failing to acquire the
+  host lock at startup.
 
 Flag off ⇒ zero behavior change: every session starts its own daemons and
 embeds locally, exactly as before Phase 1.

@@ -6,6 +6,19 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: wedged-but-alive daemon-host is now recovered (#223).** A host
+  whose heartbeat loop wedged while the process stayed up kept holding the
+  election flock, so every replacement spawn exited 0 and the machine
+  silently lost its background loops until a manual kill. `host.main()` now
+  records `{pid, started_at}` in `<db dir>/host.pid` (atomic write, cleared
+  on clean exit), and `ensure_host_running()` — the session-start and
+  `memory_guard` supervision path — SIGTERMs (then SIGKILLs after a grace
+  period) a holder whose heartbeat has been silent past the new
+  `THREADKEEPER_HOST_WEDGE_KILL_AFTER_S` (default 600 s; `0` disables the
+  kill path), but only after verifying via `ps` that the recorded pid still
+  is a `threadkeeper.host` process, so a recycled pid is never signaled. A
+  pidfile younger than the threshold is treated as a booting host and left
+  alone. Recovery emits `host_wedged_sigterm`/`host_wedged_sigkill` events.
 
 ## v0.16.3 — 2026-07-19
 
