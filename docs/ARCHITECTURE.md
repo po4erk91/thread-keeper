@@ -149,11 +149,12 @@ its current in-memory code. Set `THREADKEEPER_AUTO_UPDATE_INTERVAL_S=0` to opt
 out of the standing-consent update channel entirely; the provenance gate itself
 is controlled by `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` for break-glass
 mirrors.
-The upstream publish path is gated before that provenance exists: the
-post-test release readiness workflow is read-only and does not dispatch PyPI,
-while `publish.yml` requires a GitHub-verified signed annotated `v*` tag and
-the protected `pypi` environment before the Trusted Publisher upload job can
-run.
+The upstream publish path is gated before that provenance exists: after a
+green test run on `main`, `release-tag.yml` tags the tested commit and
+dispatches `publish.yml`, which accepts only a GitHub-verified signed
+annotated `v*` tag or that workflow's own bot tag on an already-merged
+`main` commit — and always pauses at the protected `pypi` environment for a
+human approval before the Trusted Publisher upload job can run.
 The legacy monolith `server.py` at the repo root was removed in May 2026 — the
 runtime is fully on the package.
 

@@ -1,7 +1,13 @@
 name: publish
 
-# Publish to PyPI only from a maintainer-signed annotated tag matching v*
-# after the protected pypi environment admits the upload job.
+# Publish to PyPI from a release tag matching v* after the protected
+# pypi environment admits the upload job. Two authorized tag shapes:
+#  - a maintainer-signed annotated tag pushed by hand (push trigger) —
+#    the backfill/override path;
+#  - the unsigned annotated tag release-tag.yml creates on a tested
+#    main commit and hands over via an explicit workflow_dispatch.
+# The human release gate is the pypi environment approval (required
+# reviewers — see docs/RELEASING.md).
 # Uses PyPI's Trusted Publisher OIDC flow — no API token in repo
 # secrets. Configure once on PyPI side: project → Settings → Publishing
 # → "Add a new pending publisher" with repo=po4erk91/thread-keeper,
@@ -35,10 +41,11 @@ jobs:
             exit 1
           fi
 
-      - name: Verify signed annotated tag
+      - name: Verify release tag
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           ref_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')"
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
@@ -51,10 +58,34 @@ jobs:
           verified="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified')"
           reason="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.reason')"
 
-          if [ "$verified" != "true" ]; then
+          if [ "$verified" = "true" ]; then
+            echo "::notice::$TAG carries a verified maintainer signature."
+            exit 0
+          fi
+
+          # Unsigned tags are accepted only on the explicit dispatch from
+          # release-tag.yml: annotated, tagged by github-actions[bot], and
+          # pointing at a commit already merged to main. Pushed unsigned
+          # tags keep failing here.
+          if [ "$EVENT" != "workflow_dispatch" ]; then
             echo "::error::$TAG is not a verified signed tag (reason: $reason)."
             exit 1
           fi
+
+          tagger_email="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.tagger.email')"
+          if [ "$tagger_email" != "41898282+github-actions[bot]@users.noreply.github.com" ]; then
+            echo "::error::$TAG is unsigned (reason: $reason) and not the release-tag.yml bot tag (tagger: $tagger_email)."
+            exit 1
+          fi
+
+          commit_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.object.sha')"
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$commit_sha" --jq '.status')"
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::$TAG points at $commit_sha, which is not on main (compare status: $status)."
+            exit 1
+          fi
+
+          echo "::notice::$TAG authorized: bot-created annotated tag on a main commit via explicit dispatch."
 
   build:
     name: Build distribution
