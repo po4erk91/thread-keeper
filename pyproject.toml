@@ -29,7 +29,7 @@ dependencies = [
     # >=1.10.0 for the MCP 2025-06-18 tool vocabulary: ToolAnnotations
     # (readOnly/destructive/idempotent hints) + structured outputSchema (#67).
     "mcp>=1.10.0",
-    "pydantic>=2",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2",
     "pyyaml>=6.0",
 ]
