@@ -61,7 +61,7 @@ semantic-st = [
 # not compose with --forked (collides on the xdist worker tmp dir) and a few
 # tests still race under it. See CONTRIBUTING → Running tests.
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-cov>=5.0",
     "pytest-forked>=1.6",
     "pytest-xdist>=3.5",
