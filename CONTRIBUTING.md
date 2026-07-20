@@ -266,27 +266,32 @@ contributor returns.
 
 ## Releases
 
-Versions follow Conventional-Commits-driven semver, executed by the
-maintainer as part of each commit to `main`. The flow:
+Versions follow Conventional-Commits-driven semver. Releasing is part
+of the normal PR flow:
 
 1. PR title (Conventional Commits format, enforced by `pr-title.yml`)
    becomes the squash-merge commit message on `main`.
-2. **Same commit**: maintainer bumps `version` in `pyproject.toml`
-   per the bump policy below and adds a `CHANGELOG.md` entry.
-3. **Same push**: maintainer creates an annotated tag `vX.Y.Z` on the
-   bump commit and pushes both the commit and the tag.
-4. `.github/workflows/tests.yml` runs the full pytest matrix on push.
-5. The tag push triggers `.github/workflows/publish.yml`, which builds
-   sdist + wheel and uploads to PyPI via the Trusted Publisher OIDC
-   flow.
+2. **Same PR**: bump `version` in `pyproject.toml` (and both
+   `server.json` version fields) per the bump policy below and add a
+   `CHANGELOG.md` entry under a new `## vX.Y.Z — YYYY-MM-DD` heading.
+3. `.github/workflows/test.yml` runs the full pytest matrix on the
+   merge push.
+4. On a green run, `.github/workflows/release-tag.yml` creates the
+   annotated tag `vX.Y.Z` on the tested commit and dispatches
+   `.github/workflows/publish.yml`. A version bump without a matching
+   CHANGELOG section is warned about and left untagged.
+5. `publish.yml` verifies the tag, builds sdist + wheel, and waits at
+   the protected `pypi` environment for maintainer approval; on
+   approval it uploads to PyPI via the Trusted Publisher OIDC flow and
+   creates the GitHub Release from the CHANGELOG section.
 
-There's no CI-side release automation — solo-repo, all commits go
-through the maintainer anyway, and the `python-semantic-release`
-machinery hit branch-protection friction (default `GITHUB_TOKEN` can't
-push to a protected `main`; the alternatives — PAT secret, GitHub App,
-release-please-style PR — all add per-release friction or one-time
-setup that wasn't worth it at this scale). Pulled it out; the rule
-lives in this section instead.
+The human release gate is the `pypi` environment approval (required
+reviewers — see [docs/RELEASING.md](docs/RELEASING.md)). A
+maintainer-signed annotated `v*` tag pushed by hand still publishes
+directly and is the backfill/override path. CI never pushes commits to
+`main` — it only tags what already merged and passed tests, which is
+what kept `python-semantic-release` (and its protected-branch
+friction) out.
 
 ### Bump policy
 
@@ -299,7 +304,7 @@ lives in this section instead.
 If a single commit touches multiple concerns (rare — squash-merge
 typically prevents this), pick the highest bump that applies.
 
-### Tagging recipe
+### Release commit recipe
 
 ```bash
 # Update pyproject.toml `version` per the bump table; bump server.json
@@ -309,11 +314,10 @@ typically prevents this), pick the highest bump that applies.
 
 git add pyproject.toml server.json CHANGELOG.md <other files for this change>
 git commit -m "feat: <imperative summary>"
-git tag -a vX.Y.Z -m "release vX.Y.Z"
-git push && git push --tags
+git push   # merge the PR; CI tags the green main build and dispatches publish.yml
 ```
 
-The tag push fans out to `publish.yml` automatically. After PyPI
+Approve the `pypi` deployment on the publish run; after the PyPI
 upload completes, republish the MCP Registry entry so the new version
 shows up there too:
 
@@ -325,5 +329,6 @@ mcp-publisher publish
 ### Promoting to 1.0.0
 
 Once the API is stable and the next BREAKING CHANGE should land 1.0.0:
-bump `pyproject.toml` to `1.0.0` directly, tag `v1.0.0`, push. No
-config flip needed — manual control by design.
+bump `pyproject.toml` to `1.0.0` directly in that release PR; the same
+auto-tag flow releases it. No config flip needed — manual control by
+design.

@@ -3,12 +3,16 @@
 Publishing to PyPI is deliberately split into two steps. A push to `main`
 runs `.github/workflows/test.yml`; when that run succeeds,
 `.github/workflows/release-tag.yml` checks whether the version in
-`pyproject.toml` has matching changelog notes, but it does **not** create a tag,
-dispatch publishing, or hold write permissions. A maintainer then authorizes the
-release by pushing a signed annotated `v*` tag. `.github/workflows/publish.yml`
-verifies that signed tag, checks that it matches `pyproject.toml` and
-`CHANGELOG.md`, then pauses at the protected `pypi` GitHub Environment before
-uploading.
+`pyproject.toml` is untagged and has matching changelog notes, creates the
+annotated `vX.Y.Z` tag on the tested commit (tagger: `github-actions[bot]`),
+and dispatches `.github/workflows/publish.yml` on it. `publish.yml` verifies
+the tag — a GitHub-verified maintainer signature, or the bot tag on a commit
+already merged to `main` arriving via that explicit dispatch — checks that it
+matches `pyproject.toml` and `CHANGELOG.md`, then **pauses at the protected
+`pypi` GitHub Environment** before uploading. That environment approval is
+the human release gate: nothing reaches PyPI until a required reviewer
+approves the deployment, so the required-reviewer rule on the `pypi`
+environment must stay enabled (setup below).
 
 PyPI upload uses Trusted Publisher OIDC — no PyPI API token is stored in the
 repository. The publish job explicitly uploads PyPI digital attestations
@@ -52,9 +56,10 @@ gh api repos/po4erk91/thread-keeper/environments/pypi \
   --jq '.protection_rules'
 ```
 
-The output must include a `required_reviewers` rule. Without that repository
-setting, the signed tag is still required by source control, but the PyPI upload
-job will not pause for a second human approval.
+The output must include a `required_reviewers` rule. This setting is
+load-bearing: the release tag itself is created by CI, so the environment
+approval is the only human checkpoint on the automatic path. Without a
+required reviewer, a green `main` build publishes unattended.
 
 ### 3. Verify locally before tagging (optional)
 
@@ -75,19 +80,43 @@ on GitHub.
 # 1. Bump version in pyproject.toml on a normal PR branch
 $EDITOR pyproject.toml         # version = "0.4.0" → "0.4.1"
 
-# 2. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
+# 2. Bump both server.json version fields to the same value
+$EDITOR server.json
+
+# 3. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
 $EDITOR CHANGELOG.md
 
-# 3. Commit, open a PR, and merge it to main after tests pass
+# 4. Commit, open a PR, and merge it to main after tests pass
 git commit -am "release: 0.4.1"
 ```
 
 The workflows then:
-1. Run the full test matrix on `main`
-2. Check that an unreleased `vX.Y.Z` has a matching changelog section
-3. Stop and print the signed-tag command for the maintainer
 
-After the merge-to-main checks are green, publish with a signed annotated tag:
+1. Run the full test matrix on `main`
+2. Check that the unreleased `vX.Y.Z` has a matching changelog section
+   (a bump without notes is a warning, not a tag)
+3. Create the annotated `vX.Y.Z` tag on the tested commit and dispatch
+   `publish.yml` on it
+4. Verify the tag ref, its shape (annotated bot tag on a `main` commit,
+   or a verified signed tag), and that it matches `pyproject.toml` and
+   `CHANGELOG.md`
+5. Build sdist + wheel (`python -m build`) and run `twine check dist/*`
+6. **Wait for the protected `pypi` environment approval** — the human
+   release gate
+7. On approval: upload artifacts to PyPI via `pypa/gh-action-pypi-publish`
+   (OIDC, no token)
+8. Create a GitHub Release from the matching `CHANGELOG.md` section
+
+Approve or reject the pending deployment at
+<https://github.com/po4erk91/thread-keeper/actions> → the publish run →
+"Review deployments" → `pypi`. Rejecting drops the release; the tag
+stays, so delete it first if the version should be rebuilt and re-tagged.
+
+### Manual signed-tag path (backfill / override)
+
+A maintainer-signed annotated tag still publishes directly through the
+same workflow — use it to backfill a historical version or to release
+without the auto-tag flow:
 
 ```bash
 git fetch origin main --tags
@@ -95,20 +124,8 @@ git tag -s v0.4.1 origin/main -m "release: v0.4.1"
 git push origin refs/tags/v0.4.1
 ```
 
-The publish workflow then:
-
-1. Verifies the workflow is running from a `v*` tag ref
-2. Verifies the tag is annotated and GitHub reports its signature as valid
-3. Confirms the tag matches `pyproject.toml` and `CHANGELOG.md`
-4. Builds sdist + wheel (`python -m build`)
-5. Runs `twine check dist/*`
-6. Waits for the protected `pypi` environment approval
-7. Uploads artifacts to PyPI via `pypa/gh-action-pypi-publish` (OIDC,
-   no token)
-8. Creates a GitHub Release from the matching `CHANGELOG.md` section
-
-Watch progress at
-<https://github.com/po4erk91/thread-keeper/actions>.
+The push-triggered run verifies the signature and still waits at the
+`pypi` environment.
 
 ### Manual re-run
 
