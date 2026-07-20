@@ -36,6 +36,8 @@ _DAEMON_STARTERS = [
     ("thread_janitor", "start_thread_janitor"),
     ("dialectic_miner", "start_dialectic_miner_daemon"),
     ("dialectic_validator", "start_dialectic_validator_daemon"),
+    # Notifier: surfaces silent loop/spawn failures + materialization (issue #257).
+    ("notify", "start_notify_daemon"),
     # Cross-machine sync: HTTP server (peers pull/push) + client reconcile loop.
     # Both no-op unless the DB is migrated and peers/token/listen are configured.
     # Centralized here so that with DAEMON_HOST_ENABLED only the host runs them —
