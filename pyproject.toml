@@ -62,7 +62,7 @@ semantic-st = [
 # tests still race under it. See CONTRIBUTING → Running tests.
 dev = [
     "pytest>=8.0",
-    "pytest-cov>=5.0",
+    "pytest-cov>=7.1.0",
     "pytest-forked>=1.6",
     "pytest-xdist>=3.5",
 ]
