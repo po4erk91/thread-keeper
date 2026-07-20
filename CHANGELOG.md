@@ -114,6 +114,12 @@ version bumps follow semver per the policy in
   `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` /
   `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` (default 3 days, 0 =
   threshold only).
+- **Curator deletion blast radius is capped (#106).** A destructive Curator
+  pass now atomically admits at most
+  `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` (default 10) combined lesson
+  removals and skill deletes across all child batches. Cap refusals are durable
+  events and `mp_dashboard` reports `curator_destructive_cap status=HIT`;
+  foreground deletes and advisory Curator mode are unchanged.
 
 ## v0.16.2 — 2026-07-19
 

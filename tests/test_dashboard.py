@@ -147,6 +147,11 @@ def _curator_action_field(out: str, field: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _curator_cap_field(out: str, field: str) -> int:
+    m = re.search(rf"curator_destructive_cap [^\n]*\b{field}=(\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
 def _loop_line(out: str, label: str) -> str:
     m = re.search(rf"^\s+{re.escape(label)}[^\n]+$", out, re.M)
     return m.group(0) if m else ""
@@ -328,6 +333,31 @@ def test_dashboard_surfaces_curator_destructive_action_counts(fresh_mp):
         - base["skill_deleted"]
         == 1
     )
+
+
+def test_dashboard_surfaces_curator_destructive_cap_hit(fresh_mp):
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    dash = _tool(fresh_mp, "mp_dashboard")
+    before = dash(window_days=7)
+    admitted0 = _curator_cap_field(before, "admitted")
+    refused0 = _curator_cap_field(before, "refused")
+    for outcome in ("admitted", "admitted", "refused"):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('s', 'curator_destructive_cap', 'pass-a', ?, ?)",
+            (
+                f"outcome={outcome} action=lesson_remove artifact=lesson "
+                "key=x limit=2 used=2",
+                now,
+            ),
+        )
+    conn.commit()
+
+    after = dash(window_days=7)
+    assert _curator_cap_field(after, "admitted") - admitted0 == 2
+    assert _curator_cap_field(after, "refused") - refused0 == 1
+    assert "curator_destructive_cap" in after and "status=HIT" in after
 
 
 def test_dashboard_lesson_append_emits_countable_outcome(fresh_mp):

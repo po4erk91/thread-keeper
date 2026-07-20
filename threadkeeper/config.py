@@ -322,6 +322,10 @@ class Settings(BaseSettings):
     # skill delete capture full pre-images under <db dir>/curator/trash before
     # mutating; this TTL bounds disk growth.
     curator_trash_ttl_days: int = 30
+    # Server-side admission limit shared by every destructive child batch in
+    # one curator pass. 0 disables curator lesson/skill deletes for that pass;
+    # foreground deletes are never subject to this limit.
+    curator_max_destructive_per_pass: int = 10
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -777,6 +781,9 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
         "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,
+        "CURATOR_MAX_DESTRUCTIVE_PER_PASS": (
+            s.curator_max_destructive_per_pass
+        ),
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,

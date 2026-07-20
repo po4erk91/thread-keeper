@@ -38,7 +38,10 @@ from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
 from ..config import WRITE_ORIGIN
-from ..curator_snapshots import record_curator_action
+from ..curator_snapshots import (
+    admit_curator_destructive_action,
+    record_curator_action,
+)
 from ..review_prompts import screen_injection_markers
 from ..lessons import (
     _slugify,
@@ -498,6 +501,13 @@ def lesson_remove(slug: str, force: bool = False) -> str:
     snapshot = lesson_section(slug)
     if not snapshot:
         return f"ERR remove_failed slug={slug}"
+    if reason := admit_curator_destructive_action(
+        conn,
+        action="lesson_remove",
+        artifact="lesson",
+        key=slug,
+    ):
+        return f"ERR {reason}"
     post_remove = (
         snapshot["file_body"][:snapshot["start"]]
         + snapshot["file_body"][snapshot["end"]:]

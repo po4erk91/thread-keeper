@@ -691,6 +691,14 @@ tombstones for curator prunes/deletes. Retention is bounded by
 `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` (default 10, current pass always kept).
 Use `curator_restore(pass_id, lesson_slug="...")` or
 `curator_restore(pass_id, skill_name="...")` to restore an item from a snapshot.
+As a prevention layer before recovery is needed, a destructive Curator pass
+has one server-side shared admission budget for `lesson_remove` and
+`skill_manage(action='delete')`, including across bounded child batches.
+`THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 10; set it to 0 to
+disable those autonomous deletes. The pass ID makes the count durable and
+cross-process, while foreground/human deletes are unaffected. `mp_dashboard`
+shows admitted and refused operations with `status=HIT` when the Curator reaches
+the ceiling.
 Before `lesson_remove` or `skill_manage(action='delete')` removes anything, it
 also writes a recovery artifact under `<db dir>/curator/trash/`: lessons store
 the exact sentinel section plus usage row, and skills store the full skill
@@ -1028,6 +1036,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
+| `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 10 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |

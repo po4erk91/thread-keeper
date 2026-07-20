@@ -477,6 +477,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   endorsed `inventory_sha256` and the current inventory hash. Spawned
   `curator_pass` events record total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
+  Destructive lesson removals and skill deletes reserve from one atomic,
+  pass-ID-scoped server-side budget before touching disk. The default
+  `CURATOR_MAX_DESTRUCTIVE_PER_PASS=10` is shared across child batches and
+  processes; the reservation event makes a cap refusal visible as
+  `curator_destructive_cap status=HIT` in `mp_dashboard`. Recovery snapshots
+  remain available. Foreground deletes bypass this autonomous-delete guard;
+  advisory (`CURATOR_DESTRUCTIVE=0`) passes retain their read-only toolset and
+  therefore make no capped delete calls.
 - **evolve_reviewer** (`evolve_daemon.start_evolve_daemon`) — once per
   `EVOLVE_REVIEW_INTERVAL_S` (default 0 = off) it reviews thread-keeper itself
   for security/privacy risks, memory leaks, runaway daemons, cost waste,

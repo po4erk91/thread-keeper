@@ -45,6 +45,7 @@ from ..config import (
 from ..curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
+    admit_curator_destructive_action,
     capture_skill_tombstone,
     record_curator_action,
 )
@@ -923,6 +924,13 @@ def _action_delete(name: str, *, force: bool = False) -> str:
             f"ERR protected_skill name={name} reason={protected_reason}"
             f"{force_note}"
         )
+    if reason := admit_curator_destructive_action(
+        conn,
+        action="skill_delete",
+        artifact="skill",
+        key=name,
+    ):
+        return f"ERR {reason}"
     tombstone = ""
     if WRITE_ORIGIN == "curator":
         tombstone = capture_skill_tombstone("skill_deleted", name, sdir)
