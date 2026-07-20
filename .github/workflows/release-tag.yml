@@ -1,4 +1,20 @@
-name: release readiness
+name: release tag
+
+# Auto-release from green main: when the tests workflow succeeds on a
+# main push whose pyproject.toml version has no tag yet and CHANGELOG.md
+# carries the matching "## vX.Y.Z " section, create the annotated
+# release tag via the REST API (tagger: github-actions[bot]) and
+# dispatch publish.yml on it. This workflow only prepares the release —
+# publish.yml re-verifies the tag and then pauses at the protected
+# `pypi` environment, where a required reviewer must approve the
+# deployment before anything is uploaded. That approval is the human
+# release gate (see docs/RELEASING.md).
+#
+# A maintainer-signed annotated tag pushed by hand still publishes
+# directly through publish.yml's push trigger and skips this workflow.
+#
+# Tag refs created with GITHUB_TOKEN do not start push-triggered
+# workflow runs, hence the explicit workflow_dispatch handoff.
 
 on:
   workflow_run:
@@ -9,13 +25,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
 jobs:
-  check:
-    name: Check release-ready main build
+  tag:
+    name: Tag release-ready main build
     runs-on: ubuntu-latest
     if: >
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
+    permissions:
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -41,18 +64,49 @@ jobs:
           fi
 
       - name: Validate release notes
+        id: notes
         if: steps.existing.outputs.exists == 'false'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          grep -q "^## v${VERSION} " CHANGELOG.md
+          if grep -q "^## v${VERSION} " CHANGELOG.md; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CHANGELOG.md has no '## v${VERSION} ' section — not tagging. Add the section (or push a signed tag) to release v${VERSION}."
+          fi
 
-      - name: Report maintainer release action
-        if: steps.existing.outputs.exists == 'false'
+      - name: Create annotated release tag
+        if: >
+          steps.existing.outputs.exists == 'false' &&
+          steps.notes.outputs.present == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          echo "::notice::Release metadata for $TAG is present on $SHA."
-          echo "::notice::Publishing now requires a maintainer-signed annotated tag:"
-          echo "::notice::git tag -s $TAG $SHA -m 'release: $TAG' && git push origin refs/tags/$TAG"
+          tag_obj="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$TAG" \
+            -f message="release: $TAG" \
+            -f object="$SHA" \
+            -f type="commit" \
+            -f 'tagger[name]=github-actions[bot]' \
+            -f 'tagger[email]=41898282+github-actions[bot]@users.noreply.github.com' \
+            -f "tagger[date]=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --jq '.sha')"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$tag_obj" >/dev/null
+          echo "::notice::Created annotated tag $TAG at $SHA."
+
+      - name: Dispatch publish workflow
+        if: >
+          steps.existing.outputs.exists == 'false' &&
+          steps.notes.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh workflow run publish.yml --ref "$TAG"
+          echo "::notice::Dispatched publish.yml on $TAG — approve the pypi environment to release."

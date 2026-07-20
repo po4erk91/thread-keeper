@@ -7,7 +7,27 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.16.3 — 2026-07-19
+
 ### Changed
+
+- **Releases self-publish again — the human gate moved to the `pypi`
+  environment approval.** The #57 hardening (PR #207, v0.15.0) made
+  publishing require a locally-signed maintainer tag; under fully PR-driven
+  development that step was never run, so 0.15.0–0.16.2 were version-bumped
+  but never tagged and PyPI / GitHub Releases sat at v0.14.0. The
+  `release-tag.yml` workflow now (again) creates the annotated `vX.Y.Z` tag
+  once tests pass on a `main` commit whose `pyproject.toml` version is
+  untagged and has a matching CHANGELOG section, and dispatches
+  `publish.yml` on it. The authorization model keeps a human in the loop but
+  moves the checkpoint: `publish.yml` accepts either a GitHub-verified
+  signed annotated tag (manual backfill/override path) or the bot's
+  annotated tag on an already-merged `main` commit arriving via the explicit
+  dispatch — and always stops at the protected `pypi` environment, where a
+  required reviewer must approve the deployment before the Trusted Publisher
+  upload and GitHub Release run. Keeping a required reviewer configured on
+  the `pypi` environment is now the load-bearing control;
+  `docs/RELEASING.md` documents the verification command.
 
 - **Daemon-host mode is now the default** (`THREADKEEPER_DAEMON_HOST=1`).
   One elected headless host per machine (`python -m threadkeeper.host`) runs
