@@ -968,13 +968,36 @@ THREADKEEPER_NOTIFY_POLL_S=30           # daemon tick (seconds); 0 = off
 THREADKEEPER_NOTIFY_LOOP_FAILURE=true   # alert when a loop fails to run (default on)
 THREADKEEPER_NOTIFY_SKILL_MATERIALIZED=false  # alert on skill materialization
 THREADKEEPER_NOTIFY_LESSON=false        # alert on lesson append
-THREADKEEPER_NOTIFY_CHANNEL=macos,log   # comma list: macos (osascript), log
+THREADKEEPER_NOTIFY_CHANNEL=macos,log   # comma list: macos (menu-bar app banner), log
 THREADKEEPER_NOTIFY_FAILURE_COOLDOWN_S=3600   # min seconds between repeats of one loop's failure
 ```
 
-Channels are macOS notifications (`osascript`) and a `[notify]` log line;
-`macos` self-noops off Darwin. A webhook channel (headless Linux / phone push)
-is a planned follow-up.
+Channels are macOS notifications and a `[notify]` log line; `macos` self-noops
+off Darwin. A webhook channel (headless Linux / phone push) is a planned
+follow-up.
+
+**macOS delivery — the menu-bar app.** On macOS, native banners are delivered by
+the `ThreadKeeperAgentStatus` menu-bar app, not the daemon's `osascript`. The app
+already polls `tk-agent-status` and posts de-duplicated notifications through
+`UNUserNotificationCenter` (the modern API — `osascript display notification` is
+silently suppressed unless it can borrow a signed host, so it is unreliable). It
+is ad-hoc code-signed at build time (`build.sh`), which macOS requires before it
+will register the app in **System Settings ▸ Notifications** and show banners;
+banners are titled **Thread-Keeper** (`CFBundleDisplayName`). The first launch
+after an update shows a one-time permission prompt.
+
+`agent_status` feeds the app two lists — `recent_results` (positive: captured
+skills/lessons) and `recent_failures` (the two failure sources above) — each item
+tagged with a `notify` flag computed from the toggles below. The app **lists**
+every item in its menu but only **posts a banner** for flagged ones, so turning a
+category off silences the banner without hiding the history. Enabling a toggle
+never replays backlog.
+
+**Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
+edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
+on/off categories, a picker for the interval, channel, and cooldown — and writes
+them to `~/.threadkeeper/.env`. `NOTIFY_POLL_S` is the master switch: `0` (Off)
+disables all notifications, including the app's banners.
 
 ### Dialectic user model
 

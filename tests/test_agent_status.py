@@ -640,3 +640,65 @@ def test_is_result_line_ignores_prompt_echo_lines(mp_with_cid):
     assert _is_result_line(
         "Materialized skill e2e-fresh-install-per-suite with a new section."
     )
+
+
+def _insert_failed_task(pkg, task_id, prompt, log_text, role="curator"):
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, ended_at, return_code, role, chosen_cli, rss_kb, "
+        "rss_updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            task_id, os.getpid(), _FAKE_CID, f"child-{task_id}", "/tmp",
+            prompt, now - 30, now - 5, 1, role, "claude", 0, now,
+        ),
+    )
+    pkg["config"].TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (pkg["config"].TASK_LOG_DIR / f"{task_id}.log").write_text(log_text)
+    conn.commit()
+
+
+def test_recent_failures_surfaces_dead_child_with_reason(mp_with_cid, monkeypatch):
+    # A spawned child that died non-zero (subscription-exhausted-mid-run) must
+    # surface in recent_failures with the log-tail reason and notify=True when
+    # notifications are enabled (NOTIFY_POLL_S>0, NOTIFY_LOOP_FAILURE default on).
+    monkeypatch.setenv("THREADKEEPER_NOTIFY_POLL_S", "30")
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_failed_task(
+        pkg,
+        "deadchild",
+        "You are the CURATOR for thread-keeper.\n\nCurate memory.",
+        "starting run\nCredit balance is too low to run this model\n",
+    )
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snap = agent_status_snapshot(refresh=False)
+    fails = {f["task_id"]: f for f in snap["recent_failures"]}
+    assert "deadchild" in fails
+    item = fails["deadchild"]
+    assert item["kind"] == "failure"
+    assert item["notify"] is True
+    assert "credit" in item["summary"].lower()
+    # A live failure never leaks into the positive recent_results feed.
+    assert all(r["task_id"] != "deadchild" for r in snap["recent_results"])
+
+
+def test_recent_failures_notify_flag_off_when_toggle_disabled(
+    mp_with_cid, monkeypatch
+):
+    monkeypatch.setenv("THREADKEEPER_NOTIFY_POLL_S", "30")     # master gate on
+    monkeypatch.setenv("THREADKEEPER_NOTIFY_LOOP_FAILURE", "false")
+    pkg = mp_with_cid(_FAKE_CID)  # factory re-imports fresh → reads the env
+    _insert_failed_task(
+        pkg,
+        "deadchild2",
+        "You are the CURATOR for thread-keeper.\n\nCurate memory.",
+        "boom\nspawn_error token_budget_exceeded\n",
+    )
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snap = agent_status_snapshot(refresh=False)
+    fails = {f["task_id"]: f for f in snap["recent_failures"]}
+    assert "deadchild2" in fails                 # still listed in the menu
+    assert fails["deadchild2"]["notify"] is False  # but no banner posted

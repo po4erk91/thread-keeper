@@ -712,6 +712,16 @@ def _extract_useful_result(task_id: str) -> str:
 
 
 def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+    from . import config
+    # Positive materialization notifications (#257). These are captured skills /
+    # lessons surfaced as useful loop output; the app posts a banner only when
+    # notifications are enabled (NOTIFY_POLL_S master gate) and a positive toggle
+    # is on, but the menu always lists them (`notify` flag).
+    enabled = float(getattr(config, "NOTIFY_POLL_S", 0) or 0) > 0
+    positive_notify = enabled and bool(
+        getattr(config, "NOTIFY_SKILL_MATERIALIZED", False)
+        or getattr(config, "NOTIFY_LESSON", False)
+    )
     role_loop = _role_to_loop()
     rows = conn.execute(
         "SELECT id, prompt, ended_at, return_code FROM tasks "
@@ -742,10 +752,107 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
             "ended_at": ended_at,
             "age_s": age_s,
             "age": fmt_age(age_s),
+            "notify": positive_notify,
         })
         if len(results) >= limit:
             break
     return results
+
+
+def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+    """Loop/spawn failures for the menu-bar app's notification pipeline (#257).
+
+    Two sources, mirroring `notify.py`: dead children (a spawned child that
+    ended non-zero — the subscription-died-mid-run case that stays silent
+    otherwise) and loop admission failures (a `*_pass` whose summary classifies
+    as a failure). Each item carries a `notify` flag so the app posts a banner
+    only when `NOTIFY_LOOP_FAILURE` is on; the menu lists them regardless.
+    """
+    from . import config
+    from .notify import (
+        _LOOP_PASS_KINDS,
+        _reason_from_summary,
+        _reason_from_task_log,
+        classify_summary,
+    )
+    from .spawn_budget import SPAWN_TIMEOUT_RETURN_CODE
+
+    # Master gate (NOTIFY_POLL_S) AND the per-category toggle. The menu lists
+    # every failure; only flagged ones post a banner.
+    enabled = float(getattr(config, "NOTIFY_POLL_S", 0) or 0) > 0
+    notify_flag = enabled and bool(getattr(config, "NOTIFY_LOOP_FAILURE", True))
+    role_loop = _role_to_loop()
+    floor = now - _RESULT_WINDOW_S
+    results: list[dict[str, Any]] = []
+
+    # SOURCE 2 — dead children (the key case behind the reported scenario).
+    try:
+        rows = conn.execute(
+            "SELECT id, prompt, role, chosen_cli, return_code, ended_at "
+            "FROM tasks WHERE ended_at IS NOT NULL AND ended_at>=? "
+            "AND return_code IS NOT NULL AND return_code!=0 AND return_code!=? "
+            "AND timeout_respawned_as IS NULL ORDER BY ended_at DESC LIMIT ?",
+            (floor, SPAWN_TIMEOUT_RETURN_CODE, int(limit) * 2),
+        ).fetchall()
+    except Exception:
+        rows = []
+    for row in rows:
+        role = _detect_role(row["prompt"] or "")
+        loop = role_loop.get(role)
+        label = (
+            loop["name"] if loop
+            else (row["role"] or row["chosen_cli"] or "background agent")
+        )
+        ended_at = int(row["ended_at"] or now)
+        age_s = max(0, now - ended_at)
+        results.append({
+            "id": f"fail:{row['id']}:{ended_at}",
+            "task_id": row["id"],
+            "kind": "failure",
+            "loop_name": label,
+            "title": f"{label} failed (rc={row['return_code']})",
+            "summary": _reason_from_task_log(row["id"]),
+            "ended_at": ended_at,
+            "age_s": age_s,
+            "age": fmt_age(age_s),
+            "notify": notify_flag,
+        })
+
+    # SOURCE 1 — loop admission failures (spawn_error / budget / ERR summaries).
+    ph = ",".join("?" for _ in _LOOP_PASS_KINDS)
+    try:
+        erows = conn.execute(
+            f"SELECT id, kind, summary, created_at FROM events "
+            f"WHERE created_at>=? AND kind IN ({ph}) "
+            f"ORDER BY created_at DESC LIMIT ?",
+            (floor, *_LOOP_PASS_KINDS, int(limit) * 3),
+        ).fetchall()
+    except Exception:
+        erows = []
+    for row in erows:
+        summary = row["summary"] or ""
+        if row["kind"] != "spawn_timeout_retry_failed" \
+                and classify_summary(summary) != "failure":
+            continue
+        loop_kind = row["kind"][:-5] if row["kind"].endswith("_pass") else row["kind"]
+        label = loop_kind.replace("_", " ")
+        created = int(row["created_at"] or now)
+        age_s = max(0, now - created)
+        results.append({
+            "id": f"failev:{row['id']}",
+            "task_id": "",
+            "kind": "failure",
+            "loop_name": label,
+            "title": f"{label} could not run",
+            "summary": _reason_from_summary(summary),
+            "ended_at": created,
+            "age_s": age_s,
+            "age": fmt_age(age_s),
+            "notify": notify_flag,
+        })
+
+    results.sort(key=lambda r: r["ended_at"], reverse=True)
+    return results[:limit]
 
 
 def _timed_out_count(conn, now: int) -> int:
@@ -883,6 +990,7 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "loops": loops,
         "github_budget": github_budget,
         "recent_results": _recent_results(conn, now),
+        "recent_failures": _recent_failures(conn, now),
         "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
     }

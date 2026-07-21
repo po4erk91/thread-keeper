@@ -21,7 +21,16 @@ swiftc \
   -target "$target" \
   -framework SwiftUI \
   -framework AppKit \
+  -framework UserNotifications \
   ThreadKeeperAgentStatus.swift \
   -o "$bin_dir/$app_name"
+
+# UNUserNotificationCenter only delivers from a bundle with a stable code
+# signature. Ad-hoc sign (no cert, no entitlements) is enough to give the app a
+# durable identity so macOS registers it in Notification settings and shows
+# banners. Without this, notification requests are silently dropped.
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - "$app_dir" >/dev/null 2>&1 || true
+fi
 
 echo "$app_dir"

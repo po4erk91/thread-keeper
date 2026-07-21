@@ -9,6 +9,8 @@
   <string>local.threadkeeper.agent-status</string>
   <key>CFBundleName</key>
   <string>ThreadKeeperAgentStatus</string>
+  <key>CFBundleDisplayName</key>
+  <string>Thread-Keeper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

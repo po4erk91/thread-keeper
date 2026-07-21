@@ -12,6 +12,7 @@ struct AgentStatusSnapshot: Decodable {
     let readyLoopCount: Int
     let loops: [LoopStatus]
     let recentResults: [UsefulResult]
+    let recentFailures: [UsefulResult]?
     let agents: [AgentStatus]
 
     enum CodingKeys: String, CodingKey {
@@ -23,6 +24,7 @@ struct AgentStatusSnapshot: Decodable {
         case readyLoopCount = "ready_loop_count"
         case loops
         case recentResults = "recent_results"
+        case recentFailures = "recent_failures"
         case agents
     }
 }
@@ -90,6 +92,12 @@ struct UsefulResult: Decodable, Identifiable {
     let title: String
     let summary: String
     let age: String
+    // When false, the item is listed in the menu but no banner is posted — the
+    // per-category Notifications toggles gate delivery server-side. Absent in
+    // older payloads, where every result was notifiable.
+    let notify: Bool?
+
+    var shouldNotify: Bool { notify ?? true }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -98,6 +106,7 @@ struct UsefulResult: Decodable, Identifiable {
         case title
         case summary
         case age
+        case notify
     }
 }
 
@@ -121,6 +130,7 @@ enum EnvSettingsSection: String, CaseIterable, Identifiable {
     case learningAgents = "Learning Loop Agents"
     case automation = "System Automation"
     case memory = "Memory & Budgets"
+    case notifications = "Notifications"
     case advanced = "Advanced .env"
 
     var id: String { rawValue }
@@ -131,6 +141,7 @@ enum EnvSettingsSection: String, CaseIterable, Identifiable {
         case .learningAgents: return "brain.head.profile"
         case .automation: return "gearshape.2"
         case .memory: return "memorychip"
+        case .notifications: return "bell.badge"
         case .advanced: return "doc.text"
         }
     }
@@ -337,6 +348,30 @@ private let hourScheduleChoices = [
     ChoiceOption("259200", label: "72 h · 3 days"),
     ChoiceOption("604800", label: "168 h · 7 days"),
     ChoiceOption("2592000", label: "720 h · 30 days"),
+]
+
+private let notifyPollChoices = [
+    ChoiceOption("0", label: "Off"),
+    ChoiceOption("30", label: "30 s"),
+    ChoiceOption("60", label: "60 s"),
+    ChoiceOption("120", label: "2 min"),
+    ChoiceOption("300", label: "5 min"),
+]
+
+private let notifyChannelChoices = [
+    ChoiceOption("macos,log", label: "Banner + log"),
+    ChoiceOption("macos", label: "Banner only"),
+    ChoiceOption("log", label: "Log only"),
+]
+
+private let notifyCooldownChoices = [
+    ChoiceOption("0", label: "No cooldown"),
+    ChoiceOption("300", label: "5 min"),
+    ChoiceOption("900", label: "15 min"),
+    ChoiceOption("1800", label: "30 min"),
+    ChoiceOption("3600", label: "1 h"),
+    ChoiceOption("10800", label: "3 h"),
+    ChoiceOption("21600", label: "6 h"),
 ]
 
 private let scheduleDefaultValues: [String: String] = [
@@ -555,6 +590,54 @@ private let baseEnvSettingDefinitions: [EnvSettingDefinition] = [
         detail: "Number of MCP server processes to keep after reclaim.",
         defaultValue: "1",
         kind: .choice(serverCountChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_POLL_S",
+        title: "Notifications",
+        detail: "Master switch. How often to check loop health; Off disables all notifications.",
+        defaultValue: "0",
+        kind: .choice(notifyPollChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_CHANNEL",
+        title: "Delivery channel",
+        detail: "Native macOS banner, a log line, or both.",
+        defaultValue: "macos,log",
+        kind: .choice(notifyChannelChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_FAILURE_COOLDOWN_S",
+        title: "Failure cooldown",
+        detail: "Minimum gap between repeats of one loop's failure, so a lapsed subscription is one alert, not a storm.",
+        defaultValue: "3600",
+        kind: .choice(notifyCooldownChoices)
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_LOOP_FAILURE",
+        title: "Loop / spawn failure",
+        detail: "Alert when a background loop can't bring up its model/CLI (credits, auth, missing binary) or a child dies mid-run.",
+        defaultValue: "true",
+        kind: .toggle
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_SKILL_MATERIALIZED",
+        title: "Skill materialized",
+        detail: "Alert when a skill is captured.",
+        defaultValue: "false",
+        kind: .toggle
+    ),
+    EnvSettingDefinition(
+        group: "Notifications",
+        key: "THREADKEEPER_NOTIFY_LESSON",
+        title: "Lesson added",
+        detail: "Alert when a lesson is appended.",
+        defaultValue: "false",
+        kind: .toggle
     ),
 ]
 struct EnvPresetSlot: Codable, Identifiable {
@@ -1522,6 +1605,7 @@ final class AgentStatusStore: ObservableObject {
         readyLoopCount: 0,
         loops: [],
         recentResults: [],
+        recentFailures: [],
         agents: []
     )
     @Published var lastError: String?
@@ -1578,7 +1662,9 @@ final class AgentStatusStore: ObservableObject {
                 self.isRefreshing = false
                 switch result {
                 case .success(let newSnapshot):
-                    self.handleUsefulResults(newSnapshot.recentResults)
+                    self.handleUsefulResults(
+                        newSnapshot.recentResults + (newSnapshot.recentFailures ?? [])
+                    )
                     self.snapshot = newSnapshot
                     self.lastError = nil
                     self.refreshThreadKeeperToggleState()
@@ -1691,7 +1777,11 @@ final class AgentStatusStore: ObservableObject {
 
         var changed = false
         for result in results.reversed() where !seenResultIds.contains(result.id) {
-            postNotification(for: result)
+            // Gate delivery on the per-category toggle, but always mark seen so
+            // enabling a toggle later never replays historical backlog.
+            if result.shouldNotify {
+                postNotification(for: result)
+            }
             seenResultIds.insert(result.id)
             changed = true
         }
@@ -2312,6 +2402,7 @@ struct EnvSettingsView: View {
         case .learningAgents: learningAgentsSection
         case .automation: automationSection
         case .memory: memorySection
+        case .notifications: notificationsSection
         case .advanced: advancedSection
         }
     }
@@ -2392,6 +2483,36 @@ struct EnvSettingsView: View {
                     title: "Memory and resource limits",
                     definitions: baseEnvSettingDefinitions.filter {
                         $0.group == "Memory And Budgets"
+                    },
+                    envStore: envStore
+                )
+            }
+        }
+    }
+
+    private var notificationsSection: some View {
+        SettingsScroll(
+            title: "Notifications",
+            subtitle: "Native macOS banners when a background loop can't run — or when a skill/lesson is captured. All off until you pick an interval."
+        ) {
+            LazyVGrid(columns: automationColumns, alignment: .leading, spacing: 14) {
+                EnvSettingSection(
+                    title: "Delivery",
+                    definitions: baseEnvSettingDefinitions.filter {
+                        $0.group == "Notifications"
+                            && ($0.key == "THREADKEEPER_NOTIFY_POLL_S"
+                                || $0.key == "THREADKEEPER_NOTIFY_CHANNEL"
+                                || $0.key == "THREADKEEPER_NOTIFY_FAILURE_COOLDOWN_S")
+                    },
+                    envStore: envStore
+                )
+                EnvSettingSection(
+                    title: "What to notify",
+                    definitions: baseEnvSettingDefinitions.filter {
+                        $0.group == "Notifications"
+                            && ($0.key == "THREADKEEPER_NOTIFY_LOOP_FAILURE"
+                                || $0.key == "THREADKEEPER_NOTIFY_SKILL_MATERIALIZED"
+                                || $0.key == "THREADKEEPER_NOTIFY_LESSON")
                     },
                     envStore: envStore
                 )
