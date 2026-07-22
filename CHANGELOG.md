@@ -20,6 +20,14 @@ version bumps follow semver per the policy in
   pidfile younger than the threshold is treated as a booting host and left
   alone. Recovery emits `host_wedged_sigterm`/`host_wedged_sigkill` events.
 
+### Fixed
+
+- **Skill watcher preserves discovered-skill age.** New `skill_usage` rows now
+  use a filesystem birth timestamp when available rather than an external
+  edit's mtime; filesystems without birth-time support fall back to mtime
+  capped at discovery time. `last_patched_at` continues to record the edit
+  signal used by the watcher.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed
