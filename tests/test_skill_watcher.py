@@ -11,6 +11,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +89,35 @@ def test_scan_once_creates_row_for_new_skill(tmp_path, monkeypatch):
     assert row["created_by_origin"] == "foreground"
     assert row["last_patched_at"] == int(md.stat().st_mtime)
     assert row["patch_count"] == 1
+
+
+def test_scan_once_uses_birthtime_for_new_skill(tmp_path, monkeypatch):
+    """New rows keep the file's birth time even after a much later edit."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    md = _write_skill(pkg["skills_root"], "old-but-edited")
+    birthtime = getattr(md.stat(), "st_birthtime", None)
+    if birthtime is None or birthtime <= 0:
+        pytest.skip("filesystem does not expose a birth timestamp")
+    old_birthtime = int(birthtime)
+    edited_at = old_birthtime + 90 * 86400
+    os.utime(md, (edited_at, edited_at))
+
+    conn = pkg["db"].get_db()
+    assert pkg["skill_watcher"]._scan_once(conn) == 1
+    row = conn.execute(
+        "SELECT created_at, last_patched_at FROM skill_usage "
+        "WHERE name='old-but-edited'"
+    ).fetchone()
+
+    assert row["created_at"] == old_birthtime
+    assert row["last_patched_at"] == edited_at
+
+
+def test_created_at_falls_back_to_mtime_capped_at_scan_time(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    stat_result = SimpleNamespace(st_mtime=500, st_birthtime=None)
+
+    assert pkg["skill_watcher"]._created_at(stat_result, now=100) == 100
 
 
 def test_scan_once_bumps_when_mtime_advances(tmp_path, monkeypatch):

@@ -240,9 +240,14 @@ Steady-state access is split by intent:
    pruning is owned by the retention daemon, not by read tools.
 
 5. **skill_usage** — telemetry for mirrored Skill.md entries. Fields:
-   `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
+   `created_at`, `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
-   background_review vs shadow_review). This is the input for the curator.
+   background_review vs shadow_review). Agent-created skills set `created_at`
+   directly through `skill_manage`; for skills first found by `skill_watcher`,
+   it is the filesystem `st_birthtime` when available (macOS/Windows), falling
+   back to `min(mtime, scan time)` on filesystems without a birth timestamp.
+   `last_patched_at` remains the external-edit mtime. This is the input for the
+   curator.
 
 6. **lesson_usage** — telemetry for `lessons.md` slugs. `lesson_list` bumps
    `view_count`, `lesson_get` bumps `use_count`, and the curator uses
@@ -343,7 +348,9 @@ All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable th
   Parent-alive retirement is opt-in via `MEMORY_GUARD_RETIRE_LIVE`.
 - **skill_watcher** — once per `SKILL_WATCH_INTERVAL_S` (default 5 s) walks
   the primary `~/.claude/skills/*/SKILL.md` root and bumps `last_patched_at`
-  if the file was changed outside `skill_manage`.
+  if the file was changed outside `skill_manage`. When first backfilling a
+  row, it uses the file birth time where available, otherwise the mtime capped
+  at scan time, so creation age and patch activity stay distinct.
 - **skill_updater** — once per `SKILL_UPDATE_INTERVAL_S` (default 302400 s,
   twice weekly) runs single-flight across live MCP servers, imports the newest
   local installed skill copy from any configured CLI root into the primary
