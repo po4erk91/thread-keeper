@@ -80,13 +80,16 @@ on GitHub.
 # 1. Bump version in pyproject.toml on a normal PR branch
 $EDITOR pyproject.toml         # version = "0.4.0" → "0.4.1"
 
-# 2. Bump both server.json version fields to the same value
+# 2. Bump the Dockerfile Glama-eval pin to the same version
+$EDITOR Dockerfile              # threadkeeper==0.4.0 → threadkeeper==0.4.1
+
+# 3. Bump both server.json version fields to the same value
 $EDITOR server.json
 
-# 3. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
+# 4. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
 $EDITOR CHANGELOG.md
 
-# 4. Commit, open a PR, and merge it to main after tests pass
+# 5. Commit, open a PR, and merge it to main after tests pass
 git commit -am "release: 0.4.1"
 ```
 
