@@ -7,10 +7,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install threadkeeper from PyPI. Skip the [semantic] extra (~700 MB
-# fastembed ONNX model) — Glama only inspects the MCP tool schema, not
+# Install the release this checkout declares. Skip the [semantic] extra (~700
+# MB fastembed ONNX model) — Glama only inspects the MCP tool schema, not
 # embedding quality.
-RUN pip install --no-cache-dir threadkeeper
+RUN pip install --no-cache-dir threadkeeper==0.16.3
 
 # Don't spawn shadow-review / curator / probe / dialectic daemons in
 # the Glama sandbox — they would try to invoke claude / codex / agy

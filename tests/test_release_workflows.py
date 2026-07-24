@@ -1,10 +1,12 @@
 from pathlib import Path
+import tomllib
 
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
+DOCKERFILE = ROOT / "Dockerfile"
 
 BOT_TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -85,3 +87,10 @@ def test_releasing_docs_describe_the_approval_flow():
     assert "The output must include a `required_reviewers` rule" in docs
     # The manual signed-tag path stays documented as backfill/override.
     assert "git tag -s" in docs
+    assert "Dockerfile Glama-eval pin" in docs
+
+
+def test_glama_dockerfile_pin_matches_the_project_release():
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+
+    assert f"threadkeeper=={version}" in DOCKERFILE.read_text()
