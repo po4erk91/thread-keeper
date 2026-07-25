@@ -9,6 +9,29 @@ def _loop(snapshot, loop_id: str):
     return {row["id"]: row for row in snapshot["loops"]}[loop_id]
 
 
+def test_daemon_health_is_additive_without_schema_version_bump(mp_with_cid):
+    pkg = mp_with_cid("33334444-5555-6666-7777-888899990000")
+    db = pkg["db"]
+    conn = db.get_db()
+    conn.execute("DROP TABLE daemon_health")
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    conn.close()
+
+    db._BOOTSTRAPPED = False
+    db.bootstrap_db()
+
+    conn = db.get_db()
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='daemon_health'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+
 def test_enabled_missing_thread_reports_dead(mp_with_cid):
     pkg = mp_with_cid("33334444-5555-6666-7777-888899990000")
     pkg["config"].EXTRACT_INTERVAL_S = 10

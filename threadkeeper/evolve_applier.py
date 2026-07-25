@@ -167,6 +167,10 @@ DO, strictly in order:
 HARD CONSTRAINTS (non-negotiable):
   • NEVER commit, push, or force-push to main. main has branch protection.
   • NEVER merge the PR — a human does that.
+  • For every Python/CLI/test command that imports checkout code, set
+    THREADKEEPER_DB to a task-local temporary database and
+    THREADKEEPER_DISABLE_BG_DAEMONS=1. Use configured thread-keeper MCP tools
+    for live state; never import checkout code against the inherited live DB.
   • If you CANNOT make the full suite green, do NOT open a PR and do NOT call
     evolve_mark_applied. Broadcast a one-line failure summary and stop.
   • When you report, paraphrase in plain language; don't cite internal IDs.

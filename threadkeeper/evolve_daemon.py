@@ -218,6 +218,11 @@ OUTPUTS
 HARD CONSTRAINTS
 ----------------
   - Do not implement roadmap issues. That is evolve_applier's job.
+  - The managed checkout is isolated from the live ThreadKeeper DB. For every
+    Python/CLI/test command that imports checkout code, set THREADKEEPER_DB to
+    a task-local temporary database and THREADKEEPER_DISABLE_BG_DAEMONS=1.
+    Use the configured thread-keeper MCP tools for live queue/thread updates;
+    never import checkout `threadkeeper` code against the inherited live DB.
   - Do not close issues unless they are exact duplicates and you state which
     issue supersedes them.
   - Do not create duplicate issues. Search open and closed issues first.
