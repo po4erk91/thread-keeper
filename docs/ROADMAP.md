@@ -945,9 +945,10 @@ Complements decay scoring (#27) and write-time dedup (#34). Scope: S–M.
 A follow-up audit surfaced a handful of concrete gaps that are now tracked as
 GitHub issues:
 
-- **Lesson consultation telemetry.** Lessons have no per-entry
-  read/consultation counts, so decay and prune logic cannot tell \"never read\"
-  from \"recently consulted\" (#160).
+- **Lesson consultation telemetry.** ✅ DONE (#160). `lesson_list` now
+  records views and `lesson_get` records full-body consultations in
+  `lesson_usage`; the curator inventory and stale-lesson decay score use those
+  counters and timestamps rather than registration age alone.
 - **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
   shadow edit path that can fix long lessons without re-transcribing them from
   scratch (#161).
