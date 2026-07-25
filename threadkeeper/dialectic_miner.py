@@ -438,13 +438,13 @@ def start_dialectic_miner_daemon() -> None:
     """Idempotent. Mechanical capture needs no embeddings, so it is gated only
     by BACKGROUND_DAEMONS_ALLOWED (not SEMANTIC_AVAILABLE)."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("dialectic_miner"):
         return
     if DIALECTIC_MINE_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(target=_serve_loop, name="dialectic_miner", daemon=True)
-    t.start()
+    start_daemon_thread("dialectic_miner", _serve_loop)
     _started = True

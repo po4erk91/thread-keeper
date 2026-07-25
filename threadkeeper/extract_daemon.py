@@ -144,7 +144,8 @@ def start_extract_daemon() -> None:
     spawned/background children refuse to start the daemon so spawn()
     doesn't recurse."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("extract_daemon"):
         return
     if EXTRACT_INTERVAL_S <= 0:
         return
@@ -153,8 +154,5 @@ def start_extract_daemon() -> None:
         return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire extract from here
-    t = threading.Thread(
-        target=_serve_loop, name="extract_daemon", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("extract_daemon", _serve_loop)
     _started = True

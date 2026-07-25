@@ -309,6 +309,22 @@ read via `identity._session_id` attr-access, pinned by the test
 `identity._ensure_session()` brings up background threads on first call.
 All daemon threads are cheap (ticks 0.5–30 s), no-op when env-knobs disable them:
 
+**Thread liveness and supervision.** Every evented daemon is registered with
+its thread name, interval knob, and lazy starter. The starter keeps the live
+`Thread` object rather than trusting its historical `_started` latch, so a
+thread that exits can be started again. The daemon host's lightweight
+supervisor (`THREADKEEPER_DAEMON_SUPERVISOR_INTERVAL_S`, default 30 s; `0`
+disables it) persists one mutable `daemon_health` row per loop and emits a
+`daemon_restarted` event when it revives one. This avoids a heartbeat event
+stream while allowing thin MCP servers to report host-owned thread state.
+
+`agent_status` JSON, `mp_health()`, and `mp_dashboard()` expose each loop's
+`thread_alive`, latest successful-pass age, and `ok` / `stale` / `dead` /
+`disabled` verdict. A repeated `*_running` single-flight tick is not treated
+as pass success, so an alive loop that never completes a pass becomes `stale`
+after `THREADKEEPER_DAEMON_STALE_INTERVALS` (default 3) intervals. Stale is
+observability only: the supervisor restarts dead threads, never a live child.
+
 - **background_ingester** (`ingest._start_background_ingester`) — ticks every
   `INGEST_INTERVAL_S` (default 3 s), reads fresh jsonl chunks, tops up
   dialog_messages/_fts and backfills NULL-embeddings on notes.

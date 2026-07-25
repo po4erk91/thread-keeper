@@ -1090,6 +1090,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE` | false | allow overwriting inferred untracked local skill copies; default false only adopts exact matches |
 | `THREADKEEPER_CONFIG_WATCH_INTERVAL_S` | 2 | hot-config reload: poll the universal `~/.threadkeeper/.env` (every host) + the host CLI's env-block file and re-apply changed env knobs in-process (no CLI restart); 0 disables |
 | `THREADKEEPER_CONFIG_WATCH_PATH` | "" | escape hatch: pin ONE settings file to watch (single-file mode); when unset, hybrid mode watches `.env` + the CLI file resolved via host identity |
+| `THREADKEEPER_DAEMON_SUPERVISOR_INTERVAL_S` | 30 | daemon-host watchdog cadence; it records thread liveness and restarts an enabled loop whose thread exited. Set `0` to disable restart supervision while retaining status reporting |
+| `THREADKEEPER_DAEMON_STALE_INTERVALS` | 3 | number of configured loop intervals without a completed pass before a live daemon is reported as `stale`; this never kills a running child |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |

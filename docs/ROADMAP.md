@@ -595,6 +595,14 @@ the three bare-`time.sleep` loops onto it), pruning `_last_notify_at` of
 past-cooldown / dead-pid entries each `_maybe_notify`, and collapsing
 consecutive no-op janitor passes into a single recorded row. Scope: S.
 
+**Daemon-thread liveness and supervision (done, #114).** Enabled evented
+loops now retain their `Thread` objects instead of relying on an irreversible
+`_started` latch; the host supervisor observes and restarts an exited thread,
+records a compact per-loop health row, and emits `daemon_restarted` for an
+auditable recovery. `agent_status`, `mp_health`, and `mp_dashboard` distinguish
+`disabled`, `dead`, `stale`, and `ok`; a succession of `*_running`
+single-flight records does not hide a missing completed pass. Scope: M.
+
 **Daemon robustness under load.** ✅ PARTIAL (#24/#53/#105). Curator
 single-flight has landed, #53 unified the fcntl single-flight helper across the
 spawning daemon family, and #105 bounds Curator inventory prompts plus the

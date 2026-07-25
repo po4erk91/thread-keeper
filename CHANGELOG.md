@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Added: daemon-thread liveness supervision (#114).** Evented daemon
+  starters now retain and re-check their named `Thread` instead of letting a
+  stale `_started` flag make an exited loop unrestartable. The daemon host's
+  opt-out supervisor (`THREADKEEPER_DAEMON_SUPERVISOR_INTERVAL_S=30`) restarts
+  enabled dead threads, records compact `daemon_health` state for thin
+  servers, and emits `daemon_restarted` recovery events. `agent_status`,
+  `mp_health`, and `mp_dashboard` now show `thread_alive`, last successful-pass
+  age, and `ok` / `stale` / `dead` / `disabled`; repeated single-flight
+  `*_running` ticks no longer count as successful completion. Set
+  `THREADKEEPER_DAEMON_STALE_INTERVALS` (default 3) to tune stale reporting.
 - **Fixed: wedged-but-alive daemon-host is now recovered (#223).** A host
   whose heartbeat loop wedged while the process stayed up kept holding the
   election flock, so every replacement spawn exited 0 and the machine

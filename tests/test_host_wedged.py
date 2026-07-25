@@ -16,6 +16,7 @@ import sys, importlib, threading, time
 def _reimport(monkeypatch, tmp_path):
     for k, v in {"THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
                  "THREADKEEPER_DAEMON_HOST": "1",
+                 "THREADKEEPER_ROLE": "server",
                  "THREADKEEPER_DISABLE_BG_DAEMONS": "1"}.items():
         monkeypatch.setenv(k, v)
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:

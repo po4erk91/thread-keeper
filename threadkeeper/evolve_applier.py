@@ -3149,15 +3149,13 @@ def start_evolve_applier_daemon() -> None:
     children / non-foreground origins refuse to start it so spawn() can't
     recurse (same cascade prevention as the other daemons)."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("evolve_applier_daemon"):
         return
     if EVOLVE_APPLY_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="evolve_applier_daemon", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("evolve_applier_daemon", _serve_loop)
     _started = True

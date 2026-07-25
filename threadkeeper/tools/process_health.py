@@ -7,6 +7,7 @@ loaded). These tools surface the situation and let you clean up.
 
 from .._mcp import read_tool, write_tool, structured_result
 from .. import process_health
+from ..agent_status import daemon_liveness_statuses
 from ..tool_schemas import MpHealth, MpProcess
 
 
@@ -18,8 +19,9 @@ def mp_health() -> MpHealth:
     heartbeat from its session).
 
     Self (the process answering this call) is always marked is_self=true
-    and never flagged as orphan. Returns structuredContent (MpHealth) plus
-    the legacy text block."""
+    and never flagged as orphan. The text view also includes each registered
+    daemon thread's liveness verdict. Returns structuredContent (MpHealth)
+    plus the legacy text block."""
     procs = process_health.scan()
     total_kb = sum(p["rss_kb"] for p in procs)
     orphans = [p for p in procs if p.get("is_orphaned")]
@@ -31,13 +33,14 @@ def mp_health() -> MpHealth:
         rss_total_mb=total_kb // 1024,
         processes=[MpProcess(**p) for p in procs],
     )
-    if not procs:
-        return structured_result("no_mp_processes_running", model)
-
-    out = [
-        f"total={len(procs)} live={len(live)} orphans={len(orphans)} "
-        f"rss_total={total_kb // 1024}MB"
-    ]
+    out = (
+        ["no_mp_processes_running"]
+        if not procs
+        else [
+            f"total={len(procs)} live={len(live)} orphans={len(orphans)} "
+            f"rss_total={total_kb // 1024}MB"
+        ]
+    )
     for p in procs:
         flag = "self" if p["is_self"] else ("ORPHAN" if p["is_orphaned"] else "live")
         hb = p["heartbeat_age_s"]
@@ -48,6 +51,15 @@ def mp_health() -> MpHealth:
             f"  pid={p['pid']:<6} ppid={p['ppid']:<6} ({parent})  "
             f"rss={rss_mb}MB  hb={hb_disp}  etime={p['etime']}  "
             f"[{flag}]  {p.get('orphan_reason','-')}"
+        )
+    daemon_rows = daemon_liveness_statuses()
+    out.append("\ndaemon_threads")
+    for daemon in daemon_rows:
+        out.append(
+            f"  {daemon['id']} enabled={daemon['enabled']} "
+            f"thread_alive={daemon['thread_alive']} "
+            f"verdict={daemon['verdict']} "
+            f"last_success={daemon['last_success_age']}"
         )
     if orphans:
         out.append(

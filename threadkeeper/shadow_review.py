@@ -671,7 +671,8 @@ def start_shadow_daemon() -> None:
     the semantic guard as a second belt for older slim children.
     """
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("shadow_review"):
         return
     if SHADOW_REVIEW_INTERVAL_S <= 0:
         return
@@ -680,8 +681,5 @@ def start_shadow_daemon() -> None:
         return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire shadow review from here
-    t = threading.Thread(
-        target=_serve_loop, name="shadow_review", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("shadow_review", _serve_loop)
     _started = True

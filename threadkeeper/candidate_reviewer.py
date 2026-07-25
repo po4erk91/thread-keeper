@@ -429,7 +429,8 @@ def start_candidate_reviewer_daemon() -> None:
     """Idempotent daemon starter. Uses the same spawned/background child
     cascade prevention as shadow_review / curator / extract."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("candidate_reviewer"):
         return
     if CANDIDATE_REVIEW_INTERVAL_S <= 0:
         return
@@ -438,8 +439,5 @@ def start_candidate_reviewer_daemon() -> None:
         return
     if not SEMANTIC_AVAILABLE:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="candidate_reviewer", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("candidate_reviewer", _serve_loop)
     _started = True

@@ -34,7 +34,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -502,6 +502,16 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     last_run_at INTEGER NOT NULL
 );
 
+-- Current in-process daemon-thread observations, written by the daemon host.
+-- One row per daemon avoids turning the events log into a 30-second heartbeat
+-- stream while allowing thin MCP servers to report host-owned thread state.
+CREATE TABLE IF NOT EXISTS daemon_health (
+    name              TEXT PRIMARY KEY,
+    thread_alive      INTEGER NOT NULL,
+    thread_started_at INTEGER,
+    observed_at       INTEGER NOT NULL
+);
+
 -- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
 -- across foreground status processes, reviewer/applier daemons, and spawned
 -- gh-wrapper children so one account-level throttle stops all workers.
@@ -871,7 +881,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3):
+    if from_version not in (0, 1, 2, 3, 4):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"

@@ -19,6 +19,7 @@ from .db import get_db
 from .github_budget import format_github_budget, github_budget_state
 from .helpers import alive, fmt_age
 from .agent_metadata import role_metadata
+from .daemon_liveness import daemon_thread_status
 
 
 _ROLE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -257,6 +258,41 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
     },
 )
 
+# This is the daemon registry as well as the status-loop registry.  Imports
+# remain lazy in the supervisor so merely rendering status never imports every
+# daemon module (or starts a background loop as a side effect).
+_DAEMON_BINDINGS: dict[str, tuple[str, str, str]] = {
+    "ingest": ("thread-keeper-live-ingest", "ingest", "_start_background_ingester"),
+    "retention": ("retention", "retention", "start_retention_daemon"),
+    "shadow_review": ("shadow_review", "shadow_review", "start_shadow_daemon"),
+    "extract": ("extract_daemon", "extract_daemon", "start_extract_daemon"),
+    "candidate_reviewer": (
+        "candidate_reviewer", "candidate_reviewer", "start_candidate_reviewer_daemon",
+    ),
+    "curator": ("curator", "curator", "start_curator_daemon"),
+    "dialectic_miner": (
+        "dialectic_miner", "dialectic_miner", "start_dialectic_miner_daemon",
+    ),
+    "dialectic_validator": (
+        "dialectic_validator", "dialectic_validator", "start_dialectic_validator_daemon",
+    ),
+    "evolve_review": ("evolve_daemon", "evolve_daemon", "start_evolve_daemon"),
+    "evolve_apply": (
+        "evolve_applier_daemon", "evolve_applier", "start_evolve_applier_daemon",
+    ),
+    "probe": ("probe_daemon", "probe_daemon", "start_probe_daemon"),
+    "thread_janitor": ("thread_janitor", "thread_janitor", "start_thread_janitor"),
+    "auto_update": ("auto_update_daemon", "auto_update", "start_auto_update_daemon"),
+    "skill_update": ("skill_update_daemon", "skill_updater", "start_skill_update_daemon"),
+}
+for _loop_def in _LOOP_DEFS:
+    _thread_name, _module_name, _start_name = _DAEMON_BINDINGS[_loop_def["id"]]
+    _loop_def.update(
+        thread_name=_thread_name,
+        starter_module=_module_name,
+        starter_name=_start_name,
+    )
+
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
 _ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
@@ -475,6 +511,104 @@ def _last_event(conn, kind: str | tuple[str, ...], now: int) -> dict[str, Any]:
     }
 
 
+def _last_successful_pass(conn, kind: str | tuple[str, ...], now: int) -> dict[str, Any]:
+    """Latest completed pass, ignoring repeated single-flight ``*_running`` ticks.
+
+    The loop still records those ticks for diagnostics, but they only prove
+    that the scheduler woke up — not that the enabled loop completed work.
+    """
+    kinds = (kind,) if isinstance(kind, str) else tuple(k for k in kind if k)
+    if not kinds:
+        kinds = ("",)
+    placeholders = ",".join("?" for _ in kinds)
+    try:
+        row = conn.execute(
+            f"SELECT summary, created_at FROM events WHERE kind IN ({placeholders}) "
+            "AND lower(COALESCE(summary, '')) NOT LIKE '%_running%' "
+            "AND lower(COALESCE(summary, '')) NOT LIKE '%single-flight lock%' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            kinds,
+        ).fetchone()
+    except Exception:
+        row = None
+    if not row:
+        return {"summary": "", "at": None, "age_s": None, "age": "never"}
+    age_s = max(0, now - int(row["created_at"] or now))
+    return {
+        "summary": row["summary"] or "",
+        "at": row["created_at"],
+        "age_s": age_s,
+        "age": fmt_age(age_s),
+    }
+
+
+def _daemon_health(
+    conn, loop: dict[str, Any], interval_s: float, now: int
+) -> dict[str, Any]:
+    """Return local-or-host daemon liveness plus a non-destructive verdict."""
+    enabled = interval_s > 0
+    from . import config
+
+    local = daemon_thread_status(loop["thread_name"])
+    observed_at = None
+    # Thin servers cannot enumerate the daemon host's threads.  Prefer a fresh
+    # host observation when no local live thread exists.
+    if (
+        not local["thread_alive"]
+        and config.DAEMON_HOST_ENABLED
+        and config.PROCESS_ROLE == "server"
+    ):
+        try:
+            row = conn.execute(
+                "SELECT thread_alive, thread_started_at, observed_at "
+                "FROM daemon_health WHERE name=?",
+                (loop["id"],),
+            ).fetchone()
+        except Exception:
+            row = None
+        if row:
+            local = {
+                "thread_alive": bool(row["thread_alive"]),
+                "thread_started_at": row["thread_started_at"],
+            }
+            observed_at = row["observed_at"]
+            max_age = max(2.0, float(config.DAEMON_SUPERVISOR_INTERVAL_S or 0) * 2)
+            if now - int(observed_at or 0) > max_age:
+                local["thread_alive"] = False
+
+    successful = _last_successful_pass(
+        conn, loop.get("result_events", loop["event"]), now
+    )
+    started_at = local["thread_started_at"]
+    success_at = successful["at"]
+    if success_at is not None and started_at is not None and success_at < started_at:
+        success_at = None  # a restart gets a full stale grace window
+    if success_at is None and started_at is not None:
+        success_age_s: int | None = max(0, now - int(started_at))
+    elif success_at is None:
+        success_age_s = None
+    else:
+        success_age_s = max(0, now - int(success_at))
+
+    if not enabled:
+        verdict = "disabled"
+    elif not local["thread_alive"]:
+        verdict = "dead"
+    else:
+        intervals = max(1, int(getattr(config, "DAEMON_STALE_INTERVALS", 3) or 3))
+        stale_after_s = max(1.0, interval_s) * intervals
+        verdict = "stale" if success_age_s is not None and success_age_s > stale_after_s else "ok"
+    return {
+        "thread_alive": bool(local["thread_alive"]),
+        "thread_started_at": started_at,
+        "thread_observed_at": observed_at,
+        "last_success_at": successful["at"],
+        "last_success_age_s": success_age_s,
+        "last_success_age": fmt_age(success_age_s) if success_age_s is not None else "never",
+        "verdict": verdict,
+    }
+
+
 def _human_summary(summary: str, fallback: str) -> str:
     s = (summary or "").strip()
     if not s:
@@ -541,6 +675,7 @@ def _loop_status(
     ready_backlog_min = int(loop.get("ready_backlog_min", 0) or 0)
     backlog = _backlog_count(conn, loop, now)
     last = _last_event(conn, loop.get("result_events", loop["event"]), now)
+    health = _daemon_health(conn, loop, interval_s, now)
     running = agents_by_role.get(loop.get("role", ""), [])
     rss_mb = sum(a["rss_mb"] for a in running)
     due = False
@@ -594,6 +729,7 @@ def _loop_status(
         "running_agent_count": len(running),
         "rss_mb": rss_mb,
         "rss_kb": rss_mb * 1024,
+        **health,
     }
 
 
@@ -614,6 +750,31 @@ def _loop_statuses(conn, agents: list[dict[str, Any]], now: int) -> list[dict[st
     for row in loops:
         row.pop("_order", None)
     return loops
+
+
+def daemon_liveness_statuses(conn=None, now: int | None = None) -> list[dict[str, Any]]:
+    """Read-only daemon-thread liveness rows for status tools and dashboards."""
+    own_conn = conn is None
+    if conn is None:
+        conn = get_db()
+    at = int(time.time() if now is None else now)
+    try:
+        from . import config
+
+        rows = []
+        for loop in _LOOP_DEFS:
+            interval_s = float(getattr(config, loop["interval"], 0) or 0)
+            rows.append({
+                "id": loop["id"],
+                "name": loop["name"],
+                "enabled": interval_s > 0,
+                "interval_s": interval_s,
+                **_daemon_health(conn, loop, interval_s, at),
+            })
+        return rows
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _role_to_loop() -> dict[str, dict[str, str]]:
@@ -1012,7 +1173,10 @@ def format_agent_status(snapshot: dict[str, Any]) -> str:
             backlog = f" backlog={loop['backlog_count']} {loop['backlog_label']}"
         lines.append(
             f"  {loop['name']} status={loop['status']} "
-            f"last={loop['last_age']} rss={loop['rss_mb']}MB{backlog} "
+            f"verdict={loop.get('verdict', 'unknown')} "
+            f"thread_alive={loop.get('thread_alive', False)} "
+            f"last={loop['last_age']} success={loop.get('last_success_age', 'never')} "
+            f"rss={loop['rss_mb']}MB{backlog} "
             f"desc={json.dumps(loop.get('description', ''), ensure_ascii=False)} "
             f"work={json.dumps(loop['work'], ensure_ascii=False)}"
         )

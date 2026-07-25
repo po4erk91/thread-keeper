@@ -149,15 +149,13 @@ def start_thread_janitor() -> None:
     foreground origins refuse to start it, so a review child the janitor
     triggers can't spin up its own janitor."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("thread_janitor"):
         return
     if THREAD_JANITOR_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="thread_janitor", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("thread_janitor", _serve_loop)
     _started = True
