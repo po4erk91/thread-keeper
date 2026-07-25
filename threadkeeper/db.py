@@ -9,6 +9,7 @@ import random
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
@@ -502,6 +503,16 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     last_run_at INTEGER NOT NULL
 );
 
+-- Current in-process daemon-thread observations, written by the daemon host.
+-- One row per daemon avoids turning the events log into a 30-second heartbeat
+-- stream while allowing thin MCP servers to report host-owned thread state.
+CREATE TABLE IF NOT EXISTS daemon_health (
+    name              TEXT PRIMARY KEY,
+    thread_alive      INTEGER NOT NULL,
+    thread_started_at INTEGER,
+    observed_at       INTEGER NOT NULL
+);
+
 -- Shared GitHub API rate-limit/cooldown ledger. Roadmap automation uses this
 -- across foreground status processes, reviewer/applier daemons, and spawned
 -- gh-wrapper children so one account-level throttle stops all workers.
@@ -633,6 +644,21 @@ CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE OF content ON notes BEGIN
     INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
     INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
+"""
+
+# Optional additive tables that are safe for older builds to ignore.
+#
+# These are materialized during bootstrap even when user_version is already
+# current.  That lets a feature branch add isolated telemetry without claiming
+# an incompatible global schema version and breaking still-running clients.
+# Keep this block strictly backward-compatible: CREATE ... IF NOT EXISTS only.
+ADDITIVE_RUNTIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS daemon_health (
+    name              TEXT PRIMARY KEY,
+    thread_alive      INTEGER NOT NULL,
+    thread_started_at INTEGER,
+    observed_at       INTEGER NOT NULL
+);
 """
 
 # Historical column migrations layered on top of the baseline SCHEMA.
@@ -910,6 +936,24 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     _set_user_version(conn, CURRENT_SCHEMA_VERSION)
 
 
+def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
+    """Materialize backward-compatible tables without a version migration."""
+    for statement in _iter_sql_statements(ADDITIVE_RUNTIME_SCHEMA):
+        conn.execute(statement)
+
+
+def _guard_managed_checkout_live_db() -> None:
+    """Keep unmerged evolve-checkout code away from its co-located live DB."""
+    package_root = Path(__file__).resolve().parent.parent
+    managed_checkout = (DB_PATH.parent / "evolve-repo").resolve()
+    if package_root == managed_checkout:
+        raise RuntimeError(
+            "managed evolve checkout cannot open the live ThreadKeeper DB; "
+            "set THREADKEEPER_DB to an isolated task database or use the "
+            "configured ThreadKeeper MCP server"
+        )
+
+
 def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
     """Bring the DB to CURRENT_SCHEMA_VERSION, exactly once across processes.
 
@@ -1117,6 +1161,7 @@ def bootstrap_db(force: bool = False) -> None:
     when repointing ``DB_PATH`` to a fresh file mid-process.
     """
     global _BOOTSTRAPPED
+    _guard_managed_checkout_live_db()
     if _BOOTSTRAPPED and not force:
         return
     with _BOOTSTRAP_LOCK:
@@ -1135,6 +1180,7 @@ def bootstrap_db(force: bool = False) -> None:
             # bootstrap and retains the bounded startup retry.
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
+            _ensure_additive_runtime_schema(conn)
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
             _ensure_sync_capture(conn)
             conn.commit()

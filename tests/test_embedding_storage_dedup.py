@@ -58,7 +58,9 @@ def test_v3_migration_replaces_catch_all_dialog_trigger(fresh_mp):
         "AND name='dialog_fts_au'"
     ).fetchone()[0]
     assert "AFTER UPDATE OF content" in ddl
-    assert migrated.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert migrated.execute("PRAGMA user_version").fetchone()[0] == (
+        db.CURRENT_SCHEMA_VERSION
+    )
     migrated.close()
 
 

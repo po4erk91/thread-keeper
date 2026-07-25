@@ -171,6 +171,15 @@ class Settings(BaseSettings):
     # (~/.claude/settings.json). Tests point this at a tmp file.
     config_watch_path: str = ""
 
+    # ── Daemon thread supervision ──────────────────────────────────────────
+    # The host checks enabled loop threads on this cadence and restarts a
+    # thread that exited.  0 leaves reporting available but disables restart.
+    daemon_supervisor_interval_s: float = 30.0
+    # A live thread that has not completed a non-"*_running" pass for this
+    # many configured intervals is reported as stale.  This is observability,
+    # not a kill/restart threshold: a legitimately long child remains intact.
+    daemon_stale_intervals: int = 3
+
     # ── Ingest ───────────────────────────────────────────────────────────────
     # env: THREADKEEPER_INGEST_CAP (not INGEST_CAP_PER_CALL)
     ingest_cap: int = Field(
@@ -739,6 +748,8 @@ def _derive_constants(s: "Settings") -> dict:
         ),
         "CONFIG_WATCH_INTERVAL_S": s.config_watch_interval_s,
         "CONFIG_WATCH_PATH": s.config_watch_path,
+        "DAEMON_SUPERVISOR_INTERVAL_S": s.daemon_supervisor_interval_s,
+        "DAEMON_STALE_INTERVALS": s.daemon_stale_intervals,
         "CLAUDE_SKILLS_DIR": s.claude_skills_dir,
         "CLAUDE_PROJECTS_DIR": s.claude_projects_dir,
         "TASK_LOG_DIR": s.task_log_dir,

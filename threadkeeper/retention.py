@@ -356,12 +356,12 @@ def _serve_loop() -> None:
 def start_retention_daemon() -> None:
     """Idempotent foreground-only retention daemon starter."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("retention"):
         return
     if RETENTION_INTERVAL_S <= 0:
         return
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(target=_serve_loop, name="retention", daemon=True)
-    t.start()
+    start_daemon_thread("retention", _serve_loop)
     _started = True

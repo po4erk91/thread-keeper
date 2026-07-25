@@ -864,10 +864,8 @@ def _start_background_ingester() -> None:
             except Exception:
                 pass  # never crash the daemon
 
-    _ingest_thread = threading.Thread(
-        target=_loop, name="thread-keeper-live-ingest", daemon=True
-    )
-    _ingest_thread.start()
+    from .daemon_liveness import start_daemon_thread
+    _ingest_thread = start_daemon_thread("thread-keeper-live-ingest", _loop)
 
 
 def _start_initial_ingest() -> None:

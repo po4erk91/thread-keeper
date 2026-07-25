@@ -29,6 +29,7 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..agent_status import _LOOP_DEFS
+from ..agent_status import daemon_liveness_statuses
 from ..config import DB_PATH
 from ..db import get_db
 from ..helpers import fmt_age
@@ -273,6 +274,18 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"dashboard window={window_days}d now="
         f"{time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(now))}"
     ]
+
+    # Thread liveness is deliberately a separate compact block from pass
+    # counters below: a loop can be alive but stale even while its historical
+    # event count looks healthy.
+    out.append("")
+    out.append("daemon_threads")
+    for daemon in daemon_liveness_statuses(conn, now):
+        out.append(
+            f"  daemon={daemon['id']} verdict={daemon['verdict']} "
+            f"thread_alive={daemon['thread_alive']} "
+            f"last_success={daemon['last_success_age']}"
+        )
 
     # ── stores ────────────────────────────────────────────────────────
     threads = _group_counts(conn, "threads", "state")

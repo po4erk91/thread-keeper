@@ -218,6 +218,11 @@ OUTPUTS
 HARD CONSTRAINTS
 ----------------
   - Do not implement roadmap issues. That is evolve_applier's job.
+  - The managed checkout is isolated from the live ThreadKeeper DB. For every
+    Python/CLI/test command that imports checkout code, set THREADKEEPER_DB to
+    a task-local temporary database and THREADKEEPER_DISABLE_BG_DAEMONS=1.
+    Use the configured thread-keeper MCP tools for live queue/thread updates;
+    never import checkout `threadkeeper` code against the inherited live DB.
   - Do not close issues unless they are exact duplicates and you state which
     issue supersedes them.
   - Do not create duplicate issues. Search open and closed issues first.
@@ -1242,15 +1247,13 @@ def start_evolve_daemon() -> None:
     cascade prevention as the other daemons: spawned children / non-
     foreground origins refuse to start it so spawn() can't recurse."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("evolve_daemon"):
         return
     if EVOLVE_REVIEW_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="evolve_daemon", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("evolve_daemon", _serve_loop)
     _started = True

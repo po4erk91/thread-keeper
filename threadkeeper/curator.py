@@ -1287,7 +1287,8 @@ def start_curator_daemon() -> None:
     start_shadow_daemon: spawned/background children refuse to start
     the daemon so spawn() doesn't recurse."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("curator"):
         return
     if CURATOR_INTERVAL_S <= 0:
         return
@@ -1296,8 +1297,5 @@ def start_curator_daemon() -> None:
         return
     if not SEMANTIC_AVAILABLE:
         return  # slim child: don't fire curator from here
-    t = threading.Thread(
-        target=_serve_loop, name="curator", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("curator", _serve_loop)
     _started = True

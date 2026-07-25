@@ -277,15 +277,13 @@ def start_probe_daemon() -> None:
     prevention as shadow_review/extract: spawned children and non-foreground
     origins refuse to start the daemon so spawn() can't recurse."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("probe_daemon"):
         return
     if PROBE_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="probe_daemon", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("probe_daemon", _serve_loop)
     _started = True

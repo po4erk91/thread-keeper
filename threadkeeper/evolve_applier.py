@@ -167,6 +167,10 @@ DO, strictly in order:
 HARD CONSTRAINTS (non-negotiable):
   • NEVER commit, push, or force-push to main. main has branch protection.
   • NEVER merge the PR — a human does that.
+  • For every Python/CLI/test command that imports checkout code, set
+    THREADKEEPER_DB to a task-local temporary database and
+    THREADKEEPER_DISABLE_BG_DAEMONS=1. Use configured thread-keeper MCP tools
+    for live state; never import checkout code against the inherited live DB.
   • If you CANNOT make the full suite green, do NOT open a PR and do NOT call
     evolve_mark_applied. Broadcast a one-line failure summary and stop.
   • When you report, paraphrase in plain language; don't cite internal IDs.
@@ -3149,15 +3153,13 @@ def start_evolve_applier_daemon() -> None:
     children / non-foreground origins refuse to start it so spawn() can't
     recurse (same cascade prevention as the other daemons)."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("evolve_applier_daemon"):
         return
     if EVOLVE_APPLY_INTERVAL_S <= 0:
         return
     from .config import BACKGROUND_DAEMONS_ALLOWED
     if not BACKGROUND_DAEMONS_ALLOWED:
         return
-    t = threading.Thread(
-        target=_serve_loop, name="evolve_applier_daemon", daemon=True,
-    )
-    t.start()
+    start_daemon_thread("evolve_applier_daemon", _serve_loop)
     _started = True

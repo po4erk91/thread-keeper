@@ -25,6 +25,26 @@ def test_get_db_reuses_process_bootstrap(fresh_mp, monkeypatch):
         second.close()
 
 
+def test_managed_evolve_checkout_cannot_open_colocated_db(
+    fresh_mp, monkeypatch, tmp_path
+):
+    db = fresh_mp["db"]
+    state_dir = tmp_path / "guarded-state"
+    managed_root = state_dir / "evolve-repo"
+    monkeypatch.setattr(db, "DB_PATH", state_dir / "db.sqlite")
+    monkeypatch.setattr(
+        db,
+        "__file__",
+        str(managed_root / "threadkeeper" / "db.py"),
+    )
+    db._BOOTSTRAPPED = False
+
+    with pytest.raises(RuntimeError, match="managed evolve checkout"):
+        db.bootstrap_db()
+
+    assert not db.DB_PATH.exists()
+
+
 def test_read_db_is_query_only_and_closes(fresh_mp):
     db = fresh_mp["db"]
     with db.read_db() as conn:

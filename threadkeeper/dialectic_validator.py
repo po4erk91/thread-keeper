@@ -736,7 +736,8 @@ def start_dialectic_validator_daemon() -> None:
     """Idempotent. Spawns children -> same cascade-prevention as
     candidate_reviewer (BACKGROUND_DAEMONS_ALLOWED + SEMANTIC_AVAILABLE)."""
     global _started
-    if _started:
+    from .daemon_liveness import daemon_thread_alive, start_daemon_thread
+    if _started and daemon_thread_alive("dialectic_validator"):
         return
     if DIALECTIC_VALIDATE_INTERVAL_S <= 0:
         return
@@ -745,6 +746,5 @@ def start_dialectic_validator_daemon() -> None:
         return
     if not SEMANTIC_AVAILABLE:
         return
-    t = threading.Thread(target=_serve_loop, name="dialectic_validator", daemon=True)
-    t.start()
+    start_daemon_thread("dialectic_validator", _serve_loop)
     _started = True
