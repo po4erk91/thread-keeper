@@ -530,7 +530,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   against the local `evolve_issues` fingerprint ledger, and records duplicate
   skips as telemetry before any `gh issue create` call. Same-pass duplicates
   hit the ledger after the first file, so repeated candidates file once. Before
-  that child can create a roadmap-doc PR, the parent also checks open PRs for
+  an issue-creating audit is dispatched, the parent also counts open,
+  not-yet-applied roadmap work with a paginated REST read; at
+  `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables it), it
+  records `backlog_saturated open=<n> cap=<max>` and withholds the audit.
+  This gate applies only to the privileged audit phase, not read-only research.
+  Before that child can create a roadmap-doc PR, the parent also checks open PRs for
   automation-owned changes touching `docs/ROADMAP.md` and embeds the result in
   the audit prompt. Existing roadmap-doc PRs are appended to or skipped; new
   ones use/reuse the deterministic daily `docs/roadmap-audit-YYYY-MM-DD` branch

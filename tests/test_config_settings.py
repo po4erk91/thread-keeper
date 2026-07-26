@@ -241,6 +241,7 @@ def test_all_exported_names_present(monkeypatch):
         "EMBED_MODEL_NAME",
         "EVOLVE_REVIEW_INTERVAL_S",
         "EVOLVE_REVIEW_MIN",
+        "EVOLVE_REVIEW_BACKLOG_MAX",
         "EXTRACT_INTERVAL_S",
         "EXTRACT_WINDOW_MIN",
         "FASTEMBED_MODEL_ID",

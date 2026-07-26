@@ -786,6 +786,13 @@ shell/`bypassPermissions` to the same child:
 
 A full research → audit cycle therefore spans two due passes.
 
+Before a privileged audit can create more issues, the parent counts open,
+not-yet-applied roadmap work with a paginated GitHub REST read. At
+`THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25), it withholds that audit
+and records `backlog_saturated open=<n> cap=<max>` on the
+`evolve_review_pass` event; set the knob to `0` to opt out. The read-only
+research phase is unaffected.
+
 Before an audit child can open a roadmap-doc PR, the parent preflights open PRs
 with `gh pr list --json ... files` and reports any automation-owned PR already
 touching `docs/ROADMAP.md`. The child must append to that PR or skip when no
@@ -1143,6 +1150,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` | 259200 | age-flush: an undersized observation buffer is still validated once its oldest eligible row is this old (0 = threshold only) |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
+| `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied roadmap issues before the issue-creating audit is skipped and records `backlog_saturated`; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
