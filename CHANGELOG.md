@@ -6,6 +6,13 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: evolve reviewer backlog is mechanically bounded (#115).** Before
+  dispatching its privileged issue-creating audit phase, the reviewer now
+  counts open, not-yet-applied roadmap issues and records
+  `backlog_saturated open=<n> cap=<max>` instead of spawning at or above
+  `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables the
+  governor). The read-only research phase remains available, and the recorded
+  pass summary makes saturation visible through status telemetry.
 - **Added: daemon-thread liveness supervision (#114).** Evented daemon
   starters now retain and re-check their named `Thread` instead of letting a
   stale `_started` flag make an exited loop unrestartable. The daemon host's

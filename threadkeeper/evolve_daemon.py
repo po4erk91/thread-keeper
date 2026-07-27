@@ -37,14 +37,21 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .config import DB_PATH, EVOLVE_REVIEW_INTERVAL_S, EVOLVE_REVIEW_MIN
+from .config import (
+    DB_PATH,
+    EVOLVE_REVIEW_BACKLOG_MAX,
+    EVOLVE_REVIEW_INTERVAL_S,
+    EVOLVE_REVIEW_MIN,
+)
 from .db import get_db
 from .evolve_applier import (
     _base_branch_name,
     _base_ref,
     _ensure_repo_ready,
+    _fetch_open_issues,
     _git_worktree_precondition,
     _repo_root,
+    _roadmap_issue_applied,
 )
 from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .helpers import daemon_sleep, single_flight_lock
@@ -325,6 +332,30 @@ def _record_transient_evolve_pass(conn: sqlite3.Connection,
     if prev.split(" ", 1)[0] == outcome.split(" ", 1)[0]:
         return
     _record_evolve_pass(conn, _last_evolve_ts(conn), outcome)
+
+
+def _open_roadmap_backlog_count(
+    conn: sqlite3.Connection, repo_root: Path,
+) -> tuple[int, str]:
+    """Count open GitHub issues without the applier's per-issue claim checks.
+
+    The governor needs backlog pressure, not the next issue eligible for
+    autonomous pickup. A single paginated REST issue read avoids the expensive
+    GraphQL comment checks in ``_open_roadmap_issues`` while the local event
+    ledger filters issues already handed off to an applier PR.
+    """
+    issues, err = _fetch_open_issues(repo_root)
+    if err:
+        return 0, err
+    open_backlog = 0
+    for issue in issues:
+        try:
+            number = int(issue.get("number"))
+        except (TypeError, ValueError):
+            continue
+        if not _roadmap_issue_applied(conn, number):
+            open_backlog += 1
+    return open_backlog, ""
 
 
 def _pending(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1170,6 +1201,7 @@ def run_evolve_pass(force: bool = False) -> str:
       'disabled'                   — knob off and not forced
       'not_due'                    — checked recently
       'reviewer_running n=<k>'     — a reviewer child is already in flight
+      'backlog_saturated …'        — audit withheld at the roadmap backlog cap
       'spawned research file=<f> …'— launched the read-only research child
       'spawned audit pending=<k> …'— launched the privileged audit child
       'spawn_error: …'             — spawn rejected
@@ -1203,6 +1235,21 @@ def run_evolve_pass(force: bool = False) -> str:
         # The audit runs even when the digest is empty — auditing the repo is
         # the valuable half and must not depend on web research succeeding.
         do_audit = _last_spawn_phase(conn) == "research"
+        if do_audit and EVOLVE_REVIEW_BACKLOG_MAX > 0:
+            open_backlog, backlog_err = _open_roadmap_backlog_count(
+                conn, repo_root
+            )
+            if backlog_err:
+                out = f"backlog_check_error {backlog_err}"
+                _record_transient_evolve_pass(conn, out)
+                return out
+            if open_backlog >= EVOLVE_REVIEW_BACKLOG_MAX:
+                out = (
+                    "backlog_saturated "
+                    f"open={open_backlog} cap={EVOLVE_REVIEW_BACKLOG_MAX}"
+                )
+                _record_transient_evolve_pass(conn, out)
+                return out
         try:
             if do_audit:
                 guard = _git_worktree_precondition(

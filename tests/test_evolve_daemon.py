@@ -20,7 +20,7 @@ _FAKE_CID = "dddd4444-5555-6666-7777-888899990000"
 
 
 def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2",
-               pin_repo=True):
+               review_backlog_max="25", pin_repo=True):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
@@ -37,6 +37,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2",
         "THREADKEEPER_PROBE_INTERVAL_S": "0",
         "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S": interval,
         "THREADKEEPER_EVOLVE_REVIEW_MIN": review_min,
+        "THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX": review_backlog_max,
         "THREADKEEPER_DISABLE_BG_DAEMONS": "1",
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
@@ -61,6 +62,12 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2",
     monkeypatch.setattr(
         evolve_daemon, "_open_roadmap_doc_prs",
         lambda repo_root, branch: ([], ""),
+    )
+    # Audit-phase tests do not exercise the GitHub-backed backlog governor by
+    # default. Keep their dispatch assertions offline; the dedicated governor
+    # test below replaces this with controlled backlog sizes.
+    monkeypatch.setattr(
+        evolve_daemon, "_open_roadmap_backlog_count", lambda conn, repo_root: (0, ""),
     )
     # Pin a ready tmp checkout so the reviewer's _ensure_repo_ready() gate does
     # not run a real `git clone` + venv + `pip install` (~30 s/test) against the
@@ -612,6 +619,39 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert "No open reviewer roadmap-doc PR touching docs/ROADMAP.md" in (
         calls["prompt"]
     )
+
+
+def test_run_evolve_pass_audit_backlog_governor(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, review_backlog_max="2")
+    conn = pkg["db"].get_db()
+    _seed_research(pkg, conn)
+    calls = []
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1"
+    )
+    monkeypatch.setattr(
+        pkg["ed"], "_open_roadmap_backlog_count", lambda conn, repo: (2, ""),
+    )
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "backlog_saturated open=2 cap=2"
+    assert calls == []
+    summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()["summary"]
+    assert summary == out
+
+    monkeypatch.setattr(
+        pkg["ed"], "_open_roadmap_backlog_count", lambda conn, repo: (1, ""),
+    )
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit")
+    assert len(calls) == 1
 
 
 def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(

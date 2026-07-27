@@ -386,6 +386,9 @@ class Settings(BaseSettings):
     # ── Evolve review daemon ──────────────────────────────────────────────────
     evolve_review_interval_s: float = 0.0
     evolve_review_min: int = 2
+    # Maximum open, not-yet-applied roadmap issues allowed before the
+    # privileged reviewer audit is withheld. 0 opts out of the governor.
+    evolve_review_backlog_max: int = Field(default=25, ge=0)
 
     # ── Evolve applier daemon ─────────────────────────────────────────────────
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
@@ -835,6 +838,7 @@ def _derive_constants(s: "Settings") -> dict:
         "PANEL_EFFORT": s.panel_effort,
         "EVOLVE_REVIEW_INTERVAL_S": s.evolve_review_interval_s,
         "EVOLVE_REVIEW_MIN": s.evolve_review_min,
+        "EVOLVE_REVIEW_BACKLOG_MAX": s.evolve_review_backlog_max,
         "EVOLVE_APPLY_INTERVAL_S": s.evolve_apply_interval_s,
         "EVOLVE_REPO_ROOT": s.evolve_repo_root,
         "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
