@@ -10,6 +10,9 @@ jobs:
   pytest:
     name: pytest (py${{ matrix.python }})
     runs-on: ubuntu-latest
+    env:
+      # This remains stable while tests intentionally isolate HOME per case.
+      THREADKEEPER_EMBED_CACHE_DIR: ${{ github.workspace }}/.cache/huggingface/hub
     strategy:
       fail-fast: false
       matrix:
@@ -34,8 +37,18 @@ jobs:
           # test_vec_search) assert on actual cosine search behavior and
           # don't have a skip-when-missing guard. semantic now uses
           # fastembed/ONNX Runtime (no PyTorch) + numpy + sqlite-vec; the
-          # model is fetched from HF on first use and is small.
+          # model snapshot is pinned and pre-fetched below.
           pip install -e '.[semantic,dev]'
+
+      - name: Cache pinned embedding snapshot
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/huggingface
+          key: huggingface-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('threadkeeper/config.py') }}
+
+      - name: Pre-fetch pinned embedding snapshot
+        run: |
+          python -c 'from threadkeeper.embeddings import prefetch_embedding_model; print(prefetch_embedding_model())'
 
       - name: Run pytest
         env:
@@ -45,6 +58,9 @@ jobs:
           THREADKEEPER_SHADOW_REVIEW_INTERVAL_S: "0"
           THREADKEEPER_SPAWN_BUDGET_POLL_S: "0"
           THREADKEEPER_SEARCH_PROXY_POLL_S: "0"
+          # Semantic tests prove the cached pin is usable without a Hub request.
+          THREADKEEPER_EMBED_LOCAL_FILES_ONLY: "1"
+          HF_HUB_OFFLINE: "1"
         run: |
           # --forked isolates each test in its own process. The suite's
           # per-test package re-import (tests/conftest.py) otherwise piles up

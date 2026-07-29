@@ -26,6 +26,15 @@ from .permissions import harden_storage_paths
 
 logger = logging.getLogger(__name__)
 
+# These immutable Hugging Face commits identify the two artifacts used by the
+# default embedding backends.  FastEmbed consumes Qdrant's optimized ONNX port;
+# sentence-transformers consumes the upstream model repository, so the commits
+# necessarily differ even though both expose the same logical model.
+DEFAULT_FASTEMBED_EMBED_REVISION = "faf4aa4225822f3bc6376869cb1164e8e3feedd0"
+DEFAULT_SENTENCE_TRANSFORMERS_EMBED_REVISION = (
+    "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+)
+
 # ── env-file path resolved at module load so THREADKEEPER_ENV_FILE override works ──
 _ENV_FILE: str = os.environ.get(
     "THREADKEEPER_ENV_FILE",
@@ -87,6 +96,32 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("THREADKEEPER_EMBED_MODEL", "embed_model"),
     )
     embed_backend: str = "onnx"
+    # Empty selects the backend-specific immutable default below. Supplying a
+    # value overrides that pin, which is deliberate model-space migration work.
+    embed_revision: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "THREADKEEPER_EMBED_REVISION", "embed_revision"
+        ),
+    )
+    # Refuse network access when the required snapshot should already be in the
+    # Hugging Face cache. This is useful for deterministic/offline CI and
+    # air-gapped deployments.
+    embed_local_files_only: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "THREADKEEPER_EMBED_LOCAL_FILES_ONLY", "embed_local_files_only"
+        ),
+    )
+    # Keep model snapshots in a durable cache instead of FastEmbed's temporary
+    # default. CI can override this with a workspace cache that survives tests'
+    # isolated HOME directories.
+    embed_cache_dir: Path = Field(
+        default=Path("~/.cache/huggingface/hub"),
+        validation_alias=AliasChoices(
+            "THREADKEEPER_EMBED_CACHE_DIR", "embed_cache_dir"
+        ),
+    )
     # Vector width the vec0 (`notes_vec`/`dialog_vec`) tables are CREATEd with.
     # Defaults to 384 (paraphrase-multilingual-MiniLM-L12-v2). When swapping in
     # a model of a different dimension via THREADKEEPER_EMBED_MODEL, set this to
@@ -503,6 +538,7 @@ class Settings(BaseSettings):
         "claude_skills_dir",
         "claude_projects_dir",
         "task_log_dir",
+        "embed_cache_dir",
         mode="after",
     )
     @classmethod
@@ -979,6 +1015,20 @@ FASTEMBED_MODEL_ID: str = (
     if "/" in EMBED_MODEL_NAME
     else f"sentence-transformers/{EMBED_MODEL_NAME}"
 )
+
+# Backend and revision are both model-space contracts: changing either in a
+# live process while its old model remains resident could tag vectors with the
+# wrong generation. Like EMBED_DIM, they intentionally take effect on restart.
+EMBED_REVISION: str = (
+    settings.embed_revision.strip()
+    or (
+        DEFAULT_SENTENCE_TRANSFORMERS_EMBED_REVISION
+        if EMBED_BACKEND == "sentence-transformers"
+        else DEFAULT_FASTEMBED_EMBED_REVISION
+    )
+)
+EMBED_LOCAL_FILES_ONLY: bool = bool(settings.embed_local_files_only)
+EMBED_CACHE_DIR: Path = settings.embed_cache_dir
 
 # Embedding dimension the vec0 virtual tables are created with. Computed once
 # here (NOT via _derive_constants) because, like the embedding backend, it is

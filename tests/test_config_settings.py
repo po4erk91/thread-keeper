@@ -54,6 +54,9 @@ def test_defaults_match(monkeypatch):
     assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_REPOSITORY == "po4erk91/thread-keeper"
     assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_WORKFLOW == "publish.yml"
     assert c.AUTO_UPDATE_EXPECTED_PUBLISHER_ENVIRONMENT == "pypi"
+    assert c.EMBED_REVISION == c.DEFAULT_FASTEMBED_EMBED_REVISION
+    assert c.EMBED_LOCAL_FILES_ONLY is False
+    assert c.EMBED_CACHE_DIR == Path.home() / ".cache" / "huggingface" / "hub"
     assert c.SKILL_UPDATE_INTERVAL_S == 302400
     assert c.SKILL_UPDATE_INFER_SOURCES is True
     assert c.CURATOR_SNAPSHOT_RETENTION == 10
@@ -65,6 +68,22 @@ def test_defaults_match(monkeypatch):
 def test_env_overrides_default(monkeypatch):
     c = _fresh_config(monkeypatch, env={"THREADKEEPER_MEMORY_NUDGE_INTERVAL": "3"})
     assert c.MEMORY_NUDGE_INTERVAL == 3
+
+
+def test_embed_revision_is_backend_pinned_and_configurable(monkeypatch):
+    c = _fresh_config(monkeypatch, env={
+        "THREADKEEPER_EMBED_BACKEND": "sentence-transformers",
+    })
+    assert c.EMBED_REVISION == c.DEFAULT_SENTENCE_TRANSFORMERS_EMBED_REVISION
+
+    c = _fresh_config(monkeypatch, env={
+        "THREADKEEPER_EMBED_REVISION": "custom-snapshot",
+        "THREADKEEPER_EMBED_LOCAL_FILES_ONLY": "1",
+        "THREADKEEPER_EMBED_CACHE_DIR": "/tmp/pinned-model-cache",
+    })
+    assert c.EMBED_REVISION == "custom-snapshot"
+    assert c.EMBED_LOCAL_FILES_ONLY is True
+    assert c.EMBED_CACHE_DIR == Path("/tmp/pinned-model-cache")
 
 
 def test_retention_env_overrides(monkeypatch):
@@ -238,7 +257,10 @@ def test_all_exported_names_present(monkeypatch):
         "DIALECTIC_VALIDATE_MIN",
         "DIALOG_LOG",
         "EMBED_BACKEND",
+        "EMBED_CACHE_DIR",
+        "EMBED_LOCAL_FILES_ONLY",
         "EMBED_MODEL_NAME",
+        "EMBED_REVISION",
         "EVOLVE_REVIEW_INTERVAL_S",
         "EVOLVE_REVIEW_MIN",
         "EVOLVE_REVIEW_BACKLOG_MAX",
