@@ -32,6 +32,7 @@ from ..agent_status import _LOOP_DEFS
 from ..agent_status import daemon_liveness_statuses
 from ..config import DB_PATH
 from ..db import get_db
+from ..evolve_applier import managed_repo_storage_status
 from ..helpers import fmt_age
 from ..identity import _ensure_session
 
@@ -300,6 +301,19 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"  db_size={_fmt_bytes(db_total)} "
         f"main={_fmt_bytes(db_main)} wal={_fmt_bytes(db_wal)} "
         f"shm={_fmt_bytes(db_shm)}"
+    )
+    managed = managed_repo_storage_status()
+    free = (
+        _fmt_bytes(int(managed["free_bytes"]))
+        if not managed["free_error"] else "unavailable"
+    )
+    out.append(
+        "  managed_checkout: "
+        f"state={managed['state']} "
+        f"repo={_fmt_bytes(int(managed['repo_bytes']))} "
+        f"venv={_fmt_bytes(int(managed['venv_bytes']))} "
+        f"total={_fmt_bytes(int(managed['total_bytes']))} "
+        f"free={free}"
     )
     out.append(
         f"  threads: {_fmt_group(threads, ('active','idle','closed'))} "

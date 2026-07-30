@@ -6,6 +6,25 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: pinned the MCP SDK below 2.0.** `mcp` 2.0.0 (2026-07-28) renamed
+  `mcp.server.fastmcp` to `mcp.server.mcpserver` (`FastMCP` → `MCPServer`) with
+  no compatibility shim, so every fresh install resolving the unbounded
+  `mcp>=1.10.0` floor died at import with
+  `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. The requirement
+  is now `mcp>=1.10.0,<2` (resolves to 1.29.0, which still ships the 1.x import
+  path). Porting the server to the 2.x API remains open; the cap is only safe to
+  lift together with that port.
+- **Fixed: managed Evolve checkouts no longer branch from a stale base (#128).**
+  The default disposable clone now fetches, checks out, and hard-resets to the
+  configured `origin/<EVOLVE_REPO_BRANCH>` before a code-producing pass, after
+  clean-tree and live-writer guards; explicit operator checkouts remain
+  untouched. Managed clone/venv creation reserves 5 GiB by default
+  (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES`, `0` disables), and the bounded
+  provisioning flock returns a retryable in-progress error after 5 seconds
+  instead of blocking foreground tools behind a long `pip install`.
+  `mp_dashboard()` now reports managed repo/venv/total/free-disk footprint, and
+  `evolve_prune_managed_venv(confirm=True)` explicitly reclaims the managed
+  virtualenv without deleting its clone.
 - **Fixed: evolve reviewer backlog is mechanically bounded (#115).** Before
   dispatching its privileged issue-creating audit phase, the reviewer now
   counts open, not-yet-applied roadmap issues and records

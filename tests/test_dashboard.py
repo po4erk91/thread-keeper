@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 
 
 def _tool(pkg, name):
@@ -54,6 +55,22 @@ def test_dashboard_empty_db_no_crash(fresh_mp):
     assert "high_volume:" in out, out
     for key in ("dialog_messages", "dialog_fts", "events", "signals", "tasks"):
         assert f"{key}=" in out, out
+
+
+def test_dashboard_reports_managed_checkout_and_venv_footprint(fresh_mp):
+    root = Path(fresh_mp["db"].DB_PATH).parent / "evolve-repo"
+    venv = root / ".venv"
+    root.mkdir(parents=True)
+    venv.mkdir()
+    (root / "tracked").write_bytes(b"repo-bytes")
+    (venv / "python").write_bytes(b"venv-bytes")
+
+    out = _tool(fresh_mp, "mp_dashboard")()
+
+    assert "managed_checkout: state=present" in out, out
+    assert "repo=10B" in out, out
+    assert "venv=10B" in out, out
+    assert "total=20B" in out, out
 
 
 def test_dashboard_counts_stores_delta(fresh_mp):

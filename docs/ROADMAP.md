@@ -97,6 +97,11 @@ remains a live question.
   plus an applier-owned branch and an exact GitHub `MERGED` state, archives the
   tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
   base. Explicit operator checkouts and uncertain PR states remain fail-closed.
+- Evolve managed-checkout lifecycle (#128): the disposable clone now refreshes
+  to the configured `origin/<EVOLVE_REPO_BRANCH>` base before each code pass,
+  without touching explicit checkouts. Clone/venv provisioning has a bounded
+  lock, a configurable free-disk reserve, visible footprint telemetry, and an
+  explicit managed-venv prune tool.
 - Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
   audit child, the parent checks open PRs for automation-owned changes touching
   `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one

@@ -48,15 +48,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from .config import (
     CURATOR_REPORTS_DIR,
@@ -65,6 +68,8 @@ from .config import (
     EVOLVE_AUTO_CLONE,
     EVOLVE_APPLY_SKIP_LABELS,
     EVOLVE_REPO_BRANCH,
+    EVOLVE_REPO_MIN_FREE_BYTES,
+    EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S,
     EVOLVE_REPO_ROOT,
     EVOLVE_REPO_URL,
     EVOLVE_TRUST_LABELS,
@@ -465,6 +470,7 @@ or:
 
 EVOLVE_CLONE_TIMEOUT_S = 600
 EVOLVE_VENV_TIMEOUT_S = 1800
+EVOLVE_REPO_PROVISION_LOCK_POLL_S = 0.05
 
 
 def _managed_repo_dir() -> Path:
@@ -540,21 +546,44 @@ def _autoclone_disabled_error(root: Path) -> str:
 
 
 @contextmanager
-def _repo_provision_lock():
-    """Serialize clone/venv provisioning across foreground servers so two ticks
-    don't race a half-finished clone into the same managed dir. Blocking: the
-    loser waits, then re-checks under the lock and reuses the finished clone."""
+def _repo_provision_lock() -> Iterator[str]:
+    """Acquire the managed-checkout lock, with a bounded wait.
+
+    Clone and pip-install work can take many minutes. A competing foreground
+    tool gets a retryable ERR instead of waiting behind that entire operation.
+    The yielded string is empty when this caller owns the lock.
+    """
     try:
         import fcntl
     except ImportError:  # pragma: no cover - thread-keeper runs on Unix CLIs.
-        yield
+        yield ""
         return
     lock_path = DB_PATH.parent / "evolve-repo-provision.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = lock_path.open("w")
+    except OSError as e:
+        yield f"ERR evolve_repo_provision_lock_failed={_short(str(e))}"
+        return
+    with lock:
+        deadline = time.monotonic() + max(
+            0.0, float(EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S)
+        )
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                if e.errno not in (errno.EACCES, errno.EAGAIN):
+                    yield f"ERR evolve_repo_provision_lock_failed={_short(str(e))}"
+                    return
+                if time.monotonic() >= deadline:
+                    yield "ERR evolve_repo_provisioning_in_progress retry_later=1"
+                    return
+                time.sleep(min(EVOLVE_REPO_PROVISION_LOCK_POLL_S,
+                               max(0.0, deadline - time.monotonic())))
         try:
-            yield
+            yield ""
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -589,6 +618,85 @@ def _base_branch_name() -> str:
 
 def _base_ref() -> str:
     return f"origin/{_base_branch_name()}"
+
+
+def _disk_free_bytes(path: Path) -> tuple[int, str]:
+    """Return free bytes on the nearest existing parent of ``path``."""
+    probe = path.expanduser()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return int(shutil.disk_usage(probe).free), ""
+    except OSError as e:
+        return 0, _short(str(e))
+
+
+def _managed_disk_preflight(path: Path) -> str:
+    """Fail before clone/venv work when the configured disk reserve is absent."""
+    required = max(0, int(EVOLVE_REPO_MIN_FREE_BYTES))
+    if required == 0:
+        return ""
+    free, err = _disk_free_bytes(path)
+    if err:
+        return f"ERR evolve_disk_preflight_failed={path}: {err}"
+    if free < required:
+        return (
+            f"ERR evolve_disk_low={path} free_bytes={free} "
+            f"required_bytes={required} (set "
+            "THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0 to disable)"
+        )
+    return ""
+
+
+def _tree_size(path: Path, *, skip_top_level: set[str] | None = None) -> int:
+    """Best-effort allocated-file estimate without following symlinks."""
+    skip_top_level = skip_top_level or set()
+
+    def walk(current: Path, *, top: bool = False) -> int:
+        try:
+            with os.scandir(current) as entries:
+                total = 0
+                for entry in entries:
+                    if top and entry.name in skip_top_level:
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            total += walk(Path(entry.path))
+                        else:
+                            total += int(entry.stat(follow_symlinks=False).st_size)
+                    except OSError:
+                        continue
+                return total
+        except OSError:
+            return 0
+
+    if path.is_symlink():
+        return 0
+    if path.is_dir():
+        return walk(path, top=True)
+    try:
+        return int(path.stat().st_size)
+    except OSError:
+        return 0
+
+
+def managed_repo_storage_status() -> dict[str, int | str]:
+    """Best-effort default managed-checkout footprint for status surfaces."""
+    root = _managed_repo_dir()
+    venv = root / ".venv"
+    free, free_err = _disk_free_bytes(root.parent)
+    repo_bytes = _tree_size(root, skip_top_level={".venv"})
+    venv_bytes = _tree_size(venv)
+    return {
+        "state": "present" if root.exists() else "absent",
+        "repo_bytes": repo_bytes,
+        "venv_bytes": venv_bytes,
+        "total_bytes": repo_bytes + venv_bytes,
+        "free_bytes": free,
+        "free_error": free_err,
+    }
 
 
 def _tracked_worktree_status(repo_root: Path) -> tuple[str, str]:
@@ -1058,6 +1166,9 @@ def _ensure_managed_venv(dest: Path) -> str:
     venv_py = dest / ".venv" / "bin" / "python"
     if venv_py.exists():
         return ""
+    space_err = _managed_disk_preflight(dest)
+    if space_err:
+        return space_err
     err = _run([sys.executable, "-m", "venv", str(dest / ".venv")],
                EVOLVE_VENV_TIMEOUT_S)
     if err:
@@ -1074,7 +1185,9 @@ def _provision_managed_repo(dest: Path) -> str:
     """Clone the canonical repo into `dest` and provision its venv. Serialized
     and idempotent: re-checks under the lock so a concurrent winner's clone is
     reused. Returns '' on success or an ERR string."""
-    with _repo_provision_lock():
+    with _repo_provision_lock() as lock_err:
+        if lock_err:
+            return lock_err
         if _is_git_repo(dest):
             return _ensure_managed_venv(dest)
         if dest.exists() and any(dest.iterdir()):
@@ -1083,6 +1196,9 @@ def _provision_managed_repo(dest: Path) -> str:
                 "non-empty non-git directory; clear it or set "
                 "THREADKEEPER_EVOLVE_REPO_ROOT)"
             )
+        space_err = _managed_disk_preflight(dest.parent)
+        if space_err:
+            return space_err
         dest.parent.mkdir(parents=True, exist_ok=True)
         err = _run(
             ["git", "clone", "--quiet", "--branch", str(EVOLVE_REPO_BRANCH),
@@ -1094,12 +1210,57 @@ def _provision_managed_repo(dest: Path) -> str:
         return _ensure_managed_venv(dest)
 
 
+def _refresh_managed_repo(dest: Path) -> str:
+    """Fast-forward only the disposable managed checkout to its base branch.
+
+    Explicit checkout roots are never routed here. A clean but old applier
+    branch is safe to replace after its child has ended; tracked edits and live
+    writers fail closed instead of being reset underneath their owner.
+    """
+    with _repo_provision_lock() as lock_err:
+        if lock_err:
+            return lock_err
+        if not _is_git_repo(dest):
+            return "ERR evolve_repo_refresh_missing_checkout"
+        dirty, status_err = _tracked_worktree_status(dest)
+        if status_err:
+            return f"ERR evolve_repo_refresh_status_failed={_short(status_err)}"
+        if dirty:
+            return "ERR evolve_repo_refresh_blocked_dirty"
+        try:
+            running = _running_git_writer_children(get_db())
+        except Exception as e:  # noqa: BLE001 — fail closed before a reset.
+            return f"ERR evolve_repo_refresh_running_check_failed={_short(str(e))}"
+        if running:
+            return f"ERR evolve_repo_refresh_in_use n={len(running)}"
+        branch = _base_branch_name()
+        fetch_err = _run(["git", "fetch", "origin", branch], 60, cwd=dest)
+        if fetch_err:
+            return f"ERR evolve_repo_refresh_fetch_failed={_short(fetch_err)}"
+        checkout_err = _run(["git", "checkout", "-f", branch], 30, cwd=dest)
+        if checkout_err:
+            return f"ERR evolve_repo_refresh_checkout_failed={_short(checkout_err)}"
+        reset_err = _run(
+            ["git", "reset", "--hard", _base_ref()], 30, cwd=dest
+        )
+        if reset_err:
+            return f"ERR evolve_repo_refresh_reset_failed={_short(reset_err)}"
+    return ""
+
+
 def _ensure_repo_ready() -> tuple[Path, str]:
     """Resolve the repo root and make sure it is a usable git checkout, cloning
     a managed one on first use when needed. Returns (root, error); error is ''
     on success. This is the gate every code/PR path and the reviewer call."""
     root = _resolve_repo_root()
     if _is_git_repo(root):
+        # A real git probe necessarily implies an extant directory. The extra
+        # existence check keeps this best-effort gate tolerant of a checkout
+        # disappearing between probes (and of lightweight test doubles).
+        if root.exists() and _managed_repo_auto_recovery_allowed(root):
+            refresh_err = _refresh_managed_repo(root)
+            if refresh_err:
+                return root, refresh_err
         return root, ""
     if (EVOLVE_REPO_ROOT or "").strip():
         # Explicit override that isn't a checkout — never auto-clone there.
@@ -1110,6 +1271,40 @@ def _ensure_repo_ready() -> tuple[Path, str]:
     if err:
         return root, err
     return root, ""
+
+
+def prune_managed_venv() -> str:
+    """Delete only the default managed `.venv` after an explicit GC request.
+
+    The next managed pass recreates it. Explicit operator checkouts and
+    auto-clone-disabled installations are rejected so this cannot target a
+    developer's chosen checkout.
+    """
+    root = _managed_repo_dir()
+    if not _managed_repo_auto_recovery_allowed(root):
+        return "ERR evolve_managed_venv_prune_unavailable"
+    venv = root / ".venv"
+    if venv.is_symlink():
+        return "ERR evolve_managed_venv_prune_refused_symlink"
+    with _repo_provision_lock() as lock_err:
+        if lock_err:
+            return lock_err
+        if not venv.exists():
+            return "ok evolve_managed_venv_absent"
+        if not venv.is_dir() or venv.is_symlink():
+            return "ERR evolve_managed_venv_prune_refused_invalid_path"
+        try:
+            running = _running_git_writer_children(get_db())
+        except Exception as e:  # noqa: BLE001 — do not prune on uncertainty.
+            return f"ERR evolve_managed_venv_prune_running_check_failed={_short(str(e))}"
+        if running:
+            return f"ERR evolve_managed_venv_prune_in_use n={len(running)}"
+        freed = _tree_size(venv)
+        try:
+            shutil.rmtree(venv)
+        except OSError as e:
+            return f"ERR evolve_managed_venv_prune_failed={_short(str(e))}"
+    return f"ok evolve_managed_venv_pruned freed_bytes={freed}"
 
 
 def _slug(text: str, maxlen: int = 32) -> str:
