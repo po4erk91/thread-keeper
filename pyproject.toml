@@ -28,7 +28,11 @@ classifiers = [
 dependencies = [
     # >=1.10.0 for the MCP 2025-06-18 tool vocabulary: ToolAnnotations
     # (readOnly/destructive/idempotent hints) + structured outputSchema (#67).
-    "mcp>=1.10.0",
+    # <2 because mcp 2.0.0 renamed `mcp.server.fastmcp` -> `mcp.server.mcpserver`
+    # (FastMCP -> MCPServer) with no compatibility shim; _mcp.py, elicitation.py
+    # and tools/dialectic.py all import the 1.x path. Lift the cap only together
+    # with that migration — until then an unbounded floor breaks fresh installs.
+    "mcp>=1.10.0,<2",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
