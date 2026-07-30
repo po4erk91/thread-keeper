@@ -6,6 +6,17 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: managed Evolve checkouts no longer branch from a stale base (#128).**
+  The default disposable clone now fetches, checks out, and hard-resets to the
+  configured `origin/<EVOLVE_REPO_BRANCH>` before a code-producing pass, after
+  clean-tree and live-writer guards; explicit operator checkouts remain
+  untouched. Managed clone/venv creation reserves 5 GiB by default
+  (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES`, `0` disables), and the bounded
+  provisioning flock returns a retryable in-progress error after 5 seconds
+  instead of blocking foreground tools behind a long `pip install`.
+  `mp_dashboard()` now reports managed repo/venv/total/free-disk footprint, and
+  `evolve_prune_managed_venv(confirm=True)` explicitly reclaims the managed
+  virtualenv without deleting its clone.
 - **Fixed: evolve reviewer backlog is mechanically bounded (#115).** Before
   dispatching its privileged issue-creating audit phase, the reviewer now
   counts open, not-yet-applied roadmap issues and records

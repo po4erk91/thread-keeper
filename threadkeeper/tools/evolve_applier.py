@@ -29,6 +29,11 @@
   evolve_apply_status()
     Diagnostic: interval knob, promoted+unapplied queue, running applier, and
     the last few apply/recovery passes.
+
+  evolve_prune_managed_venv(confirm=True)
+    Explicitly delete the default managed checkout's heavyweight virtualenv.
+    The next managed pass recreates it; operator-specified checkouts are never
+    eligible.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from ..evolve_applier import (
     mark_curator_report_applied,
     mark_applied,
     mark_roadmap_issue_applied,
+    prune_managed_venv,
     roadmap_attempt_ledger,
     _conflicted_applier_prs,
     _format_label_skip,
@@ -122,6 +128,22 @@ def evolve_apply_conflicted_pr(pr_number: int = 0) -> str:
     conn = get_db()
     _ensure_session(conn)
     return apply_conflicted_pr(int(pr_number or 0))
+
+
+@write_tool(destructive=True, idempotent=True)
+def evolve_prune_managed_venv(confirm: bool = False) -> str:
+    """Free the default managed checkout's `.venv` after explicit confirmation.
+
+    Pass `confirm=True` to delete only that auto-managed virtualenv. Its clone
+    remains intact and the next Evolve pass rebuilds the environment. This
+    refuses `THREADKEEPER_EVOLVE_REPO_ROOT` and auto-clone-disabled setups, so
+    it never prunes an operator-selected checkout.
+    """
+    if not confirm:
+        return "ERR confirmation_required pass confirm=true to prune managed .venv"
+    conn = get_db()
+    _ensure_session(conn)
+    return prune_managed_venv()
 
 
 @write_tool(idempotent=True)

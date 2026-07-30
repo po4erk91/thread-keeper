@@ -855,6 +855,19 @@ diff under
 unreadable PR state remains fail-closed. An explicit
 `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
 
+The default managed checkout is refreshed before every code-producing pass:
+after checking that no Evolve git writer is live and that tracked files are
+clean, it fetches the configured branch, checks out that branch, and resets to
+`origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`. Explicit
+`THREADKEEPER_EVOLVE_REPO_ROOT` checkouts are never refreshed or reset by this
+path. Provisioning reserves 5 GiB by default before clone or `.venv` creation
+(`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0` disables that preflight), and a
+contended provisioning lock returns a retryable error after 5 seconds rather
+than holding a foreground tool call behind `pip install`. `mp_dashboard()`
+reports the managed repository, virtualenv, total, and free-disk sizes. To
+reclaim the optional heavyweight virtualenv while retaining the clone, call
+`evolve_prune_managed_venv(confirm=True)`; the next managed pass rebuilds it.
+
 **Skip-label gate.** Autonomous issue pickup refuses issues with labels listed
 in `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` (default
 `blocked,needs-design,wontfix,question,discussion,help wanted`). These labels
@@ -1156,6 +1169,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES` | 5368709120 (5 GiB) | minimum free space required before a managed clone or managed `.venv` is created; `0` disables the preflight |
+| `THREADKEEPER_EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` | 5 | maximum seconds to wait for another clone/venv provisioning operation before returning `ERR evolve_repo_provisioning_in_progress retry_later=1`; `0` is immediate |
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
 | `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
 | `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |

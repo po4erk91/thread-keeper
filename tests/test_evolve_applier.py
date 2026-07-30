@@ -120,6 +120,13 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", pin_repo=True):
         _repo = tmp_path / "evolve-repo"
         monkeypatch.setattr(evolve_applier, "_resolve_repo_root", lambda: _repo)
         monkeypatch.setattr(evolve_applier, "_is_git_repo", lambda p: True)
+        # Dispatch tests use a logical ready checkout rather than a real git
+        # worktree; lifecycle tests opt out and exercise managed refresh for
+        # real. Keep the fake checkout outside the refresh-only path.
+        monkeypatch.setattr(
+            evolve_applier, "_managed_repo_auto_recovery_allowed",
+            lambda p: False,
+        )
     return {"mcp": _mcp.mcp, "db": db, "ea": evolve_applier,
             "identity": identity, "orig": orig}
 
@@ -2183,6 +2190,9 @@ def test_ensure_repo_ready_uses_existing_checkout(tmp_path, monkeypatch):
     tree (provisioned on a prior pass) → ready, no re-provisioning."""
     pkg = _bootstrap(tmp_path, monkeypatch)
     monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: True)
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda path: False,
+    )
 
     def _no_provision(dest):
         raise AssertionError("must not provision when a checkout exists")
@@ -2191,6 +2201,139 @@ def test_ensure_repo_ready_uses_existing_checkout(tmp_path, monkeypatch):
     root, err = pkg["ea"]._ensure_repo_ready()
     assert err == ""
     assert root == pkg["ea"]._repo_root()
+
+
+def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch):
+    """A later pass must branch from the current remote base, not clone day."""
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    repo = pkg["ea"]._managed_repo_dir()
+    remote = tmp_path / "remote.git"
+    source = tmp_path / "source"
+
+    def run(*cmd, cwd=None):
+        proc = subprocess.run(
+            list(cmd), cwd=str(cwd) if cwd else None, text=True,
+            capture_output=True, check=False,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr or proc.stdout)
+        return proc
+
+    run("git", "init", "--bare", str(remote))
+    run("git", "init", "-b", "main", str(source))
+    run("git", "config", "user.email", "test@example.com", cwd=source)
+    run("git", "config", "user.name", "Test", cwd=source)
+    (source / "base.txt").write_text("first\n", encoding="utf-8")
+    run("git", "add", "base.txt", cwd=source)
+    run("git", "commit", "-m", "base", cwd=source)
+    run("git", "remote", "add", "origin", str(remote), cwd=source)
+    run("git", "push", "-u", "origin", "main", cwd=source)
+    run("git", "clone", "--branch", "main", str(remote), str(repo))
+    old_head = run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+
+    (source / "upstream.txt").write_text("new base\n", encoding="utf-8")
+    run("git", "add", "upstream.txt", cwd=source)
+    run("git", "commit", "-m", "advance base", cwd=source)
+    run("git", "push", "origin", "main", cwd=source)
+    upstream_head = run("git", "rev-parse", "HEAD", cwd=source).stdout.strip()
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+
+    assert err == ""
+    assert root == repo
+    assert (repo / "upstream.txt").read_text(encoding="utf-8") == "new base\n"
+    assert run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip() == upstream_head
+    assert upstream_head != old_head
+
+
+def test_managed_provision_fails_before_clone_when_disk_is_low(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    dest = tmp_path / "managed-repo"
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_MIN_FREE_BYTES", 1024)
+    monkeypatch.setattr(pkg["ea"], "_disk_free_bytes", lambda path: (1023, ""))
+    monkeypatch.setattr(
+        pkg["ea"], "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not clone with insufficient disk")
+        ),
+    )
+
+    out = pkg["ea"]._provision_managed_repo(dest)
+
+    assert out.startswith("ERR evolve_disk_low="), out
+    assert "free_bytes=1023" in out and "required_bytes=1024" in out
+
+
+def test_managed_venv_fails_before_install_when_disk_is_low(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    dest = tmp_path / "managed-repo"
+    dest.mkdir()
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_MIN_FREE_BYTES", 1024)
+    monkeypatch.setattr(pkg["ea"], "_disk_free_bytes", lambda path: (0, ""))
+    monkeypatch.setattr(
+        pkg["ea"], "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not create or install a venv with insufficient disk")
+        ),
+    )
+
+    out = pkg["ea"]._ensure_managed_venv(dest)
+
+    assert out.startswith("ERR evolve_disk_low="), out
+
+
+def test_repo_provision_lock_returns_promptly_when_another_process_holds_it(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    lock_path = pkg["ea"].DB_PATH.parent / "evolve-repo-provision.lock"
+    ready = tmp_path / "lock-ready"
+    holder = subprocess.Popen([
+        sys.executable,
+        "-c",
+        (
+            "import fcntl, pathlib, sys, time; "
+            "lock=open(sys.argv[1], 'w'); "
+            "fcntl.flock(lock, fcntl.LOCK_EX); "
+            "pathlib.Path(sys.argv[2]).write_text('ready'); "
+            "time.sleep(30)"
+        ),
+        str(lock_path), str(ready),
+    ])
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "lock holder did not become ready"
+        monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S", 0)
+
+        started = time.monotonic()
+        with pkg["ea"]._repo_provision_lock() as err:
+            assert err == "ERR evolve_repo_provisioning_in_progress retry_later=1"
+        assert time.monotonic() - started < 0.5
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
+
+def test_prune_managed_venv_only_removes_default_managed_environment(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    venv = pkg["ea"]._managed_repo_dir() / ".venv"
+    venv.mkdir(parents=True)
+    (venv / "payload").write_bytes(b"heavy")
+    monkeypatch.setattr(pkg["ea"], "_running_git_writer_children", lambda conn: [])
+
+    out = pkg["ea"].prune_managed_venv()
+
+    assert out == "ok evolve_managed_venv_pruned freed_bytes=5"
+    assert not venv.exists()
+    assert _tool(pkg, "evolve_prune_managed_venv")(confirm=False).startswith(
+        "ERR confirmation_required"
+    )
 
 
 def test_ensure_repo_ready_auto_clones_when_missing(tmp_path, monkeypatch):

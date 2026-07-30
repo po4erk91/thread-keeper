@@ -682,9 +682,20 @@ moving the high-water forward; `force=True` bypasses this due gate.
   non-checkout install with auto-clone off the loops report
   `ERR evolve_repo_unavailable=<path>` until an explicit `EVOLVE_REPO_ROOT` is
   provided. An explicit override that is not itself a checkout is never
-  auto-cloned into and reports `ERR repo_root_not_git`. Provisioning is
-  serialized by `evolve-repo-provision.lock`. Curator report apply needs no git
-  tree and runs regardless.
+  auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
+  checkout is refreshed before every code-producing pass: after a clean-tree
+  and no-live-writer check, the parent fetches the configured branch, checks it
+  out, and hard-resets to `origin/<EVOLVE_REPO_BRANCH>`. Explicit checkout
+  roots are never refreshed or reset. Before clone or heavyweight
+  `[semantic,dev]` virtualenv creation, a 5 GiB free-space reserve is checked
+  (`EVOLVE_REPO_MIN_FREE_BYTES=0` disables it); `mp_dashboard()` reports
+  managed repo/venv/total/free-disk sizes, and
+  `evolve_prune_managed_venv(confirm=True)` removes only the default managed
+  `.venv` for explicit disk reclamation. Provisioning is serialized by
+  `evolve-repo-provision.lock`, but acquisition waits at most
+  `EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` (default 5 seconds) before returning
+  a retryable in-progress error. Curator report apply needs no git tree and
+  runs regardless.
 
   Before the privileged reviewer audit or any code/PR applier child is spawned,
   the parent enforces local git safety on that checkout: `git status

@@ -42,7 +42,8 @@ READ_TOOLS = {
 DELETE_CLASS_TOOLS = {
     "agent_memory_cleanup", "concept_manage", "consolidate", "core_remove",
     "curator_restore", "curator_run", "forget", "lesson_remove",
-    "memory_guard_check", "mp_cleanup", "skill_manage", "unlink",
+    "evolve_prune_managed_venv", "memory_guard_check", "mp_cleanup",
+    "skill_manage", "unlink",
 }
 
 # --- non-destructive mutating tools ------------------------------------------

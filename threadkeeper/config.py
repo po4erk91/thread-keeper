@@ -410,6 +410,13 @@ class Settings(BaseSettings):
     # tracks. Defaults to the upstream thread-keeper project.
     evolve_repo_url: str = "https://github.com/po4erk91/thread-keeper"
     evolve_repo_branch: str = "main"
+    # Fail before a managed clone / its heavyweight semantic+dev venv can
+    # consume the last free space on a host. 0 deliberately disables the
+    # guard for constrained test or operator-managed environments.
+    evolve_repo_min_free_bytes: int = Field(default=5 * 1024 ** 3, ge=0)
+    # A provisioning winner can spend many minutes in pip. Never leave a
+    # foreground MCP call blocked behind that work indefinitely.
+    evolve_repo_provision_lock_timeout_s: float = Field(default=5.0, ge=0)
     # After posting a roadmap-issue claim comment, wait this long, re-fetch
     # comments, and retract our claim if another host raced us. Cross-host
     # TOCTOU guard. Set to 0 in tests to skip the wait.
@@ -844,6 +851,10 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
         "EVOLVE_REPO_URL": s.evolve_repo_url,
         "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
+        "EVOLVE_REPO_MIN_FREE_BYTES": s.evolve_repo_min_free_bytes,
+        "EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S": (
+            s.evolve_repo_provision_lock_timeout_s
+        ),
         "ROADMAP_CLAIM_RACE_WINDOW_S": s.roadmap_claim_race_window_s,
         "EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS": (
             s.evolve_trusted_author_associations
