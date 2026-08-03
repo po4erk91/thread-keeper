@@ -65,16 +65,11 @@ _SKILL_RESET_KINDS = (
 # janitor_pass, curator_pass, shadow_review_pass, probe_pass,
 # config_watch_pass, evolve_review_pass / evolve_apply_pass,
 # dialectic_mine_pass / dialectic_validate_pass, candidate_review_pass,
-# extract_pass, auto_update_pass. Rather than enumerate them — a list that
-# silently rots every time a new daemon lands (lesson:
-# new-event-kind-audit-every-counter-exclude-bookkeeping-markers) —
-# _count_events_since excludes that whole class by the `%_pass` pattern.
-# This tuple is only for NON-"_pass" bookkeeping kinds that still must not
-# count. It is unioned into the exclude set in _count_events_since, NOT into
-# the *_RESET_KINDS sets, so these neither reset nor count toward the nudge.
-_NONCOUNTING_KINDS = (
-    "thread_hint_shown",
-)
+# extract_pass, auto_update_pass. Every rendered bookkeeping hint is likewise
+# named "<hint>_hint_shown" — thread_hint_shown, spawn_hint_shown, or
+# skill_hint_shown. Rather than enumerate either set — lists that silently rot
+# when a new daemon or hint lands — _count_events_since excludes both classes
+# by pattern, so these rows neither reset nor advance the nudge counters.
 
 
 def _last_reset_event_id(conn: sqlite3.Connection, session_id: str,
@@ -98,21 +93,19 @@ def _count_events_since(conn: sqlite3.Connection, session_id: str,
                         exclude_kinds: tuple[str, ...]) -> int:
     """Count events for session with id > since_id whose kind is NOT in
     exclude_kinds. These are the "non-save" turns between the last save and
-    now. Two classes never count: the caller's exclude_kinds unioned with the
-    _NONCOUNTING_KINDS bookkeeping set, AND every daemon-tick marker (any
-    "<daemon>_pass" kind) — they are byproducts of the system, not agent
-    turns."""
+    now. Two bookkeeping classes never count: daemon-tick markers (any
+    "<daemon>_pass" kind) and rendered hints (any "<hint>_hint_shown" kind).
+    They are byproducts of the system, not agent turns."""
     if not session_id:
         return 0
-    exclude_kinds = tuple(exclude_kinds) + _NONCOUNTING_KINDS
-    # Exclude the whole daemon-tick class by pattern (ingest_pass,
-    # janitor_pass, curator_pass, config_watch_pass, …) so a newly-added
-    # daemon can't silently inflate the counter. ESCAPE makes '_' a literal
-    # underscore rather than LIKE's single-char wildcard.
+    # Exclude daemon ticks and rendered hints by pattern so a newly-added
+    # bookkeeping event can't silently inflate the counter. ESCAPE makes '_'
+    # a literal underscore rather than LIKE's single-char wildcard.
     sql = (
         "SELECT COUNT(*) c FROM events "
         "WHERE session_id = ? AND id > ? "
-        "AND kind NOT LIKE '%\\_pass' ESCAPE '\\'"
+        "AND kind NOT LIKE '%\\_pass' ESCAPE '\\' "
+        "AND kind NOT LIKE '%\\_hint\\_shown' ESCAPE '\\'"
     )
     params: list = [session_id, since_id]
     if exclude_kinds:

@@ -123,6 +123,51 @@ def _inject_neutral_events(pkg, count: int) -> None:
     conn.commit()
 
 
+def test_nudge_counter_ignores_daemon_passes_and_rendered_hints(
+        tmp_path, monkeypatch):
+    """Only agent events count when daemon and brief bookkeeping interleave."""
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    sid = _open_session(pkg)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    kinds = (
+        "ingest_pass",
+        "spawn_hint_shown",
+        "note:open_q",
+        "curator_pass",
+        "skill_hint_shown",
+        "note:open_q",
+        "evolve_apply_pass",
+        "thread_hint_shown",
+        "note:open_q",
+        "candidate_review_pass",
+        "future_hint_shown",
+    )
+    conn.executemany(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?,?,?,?,?)",
+        [(sid, kind, None, "", now + i) for i, kind in enumerate(kinds)],
+    )
+    conn.commit()
+
+    assert pkg["nudges"]._count_events_since(conn, sid, 0, ()) == 3
+
+
+def test_nudge_counter_stays_zero_for_daemon_only_activity(tmp_path, monkeypatch):
+    pkg = _bootstrap_with_env(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    session_id = "daemon-only"
+    kinds = ("ingest_pass", "curator_pass", "evolve_apply_pass")
+    conn.executemany(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?,?,?,?,?)",
+        [(session_id, kind, None, "", int(time.time())) for kind in kinds],
+    )
+    conn.commit()
+
+    assert pkg["nudges"]._count_events_since(conn, session_id, 0, ()) == 0
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # compute_memory_nudge
 # ──────────────────────────────────────────────────────────────────────────
