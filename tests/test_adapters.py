@@ -100,6 +100,36 @@ def test_claude_register_mcp_writes_config(tmp_path, monkeypatch):
     assert "already current" in result2
 
 
+def test_claude_config_write_failure_preserves_existing_json(tmp_path, monkeypatch):
+    """A failed replacement must leave Claude Code's shared state untouched."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / ".claude.json"
+    original = json.dumps({
+        "mcpServers": {"other": {"command": "other-cli"}},
+        "projects": {"/workspace": {"history": ["session-1"]}},
+    })
+    cfg.write_text(original)
+    monkeypatch.setattr(pkg["claude"], "config_path", cfg)
+
+    from threadkeeper import config_io
+
+    def fail_sync(fd):
+        raise OSError("injected config write failure")
+
+    monkeypatch.setattr(config_io.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="injected config write failure"):
+        pkg["claude"].register_mcp_server(
+            name="thread-keeper",
+            command="/opt/python",
+            args=["-m", "threadkeeper.server"],
+            env={"PYTHONPATH": "/repo"},
+        )
+
+    assert cfg.read_text() == original
+    assert json.loads(cfg.read_text()) == json.loads(original)
+    assert not list(cfg.parent.glob(f".{cfg.name}.tmp.*"))
+
+
 def test_claude_iter_messages_parses_jsonl(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "claude_session.jsonl"

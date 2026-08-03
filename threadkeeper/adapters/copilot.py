@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from ..config_io import mutate_json_file
 
 
 def _ts(s: str) -> int:
@@ -151,53 +152,66 @@ class CopilotAdapter(CLIAdapter):
     def register_mcp_server(
         self, name, command, args, env, dry_run=False
     ) -> str:
-        cfg: dict
-        if self.config_path.exists():
-            try:
-                cfg = json.loads(self.config_path.read_text())
-            except json.JSONDecodeError:
-                return "copilot: malformed mcp-config.json — refused"
-        else:
-            cfg = {}
-        # Copilot v1.0.43+ schema validates the top-level `mcpServers`
-        # key (same as Claude). Older bundles shipped with
-        # `servers` documented; the validator now rejects that file.
-        # If we see a legacy `servers` block, migrate its contents into
-        # `mcpServers` AND drop the legacy key so the file is valid.
-        legacy = cfg.pop("servers", None)
-        if isinstance(legacy, dict):
-            cfg.setdefault("mcpServers", {})
-            for k, v in legacy.items():
-                cfg["mcpServers"].setdefault(k, v)
-        servers = cfg.setdefault("mcpServers", {})
         entry = {
             "command": command,
             "args": list(args),
         }
         if env:
             entry["env"] = dict(env)
-        existing = servers.get(name)
+
+        def update(cfg: dict) -> tuple[bool, tuple[object, object]]:
+            # Copilot v1.0.43+ validates ``mcpServers``.  Migrate an older
+            # ``servers`` block while preserving its entries.
+            legacy = cfg.pop("servers", None)
+            if isinstance(legacy, dict):
+                cfg.setdefault("mcpServers", {})
+                for key, value in legacy.items():
+                    cfg["mcpServers"].setdefault(key, value)
+            servers = cfg.setdefault("mcpServers", {})
+            existing = servers.get(name)
+            if existing == entry and legacy is None:
+                return False, (existing, legacy)
+            servers[name] = entry
+            return True, (existing, legacy)
+
+        try:
+            if dry_run:
+                cfg = (json.loads(self.config_path.read_text())
+                       if self.config_path.exists() else {})
+                _, (existing, legacy) = update(cfg)
+            else:
+                existing, legacy = mutate_json_file(self.config_path, update)
+        except json.JSONDecodeError:
+            return "copilot: malformed mcp-config.json — refused"
         if existing == entry and legacy is None:
             return "copilot: already current"
-        servers[name] = entry
-        if not dry_run:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(cfg, indent=2))
         if legacy is not None:
             return f"copilot: migrated legacy 'servers' → 'mcpServers' + {'added' if not existing else 'updated'} {name}"
         return f"copilot: {'would ' if dry_run else ''}{'update' if existing else 'add'}"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
-            return "copilot: nothing to remove"
-        cfg = json.loads(self.config_path.read_text())
-        servers = (cfg.get("mcpServers") or cfg.get("servers") or {})
-        if name not in servers:
+        def remove(cfg: dict) -> tuple[bool, bool]:
+            servers = cfg.get("mcpServers") or cfg.get("servers") or {}
+            if name not in servers:
+                return False, False
+            servers.pop(name)
+            return True, True
+
+        try:
+            if dry_run:
+                if not self.config_path.exists():
+                    return "copilot: nothing to remove"
+                _, present = remove(json.loads(self.config_path.read_text()))
+            else:
+                if not self.config_path.exists():
+                    return "copilot: nothing to remove"
+                present = mutate_json_file(self.config_path, remove)
+        except json.JSONDecodeError:
+            return "copilot: malformed mcp-config.json — refused"
+        if not present:
             return "copilot: not present"
         if dry_run:
             return f"copilot: would remove {name}"
-        servers.pop(name)
-        self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"copilot: removed {name}"
 
     # ----- Transcript ingestion -----------------------------------------
