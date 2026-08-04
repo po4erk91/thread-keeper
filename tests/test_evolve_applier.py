@@ -19,7 +19,14 @@ from pathlib import Path
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
 
-def _bootstrap(tmp_path, monkeypatch, interval="0", pin_repo=True):
+def _bootstrap(
+    tmp_path,
+    monkeypatch,
+    interval="0",
+    pin_repo=True,
+    write_origin="foreground",
+    spawned_child="0",
+):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_path / "fake_claude_projects"),
@@ -41,6 +48,8 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", pin_repo=True):
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
+        "THREADKEEPER_WRITE_ORIGIN": write_origin,
+        "THREADKEEPER_SPAWNED_CHILD": spawned_child,
         "THREADKEEPER_NO_EMBEDDINGS": "1",
     }
     for k, v in env.items():
@@ -156,7 +165,12 @@ def _mock_spawn(monkeypatch, calls):
     )
 
 
-def _write_report(pkg, name="REPORT-20260611T120000.md", complete=True):
+def _write_report(
+    pkg,
+    name="REPORT-20260611T120000.md",
+    complete=True,
+    provenanced=True,
+):
     import threadkeeper.config as cfg
 
     cfg.CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -166,6 +180,22 @@ def _write_report(pkg, name="REPORT-20260611T120000.md", complete=True):
         "# Curator report\n\nPATCH: stale-skill\n  reason: compact it\n" + tail,
         encoding="utf-8",
     )
+    if complete and provenanced:
+        conn = pkg["db"].get_db()
+        sid = pkg["identity"]._ensure_session(conn)
+        digest = pkg["ea"].curator_report_sha256(path.read_text())
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                sid,
+                pkg["ea"].CURATOR_REPORT_PROVENANCE_KIND,
+                str(path.resolve()),
+                f"pass_id=test sha256={digest}",
+                int(time.time()),
+            ),
+        )
+        conn.commit()
     return path
 
 
@@ -344,6 +374,45 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert "gh pr create" not in prompt
 
 
+def test_authorized_curator_report_writer_is_applied_once(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        write_origin="curator",
+        spawned_child="1",
+    )
+    from threadkeeper import curator
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
+
+    pass_id = "20260804T120000"
+    report_name = f"REPORT-{pass_id}.md"
+    monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    conn = pkg["db"].get_db()
+    curator._authorize_curator_report(conn, int(time.time()), pass_id, report_name)
+    write_report = _tool(pkg, "curator_report_write")
+    assert write_report(
+        pass_id=pass_id,
+        content="# Curator report\n\nPATCH: stale-skill\n\nCURATOR_PASS_COMPLETE",
+    ).startswith("ok path=")
+    report = tmp_path / "curator" / report_name
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    assert pkg["ea"].apply_curator_report(str(report)).startswith(
+        f"spawned curator_report={report_name}"
+    )
+    digest = pkg["ea"].curator_report_sha256(report.read_text())
+    assert pkg["ea"].mark_curator_report_applied(
+        conn, str(report), digest, "no changes needed",
+    ) == f"ok report={report_name} applied=1"
+    assert pkg["ea"].apply_curator_report(str(report)) == (
+        f"ERR report_already_applied={report_name}"
+    )
+    assert f"REPORT_SHA256\n-------------\n{digest}" in calls["prompt"]
+
+
 def test_apply_curator_report_requires_complete_unapplied_report(
     tmp_path, monkeypatch,
 ):
@@ -355,7 +424,10 @@ def test_apply_curator_report_requires_complete_unapplied_report(
     )
     complete = _write_report(pkg, name="REPORT-20260611T130000.md")
     out = pkg["ea"].mark_curator_report_applied(
-        pkg["db"].get_db(), str(complete), "already handled"
+        pkg["db"].get_db(),
+        str(complete),
+        pkg["ea"].curator_report_sha256(complete.read_text()),
+        "already handled",
     )
     assert "applied=1" in out
     assert (
@@ -371,7 +443,12 @@ def test_mark_curator_report_applied_tool_records_idempotency_event(
     report = _write_report(pkg)
     tool = _tool(pkg, "evolve_mark_curator_report_applied")
 
-    out = tool(report_path=str(report), summary="patched=1 skipped=2")
+    digest = pkg["ea"].curator_report_sha256(report.read_text())
+    out = tool(
+        report_path=str(report),
+        report_sha256=digest,
+        summary="patched=1 skipped=2",
+    )
 
     assert out == f"ok report={report.name} applied=1"
     conn = pkg["db"].get_db()
@@ -380,10 +457,43 @@ def test_mark_curator_report_applied_tool_records_idempotency_event(
         "WHERE kind='curator_report_applied'"
     ).fetchone()
     assert row["target"] == str(report.resolve())
-    assert row["summary"] == "patched=1 skipped=2"
-    assert tool(report_path=str(report), summary="again").endswith(
+    assert row["summary"] == f"sha256={digest} patched=1 skipped=2"
+    assert tool(
+        report_path=str(report), report_sha256=digest, summary="again",
+    ).endswith(
         "already_applied=1"
     )
+
+
+def test_apply_curator_report_rejects_forged_unprovenanced_report(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    forged = _write_report(pkg, provenanced=False)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    assert pkg["ea"].apply_curator_report(str(forged)) == (
+        f"ERR report_unprovenanced={forged.name}"
+    )
+    assert calls == {}
+
+
+def test_apply_curator_report_rejects_report_changed_after_provenance(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    report = _write_report(pkg)
+    report.write_text(
+        "# forged replacement\n\nCURATOR_PASS_COMPLETE\n", encoding="utf-8",
+    )
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    assert pkg["ea"].apply_curator_report(str(report)) == (
+        f"ERR report_unprovenanced={report.name}"
+    )
+    assert calls == {}
 
 
 def test_evolve_apply_status_includes_curator_completion_events(

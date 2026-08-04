@@ -509,6 +509,13 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   `~/.threadkeeper` is `0700`; `db.sqlite`, SQLite `-wal`/`-shm` sidecars,
   `.env`, and curator `REPORT-*.md` files are `0600`; headless spawn logs are
   created `0600`.
+- ✅ DONE (#143). Curator advisory reports are provenance-gated before the
+  destructive-memory applier can consume them: the parent records each
+  authorized report destination in a `curator_pass` event, the matching
+  spawned Curator records the final content SHA-256 in
+  `curator_report_provenance`, and the applier rechecks that path/hash both
+  before spawning and before it marks the report applied. Forged, swapped, or
+  replayed `REPORT-*.md` files are refused.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
   `permission_mode="bypassPermissions"` outside the evolve role/write-origin

@@ -500,6 +500,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   endorsed `inventory_sha256` and the current inventory hash. Spawned
   `curator_pass` events record total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
+  Before dispatching each child, the parent also authorizes that exact
+  `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
+  path-scoped writer requires that authorization plus its matching pass ID and
+  records the final SHA-256 in `curator_report_provenance`; a file appearing in
+  the report directory alone is therefore never trusted as Curator output.
   Destructive lesson removals and skill deletes reserve from one atomic,
   pass-ID-scoped server-side budget before touching disk. The default
   `CURATOR_MAX_DESTRUCTIVE_PER_PASS=10` is shared across child batches and
@@ -651,11 +656,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   common token shapes before the real GitHub CLI receives the body, refusing if
   a known unsafe pattern remains. Parent-authored claim/dead-letter comments use
   the same scrubber before spawning `gh`. If no issue is pending,
-  it falls back to the latest complete Curator `REPORT-*.md`, then to the oldest
+  it falls back to the latest complete Curator `REPORT-*.md` whose current
+  SHA-256 matches a `curator_report_provenance` event, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
   uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
-  and records `curator_report_applied`; no code edit or PR. Legacy code-evolve
-  apply still opens a PR and calls `evolve_mark_applied(evolve_id, pr_url)`.
+  and records `curator_report_applied` only after the child supplies the same
+  verified hash; no code edit or PR. Legacy code-evolve apply still opens a PR
+  and calls `evolve_mark_applied(evolve_id, pr_url)`.
   Machine-wide single-flight uses `evolve-applier.lock` plus the `"You are an
   EVOLVE APPLIER"` prompt prefix. Automatic apply passes respect the configured
   interval to avoid duplicate issue workers across foreground server startups;

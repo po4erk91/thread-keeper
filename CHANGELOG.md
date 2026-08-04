@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: curator report application now requires pass provenance (#143).**
+  Before a Curator child is dispatched, its parent authorizes each exact report
+  destination in a `curator_pass` event. The spawned Curator report writer
+  requires that authorization and its matching pass ID, then records the final
+  report SHA-256 in a `curator_report_provenance` event. The Evolve applier
+  accepts only a complete report whose current path/hash match that event and
+  rechecks the hash before marking it applied, rejecting forged, swapped, and
+  replayed report files.
 - **Fixed: pinned the MCP SDK below 2.0.** `mcp` 2.0.0 (2026-07-28) renamed
   `mcp.server.fastmcp` to `mcp.server.mcpserver` (`FastMCP` → `MCPServer`) with
   no compatibility shim, so every fresh install resolving the unbounded

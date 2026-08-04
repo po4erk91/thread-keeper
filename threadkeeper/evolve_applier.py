@@ -78,6 +78,7 @@ from .config import (
     ROADMAP_ISSUE_BACKOFF_BASE_S,
     ROADMAP_ISSUE_MAX_ATTEMPTS,
 )
+from .curator import CURATOR_REPORT_PROVENANCE_KIND, curator_report_sha256
 from .db import get_db
 from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .github_safety import GithubBodySafetyError, sanitize_public_github_body
@@ -247,6 +248,10 @@ REPORT_TEXT
 -----------
 {report_text}
 
+REPORT_SHA256
+-------------
+{report_sha256}
+
 REPO: {repo}
 
 DO, strictly in order:
@@ -292,6 +297,7 @@ DO, strictly in order:
    call:
      evolve_mark_curator_report_applied(
        report_path="{report_path}",
+       report_sha256="{report_sha256}",
        summary="<one-line summary of applied/skipped counts>"
      )
    Do not call it before the checks and mutations above.
@@ -1360,6 +1366,34 @@ def _is_complete_curator_report(path: Path) -> bool:
     return CURATOR_REPORT_MARKER in _read_curator_report(path)
 
 
+def _curator_report_provenanced(
+    conn: sqlite3.Connection,
+    path: Path,
+    report_text: str,
+) -> bool:
+    """Whether a curator child recorded this exact report content.
+
+    The report directory is deliberately treated as an untrusted transport:
+    only the writer's parent-authorized curator-pass event can create the
+    matching content hash record.  Re-reading the file and checking the hash
+    at every use closes replacement/tampering between report generation and
+    applier dispatch.
+    """
+    digest = curator_report_sha256(report_text)
+    try:
+        rows = conn.execute(
+            "SELECT summary FROM events WHERE kind=? AND target=? "
+            "ORDER BY id DESC LIMIT 20",
+            (CURATOR_REPORT_PROVENANCE_KIND, _report_key(path)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return False
+    return any(
+        f"sha256={digest}" in (row["summary"] or "").split()
+        for row in rows
+    )
+
+
 def _curator_report_applied(conn: sqlite3.Connection, path: Path) -> bool:
     try:
         row = conn.execute(
@@ -1388,8 +1422,13 @@ def _latest_complete_curator_report(
     except OSError:
         return None
     for path in reports:
-        if not _is_complete_curator_report(path):
+        report_text = _read_curator_report(path)
+        if CURATOR_REPORT_MARKER not in report_text:
             return None
+        # An unprovenanced file is not a curator pass and must not supersede a
+        # prior authentic report just because it has a newer mtime.
+        if not _curator_report_provenanced(conn, path, report_text):
+            continue
         return None if _curator_report_applied(conn, path) else path
     return None
 
@@ -2569,6 +2608,7 @@ def build_curator_report_apply_prompt(
         report_path=key,
         report_name=report_path.name,
         report_text=report_text,
+        report_sha256=curator_report_sha256(report_text),
         repo=repo,
     )
 
@@ -2724,16 +2764,25 @@ def mark_applied(conn: sqlite3.Connection, evolve_id: int,
 def mark_curator_report_applied(
     conn: sqlite3.Connection,
     report_path: str,
+    report_sha256: str,
     summary: str,
 ) -> str:
-    """Record that an evolve_applier child processed a Curator report."""
+    """Record that an evolve_applier child processed an unchanged report."""
     path = _resolve_curator_report_path(report_path)
     if path is None:
         return "ERR invalid_report_path"
     if not path.exists():
         return f"ERR report_not_found={path}"
-    if not _is_complete_curator_report(path):
+    report_text = _read_curator_report(path)
+    if CURATOR_REPORT_MARKER not in report_text:
         return f"ERR report_incomplete={path.name}"
+    expected = (report_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return "ERR report_sha256_required"
+    if curator_report_sha256(report_text) != expected:
+        return f"ERR report_changed={path.name}"
+    if not _curator_report_provenanced(conn, path, report_text):
+        return f"ERR report_unprovenanced={path.name}"
     key = _report_key(path)
     if _curator_report_applied(conn, path):
         return f"ok report={path.name} already_applied=1"
@@ -2744,7 +2793,7 @@ def mark_curator_report_applied(
             identity._session_id or "",
             CURATOR_REPORT_APPLIED_KIND,
             key,
-            (summary or "")[:300],
+            f"sha256={expected} {(summary or '')}"[:300],
             int(time.time()),
         ),
     )
@@ -3070,6 +3119,9 @@ def apply_curator_report(report_path: str = "") -> str:
                 return f"ERR report_not_found={path}"
             if not _is_complete_curator_report(path):
                 return f"ERR report_incomplete={path.name}"
+            report_text = _read_curator_report(path)
+            if not _curator_report_provenanced(conn, path, report_text):
+                return f"ERR report_unprovenanced={path.name}"
             if _curator_report_applied(conn, path):
                 return f"ERR report_already_applied={path.name}"
         else:
@@ -3085,6 +3137,8 @@ def apply_curator_report(report_path: str = "") -> str:
         report_text = _read_curator_report(path)
         if not report_text:
             return f"ERR report_empty={path.name}"
+        if not _curator_report_provenanced(conn, path, report_text):
+            return f"ERR report_unprovenanced={path.name}"
         # Curator apply is memory-only — no git tree required. Use the resolved
         # repo root when it exists, else fall back to the DB dir so the child's
         # cwd is always valid even before a managed checkout is cloned.
