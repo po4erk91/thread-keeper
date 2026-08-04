@@ -578,6 +578,15 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   injected content) and #63 (issue-author trust gate); the open web cannot be
   author-allowlisted, so those don't cover this path. Scope was S–M.
 
+- ✅ DONE (#144). **CI security scanning.** CodeQL now analyzes the default
+  Python query suite on PRs and pushes to `main` plus a weekly schedule, and
+  uploads results to the Security tab. A blocking `pip-audit` job scans the
+  fully resolved runtime, semantic, and development dependency set; the
+  initially clean baseline has no exceptions, and any future advisory-specific
+  suppression must be reviewed, tracked, justified, and dated in
+  `.github/pip-audit-ignores.txt`. Dependabot also tracks the Docker base image.
+  Scope was S.
+
 **Evolve issue-flow reliability.** The applier posts a claim comment *before*
 spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
 full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`

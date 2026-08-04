@@ -32,6 +32,20 @@ user data. Startup and `get_db()` best-effort set `~/.threadkeeper` to
 Headless spawn stdout logs are also created `0600`. Permission hardening
 is skipped on platforms without POSIX mode bits and never blocks startup.
 
+## Continuous security scanning
+
+GitHub Actions runs CodeQL's default Python query suite on pull requests and
+pushes to `main`, plus a weekly scheduled scan; CodeQL uploads its findings to
+the repository Security tab. A separate blocking `pip-audit` job audits the
+fully resolved runtime, semantic, and development dependency environment on
+each pull request and push.
+
+Known-vulnerability findings fail the job. The only exception mechanism is the
+reviewed, advisory-specific `.github/pip-audit-ignores.txt` list: each entry
+must include an advisory ID, a tracking issue or PR, a rationale, and a next
+review date. This list is empty for the current baseline; exceptions must be
+removed once a safe remediation is available.
+
 ## Trust boundaries
 
 ### Auto-update (future maintainer code → local execution)

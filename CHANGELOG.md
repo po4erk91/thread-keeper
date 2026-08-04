@@ -6,6 +6,12 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Added: CI security scanning (#144).** CodeQL analyzes the default Python
+  query suite on pull requests and pushes to `main`, plus weekly, and uploads
+  results to the Security tab. A blocking `pip-audit` job scans the fully
+  resolved runtime, semantic, and development dependency set; suppressions are
+  advisory-specific, reviewed entries in `.github/pip-audit-ignores.txt`.
+  Dependabot now tracks the Docker base image as well.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

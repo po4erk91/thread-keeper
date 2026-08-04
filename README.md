@@ -1706,7 +1706,10 @@ python -m pytest
 ```
 
 869 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
-the suite on every push and PR.
+the suite and a resolved-dependency `pip-audit` gate on every push and PR.
+CodeQL scans the Python source on those changes and weekly; see
+[SECURITY.md](SECURITY.md#continuous-security-scanning) for the exception
+process and reporting policy.
 
 ---
 
