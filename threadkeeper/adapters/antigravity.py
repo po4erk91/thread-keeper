@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from ..config_io import mutate_json_file
 
 
 class AntigravityAdapter(CLIAdapter):
@@ -121,40 +122,59 @@ class AntigravityAdapter(CLIAdapter):
     def register_mcp_server(
         self, name, command, args, env, dry_run=False
     ) -> str:
-        try:
-            cfg = self._read_config()
-        except json.JSONDecodeError:
-            return "antigravity: malformed mcp_config.json — refused"
-        servers = cfg.setdefault("mcpServers", {})
         entry = {
             "command": command,
             "args": list(args),
         }
         if env:
             entry["env"] = dict(env)
-        existing = servers.get(name)
+
+        def update(cfg: dict) -> tuple[bool, object]:
+            servers = cfg.setdefault("mcpServers", {})
+            existing = servers.get(name)
+            if existing == entry:
+                return False, existing
+            servers[name] = entry
+            return True, existing
+
+        try:
+            if dry_run:
+                _, existing = update(self._read_config())
+            else:
+                existing = mutate_json_file(
+                    self.config_path, update, allow_empty=True,
+                )
+        except json.JSONDecodeError:
+            return "antigravity: malformed mcp_config.json — refused"
         if existing == entry:
             return "antigravity: already current"
-        servers[name] = entry
-        if not dry_run:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"antigravity: {'would ' if dry_run else ''}{'update' if existing else 'add'}"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
-            return "antigravity: nothing to remove"
+        def remove(cfg: dict) -> tuple[bool, bool]:
+            servers = cfg.get("mcpServers") or {}
+            if name not in servers:
+                return False, False
+            servers.pop(name)
+            return True, True
+
         try:
-            cfg = self._read_config()
+            if dry_run:
+                if not self.config_path.exists():
+                    return "antigravity: nothing to remove"
+                _, present = remove(self._read_config())
+            else:
+                if not self.config_path.exists():
+                    return "antigravity: nothing to remove"
+                present = mutate_json_file(
+                    self.config_path, remove, allow_empty=True,
+                )
         except json.JSONDecodeError:
             return "antigravity: malformed mcp_config.json — refused"
-        servers = (cfg.get("mcpServers") or {})
-        if name not in servers:
+        if not present:
             return "antigravity: not present"
         if dry_run:
             return f"antigravity: would remove {name}"
-        servers.pop(name)
-        self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"antigravity: removed {name}"
 
     # ----- Transcript ingestion -----------------------------------------

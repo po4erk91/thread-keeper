@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage
+from ..config_io import mutate_json_file
 
 
 def _default_config_path() -> Path:
@@ -87,15 +88,6 @@ class VSCodeAdapter(CLIAdapter):
     def register_mcp_server(
         self, name, command, args, env, dry_run=False
     ) -> str:
-        cfg: dict
-        if self.config_path.exists():
-            try:
-                cfg = json.loads(self.config_path.read_text())
-            except json.JSONDecodeError:
-                return "vscode: malformed mcp.json — refused"
-        else:
-            cfg = {}
-        servers = cfg.setdefault("servers", {})
         entry: dict = {
             "type": "stdio",
             "command": command,
@@ -103,29 +95,51 @@ class VSCodeAdapter(CLIAdapter):
         }
         if env:
             entry["env"] = dict(env)
-        existing = servers.get(name)
+
+        def update(cfg: dict) -> tuple[bool, object]:
+            servers = cfg.setdefault("servers", {})
+            existing = servers.get(name)
+            if existing == entry:
+                return False, existing
+            servers[name] = entry
+            return True, existing
+
+        try:
+            if dry_run:
+                cfg = (json.loads(self.config_path.read_text())
+                       if self.config_path.exists() else {})
+                _, existing = update(cfg)
+            else:
+                existing = mutate_json_file(self.config_path, update)
+        except json.JSONDecodeError:
+            return "vscode: malformed mcp.json — refused"
         if existing == entry:
             return "vscode: already current"
-        servers[name] = entry
-        if not dry_run:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"vscode: {'would ' if dry_run else ''}{'update' if existing else 'add'}"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
-            return "vscode: nothing to remove"
+        def remove(cfg: dict) -> tuple[bool, bool]:
+            servers = cfg.get("servers") or {}
+            if name not in servers:
+                return False, False
+            servers.pop(name)
+            return True, True
+
         try:
-            cfg = json.loads(self.config_path.read_text())
+            if dry_run:
+                if not self.config_path.exists():
+                    return "vscode: nothing to remove"
+                _, present = remove(json.loads(self.config_path.read_text()))
+            else:
+                if not self.config_path.exists():
+                    return "vscode: nothing to remove"
+                present = mutate_json_file(self.config_path, remove)
         except json.JSONDecodeError:
             return "vscode: malformed mcp.json — refused"
-        servers = (cfg.get("servers") or {})
-        if name not in servers:
+        if not present:
             return "vscode: not present"
         if dry_run:
             return f"vscode: would remove {name}"
-        servers.pop(name)
-        self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"vscode: removed {name}"
 
     # ----------------------------- transcripts ---------------------------

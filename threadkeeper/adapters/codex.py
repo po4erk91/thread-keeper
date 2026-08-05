@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from ..config_io import mutate_text_file
 
 _FORCED_CID_RE = re.compile(
     r"Your own cid is ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
@@ -132,9 +133,7 @@ def _approval_blocks(name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _read_toml(fp: Path) -> dict:
-    if not fp.exists():
-        return {}
+def _parse_toml(body: str) -> dict:
     try:
         import tomllib  # py3.11+
     except ImportError:
@@ -142,9 +141,15 @@ def _read_toml(fp: Path) -> dict:
         # without tomllib. Returns empty (caller treats as "no MCP").
         return {}
     try:
-        return tomllib.loads(fp.read_text())
+        return tomllib.loads(body)
     except Exception:
         return {}
+
+
+def _read_toml(fp: Path) -> dict:
+    if not fp.exists():
+        return {}
+    return _parse_toml(fp.read_text())
 
 
 def _serialize_mcp_section(name: str, command: str,
@@ -355,41 +360,59 @@ class CodexAdapter(CLIAdapter):
         self, name, command, args, env, dry_run=False
     ) -> str:
         block = _serialize_mcp_section(name, command, list(args), dict(env))
-        if not self.config_path.exists():
-            if dry_run:
-                return "codex: would create config.toml with mcp section"
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(block)
-            return "codex: created config.toml"
-        body = self.config_path.read_text()
-        # Check if already current (cheap normalization compare)
-        already = _read_toml(self.config_path).get("mcp_servers", {}).get(name)
-        if isinstance(already, dict):
-            want = {"command": command, "args": list(args)}
-            if env:
-                want["env"] = dict(env)
-            if name == "thread-keeper":
-                want.update(_thread_keeper_tools_config())
-            if already == want:
-                return "codex: already current"
-        new_body = _replace_or_append_mcp_block(body, name, block)
-        if new_body == body:
-            return "codex: already current"
+
+        def update(body: str, exists: bool) -> tuple[str, str]:
+            if not exists:
+                return block, "created"
+            # Check if already current (cheap normalization compare).
+            already = _parse_toml(body).get("mcp_servers", {}).get(name)
+            if isinstance(already, dict):
+                want = {"command": command, "args": list(args)}
+                if env:
+                    want["env"] = dict(env)
+                if name == "thread-keeper":
+                    want.update(_thread_keeper_tools_config())
+                if already == want:
+                    return body, "already"
+            new_body = _replace_or_append_mcp_block(body, name, block)
+            if new_body == body:
+                return body, "already"
+            return new_body, "updated"
+
         if dry_run:
-            return "codex: would update config.toml"
-        self.config_path.write_text(new_body)
-        return "codex: updated config.toml"
+            exists = self.config_path.exists()
+            body = self.config_path.read_text() if exists else ""
+            _, result = update(body, exists)
+        else:
+            result = mutate_text_file(self.config_path, update)
+        if result == "created":
+            return ("codex: would create config.toml with mcp section"
+                    if dry_run else "codex: created config.toml")
+        if result == "already":
+            return "codex: already current"
+        return "codex: would update config.toml" if dry_run else "codex: updated config.toml"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
+        def remove(body: str, exists: bool) -> tuple[str, str]:
+            if not exists:
+                return body, "nothing"
+            new_body = _replace_or_append_mcp_block(body, name, "").rstrip() + "\n"
+            if new_body.rstrip() == body.rstrip():
+                return body, "missing"
+            return new_body, "removed"
+
+        if dry_run:
+            exists = self.config_path.exists()
+            body = self.config_path.read_text() if exists else ""
+            _, result = remove(body, exists)
+        else:
+            result = mutate_text_file(self.config_path, remove)
+        if result == "nothing":
             return "codex: nothing to remove"
-        body = self.config_path.read_text()
-        new_body = _replace_or_append_mcp_block(body, name, "").rstrip() + "\n"
-        if new_body.rstrip() == body.rstrip():
+        if result == "missing":
             return "codex: not present"
         if dry_run:
             return f"codex: would remove {name}"
-        self.config_path.write_text(new_body)
         return f"codex: removed {name}"
 
     # ----- Transcript ingestion -----------------------------------------

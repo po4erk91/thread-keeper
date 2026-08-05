@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage
+from ..config_io import mutate_json_file
 
 
 def _default_config_path() -> Path:
@@ -73,44 +74,57 @@ class ClaudeDesktopAdapter(CLIAdapter):
     def register_mcp_server(
         self, name, command, args, env, dry_run=False
     ) -> str:
-        cfg: dict
-        if self.config_path.exists():
-            try:
-                cfg = json.loads(self.config_path.read_text())
-            except json.JSONDecodeError:
-                return "claude-desktop: malformed config — refused"
-        else:
-            cfg = {}
-        servers = cfg.setdefault("mcpServers", {})
         entry: dict = {
             "command": command,
             "args": list(args),
         }
         if env:
             entry["env"] = dict(env)
-        existing = servers.get(name)
+
+        def update(cfg: dict) -> tuple[bool, object]:
+            servers = cfg.setdefault("mcpServers", {})
+            existing = servers.get(name)
+            if existing == entry:
+                return False, existing
+            servers[name] = entry
+            return True, existing
+
+        try:
+            if dry_run:
+                cfg = (json.loads(self.config_path.read_text())
+                       if self.config_path.exists() else {})
+                _, existing = update(cfg)
+            else:
+                existing = mutate_json_file(self.config_path, update)
+        except json.JSONDecodeError:
+            return "claude-desktop: malformed config — refused"
         if existing == entry:
             return "claude-desktop: already current"
-        servers[name] = entry
-        if not dry_run:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"claude-desktop: {'would ' if dry_run else ''}{'update' if existing else 'add'}"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
-            return "claude-desktop: nothing to remove"
+        def remove(cfg: dict) -> tuple[bool, bool]:
+            servers = cfg.get("mcpServers") or {}
+            if name not in servers:
+                return False, False
+            servers.pop(name)
+            return True, True
+
         try:
-            cfg = json.loads(self.config_path.read_text())
+            if dry_run:
+                if not self.config_path.exists():
+                    return "claude-desktop: nothing to remove"
+                _, present = remove(json.loads(self.config_path.read_text()))
+            else:
+                if not self.config_path.exists():
+                    return "claude-desktop: nothing to remove"
+                present = mutate_json_file(self.config_path, remove)
         except json.JSONDecodeError:
             return "claude-desktop: malformed config — refused"
-        servers = (cfg.get("mcpServers") or {})
-        if name not in servers:
+        if not present:
             return "claude-desktop: not present"
         if dry_run:
             return f"claude-desktop: would remove {name}"
-        servers.pop(name)
-        self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"claude-desktop: removed {name}"
 
     # ----------------------------- transcripts ---------------------------

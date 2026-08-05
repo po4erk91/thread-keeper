@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from ..config_io import mutate_json_file
+
 
 def install_claude_style_hooks(
     settings_path: Path,
@@ -25,48 +27,53 @@ def install_claude_style_hooks(
     command isn't already present. Other hooks (from the user or other
     plugins) are preserved.
     """
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except json.JSONDecodeError:
-            return f"{settings_path.name}: malformed JSON — refused"
-    else:
-        settings = {}
-    hooks = settings.setdefault("hooks", {})
-
-    changed = False
-    for spec in specs:
-        event = spec["event"]
-        command = spec["command"]
-        matcher = spec.get("matcher", "")
-        blocks = hooks.get(event, [])
-        # Look for an existing block whose first hook command matches.
-        found = False
-        for block in blocks:
-            inner = block.get("hooks") or []
-            for h in inner:
-                if h.get("command") == command:
-                    found = True
-                    if block.get("matcher", "") != matcher:
-                        block["matcher"] = matcher
-                        changed = True
+    def merge(settings: dict) -> bool:
+        hooks = settings.setdefault("hooks", {})
+        changed = False
+        for spec in specs:
+            event = spec["event"]
+            command = spec["command"]
+            matcher = spec.get("matcher", "")
+            blocks = hooks.get(event, [])
+            # Look for an existing block whose first hook command matches.
+            found = False
+            for block in blocks:
+                inner = block.get("hooks") or []
+                for hook in inner:
+                    if hook.get("command") == command:
+                        found = True
+                        if block.get("matcher", "") != matcher:
+                            block["matcher"] = matcher
+                            changed = True
+                        break
+                if found:
                     break
-            if found:
-                break
-        if not found:
-            new_block = {
-                "hooks": [{"type": "command", "command": command}],
-            }
-            if matcher:
-                new_block["matcher"] = matcher
-            blocks.append(new_block)
-            changed = True
-        hooks[event] = blocks
+            if not found:
+                new_block = {
+                    "hooks": [{"type": "command", "command": command}],
+                }
+                if matcher:
+                    new_block["matcher"] = matcher
+                blocks.append(new_block)
+                changed = True
+            hooks[event] = blocks
+        return changed
 
+    try:
+        if dry_run:
+            settings = (json.loads(settings_path.read_text())
+                        if settings_path.exists() else {})
+            changed = merge(settings)
+        else:
+            def update(settings: dict) -> tuple[bool, bool]:
+                changed = merge(settings)
+                return changed, changed
+
+            changed = mutate_json_file(settings_path, update)
+    except json.JSONDecodeError:
+        return f"{settings_path.name}: malformed JSON — refused"
     if not changed:
         return f"{settings_path.name}: hooks already current"
     if dry_run:
         return f"{settings_path.name}: would update hooks"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2))
     return f"{settings_path.name}: hooks updated"
