@@ -33,7 +33,7 @@ import shutil
 import sqlite3
 import subprocess
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -43,12 +43,18 @@ from ..config_io import mutate_json_file
 
 def _ts(s: str) -> int:
     try:
-        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            # Copilot's SQLite timestamps omit a timezone but are UTC.
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
     except Exception:
         try:
             # Copilot stores timestamps via sqlite's datetime('now')
             # which yields 'YYYY-MM-DD HH:MM:SS' (no T, no tz).
-            return int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp())
+            return int(datetime.strptime(
+                s, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc).timestamp())
         except Exception:
             import time
             return int(time.time())

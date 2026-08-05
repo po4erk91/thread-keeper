@@ -8,8 +8,11 @@ For each adapter we verify:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -768,3 +771,24 @@ def test_copilot_iter_messages_splits_turns(tmp_path, monkeypatch):
     assert msgs[1].role == "assistant" and msgs[1].content == "hi there"
     assert msgs[2].role == "user" and msgs[2].content == "do X"
     assert msgs[3].role == "assistant" and msgs[3].content == "done"
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX TZ support")
+@pytest.mark.parametrize("local_tz", ["UTC", "America/Los_Angeles"])
+def test_copilot_naive_utc_timestamp_is_independent_of_local_tz(
+    tmp_path, monkeypatch, local_tz,
+):
+    _bootstrap(tmp_path, monkeypatch)
+    copilot_module = sys.modules["threadkeeper.adapters.copilot"]
+    expected = int(datetime(2026, 6, 17, 12, tzinfo=timezone.utc).timestamp())
+    original_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", local_tz)
+        time.tzset()
+        assert copilot_module._ts("2026-06-17 12:00:00") == expected
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        time.tzset()
