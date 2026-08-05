@@ -111,6 +111,12 @@ _CURATABLE_SKILL_ORIGINS = {
 # edits to the opening line cannot silently drift away from the detector.
 CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
 
+# A report is executable input for the advisory-report applier, so its mere
+# presence on disk is not enough authority.  The parent authorizes each exact
+# report destination before it launches the curator child; the child-side
+# writer records the final content hash as durable provenance.
+CURATOR_REPORT_PROVENANCE_KIND = "curator_report_provenance"
+
 CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
 library. This is a deep audit, not a filename or character-count scan. You
 receive one complete bounded inventory batch from a pass that covers every
@@ -358,6 +364,53 @@ def _record_curator_pass(conn: sqlite3.Connection,
         conn.commit()
     except sqlite3.OperationalError:
         logger.debug("curator: failed to record pass", exc_info=True)
+
+
+def _authorize_curator_report(
+    conn: sqlite3.Connection,
+    ts: int,
+    pass_id: str,
+    report_name: str,
+) -> None:
+    """Record an exact report destination before dispatching its curator child.
+
+    ``curator_report_write`` requires this parent-authored ``curator_pass``
+    record in addition to its spawned-curator context.  A writer that merely
+    drops a matching filename into the reports directory cannot mint the
+    provenance event consumed by the Evolve applier.
+    """
+    _record_curator_pass(
+        conn,
+        ts,
+        f"report_authorized pass_id={pass_id} report_name={report_name}",
+    )
+
+
+def _curator_report_is_authorized(
+    conn: sqlite3.Connection,
+    pass_id: str,
+    report_name: str,
+) -> bool:
+    """Whether the curator parent authorized this exact report destination."""
+    required = {
+        "report_authorized",
+        f"pass_id={pass_id}",
+        f"report_name={report_name}",
+    }
+    try:
+        rows = conn.execute(
+            "SELECT summary FROM events WHERE kind='curator_pass' "
+            "ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return False
+    return any(required.issubset(set((row["summary"] or "").split()))
+               for row in rows)
+
+
+def curator_report_sha256(content: str) -> str:
+    """Digest report text exactly as the report writer persists it."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
@@ -1187,8 +1240,11 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         from .tools.spawn import spawn  # type: ignore
         old_pass = os.environ.get(PASS_ID_ENV)
         old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
+        # Every report writer, including advisory-mode children, must carry the
+        # pass identifier the parent authorized.  The writer rejects filenames
+        # that are not one of this pass's explicit report destinations.
+        os.environ[PASS_ID_ENV] = pass_id
         if CURATOR_DESTRUCTIVE:
-            os.environ[PASS_ID_ENV] = pass_id
             os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
         results: list[str] = []
         try:
@@ -1201,6 +1257,9 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                             f"REPORT-{pass_id}-batch-"
                             f"{batch.index:03d}-of-{batch.total:03d}.md"
                         )
+                    _authorize_curator_report(
+                        conn, now, pass_id, report_name,
+                    )
                     full_prompt = (
                         CURATOR_PROMPT.replace(
                             "{DESTRUCTIVE_CLAUSE}",

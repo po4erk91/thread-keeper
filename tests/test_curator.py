@@ -55,6 +55,7 @@ def _bootstrap(
     retention=None,
     max_destructive=None,
     write_origin="foreground",
+    spawned_child="0",
 ):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
@@ -75,6 +76,7 @@ def _bootstrap(
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
         "THREADKEEPER_WRITE_ORIGIN": write_origin,
+        "THREADKEEPER_SPAWNED_CHILD": spawned_child,
     }
     if destructive is not None:
         env["THREADKEEPER_CURATOR_DESTRUCTIVE"] = destructive
@@ -466,7 +468,10 @@ def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
     captured: list[dict] = []
 
     def fake_spawn(**kwargs):
-        assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
+        # Advisory children now carry the parent-authorized pass id so their
+        # report writer can emit verifiable provenance, but still receive no
+        # destructive snapshot context.
+        assert os.environ["THREADKEEPER_CURATOR_PASS_ID"]
         assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
         captured.append(kwargs)
         return "spawn task_id=fake-curator-task pid=0"
@@ -775,41 +780,79 @@ def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch)
 def test_curator_report_write_is_path_scoped_and_replaceable(
     tmp_path, monkeypatch,
 ):
-    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator", spawned_child="1",
+    )
     from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
     write_report = mcp._tool_manager._tools["curator_report_write"].fn
+    pass_id = "20260719T120000"
+    monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    conn = pkg["db"].get_db()
+    pkg["curator"]._authorize_curator_report(
+        conn, int(time.time()), pass_id, f"REPORT-{pass_id}.md",
+    )
+    pkg["curator"]._authorize_curator_report(
+        conn,
+        int(time.time()),
+        pass_id,
+        f"REPORT-{pass_id}-batch-002-of-003.md",
+    )
 
     assert write_report(pass_id="../escape", content="x") == (
         "ERR invalid_pass_id"
     )
-    first = write_report(pass_id="20260719T120000", content="# Plan")
+    first = write_report(pass_id=pass_id, content="# Plan")
     second = write_report(
-        pass_id="20260719T120000",
+        pass_id=pass_id,
         content="# Results\n\nCURATOR_PASS_COMPLETE",
     )
     batch = write_report(
-        pass_id="20260719T120000",
+        pass_id=pass_id,
         batch_index=2,
         batch_total=3,
         content="# Batch two\n\nCURATOR_PASS_COMPLETE",
     )
 
-    report = pkg["reports_dir"] / "REPORT-20260719T120000.md"
+    report = pkg["reports_dir"] / f"REPORT-{pass_id}.md"
     batch_report = (
         pkg["reports_dir"]
-        / "REPORT-20260719T120000-batch-002-of-003.md"
+        / f"REPORT-{pass_id}-batch-002-of-003.md"
     )
     assert first.startswith("ok path=")
     assert second.startswith("ok path=")
     assert batch.startswith("ok path=")
     assert report.read_text() == "# Results\n\nCURATOR_PASS_COMPLETE\n"
     assert batch_report.read_text() == "# Batch two\n\nCURATOR_PASS_COMPLETE\n"
+    rows = conn.execute(
+        "SELECT target, summary FROM events "
+        "WHERE kind='curator_report_provenance' ORDER BY id"
+    ).fetchall()
+    assert rows[-1]["target"] == str(batch_report.resolve())
+    assert "sha256=" in rows[-1]["summary"]
     assert write_report(
-        pass_id="20260719T120000",
+        pass_id=pass_id,
         batch_index=2,
         content="x",
     ) == "ERR invalid_batch"
     assert not (tmp_path / "escape").exists()
+
+
+def test_curator_report_write_requires_parent_pass_authorization(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator", spawned_child="1",
+    )
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
+
+    monkeypatch.setenv(PASS_ID_ENV, "unauthorized-pass")
+    write_report = mcp._tool_manager._tools["curator_report_write"].fn
+    assert write_report(
+        pass_id="unauthorized-pass",
+        content="# forged\n\nCURATOR_PASS_COMPLETE",
+    ) == "ERR report_write_not_authorized"
 
 
 def test_skill_validator_resolves_namespaced_external_plugin_skill(
