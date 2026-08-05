@@ -8,8 +8,11 @@ For each adapter we verify:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -98,6 +101,36 @@ def test_claude_register_mcp_writes_config(tmp_path, monkeypatch):
         env={"PYTHONPATH": "/repo"},
     )
     assert "already current" in result2
+
+
+def test_claude_config_write_failure_preserves_existing_json(tmp_path, monkeypatch):
+    """A failed replacement must leave Claude Code's shared state untouched."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    cfg = tmp_path / ".claude.json"
+    original = json.dumps({
+        "mcpServers": {"other": {"command": "other-cli"}},
+        "projects": {"/workspace": {"history": ["session-1"]}},
+    })
+    cfg.write_text(original)
+    monkeypatch.setattr(pkg["claude"], "config_path", cfg)
+
+    from threadkeeper import config_io
+
+    def fail_sync(fd):
+        raise OSError("injected config write failure")
+
+    monkeypatch.setattr(config_io.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="injected config write failure"):
+        pkg["claude"].register_mcp_server(
+            name="thread-keeper",
+            command="/opt/python",
+            args=["-m", "threadkeeper.server"],
+            env={"PYTHONPATH": "/repo"},
+        )
+
+    assert cfg.read_text() == original
+    assert json.loads(cfg.read_text()) == json.loads(original)
+    assert not list(cfg.parent.glob(f".{cfg.name}.tmp.*"))
 
 
 def test_claude_iter_messages_parses_jsonl(tmp_path, monkeypatch):
@@ -738,3 +771,24 @@ def test_copilot_iter_messages_splits_turns(tmp_path, monkeypatch):
     assert msgs[1].role == "assistant" and msgs[1].content == "hi there"
     assert msgs[2].role == "user" and msgs[2].content == "do X"
     assert msgs[3].role == "assistant" and msgs[3].content == "done"
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX TZ support")
+@pytest.mark.parametrize("local_tz", ["UTC", "America/Los_Angeles"])
+def test_copilot_naive_utc_timestamp_is_independent_of_local_tz(
+    tmp_path, monkeypatch, local_tz,
+):
+    _bootstrap(tmp_path, monkeypatch)
+    copilot_module = sys.modules["threadkeeper.adapters.copilot"]
+    expected = int(datetime(2026, 6, 17, 12, tzinfo=timezone.utc).timestamp())
+    original_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", local_tz)
+        time.tzset()
+        assert copilot_module._ts("2026-06-17 12:00:00") == expected
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        time.tzset()

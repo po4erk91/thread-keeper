@@ -668,6 +668,13 @@ latest report, deterministic audit manifest, recovery snapshot, last endorsed
 `entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
 large reviews visible in the normal `curator_pass` trail.
 
+Each report path is explicitly authorized in a parent-authored `curator_pass`
+event before its child is launched. `curator_report_write` only accepts that
+exact path from the spawned Curator carrying the matching pass ID, then records
+the persisted report's SHA-256 in `curator_report_provenance`. This makes the
+report directory an untrusted transport: a stray or forged `REPORT-*.md` file
+cannot acquire the provenance needed by the applier.
+
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
 can actually prune and consolidate duplicate lessons). Set
@@ -708,13 +715,14 @@ or `skill_manage(action='restore', name=...)`. Trash retention is bounded by
 trash writes. Advisory mode does not write snapshots. The existing Evolve
 applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it looks
-for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) that has not
-been marked applied, then spawns an `evolve_applier` child to apply only safe,
-still-current memory maintenance through `lesson_append` / `lesson_remove` /
-`skill_manage` / `concept_manage`. It never touches `[PROTECTED]`,
+for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) whose path and
+current SHA-256 match an unapplied `curator_report_provenance` event, then
+spawns an `evolve_applier` child to apply only safe, still-current memory
+maintenance through `lesson_append` / `lesson_remove` / `skill_manage` /
+`concept_manage`. It never touches `[PROTECTED]`,
 foreground/user, pinned, or validated entries. Only after the child finishes
-does it call `evolve_mark_curator_report_applied(...)`, which prevents replaying
-the same report.
+does it call `evolve_mark_curator_report_applied(...)` with the verified hash;
+the mark rechecks that hash and prevents replaying the same report.
 
 The shared lesson file has its own write serialization: `lesson_append`,
 `lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on

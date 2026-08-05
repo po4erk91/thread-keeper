@@ -20,6 +20,7 @@ audit pass:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -29,13 +30,22 @@ from ..db import get_db
 from ..identity import _ensure_session
 from ..curator import (
     CURATOR_PROMPT,
+    CURATOR_REPORT_PROVENANCE_KIND,
     _collect_inventory,
+    _curator_report_is_authorized,
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
+    curator_report_sha256,
     run_curator_pass,
 )
-from ..curator_snapshots import restore_lesson, restore_skill, snapshots_root
+from ..curator_snapshots import (
+    current_pass_id,
+    restore_lesson,
+    restore_skill,
+    snapshots_root,
+)
+from ..permissions import chmod_private_file
 from ..skill_audit import build_skill_audit
 from ..config import (
     CURATOR_INTERVAL_S,
@@ -43,11 +53,14 @@ from ..config import (
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
+    SPAWNED_CHILD,
+    WRITE_ORIGIN,
 )
 
 
 _PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MAX_REPORT_CHARS = 2_000_000
+logger = logging.getLogger(__name__)
 
 
 @write_tool()
@@ -266,7 +279,9 @@ def curator_report_write(
     arbitrary path. A bounded multi-child pass supplies ``batch_index`` and
     ``batch_total`` so children cannot overwrite each other's reports. Repeated
     calls replace the same pass/batch report so the Curator can persist its
-    plan before mutation and then add actual validation/rollback results.
+    plan before mutation and then add actual validation/rollback results. Only
+    a parent-authorized spawned Curator carrying the matching pass ID may write
+    a report; the final content hash is recorded for the report applier.
     """
     clean_id = pass_id.strip()
     if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
@@ -284,6 +299,12 @@ def curator_report_write(
         return f"ERR report_too_large max_chars={_MAX_REPORT_CHARS}"
     if not content.strip():
         return "ERR empty_report"
+    if WRITE_ORIGIN != "curator" or not SPAWNED_CHILD:
+        return "ERR report_write_not_authorized"
+    if current_pass_id() != clean_id:
+        return "ERR report_write_pass_mismatch"
+    conn = get_db()
+    _ensure_session(conn)
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     if batch_index:
         report_name = (
@@ -291,17 +312,38 @@ def curator_report_write(
         )
     else:
         report_name = f"REPORT-{clean_id}.md"
+    if not _curator_report_is_authorized(conn, clean_id, report_name):
+        return "ERR report_write_not_authorized"
     target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    persisted = content.rstrip() + "\n"
     try:
-        temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
+        temporary.write_text(persisted, encoding="utf-8")
         temporary.replace(target)
+        chmod_private_file(target)
     except OSError as exc:
         try:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
         return f"ERR report_write_failed={exc}"
+    digest = curator_report_sha256(persisted)
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                _ensure_session(conn),
+                CURATOR_REPORT_PROVENANCE_KIND,
+                str(target.resolve()),
+                f"pass_id={clean_id} sha256={digest}",
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("curator report provenance record failed", exc_info=True)
+        return f"ERR report_provenance_failed={exc}"
     return f"ok path={target} chars={len(content)}"
 
 

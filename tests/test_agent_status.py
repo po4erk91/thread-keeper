@@ -202,10 +202,26 @@ def test_agent_status_evolve_applier_ready_when_curator_report_exists(
     reports_dir = pkg["tmp"] / "curator"
     reports_dir.mkdir()
     pkg["config"].CURATOR_REPORTS_DIR = reports_dir
-    (reports_dir / "REPORT-20260611T120000.md").write_text(
+    report = reports_dir / "REPORT-20260611T120000.md"
+    report.write_text(
         "# report\n\nPATCH: stale-skill\n\nCURATOR_PASS_COMPLETE\n",
         encoding="utf-8",
     )
+    conn = pkg["db"].get_db()
+    sid = pkg["identity"]._ensure_session(conn)
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            sid,
+            applier_mod.CURATOR_REPORT_PROVENANCE_KIND,
+            str(report.resolve()),
+            "pass_id=test sha256="
+            + applier_mod.curator_report_sha256(report.read_text()),
+            int(time.time()),
+        ),
+    )
+    conn.commit()
 
     from threadkeeper.agent_status import agent_status_snapshot
 

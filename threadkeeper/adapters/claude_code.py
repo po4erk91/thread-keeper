@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from ..config_io import mutate_json_file
 
 
 def _clean_discovered_model(value: str) -> str:
@@ -206,40 +207,57 @@ class ClaudeCodeAdapter(CLIAdapter):
     def register_mcp_server(
         self, name, command, args, env, dry_run=False
     ) -> str:
-        cfg: dict
-        if self.config_path.exists():
-            try:
-                cfg = json.loads(self.config_path.read_text())
-            except json.JSONDecodeError:
-                return "claude-code: malformed ~/.claude.json — refused"
-        else:
-            cfg = {}
-        servers = cfg.setdefault("mcpServers", {})
         entry = {
             "type": "stdio",
             "command": command,
             "args": list(args),
             "env": dict(env),
         }
-        existing = servers.get(name)
+
+        def update(cfg: dict) -> tuple[bool, object]:
+            servers = cfg.setdefault("mcpServers", {})
+            existing = servers.get(name)
+            if existing == entry:
+                return False, existing
+            servers[name] = entry
+            return True, existing
+
+        try:
+            if dry_run:
+                cfg = (json.loads(self.config_path.read_text())
+                       if self.config_path.exists() else {})
+                _, existing = update(cfg)
+            else:
+                existing = mutate_json_file(self.config_path, update)
+        except json.JSONDecodeError:
+            return "claude-code: malformed ~/.claude.json — refused"
         if existing == entry:
             return "claude-code: already current"
-        servers[name] = entry
-        if not dry_run:
-            self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"claude-code: {'would ' if dry_run else ''}{'update' if existing else 'add'}"
 
     def unregister_mcp_server(self, name, dry_run=False) -> str:
-        if not self.config_path.exists():
-            return "claude-code: nothing to remove"
-        cfg = json.loads(self.config_path.read_text())
-        servers = (cfg.get("mcpServers") or {})
-        if name not in servers:
+        def remove(cfg: dict) -> tuple[bool, bool]:
+            servers = cfg.get("mcpServers") or {}
+            if name not in servers:
+                return False, False
+            servers.pop(name)
+            return True, True
+
+        try:
+            if dry_run:
+                if not self.config_path.exists():
+                    return "claude-code: nothing to remove"
+                _, present = remove(json.loads(self.config_path.read_text()))
+            else:
+                if not self.config_path.exists():
+                    return "claude-code: nothing to remove"
+                present = mutate_json_file(self.config_path, remove)
+        except json.JSONDecodeError:
+            return "claude-code: malformed ~/.claude.json — refused"
+        if not present:
             return "claude-code: not present"
         if dry_run:
             return f"claude-code: would remove {name}"
-        servers.pop(name)
-        self.config_path.write_text(json.dumps(cfg, indent=2))
         return f"claude-code: removed {name}"
 
     # ----------------------------- transcripts ---------------------------

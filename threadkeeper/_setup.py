@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .config_io import mutate_text_file
 from .permissions import chmod_private_dir
 
 # ----------------------------------------------------------------------
@@ -240,40 +241,41 @@ def _install_managed_block(fp: Path, dry_run: bool) -> str:
     block = f"{MARK_BEGIN}\n{CLAUDE_MD_BLOCK}{MARK_END}\n"
     label = fp.name
 
-    if not fp.exists():
-        if not dry_run:
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            fp.write_text(block)
-        return f"{label}: created"
+    def update(body: str, exists: bool) -> tuple[str, str]:
+        if not exists:
+            return block, "created"
+        if MARK_BEGIN in body and MARK_END in body:
+            head, _, rest = body.partition(MARK_BEGIN)
+            _, _, tail = rest.partition(MARK_END)
+            head = head.rstrip()
+            tail = tail.lstrip()
+            if head and tail:
+                new_body = head + "\n\n" + block + "\n" + tail + "\n"
+            elif head:
+                new_body = head + "\n\n" + block
+            elif tail:
+                new_body = block + "\n" + tail + "\n"
+            else:
+                new_body = block
+            return new_body, "already" if new_body == body else "updated"
 
-    body = fp.read_text()
-    if MARK_BEGIN in body and MARK_END in body:
-        head, _, rest = body.partition(MARK_BEGIN)
-        _, _, tail = rest.partition(MARK_END)
-        head = head.rstrip()
-        tail = tail.lstrip()
-        if head and tail:
-            new_body = head + "\n\n" + block + "\n" + tail + "\n"
-        elif head:
-            new_body = head + "\n\n" + block
-        elif tail:
-            new_body = block + "\n" + tail + "\n"
-        else:
-            new_body = block
-        if new_body == body:
-            return f"{label}: managed block already current"
-        if not dry_run:
-            fp.write_text(new_body)
-        return f"{label}: {'would update' if dry_run else 'updated'} managed block"
+        # No markers yet → prepend (top placement → visible without scroll).
+        existing = body.strip()
+        new_body = block + "\n" + existing + "\n" if existing else block
+        return new_body, "prepended"
 
-    # No markers yet → prepend (top placement → visible without scroll).
-    existing = body.strip()
-    if existing:
-        new_body = block + "\n" + existing + "\n"
+    if dry_run:
+        exists = fp.exists()
+        body = fp.read_text() if exists else ""
+        _, result = update(body, exists)
     else:
-        new_body = block
-    if not dry_run:
-        fp.write_text(new_body)
+        result = mutate_text_file(fp, update)
+    if result == "created":
+        return f"{label}: created"
+    if result == "already":
+        return f"{label}: managed block already current"
+    if result == "updated":
+        return f"{label}: {'would update' if dry_run else 'updated'} managed block"
     return f"{label}: {'would prepend' if dry_run else 'prepended'} managed block"
 
 

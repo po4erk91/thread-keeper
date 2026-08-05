@@ -22,9 +22,9 @@
     Called BY the applier child after `gh pr create` succeeds. Sets applied=1
     so the suggestion stops resurfacing. Requires a non-empty pr_url (the gate).
 
-  evolve_mark_curator_report_applied(report_path, summary)
-    Called BY the applier child after it processed a Curator report. Records an
-    idempotency event so the report is not replayed.
+  evolve_mark_curator_report_applied(report_path, report_sha256, summary)
+    Called BY the applier child after it processed an unchanged, provenanced
+    Curator report. Records an idempotency event so the report is not replayed.
 
   evolve_apply_status()
     Diagnostic: interval knob, promoted+unapplied queue, running applier, and
@@ -178,17 +178,24 @@ def evolve_mark_roadmap_issue_applied(issue_number: int, pr_url: str) -> str:
 
 
 @write_tool(idempotent=True)
-def evolve_mark_curator_report_applied(report_path: str, summary: str) -> str:
+def evolve_mark_curator_report_applied(
+    report_path: str,
+    report_sha256: str,
+    summary: str,
+) -> str:
     """Mark a Curator report as processed by the evolve_applier child.
 
     The report must live under `THREADKEEPER_CURATOR_REPORTS_DIR`, match
-    `REPORT-*.md`, and contain `CURATOR_PASS_COMPLETE`. This marker is the
-    idempotency gate that prevents replaying the same advisory report."""
+    `REPORT-*.md`, contain `CURATOR_PASS_COMPLETE`, and still match the
+    parent-verified content hash. The hash and applied event prevent a swapped
+    report or replay from being accepted."""
     if not (report_path or "").strip():
         return "ERR report_path_required"
     conn = get_db()
     _ensure_session(conn)
-    return mark_curator_report_applied(conn, report_path.strip(), summary)
+    return mark_curator_report_applied(
+        conn, report_path.strip(), report_sha256, summary,
+    )
 
 
 @read_tool()
