@@ -6,6 +6,11 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: evolve-applier roadmap dispatch no longer double-fetches and
+  claim-checks the whole backlog (#131).** A due pass now reuses one paginated
+  open-issue snapshot for selection and dispatch; roadmap-label/FIFO sorting
+  happens before the existing per-start claim/open-PR/race guards, so comment
+  requests are limited to candidates actually attempted.
 - **Fixed: pinned the MCP SDK below 2.0.** `mcp` 2.0.0 (2026-07-28) renamed
   `mcp.server.fastmcp` to `mcp.server.mcpserver` (`FastMCP` → `MCPServer`) with
   no compatibility shim, so every fresh install resolving the unbounded
