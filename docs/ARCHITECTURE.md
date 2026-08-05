@@ -577,7 +577,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   (`roadmap`-labeled issues first, then FIFO by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
-  of open issues outside the window. The applier then spawns one
+  of open issues outside the window. Each pass reuses that one candidate
+  snapshot for dispatch, then reads claim comments lazily only for candidates
+  it actually tries (normally the selected issue's initial claim check and
+  post-claim race check). This avoids a second open-issue fetch and a
+  per-backlog-item claim-comment fan-out before the applier spawns one
   `evolve_applier` child to implement exactly one issue.
   **Shared GitHub budget (#38):** parent `gh` calls and the privileged child
   PATH `gh` wrapper consult `github_rate_budget` before every request. Included

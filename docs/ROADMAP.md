@@ -676,6 +676,9 @@ Follow-up gaps from the 2026-06-17 audit:
 - Transcript secret scrubbing before persistence into `dialog_messages` /
   `dialog_fts` (#37).
 - ✅ DONE (#38). Shared GitHub API budget/backoff across roadmap automation.
+- ✅ DONE (#131). Evolve applier roadmap selection now reuses one issue-list
+  snapshot per pass and checks active claims lazily in priority order, avoiding
+  duplicate full-backlog reads and per-candidate comment fan-out.
 - ✅ DONE (#40). Curator went **destructive-by-default**
   (`THREADKEEPER_CURATOR_DESTRUCTIVE=1`), so the autonomous child needed a
   recovery path before pruning/consolidating lessons + skills in place. A

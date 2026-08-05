@@ -2456,14 +2456,12 @@ def _open_roadmap_issues(
     conn: sqlite3.Connection,
     repo_root: Optional[Path] = None,
     *,
-    skip_claimed: bool = True,
     enforce_author_trust: bool = True,
     skip_backoff: bool = True,
     flag_dead_letter: bool = False,
 ) -> tuple[list[dict], str]:
     issues, err, _ = _open_roadmap_issue_candidates(
         conn, repo_root,
-        skip_claimed=skip_claimed,
         enforce_author_trust=enforce_author_trust,
         skip_backoff=skip_backoff,
         flag_dead_letter=flag_dead_letter,
@@ -2475,7 +2473,6 @@ def _open_roadmap_issue_candidates(
     conn: sqlite3.Connection,
     repo_root: Optional[Path] = None,
     *,
-    skip_claimed: bool = True,
     enforce_author_trust: bool = True,
     skip_backoff: bool = True,
     flag_dead_letter: bool = False,
@@ -2483,11 +2480,12 @@ def _open_roadmap_issue_candidates(
     """Open GitHub issues not already handed off by evolve_applier.
 
     The user treats all open issues as roadmap backlog; issues with the
-    explicit `roadmap` label are prioritized first, then FIFO by number. Active
-    issue-claim comments are skipped so multiple appliers do not start the same
-    item in parallel. The upstream issue fetch is paginated oldest-first before
-    this sort, so FIFO applies across the whole visible backlog rather than a
-    newest-first GitHub CLI window.
+    explicit `roadmap` label are prioritized first, then FIFO by number. Claim
+    comments are deliberately not read here: the per-start guard checks each
+    candidate lazily, after sorting, so a pass does not fan out one GitHub
+    comment request across the full backlog. The upstream issue fetch is
+    paginated oldest-first before this sort, so FIFO applies across the whole
+    visible backlog rather than a newest-first GitHub CLI window.
 
     When `enforce_author_trust` is set (the autonomous-drain default), issues
     whose author is not trusted (`_issue_author_trusted`) are skipped — this
@@ -2509,7 +2507,6 @@ def _open_roadmap_issue_candidates(
     if err:
         return [], err, []
     out: list[dict] = []
-    claim_errors: list[str] = []
     applied_errors: list[str] = []
     untrusted: list[int] = []
     label_skipped: list[tuple[int, str]] = []
@@ -2541,15 +2538,6 @@ def _open_roadmap_issue_candidates(
                 continue
             if state == "backoff":
                 continue
-        if skip_claimed:
-            claimed, claim_err = _issue_has_active_claim(
-                num, repo_root, now_t
-            )
-            if claim_err:
-                claim_errors.append(f"#{num}: {claim_err}")
-                continue
-            if claimed:
-                continue
         out.append(issue)
     out.sort(
         key=lambda issue: (
@@ -2564,14 +2552,11 @@ def _open_roadmap_issue_candidates(
             len(untrusted),
             ", ".join(f"#{n}" for n in untrusted[:20]),
         )
-    if not out and (claim_errors or applied_errors):
+    if not out and applied_errors:
         parts = []
         if applied_errors:
             parts.append("roadmap_issue_applied_check_failed: "
                          + "; ".join(applied_errors)[:240])
-        if claim_errors:
-            parts.append("roadmap_issue_claim_check_failed: "
-                         + "; ".join(claim_errors)[:240])
         return [], " | ".join(parts), label_skipped
     return out, "", label_skipped
 
@@ -3011,7 +2996,12 @@ def _roadmap_dispatch_can_try_next(status: str) -> bool:
     ))
 
 
-def apply_roadmap_issue(issue_number: int = 0) -> str:
+def apply_roadmap_issue(
+    issue_number: int = 0,
+    *,
+    queued_issues: Optional[list[dict]] = None,
+    queued_label_skipped: Optional[list[tuple[int, str]]] = None,
+) -> str:
     """Spawn an evolve_applier child to implement one open GitHub issue.
 
     With issue_number=0, this is queue mode: try candidates in roadmap/FIFO
@@ -3037,16 +3027,21 @@ def apply_roadmap_issue(issue_number: int = 0) -> str:
         # Queue mode honours the backoff/dead-letter gate and flags poison
         # issues; exact mode is a deliberate human override that ignores it.
         # Label-denylisted issues are skipped in both modes; exact mode reports
-        # that skip explicitly instead of switching tasks.
-        issues, err, label_skipped = _open_roadmap_issue_candidates(
-            conn, repo_root,
-            skip_claimed=not exact,
-            enforce_author_trust=not exact,
-            skip_backoff=not exact,
-            flag_dead_letter=not exact,
-        )
-        if err:
-            return f"ERR roadmap_issue_fetch_failed: {err}"
+        # that skip explicitly instead of switching tasks. A daemon pass can
+        # provide its single already-fetched snapshot, avoiding a second full
+        # GitHub issue sweep before dispatch.
+        if queued_issues is None:
+            issues, err, label_skipped = _open_roadmap_issue_candidates(
+                conn, repo_root,
+                enforce_author_trust=not exact,
+                skip_backoff=not exact,
+                flag_dead_letter=not exact,
+            )
+            if err:
+                return f"ERR roadmap_issue_fetch_failed: {err}"
+        else:
+            issues = list(queued_issues)
+            label_skipped = list(queued_label_skipped or [])
         if exact:
             if _roadmap_issue_applied(conn, int(issue_number)):
                 return f"ERR roadmap_issue_already_applied={int(issue_number)}"
@@ -3349,7 +3344,10 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     if label_skipped and not issues:
         _record_roadmap_issue_skipped(conn, label_skipped)
     if issues:
-        out = apply_roadmap_issue()
+        out = apply_roadmap_issue(
+            queued_issues=issues,
+            queued_label_skipped=label_skipped,
+        )
         if out.startswith("spawned roadmap_issue=") or out.startswith(
             "applier_running"
         ):

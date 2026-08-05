@@ -63,6 +63,7 @@ def _bootstrap(
     # exercise the unstubbed gh/REST paths can restore them.
     orig = {
         "_fetch_open_issues": evolve_applier._fetch_open_issues,
+        "_fetch_issue_comments": evolve_applier._fetch_issue_comments,
         "_fetch_open_prs": evolve_applier._fetch_open_prs,
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
         "_git_worktree_precondition": evolve_applier._git_worktree_precondition,
@@ -714,7 +715,7 @@ def test_open_roadmap_issues_requeued_marker_obeys_attempt_cap(
     assert (state, attempts) == ("dead_letter", 1)
 
 
-def test_open_roadmap_issues_skips_active_issue_claim(
+def test_open_roadmap_issues_defers_claim_reads_until_dispatch(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
@@ -731,24 +732,20 @@ def test_open_roadmap_issues_skips_active_issue_claim(
     )
 
     def _comments(issue_number, repo_root=None):
-        if int(issue_number) == 1:
-            return ([_claim_comment()], "")
-        return ([], "")
+        raise AssertionError("candidate collection must not read claim comments")
 
     monkeypatch.setattr(pkg["ea"], "_fetch_issue_comments", _comments)
-    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
 
     issues, err = pkg["ea"]._open_roadmap_issues(conn)
 
     assert err == ""
-    assert [int(i["number"]) for i in issues] == [2]
+    assert [int(i["number"]) for i in issues] == [1, 2]
 
 
-def test_open_roadmap_issues_allows_stale_issue_claim(
+def test_apply_roadmap_issue_allows_stale_claim(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    conn = pkg["db"].get_db()
     monkeypatch.setattr(
         pkg["ea"], "_fetch_open_issues",
         lambda repo_root=None: ([_issue(1, "stale claim")], ""),
@@ -761,11 +758,13 @@ def test_open_roadmap_issues_allows_stale_issue_claim(
         ),
     )
     monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
 
-    issues, err = pkg["ea"]._open_roadmap_issues(conn)
+    out = pkg["ea"].apply_roadmap_issue()
 
-    assert err == ""
-    assert [int(i["number"]) for i in issues] == [1]
+    assert out.startswith("spawned roadmap_issue=#1"), out
+    assert "ISSUE #1: stale claim" in calls["prompt"]
 
 
 def test_open_roadmap_issues_skips_untrusted_author(tmp_path, monkeypatch):
@@ -841,7 +840,7 @@ def test_open_roadmap_issues_exact_mode_bypasses_author_gate(
     assert [int(i["number"]) for i in gated] == []
 
     promoted, err = pkg["ea"]._open_roadmap_issues(
-        conn, skip_claimed=False, enforce_author_trust=False,
+        conn, enforce_author_trust=False,
     )
     assert err == ""
     assert [int(i["number"]) for i in promoted] == [7]
@@ -2111,6 +2110,68 @@ def test_run_apply_pass_picks_roadmap_issue_before_curator_and_evolve(
     assert out.startswith("spawned roadmap_issue=#2"), out
     assert "ISSUE #2: Hot config" in calls["prompt"]
     assert "Curator REPORT" not in calls["prompt"]
+
+
+def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
+    tmp_path, monkeypatch,
+):
+    """One due pass reads the backlog once and only claim-checks its pick."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues", pkg["orig"]["_fetch_open_issues"],
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        pkg["orig"]["_fetch_issue_comments"],
+    )
+    calls = []
+
+    def _run_gh(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["gh", "api"]:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=json.dumps([
+                    _rest_issue(3, "ordinary issue", labels=("enhancement",)),
+                    _rest_issue(2, "later roadmap issue"),
+                    _rest_issue(1, "first roadmap issue"),
+                ]),
+                stderr="",
+            )
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"comments": []}), stderr="",
+            )
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="https://github.com/o/r/issues/1#issuecomment-1\n",
+                stderr="",
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        raise AssertionError(f"unexpected gh command: {cmd}")
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", _run_gh)
+    spawn_calls = {}
+    _mock_spawn(monkeypatch, spawn_calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#1"), out
+    assert "ISSUE #1: first roadmap issue" in spawn_calls["prompt"]
+    issue_list_calls = [
+        cmd for cmd in calls
+        if cmd[:2] == ["gh", "api"] and "/issues?state=open" in cmd[-1]
+    ]
+    claim_view_calls = [
+        cmd for cmd in calls if cmd[:3] == ["gh", "issue", "view"]
+    ]
+    assert len(issue_list_calls) == 1
+    # The selected issue gets its initial and post-claim race checks; no other
+    # backlog candidate has its comments read.
+    assert len(claim_view_calls) == 2
+    assert {cmd[3] for cmd in claim_view_calls} == {"1"}
 
 
 def test_run_apply_pass_repairs_conflicted_pr_before_new_work(
