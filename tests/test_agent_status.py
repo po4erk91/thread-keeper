@@ -388,6 +388,34 @@ def test_agent_status_evolve_applier_prefers_completion_event(mp_with_cid):
     assert loop["work"] == "Applied 4 lesson consolidations"
 
 
+def test_agent_status_err_pass_does_not_refresh_success_clock(mp_with_cid):
+    pkg = mp_with_cid(_FAKE_CID)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.executemany(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, 'evolve_apply_pass', ?, ?, ?)",
+        [
+            (_FAKE_CID, str(now - 7200), "no_apply_work", now - 7200),
+            (
+                _FAKE_CID,
+                str(now - 60),
+                "ERR evolve_repo_refresh_blocked_dirty",
+                now - 60,
+            ),
+        ],
+    )
+    conn.commit()
+
+    from threadkeeper.agent_status import _last_successful_pass
+
+    success = _last_successful_pass(conn, "evolve_apply_pass", now)
+
+    assert success["summary"] == "no_apply_work"
+    assert success["at"] == now - 7200
+    assert success["age_s"] == 7200
+
+
 def test_agent_status_probe_backlog_counts_only_due_objective_probes(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     pkg["config"].PROBE_INTERVAL_S = 1800

@@ -847,26 +847,28 @@ throttling the roadmap loop.
 Before any PR-producing reviewer/audit or applier child is spawned, the parent
 checks the target checkout with `git status --porcelain --untracked-files=no`.
 Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
-untracked scratch files do not block. The child prompts also fetch the configured
-base branch and create feature branches from `origin/main` (or the configured
-`THREADKEEPER_EVOLVE_REPO_BRANCH`), not from whatever `HEAD` the daemon happens
-to have checked out. A shared git-writer running-task check prevents the
-privileged reviewer audit and code/PR applier from overlapping in the same
-checkout. If a killed conflict-repair child leaves an unresolved merge in the
-default auto-managed checkout, the next code-applying pass can recover it — but
-only when the current branch is `roadmap/…`/`evolve/…` and GitHub confirms that
-exact PR is already merged. Before returning the managed tree to fresh
-`origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`, thread-keeper archives the tracked
-diff under
-`~/.threadkeeper/evolve-recovery/stale-merge-pr-*.patch` and records
-`recovered_stale_merge` telemetry. Open, closed-unmerged, missing, or
-unreadable PR state remains fail-closed. An explicit
-`THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
+untracked scratch files do not block. Each applier child fetches the configured
+base and prepares or resumes its deterministic local/remote feature branch
+before reading or editing; retries therefore validate prior branch work instead
+of discovering a branch-name collision after changing the base checkout. A
+shared git-writer running-task check prevents the privileged reviewer audit and
+code/PR applier from overlapping in the same checkout.
+
+If a killed child leaves an unresolved merge or plain tracked WIP in the default
+auto-managed checkout, the next code-producing pass archives the diff before
+recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
+branches whose exact PR is confirmed merged. Plain abandoned WIP is recoverable
+on those applier branches when PR state is readable, and also on the configured
+base branch: the disposable base can contain orphaned edits when an older child
+failed during late branch creation. Recovery patches are owner-only files under
+`~/.threadkeeper/evolve-recovery/`, and `evolve_git_safety` records the action.
+Unknown ownership, a live writer, or unreadable required PR state remains
+fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
 
 The default managed checkout is refreshed before every code-producing pass:
-after checking that no Evolve git writer is live and that tracked files are
-clean, it fetches the configured branch, checks out that branch, and resets to
-`origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`. Explicit
+after checking that no Evolve git writer is live, it archives and recovers any
+eligible orphaned tracked WIP, then fetches the configured branch, checks it out,
+and resets to `origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`. Explicit
 `THREADKEEPER_EVOLVE_REPO_ROOT` checkouts are never refreshed or reset by this
 path. Provisioning reserves 5 GiB by default before clone or `.venv` creation
 (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0` disables that preflight), and a
