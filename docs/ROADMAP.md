@@ -848,31 +848,18 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
-- **Learning-loop memory poisoning** — the synthesis children (`shadow_review`,
-  `candidate_reviewer`, close-thread auto-review, `dialectic_validator`) turn the
-  **raw observed-dialog stream** into **auto-loaded** `SKILL.md` / `lessons.md` /
-  user-model claims with **no injection fence and no provenance trust-tiering**:
-  `_collect_window` keeps all `user`/`assistant`/`[thinking]` content (incl.
-  untrusted text the agent read from web/files/paste), the review prompts carry a
-  *quality* fence (`ANTI_CAPTURE`) but no "treat observed dialog as data, not
-  instructions" boundary, and the writer child runs `permission_mode="auto"` with
-  bare `Write` allow-listed. A poisoned skill auto-triggers on every future
-  SessionStart across every CLI. Fence observed content as data, trust-tier
-  policy capture to genuine user turns, de-privilege the writer (drop bare
-  `Write`), and gate auto-load of loop-minted skills (compose with #26). Distinct
-  from #22 (GitHub-writing daemons; redactable public sink) and #37 (secret
-  scrub, outbound) (#76).
-- Concepts store is **write-only / grow-only**: no remove/consolidate/
-  confidence tool exists (`tools/concepts.py` has only register/list/expand),
-  concepts are auto-registered (`accept_candidate kind='concept'` at conf=low +
-  agent `register_concept`) so the store grows unbounded, and `last_evidence_at`
-  is set once at registration and **never bumped** (only `user_dialectic` bumps
-  it via `dialectic.py`) — so the curator's concept-prune rubric (`conf=low AND
-  last_evidence >30d`) and the brief's concept ordering both degenerate to pure
-  registration-age. The curator's destructive toolset carries no concept tool,
-  and the curator-report applier hard-codes "NEVER mutate concepts for now", so
-  the `PRUNE_CONCEPT`/`CONSOLIDATE_CONCEPT` rubric is unappliable by design.
-  Distinct from the lessons-only decay item (#27) (#75).
+- ✅ DONE (#76). **Learning-loop memory-poisoning boundary.** Observed dialog is
+  fenced as untrusted data in every synthesis prompt, loop children use
+  path-scoped memory tools instead of bare filesystem writes, stated-policy
+  capture is restricted to genuine foreground user turns, and loop-authored
+  lesson/skill bodies pass a write-time injection-marker screen. The remaining
+  defense-in-depth gap is periodic re-screening after direct on-disk edits or a
+  detector update (#268).
+- ✅ DONE (#75). **Concept lifecycle.** `concept_manage` now supports remove,
+  consolidate, and confidence changes; corroborating evidence refreshes
+  `last_evidence_at`; and the destructive Curator / report-applier toolsets can
+  apply concept prune, merge, and re-grade recommendations. The concepts store
+  is no longer grow-only.
 
 Also folded into existing issues rather than filed anew: auto-update restarts
 even when `_run_setup` reports `setup=failed` (✅ DONE via #19);
@@ -1018,6 +1005,32 @@ path:
   unresolved `[[slug]]` references and surface the dead targets in a
   read-only health view so manual body reads are not the only way to spot
   broken cross-links (#202).
+
+**2026-08-10 reviewer additions (issue-backed).**
+The current audit reconciled three post-July open issues and added four newly
+verified gaps from the present code and test suite:
+
+- **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
+  state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
+  cut repeated managed-checkout setup in Evolve tests (#217).
+- **Research-phase write confinement.** Replace the Evolve research child's
+  generic `Write` capability with a mechanically destination-scoped, bounded,
+  pass-linked digest handoff (#263).
+- **Loop-authored skill re-screening.** Re-run the existing injection-marker
+  screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
+  record a review flag, and surface it without auto-deleting the skill (#268).
+- **Spawn-result contract.** Several callers treat returned `ERR ...` admission
+  failures as successful launches, advancing Evolve phase/cadence, retaining
+  claims, and emitting false panel/probe/candidate telemetry. Introduce one
+  typed/shared success contract and migrate every caller (#276).
+- **Authenticated roadmap claims.** Ignore public Evolve claim-marker comments
+  unless their author has a trusted repository association or is an explicitly
+  configured automation actor; claim text alone must not suppress work (#277).
+- **Generated documentation inventory.** Remove hand-maintained test/tool
+  counts or check them mechanically so README and architecture totals cannot
+  drift from collection and the MCP registry (#278).
+- **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
+  contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
 ---
 

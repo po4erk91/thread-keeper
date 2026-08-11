@@ -694,10 +694,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `ERR evolve_repo_unavailable=<path>` until an explicit `EVOLVE_REPO_ROOT` is
   provided. An explicit override that is not itself a checkout is never
   auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
-  checkout is refreshed before every code-producing pass: after a clean-tree
-  and no-live-writer check, the parent fetches the configured branch, checks it
-  out, and hard-resets to `origin/<EVOLVE_REPO_BRANCH>`. Explicit checkout
-  roots are never refreshed or reset. Before clone or heavyweight
+  checkout is refreshed before every code-producing pass: after the
+  no-live-writer check, the parent archives and recovers eligible orphaned
+  tracked WIP, fetches the configured branch, checks it out, and hard-resets to
+  `origin/<EVOLVE_REPO_BRANCH>`. Explicit checkout roots are never refreshed or
+  reset. Before clone or heavyweight
   `[semantic,dev]` virtualenv creation, a 5 GiB free-space reserve is checked
   (`EVOLVE_REPO_MIN_FREE_BYTES=0` disables it); `mp_dashboard()` reports
   managed repo/venv/total/free-disk sizes, and
@@ -714,12 +715,15 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mode=git` is recorded on `events.kind='evolve_git_safety'` when tracked WIP is
   present), and no other PR-producing evolve reviewer/applier task may already
   be running. The guard intentionally ignores untracked scratch files, matching
-  `auto_update`'s dirty-check semantics. Child prompts then branch from a fetched
-  base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
-  of arbitrary current `HEAD`; reviewer roadmap-doc prompts additionally reuse
-  the daily `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open
-  roadmap-doc PR branch so repeated audits do not collide. The running-writer
-  check precedes dirty-state recovery so active child WIP is never discarded.
+  `auto_update`'s dirty-check semantics. Applier prompts fetch the base and
+  prepare or resume their deterministic local/remote feature branch before any
+  reading or editing, then rebase it on `origin/main` by default (or
+  `origin/<EVOLVE_REPO_BRANCH>`). This makes retries validate previous branch
+  work instead of colliding with a stale local branch after editing the base.
+  Reviewer roadmap-doc prompts additionally reuse the daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open roadmap-doc PR
+  branch so repeated audits do not collide. The running-writer check precedes
+  dirty-state recovery so active child WIP is never discarded.
   For the default auto-managed checkout only, an in-progress merge on an
   applier-owned branch is treated as recoverable when GitHub proves the exact
   PR is already merged. The parent fetches the configured base, archives the
@@ -733,8 +737,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   implementer child — is likewise auto-recovered: with no PR-producing child
   running and the branch's PR state readable (any state, including none), the
   tracked diff is archived as `evolve-recovery/abandoned-wip-*.patch` and the
-  checkout is reset to the fresh base, so one dead child can no longer stall
-  the whole apply backlog behind the dirty gate.
+  checkout is reset to the fresh base. Plain abandoned WIP on the configured
+  base branch is also recoverable in the disposable managed checkout because a
+  pre-fix child could edit there before its late feature-branch creation failed;
+  base-branch recovery does not need a PR lookup. One dead child can therefore
+  no longer stall the whole apply backlog behind refresh's dirty gate.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   snapshot-first and report-first: destructive mode writes a recoverable
   snapshot before spawning the child, then the child writes its REPORT before

@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
+  scheduler.** Managed-checkout refresh used to reject a dirty tree before the
+  abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
+  deterministic branch-name collision made every later pass fail with
+  `evolve_repo_refresh_blocked_dirty`. Refresh now checks live writers first,
+  archives and recovers eligible orphaned WIP (including the disposable base
+  branch), and only then resets to the remote base. Applier prompts prepare or
+  resume the local/remote feature branch before reading or editing, and
+  `agent_status` no longer treats `ERR`/spawn-failure pass events as successful
+  health-clock updates.
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer
