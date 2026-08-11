@@ -316,11 +316,15 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert "gh pr create" in p
     assert 'git commit -m "<type>: <short imperative summary>"' in p
     assert 'gh pr create --title "<type>: <short>"' in p
-    assert "git fetch origin main" in p
-    assert (
-        f"git checkout -b {pkg['ea'].branch_name(eid, 'add a failed_paths field per thread')} "
-        "origin/main"
-    ) in p
+    branch = pkg["ea"].branch_name(eid, "add a failed_paths field per thread")
+    assert "git fetch origin" in p
+    assert f"refs/heads/{branch}" in p
+    assert f"refs/remotes/origin/{branch}" in p
+    assert f"git checkout -b {branch} origin/main" in p
+    assert f"git rebase origin/main" in p
+    assert p.index("PREPARE OR RESUME THE FEATURE BRANCH") < p.index(
+        "READ threadkeeper/brief.py"
+    )
     assert 'git commit -m "evolve:' not in p
     assert 'gh pr create --title "evolve:' not in p
     assert "evolve_mark_applied" in p
@@ -1119,11 +1123,15 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "evolve_mark_roadmap_issue_applied" in prompt
     assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
     assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
-    assert "git fetch origin main" in prompt
-    assert (
-        f"git checkout -b {pkg['ea'].roadmap_issue_branch_name(6, 'Telemetry dashboard')} "
-        "origin/main"
-    ) in prompt
+    branch = pkg["ea"].roadmap_issue_branch_name(6, "Telemetry dashboard")
+    assert "git fetch origin" in prompt
+    assert f"refs/heads/{branch}" in prompt
+    assert f"refs/remotes/origin/{branch}" in prompt
+    assert f"git checkout -b {branch} origin/main" in prompt
+    assert f"git rebase origin/main" in prompt
+    assert prompt.index("Prepare or resume the issue branch") < prompt.index(
+        "Read the relevant code and docs"
+    )
 
 
 def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
@@ -2417,6 +2425,91 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     assert upstream_head != old_head
 
 
+def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
+    tmp_path, monkeypatch,
+):
+    """A dead child can leave WIP on main if branch setup itself failed.
+
+    Managed refresh must archive and recover that WIP instead of returning
+    ``evolve_repo_refresh_blocked_dirty`` before the recovery gate is reached.
+    """
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    repo = pkg["ea"]._managed_repo_dir()
+    remote = tmp_path / "remote.git"
+
+    def run(*cmd, cwd=None):
+        proc = subprocess.run(
+            list(cmd), cwd=str(cwd) if cwd else None, text=True,
+            capture_output=True, check=False,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr or proc.stdout)
+        return proc
+
+    run("git", "init", "--bare", str(remote))
+    run("git", "init", "-b", "main", str(repo))
+    run("git", "config", "user.email", "test@example.com", cwd=repo)
+    run("git", "config", "user.name", "Test", cwd=repo)
+    (repo / "shared.txt").write_text("base\n", encoding="utf-8")
+    run("git", "add", "shared.txt", cwd=repo)
+    run("git", "commit", "-m", "base", cwd=repo)
+    run("git", "remote", "add", "origin", str(remote), cwd=repo)
+    run("git", "push", "-u", "origin", "main", cwd=repo)
+
+    (repo / "shared.txt").write_text(
+        "issue implementation left on main\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_prs_for_head_branch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("base-branch recovery must not query PR state")
+        ),
+    )
+
+    root, err = pkg["ea"]._ensure_repo_ready()
+
+    assert root == repo
+    assert err == ""
+    assert run(
+        "git", "status", "--porcelain", "--untracked-files=no", cwd=repo
+    ).stdout == ""
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "base\n"
+    backups = list(
+        (tmp_path / "evolve-recovery").glob("abandoned-wip-main-*.patch")
+    )
+    assert len(backups) == 1
+    assert "issue implementation left on main" in backups[0].read_text(
+        encoding="utf-8"
+    )
+    row = pkg["db"].get_db().execute(
+        "SELECT target, summary FROM events WHERE kind=? ORDER BY id DESC",
+        (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
+    ).fetchone()
+    assert row["target"] == "managed_repo_refresh"
+    assert "recovered_abandoned_wip branch=main" in row["summary"]
+
+
+def test_managed_refresh_checks_live_writer_before_dirty_recovery(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    repo = pkg["ea"]._managed_repo_dir()
+    monkeypatch.setattr(pkg["ea"], "_is_git_repo", lambda path: True)
+    monkeypatch.setattr(
+        pkg["ea"], "_running_git_writer_children", lambda conn: ["tk_live"]
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_tracked_worktree_status",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError("must not inspect/recover a live writer's WIP")
+        ),
+    )
+
+    err = pkg["ea"]._refresh_managed_repo(repo)
+
+    assert err == "ERR evolve_repo_refresh_in_use n=1"
+
+
 def test_managed_provision_fails_before_clone_when_disk_is_low(
     tmp_path, monkeypatch,
 ):
@@ -3010,11 +3103,13 @@ def test_abandoned_wip_ignores_non_applier_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pkg["ea"], "_merge_in_progress", lambda repo: (False, ""),
     )
-    monkeypatch.setattr(pkg["ea"], "_current_branch", lambda repo: ("main", ""))
+    monkeypatch.setattr(
+        pkg["ea"], "_current_branch", lambda repo: ("feature/operator-work", "")
+    )
 
     recovered, reason = pkg["ea"]._recover_abandoned_managed_wip(
         tmp_path / "repo"
     )
 
     assert recovered is False
-    assert reason == "abandoned_wip_non_applier_branch=main"
+    assert reason == "abandoned_wip_non_applier_branch=feature/operator-work"

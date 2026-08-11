@@ -512,23 +512,29 @@ def _last_event(conn, kind: str | tuple[str, ...], now: int) -> dict[str, Any]:
 
 
 def _last_successful_pass(conn, kind: str | tuple[str, ...], now: int) -> dict[str, Any]:
-    """Latest completed pass, ignoring repeated single-flight ``*_running`` ticks.
+    """Latest non-failing completed pass.
 
-    The loop still records those ticks for diagnostics, but they only prove
-    that the scheduler woke up — not that the enabled loop completed work.
+    Running/lock rows only prove that the scheduler woke up. ``ERR`` and spawn
+    failures prove the opposite of health and must not refresh the success
+    clock; otherwise a permanently blocked loop reports ``verdict=ok`` forever.
     """
     kinds = (kind,) if isinstance(kind, str) else tuple(k for k in kind if k)
     if not kinds:
         kinds = ("",)
     placeholders = ",".join("?" for _ in kinds)
+    from .notify import classify_summary
     try:
-        row = conn.execute(
+        rows = conn.execute(
             f"SELECT summary, created_at FROM events WHERE kind IN ({placeholders}) "
             "AND lower(COALESCE(summary, '')) NOT LIKE '%_running%' "
             "AND lower(COALESCE(summary, '')) NOT LIKE '%single-flight lock%' "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            "ORDER BY created_at DESC, id DESC",
             kinds,
-        ).fetchone()
+        )
+        row = next(
+            (r for r in rows if classify_summary(r["summary"] or "") != "failure"),
+            None,
+        )
     except Exception:
         row = None
     if not row:
