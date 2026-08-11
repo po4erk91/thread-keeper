@@ -676,10 +676,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
   order: (1) an explicit `EVOLVE_REPO_ROOT` (`THREADKEEPER_EVOLVE_REPO_ROOT`);
   (2) by default, a dedicated **managed checkout** under the DB dir
-  (`~/.threadkeeper/evolve-repo`), **auto-cloned on first use** (from
-  `EVOLVE_REPO_URL`/`EVOLVE_REPO_BRANCH`, defaulting to the upstream repo) and
-  given its own `.venv` with the `[semantic,dev]` extras so the children can
-  branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
+  (`~/.threadkeeper/evolve-repo`), **auto-cloned on first use** from the
+  HTTPS `github.com` allowlist and checked out at the immutable
+  `EVOLVE_REPO_COMMIT` pin (the configured branch only retrieves that commit),
+  then given its own `.venv` with the `[semantic,dev]` extras so the children
+  can branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
   the package's parent dir (when it carries a `.git` entry — the
   editable-from-checkout `install.sh`) serve as an in-place fallback. The
   managed checkout is the default even for editable installs on purpose
@@ -695,8 +696,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   provided. An explicit override that is not itself a checkout is never
   auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
   checkout is refreshed before every code-producing pass: after a clean-tree
-  and no-live-writer check, the parent fetches the configured branch, checks it
-  out, and hard-resets to `origin/<EVOLVE_REPO_BRANCH>`. Explicit checkout
+  and no-live-writer check, the parent fetches the configured branch and checks
+  out `EVOLVE_REPO_COMMIT`, rejecting a missing or mismatched pin before any
+  virtualenv install or test can execute it. `EVOLVE_REPO_URL`,
+  `EVOLVE_REPO_BRANCH`, and `EVOLVE_REPO_COMMIT` are restart-only: hot-config
+  reload logs and ignores changes to them. The managed clone runs remote build
+  and test code, so shared or multi-user hosts should disable auto-clone unless
+  that explicit execution trust boundary is acceptable. Explicit checkout
   roots are never refreshed or reset. Before clone or heavyweight
   `[semantic,dev]` virtualenv creation, a 5 GiB free-space reserve is checked
   (`EVOLVE_REPO_MIN_FREE_BYTES=0` disables it); `mp_dashboard()` reports

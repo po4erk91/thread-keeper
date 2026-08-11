@@ -6,6 +6,13 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Fixed: managed Evolve clones now execute only a verified pinned commit
+  (#132).** Auto-provisioning accepts only HTTPS `github.com` URLs, detaches at
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, and verifies `HEAD` before reusing or
+  creating the `[semantic,dev]` virtualenv. URL, branch, and commit changes are
+  restart-only and hot-config reload logs then ignores them, closing runtime
+  source redirection through a host settings file. The managed clone's remote
+  code-execution trust boundary and shared-host opt-out are documented.
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer

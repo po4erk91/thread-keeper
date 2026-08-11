@@ -89,8 +89,8 @@ remains a live question.
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
   with `skipped_dirty_worktree` (untracked scratch files do not block), refuses
   overlapping reviewer/applier git writers in the shared checkout, and prompts
-  children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
-  instead of arbitrary current `HEAD`.
+  children to fetch the configured branch but branch only from the configured
+  immutable managed-checkout pin instead of arbitrary current `HEAD`.
 - Evolve managed-checkout stale-merge recovery: a killed conflict-repair child
   no longer blocks the entire backlog after its PR was merged elsewhere. The
   parent first excludes live git writers, requires the default managed checkout
@@ -98,10 +98,15 @@ remains a live question.
   tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
   base. Explicit operator checkouts and uncertain PR states remain fail-closed.
 - Evolve managed-checkout lifecycle (#128): the disposable clone now refreshes
-  to the configured `origin/<EVOLVE_REPO_BRANCH>` base before each code pass,
-  without touching explicit checkouts. Clone/venv provisioning has a bounded
+  to its configured base before each code pass, without touching explicit
+  checkouts. Clone/venv provisioning has a bounded
   lock, a configurable free-disk reserve, visible footprint telemetry, and an
   explicit managed-venv prune tool.
+- Evolve managed-clone execution integrity (#132): auto-provisioning accepts
+  only HTTPS `github.com` URLs, checks out and verifies a release-pinned commit
+  before `pip install -e` or tests, and ignores runtime reloads of the source,
+  branch, or pin. The remote-code-execution boundary and shared-host opt-out
+  are documented.
 - Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
   audit child, the parent checks open PRs for automation-owned changes touching
   `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one

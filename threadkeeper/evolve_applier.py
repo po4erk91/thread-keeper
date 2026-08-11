@@ -60,6 +60,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Iterator, Optional
+from urllib.parse import urlsplit
 
 from .config import (
     CURATOR_REPORTS_DIR,
@@ -68,6 +69,7 @@ from .config import (
     EVOLVE_AUTO_CLONE,
     EVOLVE_APPLY_SKIP_LABELS,
     EVOLVE_REPO_BRANCH,
+    EVOLVE_REPO_COMMIT,
     EVOLVE_REPO_MIN_FREE_BYTES,
     EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S,
     EVOLVE_REPO_ROOT,
@@ -623,7 +625,85 @@ def _base_branch_name() -> str:
 
 
 def _base_ref() -> str:
-    return f"origin/{_base_branch_name()}"
+    """The immutable base every managed child branches from."""
+    return str(EVOLVE_REPO_COMMIT or "").strip().lower()
+
+
+_MANAGED_REPO_ALLOWED_HOSTS = frozenset({"github.com"})
+_FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _expected_managed_commit() -> tuple[str, str]:
+    """Return the configured immutable commit or a clear fail-closed error."""
+    commit = _base_ref()
+    if not _FULL_COMMIT_SHA.fullmatch(commit):
+        return "", (
+            "ERR evolve_repo_pin_invalid (THREADKEEPER_EVOLVE_REPO_COMMIT "
+            "must be a 40-character lowercase commit SHA)"
+        )
+    return commit, ""
+
+
+def _validate_managed_repo_source() -> str:
+    """Reject clone URLs outside the fixed HTTPS allowlist before git runs."""
+    source = str(EVOLVE_REPO_URL or "").strip()
+    try:
+        parsed = urlsplit(source)
+        port = parsed.port
+    except ValueError:
+        parsed = None
+        port = None
+    if (
+        parsed is None
+        or parsed.scheme.lower() != "https"
+        or parsed.hostname not in _MANAGED_REPO_ALLOWED_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or not parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return (
+            "ERR evolve_repo_url_refused (managed clone URL must use HTTPS on "
+            "an allowlisted host)"
+        )
+    _commit, pin_err = _expected_managed_commit()
+    return pin_err
+
+
+def _managed_repo_head(dest: Path) -> tuple[str, str]:
+    """Return ``HEAD`` without running checkout code."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(dest), "rev-parse", "HEAD"],
+            text=True, capture_output=True, timeout=10, check=False,
+        )
+    except FileNotFoundError:
+        return "", "git_not_found"
+    except subprocess.TimeoutExpired:
+        return "", "git_head_timeout"
+    except OSError as e:
+        return "", f"git_head_error: {_short(str(e))}"
+    if proc.returncode != 0:
+        return "", _short(proc.stderr or proc.stdout or f"exit={proc.returncode}")
+    return (proc.stdout or "").strip().lower(), ""
+
+
+def _verify_managed_repo_ref(dest: Path) -> str:
+    """Ensure no managed venv or test can run a ref other than the pin."""
+    commit, pin_err = _expected_managed_commit()
+    if pin_err:
+        return pin_err
+    head, head_err = _managed_repo_head(dest)
+    if head_err:
+        return f"ERR evolve_repo_pin_verify_failed={_short(head_err)}"
+    if head != commit:
+        return (
+            "ERR evolve_repo_pin_mismatch "
+            f"expected={commit} actual={_short(head or 'unknown', 40)}"
+        )
+    return ""
 
 
 def _disk_free_bytes(path: Path) -> tuple[int, str]:
@@ -1171,10 +1251,13 @@ def _ensure_managed_venv(dest: Path) -> str:
     import sys
     venv_py = dest / ".venv" / "bin" / "python"
     if venv_py.exists():
-        return ""
+        return _verify_managed_repo_ref(dest)
     space_err = _managed_disk_preflight(dest)
     if space_err:
         return space_err
+    pin_err = _verify_managed_repo_ref(dest)
+    if pin_err:
+        return pin_err
     err = _run([sys.executable, "-m", "venv", str(dest / ".venv")],
                EVOLVE_VENV_TIMEOUT_S)
     if err:
@@ -1188,12 +1271,15 @@ def _ensure_managed_venv(dest: Path) -> str:
 
 
 def _provision_managed_repo(dest: Path) -> str:
-    """Clone the canonical repo into `dest` and provision its venv. Serialized
-    and idempotent: re-checks under the lock so a concurrent winner's clone is
+    """Clone a trusted source, pin it, then provision its venv. Serialized and
+    idempotent: re-checks under the lock so a concurrent winner's clone is
     reused. Returns '' on success or an ERR string."""
     with _repo_provision_lock() as lock_err:
         if lock_err:
             return lock_err
+        source_err = _validate_managed_repo_source()
+        if source_err:
+            return source_err
         if _is_git_repo(dest):
             return _ensure_managed_venv(dest)
         if dest.exists() and any(dest.iterdir()):
@@ -1207,17 +1293,25 @@ def _provision_managed_repo(dest: Path) -> str:
             return space_err
         dest.parent.mkdir(parents=True, exist_ok=True)
         err = _run(
-            ["git", "clone", "--quiet", "--branch", str(EVOLVE_REPO_BRANCH),
-             str(EVOLVE_REPO_URL), str(dest)],
+            ["git", "clone", "--quiet", "--no-checkout", "--branch",
+             _base_branch_name(), str(EVOLVE_REPO_URL), str(dest)],
             EVOLVE_CLONE_TIMEOUT_S,
         )
         if err:
             return f"ERR evolve_repo_clone_failed={dest}: {err}"
+        commit, _pin_err = _expected_managed_commit()
+        checkout_err = _run(
+            ["git", "checkout", "--detach", "--force", commit],
+            EVOLVE_CLONE_TIMEOUT_S,
+            cwd=dest,
+        )
+        if checkout_err:
+            return f"ERR evolve_repo_pin_checkout_failed={_short(checkout_err)}"
         return _ensure_managed_venv(dest)
 
 
 def _refresh_managed_repo(dest: Path) -> str:
-    """Fast-forward only the disposable managed checkout to its base branch.
+    """Refresh only the disposable managed checkout to its pinned base.
 
     Explicit checkout roots are never routed here. A clean but old applier
     branch is safe to replace after its child has ended; tracked edits and live
@@ -1226,6 +1320,9 @@ def _refresh_managed_repo(dest: Path) -> str:
     with _repo_provision_lock() as lock_err:
         if lock_err:
             return lock_err
+        source_err = _validate_managed_repo_source()
+        if source_err:
+            return source_err
         if not _is_git_repo(dest):
             return "ERR evolve_repo_refresh_missing_checkout"
         dirty, status_err = _tracked_worktree_status(dest)
@@ -1243,14 +1340,18 @@ def _refresh_managed_repo(dest: Path) -> str:
         fetch_err = _run(["git", "fetch", "origin", branch], 60, cwd=dest)
         if fetch_err:
             return f"ERR evolve_repo_refresh_fetch_failed={_short(fetch_err)}"
-        checkout_err = _run(["git", "checkout", "-f", branch], 30, cwd=dest)
-        if checkout_err:
-            return f"ERR evolve_repo_refresh_checkout_failed={_short(checkout_err)}"
-        reset_err = _run(
-            ["git", "reset", "--hard", _base_ref()], 30, cwd=dest
+        commit, _pin_err = _expected_managed_commit()
+        checkout_err = _run(
+            ["git", "checkout", "--detach", "--force", commit], 30, cwd=dest
         )
-        if reset_err:
-            return f"ERR evolve_repo_refresh_reset_failed={_short(reset_err)}"
+        if checkout_err:
+            return (
+                "ERR evolve_repo_refresh_pin_checkout_failed="
+                f"{_short(checkout_err)}"
+            )
+        pin_err = _verify_managed_repo_ref(dest)
+        if pin_err:
+            return pin_err
     return ""
 
 

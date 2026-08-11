@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
@@ -319,7 +321,7 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert "git fetch origin main" in p
     assert (
         f"git checkout -b {pkg['ea'].branch_name(eid, 'add a failed_paths field per thread')} "
-        "origin/main"
+        f"{pkg['ea']._base_ref()}"
     ) in p
     assert 'git commit -m "evolve:' not in p
     assert 'gh pr create --title "evolve:' not in p
@@ -1122,7 +1124,7 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "git fetch origin main" in prompt
     assert (
         f"git checkout -b {pkg['ea'].roadmap_issue_branch_name(6, 'Telemetry dashboard')} "
-        "origin/main"
+        f"{pkg['ea']._base_ref()}"
     ) in prompt
 
 
@@ -1227,6 +1229,10 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
     (repo / "shared.txt").write_text("main\n", encoding="utf-8")
     git("commit", "-am", "main change")
     git("push", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
     git("checkout", branch)
     conflicted = git("merge", "origin/main", check=False)
     assert conflicted.returncode != 0
@@ -2407,6 +2413,7 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     run("git", "commit", "-m", "advance base", cwd=source)
     run("git", "push", "origin", "main", cwd=source)
     upstream_head = run("git", "rev-parse", "HEAD", cwd=source).stdout.strip()
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_COMMIT", upstream_head)
 
     root, err = pkg["ea"]._ensure_repo_ready()
 
@@ -2415,6 +2422,49 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     assert (repo / "upstream.txt").read_text(encoding="utf-8") == "new base\n"
     assert run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip() == upstream_head
     assert upstream_head != old_head
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["http://github.com/po4erk91/thread-keeper", "https://example.invalid/repo"],
+)
+def test_managed_provision_refuses_untrusted_source_before_clone(
+    tmp_path, monkeypatch, source,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_URL", source)
+    monkeypatch.setattr(
+        pkg["ea"],
+        "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not run git or install from an untrusted URL")
+        ),
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_url_refused"), out
+
+
+def test_managed_provision_aborts_on_pinned_ref_mismatch_before_venv(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    commands = []
+    monkeypatch.setattr(
+        pkg["ea"], "_run", lambda cmd, *args, **kwargs: commands.append(cmd) or ""
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_head", lambda dest: ("0" * 40, "")
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_pin_mismatch"), out
+    assert any(cmd[:2] == ["git", "clone"] for cmd in commands)
+    assert any(cmd[:3] == ["git", "checkout", "--detach"] for cmd in commands)
+    assert not any("venv" in " ".join(cmd) for cmd in commands)
+    assert not any("install" in cmd for cmd in commands)
 
 
 def test_managed_provision_fails_before_clone_when_disk_is_low(
@@ -2929,6 +2979,10 @@ def test_managed_checkout_recovers_abandoned_wip_without_merge(
     git("commit", "-m", "base")
     git("remote", "add", "origin", str(remote))
     git("push", "-u", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
 
     branch = "roadmap/issue-9-abandoned-wip"
     git("checkout", "-b", branch)
