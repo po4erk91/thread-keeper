@@ -47,6 +47,11 @@ remains a live question.
 - sqlite-vec HNSW: `notes_vec` / `dialog_vec` virtual tables on vec0,
   ~10x faster than Python-side cosine, fallback when vec0 is absent.
 - FTS5 + semantic hybrid in `search` / `dialog_search`.
+- Reproducible embedding snapshots (#120): both backends use immutable Hugging
+  Face revisions by default, the revision is part of the searchable vector
+  generation, and CI pre-fetches the pinned snapshot before running semantic
+  tests offline. An intentional model/revision upgrade requires
+  `tk-migrate-embeddings --all`.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.

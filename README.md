@@ -1165,6 +1165,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable the embedding model (FTS5 + delegate only) |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
+| `THREADKEEPER_EMBED_REVISION` | backend-specific immutable commit | Hugging Face snapshot pin; set an intentional replacement commit only together with a re-embedding plan |
+| `THREADKEEPER_EMBED_CACHE_DIR` | `~/.cache/huggingface/hub` | durable Hugging Face snapshot cache |
+| `THREADKEEPER_EMBED_LOCAL_FILES_ONLY` | false | require the pinned snapshot in the local Hugging Face cache (offline / air-gapped mode) |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
@@ -1476,6 +1479,13 @@ RU+EN+50 langs). The default backend is **fastembed / ONNX Runtime** — no
 PyTorch. A model-loaded process sits at ~700 MB physical footprint
 (~850 MB RSS), down from ~1.8 GB on the PyTorch backend.
 
+The model artifact is loaded from an immutable, backend-specific Hugging Face
+commit by default. The active model and revision are part of the stored
+embedding-generation fingerprint shown by `mp_dashboard()`, so changing a
+snapshot cannot silently mix vectors with an older space. Set
+`THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` after priming the Hugging Face cache to
+run semantic search without model-download network access.
+
 A **sentence-transformers** (PyTorch) backend is kept as an opt-in fallback.
 It is heavier (~1.8 GB RSS) and produces vectors that are *not numerically
 identical* to the ONNX backend's, so switching backends warrants a recompute:
@@ -1494,6 +1504,12 @@ tk-migrate-embeddings --dry-run      # report stale counts only
 The migration is batched, resumable, and idempotent (a second run finds
 nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
 unchanged.
+
+**Intentional model revision upgrade.** Set `THREADKEEPER_EMBED_REVISION` to
+the immutable commit for the selected backend's Hugging Face artifact, restart
+the host, then run `tk-migrate-embeddings --all`. A changed revision is a new
+embedding generation; until migration, old vectors remain available through
+FTS rather than being compared against the new vector space.
 
 Stored rows carry an embedding-generation fingerprint, not just the backend:
 backend, model ID, vector dimension, pooling contract, and compatible runtime

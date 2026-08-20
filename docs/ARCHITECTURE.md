@@ -1425,10 +1425,15 @@ default `onnx` runs the model through **fastembed / ONNX Runtime** (no PyTorch,
 ~700 MB footprint / ~850 MB RSS); `sentence-transformers` is a heavier opt-in
 fallback (~1.8 GB). `_encode()` L2-normalizes both backends' output so the dot product
 used by vec0 and the legacy path equals cosine. Each row records a generation
-fingerprint in `embed_backend`: backend, model, dimension, pooling contract,
-and compatible runtime version (NULL = legacy). Dense retrieval filters to the
-current fingerprint; stale rows remain visible to the always-on FTS channel.
-After a backend/runtime generation switch, run `tk-migrate-embeddings --all`
+fingerprint in `embed_backend`: backend, model, immutable Hugging Face
+revision, dimension, pooling contract, and compatible runtime version (NULL =
+legacy). FastEmbed resolves its ONNX artifact to a pinned local Hub snapshot
+before loading; sentence-transformers receives its configured revision directly.
+`THREADKEEPER_EMBED_CACHE_DIR` holds the durable snapshot cache, and
+`THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` makes a cache miss fail without a Hub
+request. Dense retrieval filters to the current fingerprint; stale rows remain
+visible to the always-on FTS channel. After a backend/model/revision/runtime
+generation switch, run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
 `retrieval.py` normalizes notes and dialog hits into one `Candidate` model.

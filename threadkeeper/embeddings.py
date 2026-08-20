@@ -24,6 +24,9 @@ from .config import (
     SEMANTIC_AVAILABLE,
     EMBED_MODEL_NAME,
     EMBED_BACKEND,
+    EMBED_CACHE_DIR,
+    EMBED_LOCAL_FILES_ONLY,
+    EMBED_REVISION,
     EMBED_DIM,
     FASTEMBED_MODEL_ID,
 )
@@ -74,6 +77,67 @@ _model = None
 _model_lock = threading.RLock()
 _last_used_at = 0.0
 
+_FASTEMBED_HUB_ALLOW_PATTERNS = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "preprocessor_config.json",
+    "model_optimized.onnx",
+)
+
+
+def _fastembed_snapshot_path() -> str:
+    """Return the pinned FastEmbed artifact snapshot for the active model.
+
+    FastEmbed 0.8's public ``TextEmbedding`` constructor accepts arbitrary
+    keyword arguments but does not forward ``revision`` to its Hub download
+    helper. Resolve the registry's actual Hugging Face source ourselves, then
+    hand FastEmbed that immutable local snapshot via ``specific_model_path``.
+    This keeps its model registry/pooling behavior while making the artifact
+    choice explicit and testable.
+    """
+    from fastembed import TextEmbedding  # type: ignore
+    from huggingface_hub import snapshot_download  # type: ignore
+
+    source = next(
+        (
+            model.get("sources", {}).get("hf")
+            for model in TextEmbedding.list_supported_models()
+            if model.get("model", "").lower() == FASTEMBED_MODEL_ID.lower()
+        ),
+        None,
+    )
+    if not source:
+        raise ValueError(
+            f"FastEmbed model {FASTEMBED_MODEL_ID!r} has no Hugging Face source; "
+            "choose a supported model with an HF source to use a pinned revision."
+        )
+    return str(snapshot_download(
+        repo_id=source,
+        revision=EMBED_REVISION,
+        cache_dir=str(EMBED_CACHE_DIR),
+        allow_patterns=list(_FASTEMBED_HUB_ALLOW_PATTERNS),
+        local_files_only=EMBED_LOCAL_FILES_ONLY,
+    ))
+
+
+def prefetch_embedding_model() -> str:
+    """Download (or verify from cache) the active pinned embedding snapshot.
+
+    CI calls this before entering offline test mode; deployers can use it to
+    prime an air-gapped cache without loading ONNX Runtime or encoding text.
+    """
+    if EMBED_BACKEND == "sentence-transformers":
+        from huggingface_hub import snapshot_download  # type: ignore
+        return str(snapshot_download(
+            repo_id=EMBED_MODEL_NAME,
+            revision=EMBED_REVISION,
+            cache_dir=str(EMBED_CACHE_DIR),
+            local_files_only=EMBED_LOCAL_FILES_ONLY,
+        ))
+    return _fastembed_snapshot_path()
+
 def _get_model():
     """Lazily load and cache the embedding model for the active backend.
 
@@ -85,9 +149,17 @@ def _get_model():
         return None
     with _model_lock:
         if _model is None:
+            logger.info(
+                "loading pinned embedding model backend=%s model=%s revision=%s",
+                EMBED_BACKEND, EMBED_MODEL_NAME, EMBED_REVISION,
+            )
             if EMBED_BACKEND == "sentence-transformers":
                 from sentence_transformers import SentenceTransformer  # type: ignore
-                _model = SentenceTransformer(EMBED_MODEL_NAME)
+                _model = SentenceTransformer(
+                    EMBED_MODEL_NAME,
+                    cache_folder=str(EMBED_CACHE_DIR),
+                    revision=EMBED_REVISION,
+                )
             else:  # 'onnx' (default)
                 from fastembed import TextEmbedding  # type: ignore
                 # fastembed 0.8 intentionally moved this model to mean pooling.
@@ -100,7 +172,10 @@ def _get_model():
                         message=r"The model .* now uses mean pooling .*",
                         category=UserWarning,
                     )
-                    _model = TextEmbedding(model_name=FASTEMBED_MODEL_ID)
+                    _model = TextEmbedding(
+                        model_name=FASTEMBED_MODEL_ID,
+                        specific_model_path=_fastembed_snapshot_path(),
+                    )
         return _model
 
 
@@ -221,7 +296,7 @@ def embedding_fingerprint() -> str:
         model = FASTEMBED_MODEL_ID
         pooling = "mean"
     return (
-        f"{EMBED_BACKEND}:{model}:dim={EMBED_DIM}:"
+        f"{EMBED_BACKEND}:{model}:revision={EMBED_REVISION}:dim={EMBED_DIM}:"
         f"pool={pooling}:runtime={runtime}"
     )
 

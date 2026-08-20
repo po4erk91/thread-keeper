@@ -47,6 +47,8 @@ semantic = [
     # family so stored document vectors and fresh query vectors share a space;
     # embeddings.py fingerprints the generation for resumable migration.
     "fastembed>=0.8,<0.9",
+    # Used directly to resolve the pinned FastEmbed snapshot before model load.
+    "huggingface-hub>=0.20",
     "numpy>=1.24.0",
     "sqlite-vec>=0.1.9",
 ]

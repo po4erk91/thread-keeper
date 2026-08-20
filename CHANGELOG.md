@@ -48,6 +48,17 @@ version bumps follow semver per the policy in
   `mp_dashboard()` now reports managed repo/venv/total/free-disk footprint, and
   `evolve_prune_managed_venv(confirm=True)` explicitly reclaims the managed
   virtualenv without deleting its clone.
+- **Fixed: embedding artifacts are revision-pinned (#120).** Both backends now
+  use immutable Hugging Face commits by default; the revision is configurable
+  through `THREADKEEPER_EMBED_REVISION`, part of the stored
+  embedding-generation fingerprint, and visible in dashboard generation
+  health. FastEmbed resolves the exact ONNX snapshot before loading, while the
+  sentence-transformers fallback receives its revision directly. CI caches and
+  pre-fetches the snapshot into `THREADKEEPER_EMBED_CACHE_DIR`, then runs
+  semantic tests in offline mode; set
+  `THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` to require that same cached-only
+  behavior in an air-gapped deployment. Change a model/revision deliberately
+  and run `tk-migrate-embeddings --all` to recompute the store.
 - **Fixed: evolve reviewer backlog is mechanically bounded (#115).** Before
   dispatching its privileged issue-creating audit phase, the reviewer now
   counts open, not-yet-applied roadmap issues and records

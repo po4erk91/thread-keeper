@@ -10,6 +10,7 @@ def test_fingerprint_names_vector_space(fresh_mp):
     tag = embeddings.embedding_fingerprint()
     assert fresh_mp["config"].EMBED_BACKEND in tag
     assert fresh_mp["config"].EMBED_MODEL_NAME in tag
+    assert f"revision={fresh_mp['config'].EMBED_REVISION}" in tag
     assert f"dim={fresh_mp['config'].EMBED_DIM}" in tag
     assert "pool=" in tag
     assert "runtime=" in tag
