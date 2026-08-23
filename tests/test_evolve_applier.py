@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
@@ -317,11 +319,12 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert 'git commit -m "<type>: <short imperative summary>"' in p
     assert 'gh pr create --title "<type>: <short>"' in p
     branch = pkg["ea"].branch_name(eid, "add a failed_paths field per thread")
+    base_ref = pkg["ea"]._base_ref()
     assert "git fetch origin" in p
     assert f"refs/heads/{branch}" in p
     assert f"refs/remotes/origin/{branch}" in p
-    assert f"git checkout -b {branch} origin/main" in p
-    assert f"git rebase origin/main" in p
+    assert f"git checkout -b {branch} {base_ref}" in p
+    assert f"git rebase {base_ref}" in p
     assert p.index("PREPARE OR RESUME THE FEATURE BRANCH") < p.index(
         "READ threadkeeper/brief.py"
     )
@@ -1124,11 +1127,12 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
     assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
     branch = pkg["ea"].roadmap_issue_branch_name(6, "Telemetry dashboard")
+    base_ref = pkg["ea"]._base_ref()
     assert "git fetch origin" in prompt
     assert f"refs/heads/{branch}" in prompt
     assert f"refs/remotes/origin/{branch}" in prompt
-    assert f"git checkout -b {branch} origin/main" in prompt
-    assert f"git rebase origin/main" in prompt
+    assert f"git checkout -b {branch} {base_ref}" in prompt
+    assert f"git rebase {base_ref}" in prompt
     assert prompt.index("Prepare or resume the issue branch") < prompt.index(
         "Read the relevant code and docs"
     )
@@ -1182,13 +1186,31 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
     assert row["summary"] == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_recovers_stale_merge_after_pr_merged(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize(
+    ("pr_state", "merged_at", "backup_prefix", "recovery_summary"),
+    [
+        (
+            "MERGED",
+            "2026-07-12T10:28:56Z",
+            "stale-merge-pr-7",
+            "recovered_stale_merge pr=#7",
+        ),
+        (
+            "OPEN",
+            None,
+            "interrupted-open-pr-merge-pr-7",
+            "recovered_open_pr_merge pr=#7",
+        ),
+    ],
+)
+def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
+    tmp_path, monkeypatch, pr_state, merged_at, backup_prefix, recovery_summary,
 ):
     """A killed repair child must not leave the whole backlog blocked forever.
 
     Recovery is restricted to the auto-managed checkout and archives the
     tracked merge diff before returning the tree to the fresh configured base.
+    Open PR merges are aborted for a clean retry; merged PR leftovers are stale.
     """
     pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     conn = pkg["db"].get_db()
@@ -1235,6 +1257,10 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
     (repo / "shared.txt").write_text("main\n", encoding="utf-8")
     git("commit", "-am", "main change")
     git("push", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
     git("checkout", branch)
     conflicted = git("merge", "origin/main", check=False)
     assert conflicted.returncode != 0
@@ -1244,8 +1270,8 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "MERGED",
-            "mergedAt": "2026-07-12T10:28:56Z",
+            "state": pr_state,
+            "mergedAt": merged_at,
             "headRefName": branch,
             "url": "https://github.com/o/r/pull/7",
         }], ""),
@@ -1265,7 +1291,7 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
     ).returncode == 1
     backups = list(
-        (tmp_path / "evolve-recovery").glob("stale-merge-pr-7-*.patch")
+        (tmp_path / "evolve-recovery").glob(f"{backup_prefix}-*.patch")
     )
     assert len(backups) == 1
     assert "diff --git" in backups[0].read_text(encoding="utf-8")
@@ -1275,7 +1301,7 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
     ).fetchone()
     assert row["target"] == "roadmap_issue"
-    assert "recovered_stale_merge pr=#7" in row["summary"]
+    assert recovery_summary in row["summary"]
     assert backups[0].name in row["summary"]
 
 
@@ -1304,11 +1330,11 @@ def test_explicit_checkout_never_auto_recovers_dirty_merge(
     assert out == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_keeps_open_pr_merge_fail_closed(
+def test_managed_checkout_keeps_closed_unmerged_pr_merge_fail_closed(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    branch = "roadmap/issue-7-still-open"
+    branch = "roadmap/issue-7-closed-unmerged"
     monkeypatch.setattr(
         pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
     )
@@ -1318,7 +1344,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "OPEN",
+            "state": "CLOSED",
             "mergedAt": None,
             "headRefName": branch,
         }], ""),
@@ -1326,7 +1352,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     monkeypatch.setattr(
         pkg["ea"], "_archive_stale_merge_diff",
         lambda *args: (_ for _ in ()).throw(
-            AssertionError("open PR state must never be reset")
+            AssertionError("closed-unmerged PR state must never be reset")
         ),
     )
 
@@ -1335,7 +1361,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     )
 
     assert recovered is False
-    assert reason == "stale_merge_pr_not_merged=#7:OPEN"
+    assert reason == "stale_merge_pr_not_recoverable=#7:CLOSED"
 
 
 def test_prs_for_head_branch_filters_cross_repository_matches(
@@ -2415,6 +2441,7 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     run("git", "commit", "-m", "advance base", cwd=source)
     run("git", "push", "origin", "main", cwd=source)
     upstream_head = run("git", "rev-parse", "HEAD", cwd=source).stdout.strip()
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_COMMIT", upstream_head)
 
     root, err = pkg["ea"]._ensure_repo_ready()
 
@@ -2423,6 +2450,49 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     assert (repo / "upstream.txt").read_text(encoding="utf-8") == "new base\n"
     assert run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip() == upstream_head
     assert upstream_head != old_head
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["http://github.com/po4erk91/thread-keeper", "https://example.invalid/repo"],
+)
+def test_managed_provision_refuses_untrusted_source_before_clone(
+    tmp_path, monkeypatch, source,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_URL", source)
+    monkeypatch.setattr(
+        pkg["ea"],
+        "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not run git or install from an untrusted URL")
+        ),
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_url_refused"), out
+
+
+def test_managed_provision_aborts_on_pinned_ref_mismatch_before_venv(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    commands = []
+    monkeypatch.setattr(
+        pkg["ea"], "_run", lambda cmd, *args, **kwargs: commands.append(cmd) or ""
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_head", lambda dest: ("0" * 40, "")
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_pin_mismatch"), out
+    assert any(cmd[:2] == ["git", "clone"] for cmd in commands)
+    assert any(cmd[:3] == ["git", "checkout", "--detach"] for cmd in commands)
+    assert not any("venv" in " ".join(cmd) for cmd in commands)
+    assert not any("install" in cmd for cmd in commands)
 
 
 def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
@@ -2455,6 +2525,10 @@ def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
     run("git", "commit", "-m", "base", cwd=repo)
     run("git", "remote", "add", "origin", str(remote), cwd=repo)
     run("git", "push", "-u", "origin", "main", cwd=repo)
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip(),
+    )
 
     (repo / "shared.txt").write_text(
         "issue implementation left on main\n", encoding="utf-8"
@@ -3022,6 +3096,10 @@ def test_managed_checkout_recovers_abandoned_wip_without_merge(
     git("commit", "-m", "base")
     git("remote", "add", "origin", str(remote))
     git("push", "-u", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
 
     branch = "roadmap/issue-9-abandoned-wip"
     git("checkout", "-b", branch)

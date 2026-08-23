@@ -80,6 +80,27 @@ Editable git checkouts are still treated as developer-controlled working trees:
 dirty/diverged checkouts are skipped, but signed git tag/commit enforcement is
 not yet implemented for that path.
 
+### Managed Evolve checkout (pinned remote code → local execution)
+
+When `THREADKEEPER_EVOLVE_AUTO_CLONE=1`, Evolve can provision a disposable
+managed checkout and execute its `pip install -e` build path and test suite.
+That is an explicit remote-code-execution trust boundary. Disable auto-clone on
+shared or multi-user hosts unless the operator deliberately accepts it:
+`THREADKEEPER_EVOLVE_AUTO_CLONE=0`.
+
+Mitigations:
+
+- The clone URL must be HTTPS on the built-in `github.com` allowlist; other
+  schemes, hosts, credentials, nonstandard ports, queries, and fragments are
+  refused before `git clone` runs.
+- `THREADKEEPER_EVOLVE_REPO_COMMIT` is a required full commit SHA. The managed
+  checkout is detached at that commit and its `HEAD` is verified before a new
+  or existing managed virtualenv can be used. A mismatch returns an `ERR` and
+  neither installs nor tests checkout code.
+- `THREADKEEPER_EVOLVE_REPO_URL`, `THREADKEEPER_EVOLVE_REPO_BRANCH`, and
+  `THREADKEEPER_EVOLVE_REPO_COMMIT` are restart-only. Hot-config reload logs
+  and ignores edits, so a running server cannot silently redirect its clone.
+
 ### Autonomous GitHub writers (stored / issue content → public GitHub)
 
 The evolve reviewer and evolve applier can run privileged children that edit the
