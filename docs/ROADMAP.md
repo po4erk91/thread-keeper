@@ -96,12 +96,14 @@ remains a live question.
   overlapping reviewer/applier git writers in the shared checkout, and prompts
   children to fetch the configured branch but branch only from the configured
   immutable managed-checkout pin instead of arbitrary current `HEAD`.
-- Evolve managed-checkout stale-merge recovery: a killed conflict-repair child
-  no longer blocks the entire backlog after its PR was merged elsewhere. The
-  parent first excludes live git writers, requires the default managed checkout
-  plus an applier-owned branch and an exact GitHub `MERGED` state, archives the
-  tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
-  base. Explicit operator checkouts and uncertain PR states remain fail-closed.
+- Evolve managed-checkout interrupted-merge recovery: a killed conflict-repair
+  child no longer blocks the entire backlog whether its exact PR remains open
+  or was merged elsewhere. The parent first excludes live git writers, requires
+  the default managed checkout plus an applier-owned branch, archives the
+  tracked diff under `evolve-recovery/`, aborts open-PR merges for a clean retry,
+  and discards already-merged leftovers as stale before returning to the fetched
+  pinned base. Explicit operator checkouts and uncertain/closed-unmerged PR states
+  remain fail-closed.
 - Evolve managed-checkout lifecycle (#128): the disposable clone now refreshes
   to its configured base before each code pass, without touching explicit
   checkouts. Clone/venv provisioning has a bounded

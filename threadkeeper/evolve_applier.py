@@ -997,6 +997,16 @@ def _archive_stale_merge_diff(
     return _archive_tracked_diff(repo_root, f"stale-merge-pr-{int(pr_number)}")
 
 
+def _archive_interrupted_open_pr_merge_diff(
+    repo_root: Path,
+    pr_number: int,
+) -> tuple[Optional[Path], str]:
+    """Persist an interrupted open-PR merge before restarting its repair."""
+    return _archive_tracked_diff(
+        repo_root, f"interrupted-open-pr-merge-pr-{int(pr_number)}"
+    )
+
+
 def _archive_abandoned_wip_diff(
     repo_root: Path,
     branch: str,
@@ -1008,13 +1018,15 @@ def _archive_abandoned_wip_diff(
 def _recover_stale_managed_merge(
     repo_root: Path,
 ) -> tuple[bool, str]:
-    """Recover an orphaned merge only when its applier PR is already merged.
+    """Recover an orphaned merge for a known applier PR.
 
     The managed checkout is shared across passes, so a killed conflict-repair
     child can otherwise block every future backlog item. This recovery is
     intentionally narrow: managed checkout, merge in progress, applier-owned
-    branch, exact GitHub PR proven merged, archived tracked diff. Any uncertain
-    state remains fail-closed for a human.
+    branch, exact GitHub PR proven open or merged, archived tracked diff. An
+    open PR's interrupted merge is aborted so the conflict-repair child can
+    restart it; an already-merged PR is discarded as stale. Any uncertain state
+    remains fail-closed for a human.
     """
     if not _managed_repo_auto_recovery_allowed(repo_root):
         return False, ""
@@ -1033,6 +1045,13 @@ def _recover_stale_managed_merge(
         return False, f"stale_merge_pr_fetch_failed={_short(pr_err)}"
     if not prs:
         return False, "stale_merge_pr_not_found"
+    opened = next(
+        (
+            pr for pr in prs
+            if str(pr.get("state") or "").upper() == "OPEN"
+        ),
+        None,
+    )
     merged = next(
         (
             pr for pr in prs
@@ -1041,13 +1060,14 @@ def _recover_stale_managed_merge(
         ),
         None,
     )
-    if merged is None:
+    recoverable_pr = opened or merged
+    if recoverable_pr is None:
         state = str(prs[0].get("state") or "UNKNOWN").upper()
         return False, (
-            f"stale_merge_pr_not_merged=#{int(prs[0].get('number') or 0)}"
+            f"stale_merge_pr_not_recoverable=#{int(prs[0].get('number') or 0)}"
             f":{state}"
         )
-    pr_number = int(merged.get("number") or 0)
+    pr_number = int(recoverable_pr.get("number") or 0)
     if pr_number <= 0:
         return False, "stale_merge_pr_number_invalid"
 
@@ -1058,15 +1078,27 @@ def _recover_stale_managed_merge(
     )
     if fetch_err:
         return False, f"stale_merge_fetch_failed={_short(fetch_err)}"
-    backup, backup_err = _archive_stale_merge_diff(repo_root, pr_number)
+    if opened is not None:
+        backup, backup_err = _archive_interrupted_open_pr_merge_diff(
+            repo_root, pr_number
+        )
+        backup_kind = "open_pr_merge"
+    else:
+        backup, backup_err = _archive_stale_merge_diff(repo_root, pr_number)
+        backup_kind = "stale_merge"
     if backup_err or backup is None:
-        return False, f"stale_merge_backup_failed={_short(backup_err)}"
+        return False, f"{backup_kind}_backup_failed={_short(backup_err)}"
 
-    reset_err = _run(
-        ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
-    )
-    if reset_err:
-        return False, f"stale_merge_reset_failed={_short(reset_err)}"
+    if opened is not None:
+        reset_err = _run(["git", "merge", "--abort"], timeout=30, cwd=repo_root)
+        if reset_err:
+            return False, f"open_pr_merge_abort_failed={_short(reset_err)}"
+    else:
+        reset_err = _run(
+            ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
+        )
+        if reset_err:
+            return False, f"stale_merge_reset_failed={_short(reset_err)}"
     checkout_err = _run(
         [
             "git", "checkout", "-f", "-B", _base_branch_name(),
@@ -1082,6 +1114,11 @@ def _recover_stale_managed_merge(
         return False, f"stale_merge_recheck_failed={_short(status_err)}"
     if dirty:
         return False, "stale_merge_recovery_left_dirty"
+    if opened is not None:
+        return True, (
+            f"recovered_open_pr_merge pr=#{pr_number} "
+            f"branch={_short(branch, 80)} backup={backup.name}"
+        )
     return True, (
         f"recovered_stale_merge pr=#{pr_number} branch={_short(branch, 80)} "
         f"backup={backup.name}"
