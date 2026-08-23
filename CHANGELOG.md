@@ -13,6 +13,15 @@ version bumps follow semver per the policy in
   restart-only and hot-config reload logs then ignores them, closing runtime
   source redirection through a host settings file. The managed clone's remote
   code-execution trust boundary and shared-host opt-out are documented.
+- **Fixed: interrupted conflict repair no longer deadlocks Evolve apply.** If a
+  conflict-repair child exited after `git merge` while its PR remained open,
+  managed refresh treated the unresolved merge as permanently dirty and every
+  scheduled pass stopped before the conflicted-PR sweep. With no live git
+  writer, the parent now verifies the exact open applier PR, archives the merge
+  diff as an owner-only recovery patch, aborts the orphaned merge, refreshes the
+  disposable checkout, and retries that same PR through the normal protected
+  conflict-repair flow. Closed-unmerged/unreadable PRs and explicit operator
+  checkouts remain fail-closed.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

@@ -859,13 +859,17 @@ overlapping in the same checkout.
 If a killed child leaves an unresolved merge or plain tracked WIP in the default
 auto-managed checkout, the next code-producing pass archives the diff before
 recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
-branches whose exact PR is confirmed merged. Plain abandoned WIP is recoverable
-on those applier branches when PR state is readable, and also on the configured
+branches whose exact PR is confirmed open or merged. For an open PR, the parent
+archives the interrupted merge, aborts it, refreshes the disposable checkout,
+and lets the normal conflict-repair sweep retry that same PR. A merged PR's
+leftover merge is discarded as stale. Plain abandoned WIP is recoverable on
+those applier branches when PR state is readable, and also on the configured
 base branch: the disposable base can contain orphaned edits when an older child
 failed during late branch creation. Recovery patches are owner-only files under
 `~/.threadkeeper/evolve-recovery/`, and `evolve_git_safety` records the action.
-Unknown ownership, a live writer, or unreadable required PR state remains
-fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
+Unknown ownership, a live writer, a closed-unmerged PR, or unreadable required
+PR state remains fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is
+never auto-reset.
 
 The default managed checkout is refreshed before every code-producing pass:
 after checking that no Evolve git writer is live, it archives and recovers any

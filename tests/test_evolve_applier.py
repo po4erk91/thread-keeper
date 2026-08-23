@@ -1186,13 +1186,31 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
     assert row["summary"] == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_recovers_stale_merge_after_pr_merged(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize(
+    ("pr_state", "merged_at", "backup_prefix", "recovery_summary"),
+    [
+        (
+            "MERGED",
+            "2026-07-12T10:28:56Z",
+            "stale-merge-pr-7",
+            "recovered_stale_merge pr=#7",
+        ),
+        (
+            "OPEN",
+            None,
+            "interrupted-open-pr-merge-pr-7",
+            "recovered_open_pr_merge pr=#7",
+        ),
+    ],
+)
+def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
+    tmp_path, monkeypatch, pr_state, merged_at, backup_prefix, recovery_summary,
 ):
     """A killed repair child must not leave the whole backlog blocked forever.
 
     Recovery is restricted to the auto-managed checkout and archives the
     tracked merge diff before returning the tree to the fresh configured base.
+    Open PR merges are aborted for a clean retry; merged PR leftovers are stale.
     """
     pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     conn = pkg["db"].get_db()
@@ -1252,8 +1270,8 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "MERGED",
-            "mergedAt": "2026-07-12T10:28:56Z",
+            "state": pr_state,
+            "mergedAt": merged_at,
             "headRefName": branch,
             "url": "https://github.com/o/r/pull/7",
         }], ""),
@@ -1273,7 +1291,7 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
     ).returncode == 1
     backups = list(
-        (tmp_path / "evolve-recovery").glob("stale-merge-pr-7-*.patch")
+        (tmp_path / "evolve-recovery").glob(f"{backup_prefix}-*.patch")
     )
     assert len(backups) == 1
     assert "diff --git" in backups[0].read_text(encoding="utf-8")
@@ -1283,7 +1301,7 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
     ).fetchone()
     assert row["target"] == "roadmap_issue"
-    assert "recovered_stale_merge pr=#7" in row["summary"]
+    assert recovery_summary in row["summary"]
     assert backups[0].name in row["summary"]
 
 
@@ -1312,11 +1330,11 @@ def test_explicit_checkout_never_auto_recovers_dirty_merge(
     assert out == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_keeps_open_pr_merge_fail_closed(
+def test_managed_checkout_keeps_closed_unmerged_pr_merge_fail_closed(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    branch = "roadmap/issue-7-still-open"
+    branch = "roadmap/issue-7-closed-unmerged"
     monkeypatch.setattr(
         pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
     )
@@ -1326,7 +1344,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "OPEN",
+            "state": "CLOSED",
             "mergedAt": None,
             "headRefName": branch,
         }], ""),
@@ -1334,7 +1352,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     monkeypatch.setattr(
         pkg["ea"], "_archive_stale_merge_diff",
         lambda *args: (_ for _ in ()).throw(
-            AssertionError("open PR state must never be reset")
+            AssertionError("closed-unmerged PR state must never be reset")
         ),
     )
 
@@ -1343,7 +1361,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     )
 
     assert recovered is False
-    assert reason == "stale_merge_pr_not_merged=#7:OPEN"
+    assert reason == "stale_merge_pr_not_recoverable=#7:CLOSED"
 
 
 def test_prs_for_head_branch_filters_cross_repository_matches(

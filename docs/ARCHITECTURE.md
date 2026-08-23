@@ -732,13 +732,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   dirty-state recovery so active child WIP is never discarded.
   For the default auto-managed checkout only, an in-progress merge on an
   applier-owned branch is treated as recoverable when GitHub proves the exact
-  PR is already merged. The parent fetches the configured base, archives the
-  tracked diff as an owner-only (`0600`)
-  `DB_PATH.parent/evolve-recovery/stale-merge-pr-*.patch`, then
-  hard-resets the disposable checkout and switches it to the configured pinned
-  commit. For merges, unknown/open/closed-unmerged PR state
-  and explicit operator checkouts remain fail-closed with
-  `skipped_dirty_worktree`. Plain uncommitted WIP (no merge in progress) on an
+  PR is open or merged. The parent fetches the configured base and archives the
+  tracked diff as an owner-only (`0600`) recovery patch. An open PR merge is
+  explicitly aborted so the normal conflict-repair sweep can retry that same
+  PR from its remote branch; an already-merged PR's local merge is hard-reset
+  as stale. Both paths switch the disposable checkout to the configured pinned
+  commit. Unknown/closed-unmerged PR state and explicit
+  operator checkouts remain fail-closed with `skipped_dirty_worktree`. Plain
+  uncommitted WIP (no merge in progress) on an
   applier-owned branch of the managed checkout — the leftovers of a killed
   implementer child — is likewise auto-recovered: with no PR-producing child
   running and the branch's PR state readable (any state, including none), the
