@@ -695,9 +695,10 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `ERR evolve_repo_unavailable=<path>` until an explicit `EVOLVE_REPO_ROOT` is
   provided. An explicit override that is not itself a checkout is never
   auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
-  checkout is refreshed before every code-producing pass: after a clean-tree
-  and no-live-writer check, the parent fetches the configured branch and checks
-  out `EVOLVE_REPO_COMMIT`, rejecting a missing or mismatched pin before any
+  checkout is refreshed before every code-producing pass: after the
+  no-live-writer check, the parent archives and recovers eligible orphaned
+  tracked WIP, fetches the configured branch, and checks out
+  `EVOLVE_REPO_COMMIT`, rejecting a missing or mismatched pin before any
   virtualenv install or test can execute it. `EVOLVE_REPO_URL`,
   `EVOLVE_REPO_BRANCH`, and `EVOLVE_REPO_COMMIT` are restart-only: hot-config
   reload logs and ignores changes to them. The managed clone runs remote build
@@ -720,27 +721,33 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mode=git` is recorded on `events.kind='evolve_git_safety'` when tracked WIP is
   present), and no other PR-producing evolve reviewer/applier task may already
   be running. The guard intentionally ignores untracked scratch files, matching
-  `auto_update`'s dirty-check semantics. Child prompts then branch from a fetched
-  base ref (`origin/main` by default, or `origin/<EVOLVE_REPO_BRANCH>`) instead
-  of arbitrary current `HEAD`; reviewer roadmap-doc prompts additionally reuse
-  the daily `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open
-  roadmap-doc PR branch so repeated audits do not collide. The running-writer
-  check precedes dirty-state recovery so active child WIP is never discarded.
+  `auto_update`'s dirty-check semantics. Applier prompts fetch the base and
+  prepare or resume their deterministic local/remote feature branch before any
+  reading or editing, then rebase it on the immutable
+  `EVOLVE_REPO_COMMIT`. This makes retries validate previous branch work
+  instead of colliding with a stale local branch after editing the base.
+  Reviewer roadmap-doc prompts additionally reuse the daily
+  `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open roadmap-doc PR
+  branch so repeated audits do not collide. The running-writer check precedes
+  dirty-state recovery so active child WIP is never discarded.
   For the default auto-managed checkout only, an in-progress merge on an
   applier-owned branch is treated as recoverable when GitHub proves the exact
   PR is already merged. The parent fetches the configured base, archives the
   tracked diff as an owner-only (`0600`)
   `DB_PATH.parent/evolve-recovery/stale-merge-pr-*.patch`, then
-  hard-resets the disposable checkout and switches it to fresh `origin/main`
-  (or the configured base). For merges, unknown/open/closed-unmerged PR state
+  hard-resets the disposable checkout and switches it to the configured pinned
+  commit. For merges, unknown/open/closed-unmerged PR state
   and explicit operator checkouts remain fail-closed with
   `skipped_dirty_worktree`. Plain uncommitted WIP (no merge in progress) on an
   applier-owned branch of the managed checkout — the leftovers of a killed
   implementer child — is likewise auto-recovered: with no PR-producing child
   running and the branch's PR state readable (any state, including none), the
   tracked diff is archived as `evolve-recovery/abandoned-wip-*.patch` and the
-  checkout is reset to the fresh base, so one dead child can no longer stall
-  the whole apply backlog behind the dirty gate.
+  checkout is reset to the pinned base. Plain abandoned WIP on the configured
+  base branch is also recoverable in the disposable managed checkout because a
+  pre-fix child could edit there before its late feature-branch creation failed;
+  base-branch recovery does not need a PR lookup. One dead child can therefore
+  no longer stall the whole apply backlog behind refresh's dirty gate.
 - **curator → evolve bridge** — the Curator's lessons/skills audit remains
   snapshot-first and report-first: destructive mode writes a recoverable
   snapshot before spawning the child, then the child writes its REPORT before
@@ -1424,10 +1431,15 @@ default `onnx` runs the model through **fastembed / ONNX Runtime** (no PyTorch,
 ~700 MB footprint / ~850 MB RSS); `sentence-transformers` is a heavier opt-in
 fallback (~1.8 GB). `_encode()` L2-normalizes both backends' output so the dot product
 used by vec0 and the legacy path equals cosine. Each row records a generation
-fingerprint in `embed_backend`: backend, model, dimension, pooling contract,
-and compatible runtime version (NULL = legacy). Dense retrieval filters to the
-current fingerprint; stale rows remain visible to the always-on FTS channel.
-After a backend/runtime generation switch, run `tk-migrate-embeddings --all`
+fingerprint in `embed_backend`: backend, model, immutable Hugging Face
+revision, dimension, pooling contract, and compatible runtime version (NULL =
+legacy). FastEmbed resolves its ONNX artifact to a pinned local Hub snapshot
+before loading; sentence-transformers receives its configured revision directly.
+`THREADKEEPER_EMBED_CACHE_DIR` holds the durable snapshot cache, and
+`THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` makes a cache miss fail without a Hub
+request. Dense retrieval filters to the current fingerprint; stale rows remain
+visible to the always-on FTS channel. After a backend/model/revision/runtime
+generation switch, run `tk-migrate-embeddings --all`
 (`migrate_embeddings.py`) to recompute stale rows into one consistent space.
 
 `retrieval.py` normalizes notes and dialog hits into one `Candidate` model.

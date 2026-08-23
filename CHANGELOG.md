@@ -13,6 +13,16 @@ version bumps follow semver per the policy in
   restart-only and hot-config reload logs then ignores them, closing runtime
   source redirection through a host settings file. The managed clone's remote
   code-execution trust boundary and shared-host opt-out are documented.
+- **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
+  scheduler.** Managed-checkout refresh used to reject a dirty tree before the
+  abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
+  deterministic branch-name collision made every later pass fail with
+  `evolve_repo_refresh_blocked_dirty`. Refresh now checks live writers first,
+  archives and recovers eligible orphaned WIP (including the disposable base
+  branch), and only then resets to the remote base. Applier prompts prepare or
+  resume the local/remote feature branch before reading or editing, and
+  `agent_status` no longer treats `ERR`/spawn-failure pass events as successful
+  health-clock updates.
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer
@@ -45,6 +55,17 @@ version bumps follow semver per the policy in
   `mp_dashboard()` now reports managed repo/venv/total/free-disk footprint, and
   `evolve_prune_managed_venv(confirm=True)` explicitly reclaims the managed
   virtualenv without deleting its clone.
+- **Fixed: embedding artifacts are revision-pinned (#120).** Both backends now
+  use immutable Hugging Face commits by default; the revision is configurable
+  through `THREADKEEPER_EMBED_REVISION`, part of the stored
+  embedding-generation fingerprint, and visible in dashboard generation
+  health. FastEmbed resolves the exact ONNX snapshot before loading, while the
+  sentence-transformers fallback receives its revision directly. CI caches and
+  pre-fetches the snapshot into `THREADKEEPER_EMBED_CACHE_DIR`, then runs
+  semantic tests in offline mode; set
+  `THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` to require that same cached-only
+  behavior in an air-gapped deployment. Change a model/revision deliberately
+  and run `tk-migrate-embeddings --all` to recompute the store.
 - **Fixed: evolve reviewer backlog is mechanically bounded (#115).** Before
   dispatching its privileged issue-creating audit phase, the reviewer now
   counts open, not-yet-applied roadmap issues and records

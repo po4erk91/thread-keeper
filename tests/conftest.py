@@ -23,6 +23,15 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
+    # Model snapshots are large and immutable. Reuse one cache across the
+    # per-test HOME sandboxes so a normal local full-suite run downloads the
+    # pinned artifact once rather than once per semantic test. CI's explicit
+    # workspace cache continues to win when supplied.
+    if "THREADKEEPER_EMBED_CACHE_DIR" not in os.environ:
+        monkeypatch.setenv(
+            "THREADKEEPER_EMBED_CACHE_DIR",
+            str(Path(tempfile.gettempdir()) / "threadkeeper-test-hf-cache"),
+        )
     monkeypatch.setenv("THREADKEEPER_AUTO_UPDATE_INTERVAL_S", "0")
     monkeypatch.setenv("THREADKEEPER_SKILL_UPDATE_INTERVAL_S", "0")
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)

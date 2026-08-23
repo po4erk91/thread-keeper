@@ -113,16 +113,34 @@ REPO: {repo}   (run everything from here; the project venv is .venv/)
 
 DO, strictly in order:
 
-1. READ threadkeeper/brief.py — specifically render_brief() — and understand the
+1. PREPARE OR RESUME THE FEATURE BRANCH BEFORE READING OR EDITING. Never make
+   implementation changes on the managed checkout's base branch:
+       git fetch origin
+       if git show-ref --verify --quiet refs/heads/{branch}; then
+         git checkout {branch}
+         if git show-ref --verify --quiet refs/remotes/origin/{branch}; then
+           git merge --ff-only origin/{branch}
+         fi
+       elif git show-ref --verify --quiet refs/remotes/origin/{branch}; then
+         git checkout -b {branch} origin/{branch}
+       else
+         git checkout -b {branch} {base_ref}
+       fi
+       git rebase {base_ref}
+   If the branch already contains a previous implementation attempt, inspect
+   and validate that work instead of recreating it. If it cannot be resumed
+   safely, stop before editing and report the blocker.
+
+2. READ threadkeeper/brief.py — specifically render_brief() — and understand the
    sections it emits (core_memory, style, verbatim, open/idle/closed threads,
    evolve_pending, the trailing user-facing reminder, ...). Find exactly where
    the suggestion applies.
 
-2. IMPLEMENT the suggestion by editing render_brief() (and only the helper(s) it
+3. IMPLEMENT the suggestion by editing render_brief() (and only the helper(s) it
    needs). Keep the change surgical and in the existing house style — match the
    surrounding section idiom. Do NOT reformat or touch unrelated code.
 
-3. ADD or EXTEND A GOLDEN TEST under tests/ (extend tests/test_brief_sections.py
+4. ADD or EXTEND A GOLDEN TEST under tests/ (extend tests/test_brief_sections.py
    or add tests/test_evolve_apply_{evolve_id}.py). It MUST assert BOTH:
      (a) the NEW behavior/field the suggestion asks for actually appears in the
          rendered brief for a seeded fixture, AND
@@ -133,7 +151,7 @@ DO, strictly in order:
    Mirror the bootstrap/fixture style of tests/test_brief_sections.py and
    tests/test_evolve_daemon.py (env setup, module reload, render_brief(conn)).
 
-4. RUN THE FULL SUITE from the repo root and read the FINAL summary line.
+5. RUN THE FULL SUITE from the repo root and read the FINAL summary line.
    IMPORTANT: your spawned environment sets THREADKEEPER_NO_EMBEDDINGS=1 (the
    slim-child default). That makes the embedding/vector tests (test_vec_search,
    test_delegated_search, test_onnx_embeddings) fail SPURIOUSLY — they are NOT
@@ -144,10 +162,8 @@ DO, strictly in order:
    IS related to your brief change, FIX it (your change or your test) and re-run
    until green. Do NOT proceed while red.
 
-5. OPEN A PR — only after the suite is GREEN:
-     • Create a NEW feature branch (NEVER commit on main):
-         git fetch origin {base_branch}
-         git checkout -b {branch} {base_ref}
+6. OPEN A PR — only after the suite is GREEN:
+     • Confirm you are still on `{branch}`; NEVER commit on main.
      • Choose a Conventional Commits type allowed by CONTRIBUTING.md and
        .github/workflows/pr-title.yml. Use `feat` for new/changed brief output
        and `fix` for a broken existing brief behavior. Do NOT use `evolve:`:
@@ -167,7 +183,7 @@ DO, strictly in order:
        gh path.
      • Capture the PR URL that gh prints.
 
-6. RECORD COMPLETION — ONLY after gh pr create printed a real PR URL — call the
+7. RECORD COMPLETION — ONLY after gh pr create printed a real PR URL — call the
    thread-keeper MCP tool:
        evolve_mark_applied(evolve_id={evolve_id}, pr_url="<the PR url>")
    This sets applied=1 so the suggestion stops resurfacing.
@@ -347,20 +363,37 @@ other agents do not start the same issue in parallel. Do not remove it. If you
 abort after doing meaningful investigation, leave a normal issue comment with
 the blocker/status so a later agent has enough context.
 
-2. Read the relevant code and docs before editing. Also read docs/ROADMAP.md
+2. Prepare or resume the issue branch BEFORE reading or editing so a branch-name
+   collision cannot leave implementation changes on the managed checkout's base:
+     git fetch origin
+     if git show-ref --verify --quiet refs/heads/{branch}; then
+       git checkout {branch}
+       if git show-ref --verify --quiet refs/remotes/origin/{branch}; then
+         git merge --ff-only origin/{branch}
+       fi
+     elif git show-ref --verify --quiet refs/remotes/origin/{branch}; then
+       git checkout -b {branch} origin/{branch}
+     else
+       git checkout -b {branch} {base_ref}
+     fi
+     git rebase {base_ref}
+   If the branch already contains a previous implementation attempt, inspect
+   and validate it instead of recreating it. If the branch cannot be resumed
+   safely, comment with the blocker and stop before editing.
+
+3. Read the relevant code and docs before editing. Also read docs/ROADMAP.md
    and the issue body so the implementation matches the tracked roadmap item.
 
-3. Implement only this issue. Keep the change surgical, update README /
+4. Implement only this issue. Keep the change surgical, update README /
    docs/ARCHITECTURE.md / docs/ROADMAP.md / CHANGELOG.md when behavior or
    documented state changes, and add focused tests proportional to risk.
 
-4. Run the full suite from the repo root and read the FINAL summary line:
+5. Run the full suite from the repo root and read the FINAL summary line:
      env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
    It MUST report 0 failed. Fix related failures and re-run until green.
 
-5. Open a PR on a new branch; never commit on main:
-     git fetch origin {base_branch}
-     git checkout -b {branch} {base_ref}
+6. Open a PR from the prepared issue branch; never commit on main:
+     git branch --show-current  # must print {branch}
      git add <only files you changed>
      git commit -m "<type>: <short imperative summary>"
      git push -u origin {branch}
@@ -374,7 +407,7 @@ the blocker/status so a later agent has enough context.
    the real GitHub CLI receives them, and refuses if unsafe content remains. Do
    not bypass it with an absolute gh path.
 
-6. ONLY after gh prints a real PR URL, call:
+7. ONLY after gh prints a real PR URL, call:
      evolve_mark_roadmap_issue_applied(
        issue_number={issue_number},
        pr_url="<the PR url>"
@@ -1065,10 +1098,13 @@ def _recover_abandoned_managed_wip(
     does not apply there, and the dirty gate then blocks every future backlog
     item until a human resets the checkout (observed live: one abandoned
     `roadmap/issue-…` branch stalled a 43-item backlog for days). Deliberately
-    narrow: managed checkout only, applier-owned branch, no merge in progress,
-    the branch's PR state must be readable (any state — none, open, merged,
-    closed — is safe once the diff is preserved), and the tracked diff is
-    archived before any reset. Uncertain state stays fail-closed for a human.
+    narrow: managed checkout only, an applier-owned branch or the configured
+    base branch, no merge in progress, and an archived tracked diff before any
+    reset. Applier branches additionally require readable PR state (any state —
+    none, open, merged, closed — is safe once the diff is preserved). Base-branch
+    WIP is recoverable because this checkout is disposable and never an explicit
+    operator checkout; this covers a child that failed to create/resume its
+    deterministic branch before editing. Uncertain state stays fail-closed.
 
     The caller has already established that no PR-producing child is running,
     so the WIP is orphaned rather than owned.
@@ -1083,11 +1119,14 @@ def _recover_abandoned_managed_wip(
     branch, branch_err = _current_branch(repo_root)
     if branch_err:
         return False, f"abandoned_wip_branch_failed={_short(branch_err)}"
-    if not branch.startswith(APPLIER_BRANCH_PREFIXES):
+    is_applier_branch = branch.startswith(APPLIER_BRANCH_PREFIXES)
+    is_base_branch = branch == _base_branch_name()
+    if not is_applier_branch and not is_base_branch:
         return False, f"abandoned_wip_non_applier_branch={_short(branch or '?')}"
-    _prs, pr_err = _prs_for_head_branch(branch, repo_root)
-    if pr_err:
-        return False, f"abandoned_wip_pr_fetch_failed={_short(pr_err)}"
+    if is_applier_branch:
+        _prs, pr_err = _prs_for_head_branch(branch, repo_root)
+        if pr_err:
+            return False, f"abandoned_wip_pr_fetch_failed={_short(pr_err)}"
 
     fetch_err = _run(
         ["git", "fetch", "origin", _base_branch_name()],
@@ -1124,6 +1163,14 @@ def _recover_abandoned_managed_wip(
         f"recovered_abandoned_wip branch={_short(branch, 80)} "
         f"backup={backup.name}"
     )
+
+
+def _recover_dirty_managed_checkout(repo_root: Path) -> tuple[bool, str]:
+    """Recover orphaned dirty state after the live-writer check passed."""
+    recovered, recovery = _recover_stale_managed_merge(repo_root)
+    if not recovered and not recovery:
+        recovered, recovery = _recover_abandoned_managed_wip(repo_root)
+    return recovered, recovery
 
 
 def _record_git_safety_event(
@@ -1205,11 +1252,7 @@ def _git_worktree_precondition(
         _record_git_safety_event(conn, actor, outcome)
         return outcome
     if dirty:
-        recovered, recovery = _recover_stale_managed_merge(repo_root)
-        if not recovered and not recovery:
-            # No merge in progress (and no engaged-but-failed reason): a dead
-            # child may have left plain uncommitted WIP on its applier branch.
-            recovered, recovery = _recover_abandoned_managed_wip(repo_root)
+        recovered, recovery = _recover_dirty_managed_checkout(repo_root)
         if recovered:
             _record_git_safety_event(conn, actor, recovery)
             dirty, err = _tracked_worktree_status(repo_root)
@@ -1313,9 +1356,9 @@ def _provision_managed_repo(dest: Path) -> str:
 def _refresh_managed_repo(dest: Path) -> str:
     """Refresh only the disposable managed checkout to its pinned base.
 
-    Explicit checkout roots are never routed here. A clean but old applier
-    branch is safe to replace after its child has ended; tracked edits and live
-    writers fail closed instead of being reset underneath their owner.
+    Explicit checkout roots are never routed here. Live writers fail closed.
+    Orphaned tracked edits are archived and recovered before refresh; uncertain
+    ownership still fails closed instead of being reset underneath an owner.
     """
     with _repo_provision_lock() as lock_err:
         if lock_err:
@@ -1325,17 +1368,30 @@ def _refresh_managed_repo(dest: Path) -> str:
             return source_err
         if not _is_git_repo(dest):
             return "ERR evolve_repo_refresh_missing_checkout"
-        dirty, status_err = _tracked_worktree_status(dest)
-        if status_err:
-            return f"ERR evolve_repo_refresh_status_failed={_short(status_err)}"
-        if dirty:
-            return "ERR evolve_repo_refresh_blocked_dirty"
         try:
-            running = _running_git_writer_children(get_db())
+            conn = get_db()
+            running = _running_git_writer_children(conn)
         except Exception as e:  # noqa: BLE001 — fail closed before a reset.
             return f"ERR evolve_repo_refresh_running_check_failed={_short(str(e))}"
         if running:
             return f"ERR evolve_repo_refresh_in_use n={len(running)}"
+        dirty, status_err = _tracked_worktree_status(dest)
+        if status_err:
+            return f"ERR evolve_repo_refresh_status_failed={_short(status_err)}"
+        if dirty:
+            recovered, recovery = _recover_dirty_managed_checkout(dest)
+            if not recovered:
+                suffix = f" reason={_short(recovery)}" if recovery else ""
+                return f"ERR evolve_repo_refresh_blocked_dirty{suffix}"
+            _record_git_safety_event(conn, "managed_repo_refresh", recovery)
+            dirty, status_err = _tracked_worktree_status(dest)
+            if status_err:
+                return (
+                    "ERR evolve_repo_refresh_status_failed_after_recovery="
+                    f"{_short(status_err)}"
+                )
+            if dirty:
+                return "ERR evolve_repo_refresh_recovery_left_dirty"
         branch = _base_branch_name()
         fetch_err = _run(["git", "fetch", "origin", branch], 60, cwd=dest)
         if fetch_err:

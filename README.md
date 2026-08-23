@@ -847,30 +847,36 @@ throttling the roadmap loop.
 Before any PR-producing reviewer/audit or applier child is spawned, the parent
 checks the target checkout with `git status --porcelain --untracked-files=no`.
 Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
-untracked scratch files do not block. Managed-checkout child prompts fetch the
-configured branch only to retrieve the configured immutable commit, then create
-feature branches from `THREADKEEPER_EVOLVE_REPO_COMMIT`, never from its moving
-tip. A shared git-writer running-task check prevents the
-privileged reviewer audit and code/PR applier from overlapping in the same
-checkout. If a killed conflict-repair child leaves an unresolved merge in the
-default auto-managed checkout, the next code-applying pass can recover it — but
-only when the current branch is `roadmap/…`/`evolve/…` and GitHub confirms that
-exact PR is already merged. Before returning the managed tree to its pinned
-commit, thread-keeper archives the tracked diff under
-`~/.threadkeeper/evolve-recovery/stale-merge-pr-*.patch` and records
-`recovered_stale_merge` telemetry. Open, closed-unmerged, missing, or
-unreadable PR state remains fail-closed. An explicit
-`THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
+untracked scratch files do not block. Each managed-checkout child fetches the
+configured branch only to retrieve the configured immutable commit, then
+prepares or resumes its deterministic local/remote feature branch from
+`THREADKEEPER_EVOLVE_REPO_COMMIT`, never from the branch's moving tip. Retries
+therefore validate prior branch work instead of discovering a branch-name
+collision after changing the base checkout. A shared git-writer running-task
+check prevents the privileged reviewer audit and code/PR applier from
+overlapping in the same checkout.
+
+If a killed child leaves an unresolved merge or plain tracked WIP in the default
+auto-managed checkout, the next code-producing pass archives the diff before
+recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
+branches whose exact PR is confirmed merged. Plain abandoned WIP is recoverable
+on those applier branches when PR state is readable, and also on the configured
+base branch: the disposable base can contain orphaned edits when an older child
+failed during late branch creation. Recovery patches are owner-only files under
+`~/.threadkeeper/evolve-recovery/`, and `evolve_git_safety` records the action.
+Unknown ownership, a live writer, or unreadable required PR state remains
+fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
 
 The default managed checkout is refreshed before every code-producing pass:
-after checking that no Evolve git writer is live and that tracked files are
-clean, it fetches the configured branch and checks out the pinned
-`THREADKEEPER_EVOLVE_REPO_COMMIT`. Provisioning refuses clone URLs outside the
-HTTPS `github.com` allowlist, verifies `HEAD` against that pin before creating
-or reusing its virtualenv, and the config watcher ignores source/pin edits until
-the process is restarted. The managed clone runs `pip install -e` and its test
-suite, so leave auto-clone off (`THREADKEEPER_EVOLVE_AUTO_CLONE=0`) on shared or
-multi-user hosts unless that execution boundary is explicitly acceptable. Explicit
+after checking that no Evolve git writer is live, it archives and recovers any
+eligible orphaned tracked WIP, fetches the configured branch, and checks out the
+pinned `THREADKEEPER_EVOLVE_REPO_COMMIT`. Provisioning refuses clone URLs
+outside the HTTPS `github.com` allowlist, verifies `HEAD` against that pin before
+creating or reusing its virtualenv, and the config watcher ignores source/pin
+edits until the process is restarted. The managed clone runs `pip install -e`
+and its test suite, so leave auto-clone off
+(`THREADKEEPER_EVOLVE_AUTO_CLONE=0`) on shared or multi-user hosts unless that
+execution boundary is explicitly acceptable. Explicit
 `THREADKEEPER_EVOLVE_REPO_ROOT` checkouts are never refreshed or reset by this
 path. Provisioning reserves 5 GiB by default before clone or `.venv` creation
 (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0` disables that preflight), and a
@@ -1167,6 +1173,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable the embedding model (FTS5 + delegate only) |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
+| `THREADKEEPER_EMBED_REVISION` | backend-specific immutable commit | Hugging Face snapshot pin; set an intentional replacement commit only together with a re-embedding plan |
+| `THREADKEEPER_EMBED_CACHE_DIR` | `~/.cache/huggingface/hub` | durable Hugging Face snapshot cache |
+| `THREADKEEPER_EMBED_LOCAL_FILES_ONLY` | false | require the pinned snapshot in the local Hugging Face cache (offline / air-gapped mode) |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
@@ -1181,7 +1190,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
 | `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch used only to retrieve the pinned commit; restart-only |
-| `THREADKEEPER_EVOLVE_REPO_COMMIT` | `b52a9f6cc8e35373819ffb6db3d31935fc62e185` | required immutable 40-character commit SHA checked before any managed virtualenv install or test; restart-only |
+| `THREADKEEPER_EVOLVE_REPO_COMMIT` | `3580726833b6a3d7ed872aa2bc5512552ca94532` | required immutable 40-character commit SHA checked before any managed virtualenv install or test; restart-only |
 | `THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES` | 5368709120 (5 GiB) | minimum free space required before a managed clone or managed `.venv` is created; `0` disables the preflight |
 | `THREADKEEPER_EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` | 5 | maximum seconds to wait for another clone/venv provisioning operation before returning `ERR evolve_repo_provisioning_in_progress retry_later=1`; `0` is immediate |
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
@@ -1479,6 +1488,13 @@ RU+EN+50 langs). The default backend is **fastembed / ONNX Runtime** — no
 PyTorch. A model-loaded process sits at ~700 MB physical footprint
 (~850 MB RSS), down from ~1.8 GB on the PyTorch backend.
 
+The model artifact is loaded from an immutable, backend-specific Hugging Face
+commit by default. The active model and revision are part of the stored
+embedding-generation fingerprint shown by `mp_dashboard()`, so changing a
+snapshot cannot silently mix vectors with an older space. Set
+`THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` after priming the Hugging Face cache to
+run semantic search without model-download network access.
+
 A **sentence-transformers** (PyTorch) backend is kept as an opt-in fallback.
 It is heavier (~1.8 GB RSS) and produces vectors that are *not numerically
 identical* to the ONNX backend's, so switching backends warrants a recompute:
@@ -1497,6 +1513,12 @@ tk-migrate-embeddings --dry-run      # report stale counts only
 The migration is batched, resumable, and idempotent (a second run finds
 nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
 unchanged.
+
+**Intentional model revision upgrade.** Set `THREADKEEPER_EMBED_REVISION` to
+the immutable commit for the selected backend's Hugging Face artifact, restart
+the host, then run `tk-migrate-embeddings --all`. A changed revision is a new
+embedding generation; until migration, old vectors remain available through
+FTS rather than being compared against the new vector space.
 
 Stored rows carry an embedding-generation fingerprint, not just the backend:
 backend, model ID, vector dimension, pooling contract, and compatible runtime
