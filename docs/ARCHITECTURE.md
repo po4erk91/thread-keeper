@@ -676,10 +676,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
   order: (1) an explicit `EVOLVE_REPO_ROOT` (`THREADKEEPER_EVOLVE_REPO_ROOT`);
   (2) by default, a dedicated **managed checkout** under the DB dir
-  (`~/.threadkeeper/evolve-repo`), **auto-cloned on first use** (from
-  `EVOLVE_REPO_URL`/`EVOLVE_REPO_BRANCH`, defaulting to the upstream repo) and
-  given its own `.venv` with the `[semantic,dev]` extras so the children can
-  branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
+  (`~/.threadkeeper/evolve-repo`), **auto-cloned on first use** from the
+  HTTPS `github.com` allowlist and checked out at the immutable
+  `EVOLVE_REPO_COMMIT` pin (the configured branch only retrieves that commit),
+  then given its own `.venv` with the `[semantic,dev]` extras so the children
+  can branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
   the package's parent dir (when it carries a `.git` entry — the
   editable-from-checkout `install.sh`) serve as an in-place fallback. The
   managed checkout is the default even for editable installs on purpose
@@ -696,9 +697,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
   checkout is refreshed before every code-producing pass: after the
   no-live-writer check, the parent archives and recovers eligible orphaned
-  tracked WIP, fetches the configured branch, checks it out, and hard-resets to
-  `origin/<EVOLVE_REPO_BRANCH>`. Explicit checkout roots are never refreshed or
-  reset. Before clone or heavyweight
+  tracked WIP, fetches the configured branch, and checks out
+  `EVOLVE_REPO_COMMIT`, rejecting a missing or mismatched pin before any
+  virtualenv install or test can execute it. `EVOLVE_REPO_URL`,
+  `EVOLVE_REPO_BRANCH`, and `EVOLVE_REPO_COMMIT` are restart-only: hot-config
+  reload logs and ignores changes to them. The managed clone runs remote build
+  and test code, so shared or multi-user hosts should disable auto-clone unless
+  that explicit execution trust boundary is acceptable. Explicit checkout
+  roots are never refreshed or reset. Before clone or heavyweight
   `[semantic,dev]` virtualenv creation, a 5 GiB free-space reserve is checked
   (`EVOLVE_REPO_MIN_FREE_BYTES=0` disables it); `mp_dashboard()` reports
   managed repo/venv/total/free-disk sizes, and
@@ -717,9 +723,9 @@ moving the high-water forward; `force=True` bypasses this due gate.
   be running. The guard intentionally ignores untracked scratch files, matching
   `auto_update`'s dirty-check semantics. Applier prompts fetch the base and
   prepare or resume their deterministic local/remote feature branch before any
-  reading or editing, then rebase it on `origin/main` by default (or
-  `origin/<EVOLVE_REPO_BRANCH>`). This makes retries validate previous branch
-  work instead of colliding with a stale local branch after editing the base.
+  reading or editing, then rebase it on the immutable
+  `EVOLVE_REPO_COMMIT`. This makes retries validate previous branch work
+  instead of colliding with a stale local branch after editing the base.
   Reviewer roadmap-doc prompts additionally reuse the daily
   `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open roadmap-doc PR
   branch so repeated audits do not collide. The running-writer check precedes
@@ -729,15 +735,15 @@ moving the high-water forward; `force=True` bypasses this due gate.
   PR is already merged. The parent fetches the configured base, archives the
   tracked diff as an owner-only (`0600`)
   `DB_PATH.parent/evolve-recovery/stale-merge-pr-*.patch`, then
-  hard-resets the disposable checkout and switches it to fresh `origin/main`
-  (or the configured base). For merges, unknown/open/closed-unmerged PR state
+  hard-resets the disposable checkout and switches it to the configured pinned
+  commit. For merges, unknown/open/closed-unmerged PR state
   and explicit operator checkouts remain fail-closed with
   `skipped_dirty_worktree`. Plain uncommitted WIP (no merge in progress) on an
   applier-owned branch of the managed checkout — the leftovers of a killed
   implementer child — is likewise auto-recovered: with no PR-producing child
   running and the branch's PR state readable (any state, including none), the
   tracked diff is archived as `evolve-recovery/abandoned-wip-*.patch` and the
-  checkout is reset to the fresh base. Plain abandoned WIP on the configured
+  checkout is reset to the pinned base. Plain abandoned WIP on the configured
   base branch is also recoverable in the disposable managed checkout because a
   pre-fix child could edit there before its late feature-branch creation failed;
   base-branch recovery does not need a PR lookup. One dead child can therefore

@@ -441,10 +441,14 @@ class Settings(BaseSettings):
     # evolve loops work out of the box; set 0/false to disable — then the loops
     # require an editable install or an explicit EVOLVE_REPO_ROOT.
     evolve_auto_clone: bool = True
-    # Canonical repo the managed checkout is cloned from, and the branch it
-    # tracks. Defaults to the upstream thread-keeper project.
+    # Canonical repo the managed checkout is cloned from. The mutable branch is
+    # used only to retrieve the immutable commit below; managed code always
+    # checks out and executes that exact commit.
     evolve_repo_url: str = "https://github.com/po4erk91/thread-keeper"
     evolve_repo_branch: str = "main"
+    # Immutable commit allowed to execute in an auto-managed checkout. Bump
+    # this with a reviewed release; never follow a moving branch tip here.
+    evolve_repo_commit: str = "3580726833b6a3d7ed872aa2bc5512552ca94532"
     # Fail before a managed clone / its heavyweight semantic+dev venv can
     # consume the last free space on a host. 0 deliberately disables the
     # guard for constrained test or operator-managed environments.
@@ -887,6 +891,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
         "EVOLVE_REPO_URL": s.evolve_repo_url,
         "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
+        "EVOLVE_REPO_COMMIT": s.evolve_repo_commit,
         "EVOLVE_REPO_MIN_FREE_BYTES": s.evolve_repo_min_free_bytes,
         "EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S": (
             s.evolve_repo_provision_lock_timeout_s
@@ -966,14 +971,23 @@ def _propagate(new_values: dict) -> None:
                 d[cname] = val
 
 
+_RELOAD_PRESERVABLE_FIELDS = {
+    "EVOLVE_REPO_URL": "evolve_repo_url",
+    "EVOLVE_REPO_BRANCH": "evolve_repo_branch",
+    "EVOLVE_REPO_COMMIT": "evolve_repo_commit",
+}
+
+
 def reload_settings(env: Optional[dict] = None,
-                    remove: Optional[list] = None) -> dict:
+                    remove: Optional[list] = None,
+                    preserve: Optional[set[str]] = None) -> dict:
     """Re-read configuration in place (hot-config reload — issue #2).
 
     Steps:
       1. Optionally mutate `os.environ`: drop `remove` keys, set `env` keys.
          (The config_watcher uses this to mirror ~/.claude/settings.json.)
       2. Re-instantiate `Settings()` (re-reads os.environ + the .env file).
+         `preserve` keeps selected restart-only constants at their prior values.
       3. Recompute the UPPER_CASE constants and republish them on this module.
       4. Propagate every CHANGED constant to all loaded `threadkeeper.*`
          modules so daemons/tools that imported a copy observe the new value.
@@ -991,7 +1005,13 @@ def reload_settings(env: Optional[dict] = None,
             os.environ[k] = str(v)
 
     old = _derive_constants(settings)
-    settings = Settings()
+    refreshed = Settings()
+    preserved = {
+        field: getattr(settings, field)
+        for const, field in _RELOAD_PRESERVABLE_FIELDS.items()
+        if const in (preserve or set())
+    }
+    settings = refreshed.model_copy(update=preserved) if preserved else refreshed
     _warn_unknown_threadkeeper_env_keys()
     new = _derive_constants(settings)
 

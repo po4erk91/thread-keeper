@@ -847,12 +847,14 @@ throttling the roadmap loop.
 Before any PR-producing reviewer/audit or applier child is spawned, the parent
 checks the target checkout with `git status --porcelain --untracked-files=no`.
 Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
-untracked scratch files do not block. Each applier child fetches the configured
-base and prepares or resumes its deterministic local/remote feature branch
-before reading or editing; retries therefore validate prior branch work instead
-of discovering a branch-name collision after changing the base checkout. A
-shared git-writer running-task check prevents the privileged reviewer audit and
-code/PR applier from overlapping in the same checkout.
+untracked scratch files do not block. Each managed-checkout child fetches the
+configured branch only to retrieve the configured immutable commit, then
+prepares or resumes its deterministic local/remote feature branch from
+`THREADKEEPER_EVOLVE_REPO_COMMIT`, never from the branch's moving tip. Retries
+therefore validate prior branch work instead of discovering a branch-name
+collision after changing the base checkout. A shared git-writer running-task
+check prevents the privileged reviewer audit and code/PR applier from
+overlapping in the same checkout.
 
 If a killed child leaves an unresolved merge or plain tracked WIP in the default
 auto-managed checkout, the next code-producing pass archives the diff before
@@ -867,8 +869,14 @@ fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
 
 The default managed checkout is refreshed before every code-producing pass:
 after checking that no Evolve git writer is live, it archives and recovers any
-eligible orphaned tracked WIP, then fetches the configured branch, checks it out,
-and resets to `origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`. Explicit
+eligible orphaned tracked WIP, fetches the configured branch, and checks out the
+pinned `THREADKEEPER_EVOLVE_REPO_COMMIT`. Provisioning refuses clone URLs
+outside the HTTPS `github.com` allowlist, verifies `HEAD` against that pin before
+creating or reusing its virtualenv, and the config watcher ignores source/pin
+edits until the process is restarted. The managed clone runs `pip install -e`
+and its test suite, so leave auto-clone off
+(`THREADKEEPER_EVOLVE_AUTO_CLONE=0`) on shared or multi-user hosts unless that
+execution boundary is explicitly acceptable. Explicit
 `THREADKEEPER_EVOLVE_REPO_ROOT` checkouts are never refreshed or reset by this
 path. Provisioning reserves 5 GiB by default before clone or `.venv` creation
 (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0` disables that preflight), and a
@@ -1179,9 +1187,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied roadmap issues before the issue-creating audit is skipped and records `backlog_saturated`; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
-| `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
-| `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
-| `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
+| `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
+| `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch used only to retrieve the pinned commit; restart-only |
+| `THREADKEEPER_EVOLVE_REPO_COMMIT` | `3580726833b6a3d7ed872aa2bc5512552ca94532` | required immutable 40-character commit SHA checked before any managed virtualenv install or test; restart-only |
 | `THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES` | 5368709120 (5 GiB) | minimum free space required before a managed clone or managed `.venv` is created; `0` disables the preflight |
 | `THREADKEEPER_EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` | 5 | maximum seconds to wait for another clone/venv provisioning operation before returning `ERR evolve_repo_provisioning_in_progress retry_later=1`; `0` is immediate |
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
