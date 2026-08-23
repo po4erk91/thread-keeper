@@ -72,3 +72,44 @@ jobs:
           # the suite for parallel runs is tracked separately; xdist is shipped
           # as an opt-in local accelerator (see CONTRIBUTING).
           python -m pytest -q --forked --tb=short
+
+  pip-audit:
+    name: pip-audit (resolved dependencies)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Resolve project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Audit the same runtime, semantic, and test dependency set that CI
+          # resolves, rather than only direct requirements from pyproject.toml.
+          python -m pip install -e '.[semantic,dev]'
+          python -m pip install pip-audit
+
+      - name: Fail on known dependency vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          ignore_args=()
+          while IFS='|' read -r vulnerability_id tracking rationale review_by; do
+            if [[ "$vulnerability_id" =~ ^[[:space:]]*(#|$) ]]; then
+              continue
+            fi
+            if [[ -z "$tracking" || -z "$rationale" || -z "$review_by" ]]; then
+              echo "::error::Malformed .github/pip-audit-ignores.txt entry for $vulnerability_id"
+              exit 1
+            fi
+            vulnerability_id="${vulnerability_id//[[:space:]]/}"
+            ignore_args+=(--ignore-vuln "$vulnerability_id")
+          done < .github/pip-audit-ignores.txt
+          # With no input arguments, pip-audit audits this fully resolved
+          # environment. --strict makes incomplete dependency collection fail.
+          pip-audit --local --strict "${ignore_args[@]}"

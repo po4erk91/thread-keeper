@@ -1,0 +1,38 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Re-scan the default query suite even when no code changes land.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+# CodeQL uploads SARIF results to the repository Security tab. Keep the
+# permission narrow: this workflow never writes repository contents.
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Python is interpreted, so CodeQL's no-build mode is the supported
+      # analysis mode. Omitting a `queries` override intentionally keeps the
+      # default suite until any security-extended findings are triaged.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"

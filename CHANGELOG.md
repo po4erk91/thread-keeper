@@ -6,6 +6,12 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Added: CI security scanning (#144).** CodeQL analyzes the default Python
+  query suite on pull requests and pushes to `main`, plus weekly, and uploads
+  results to the Security tab. A blocking `pip-audit` job scans the fully
+  resolved runtime, semantic, and development dependency set; suppressions are
+  advisory-specific, reviewed entries in `.github/pip-audit-ignores.txt`.
+  Dependabot now tracks the Docker base image as well.
 - **Fixed: managed Evolve clones now execute only a verified pinned commit
   (#132).** Auto-provisioning accepts only HTTPS `github.com` URLs, detaches at
   `THREADKEEPER_EVOLVE_REPO_COMMIT`, and verifies `HEAD` before reusing or
