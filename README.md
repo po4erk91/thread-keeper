@@ -555,10 +555,13 @@ daemon even if a CLI drops the no-embeddings env. Idempotent through
 `events.kind='shadow_review_pass'`.
 
 Before writing memory, the observer now checks existing lessons/skills and
-prefers patching broad skills. Shadow-origin `lesson_append` is a compact
-fallback only: oversized bodies are rejected, near-duplicate slugs are blocked,
-and semantic body matches are routed to the incumbent lesson or surfaced for
-curation instead of minting a sibling lesson.
+prefers patching broad skills. `lesson_patch(slug, old_string, new_string)`
+can correct one unique substring without reserializing a lesson. Shadow-origin
+`lesson_append` is a compact fallback only: oversized new bodies are rejected,
+though an existing same-slug long lesson may be corrected without increasing
+its body size; near-duplicate slugs are blocked, and semantic body matches are
+routed to the incumbent lesson or surfaced for curation instead of minting a
+sibling lesson.
 
 #### 3. Extract daemon
 
@@ -718,14 +721,14 @@ also the Curator apply worker: after the roadmap issue queue is empty, it looks
 for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) whose path and
 current SHA-256 match an unapplied `curator_report_provenance` event, then
 spawns an `evolve_applier` child to apply only safe, still-current memory
-maintenance through `lesson_append` / `lesson_remove` / `skill_manage` /
+maintenance through `lesson_append` / `lesson_patch` / `lesson_remove` / `skill_manage` /
 `concept_manage`. It never touches `[PROTECTED]`,
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)` with the verified hash;
 the mark rechecks that hash and prevents replaying the same report.
 
 The shared lesson file has its own write serialization: `lesson_append`,
-`lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
+`lesson_patch`, `lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
 `lessons.md.lock` around file creation/read/mutate/write, so foreground calls
 and learning-loop children cannot last-writer-win over each other's sections.
 
@@ -1330,7 +1333,7 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
   `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
-  mutation counts: `lesson_append` / `lesson_remove`,
+  mutation counts: `lesson_append` (including patches) / `lesson_remove`,
   `curator_report_applied`, `roadmap_issue_applied`,
   `roadmap_issue_skipped`, `evolve_applied`, `dialectic_claim` /
   `dialectic_supersede`). A `curator_net_change

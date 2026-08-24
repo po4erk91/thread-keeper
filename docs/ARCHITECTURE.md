@@ -60,8 +60,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
-    ├── lessons.py     lesson_append/list/get
-    ├── lessons.py     lesson_append/list/get/remove/restore
+    ├── lessons.py     lesson_append/list/get/patch/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -671,7 +670,8 @@ moving the high-water forward; `force=True` bypasses this due gate.
   it falls back to the latest complete Curator `REPORT-*.md` whose current
   SHA-256 matches a `curator_report_provenance` event, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
-  uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
+  uses memory MCP tools only (`lesson_append`, `lesson_patch`, `lesson_remove`,
+  `skill_manage`)
   and records `curator_report_applied` only after the child supplies the same
   verified hash; no code edit or PR. Legacy code-evolve apply still opens a PR
   and calls `evolve_mark_applied(evolve_id, pr_url)`.
@@ -1047,7 +1047,7 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
 5. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
-   allowed_tools = lesson_append + lesson_list + lesson_get + skill_manage
+   allowed_tools = lesson_append + lesson_list + lesson_get + lesson_patch + skill_manage
    + skill_list + mark_skill_materialized.
 6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
    first checks existing lessons/skills, then prefers patching or creating a
@@ -1151,7 +1151,8 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the
-  normal `lesson_append`, `lesson_remove`, or `skill_manage` tools run under
+  normal `lesson_append`, `lesson_patch`, `lesson_remove`, or `skill_manage`
+  tools run under
   that pass, they emit `events.kind='curator_destructive_action'` rows such as
   `lesson_pruned`, `lesson_patched`, `lesson_consolidated`, and
   `skill_deleted`, with a tombstone path when a deleted body is captured.
@@ -1482,7 +1483,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
+| lessons | 6 | lesson_append, lesson_list, lesson_get, lesson_patch, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |

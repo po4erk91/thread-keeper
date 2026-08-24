@@ -7,6 +7,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: surgical lesson patching (#161).** `lesson_patch(slug,
+  old_string, new_string)` now changes one unique substring in an existing
+  lesson while preserving its section metadata. Overlong shadow replacements
+  may repair an existing same-slug lesson only when they do not increase its
+  body size; new overlong shadow lessons remain rejected.
+
 ## v0.17.0 — 2026-08-24
 
 - **Added: pre-ingest transcript privacy denylist (#145).**

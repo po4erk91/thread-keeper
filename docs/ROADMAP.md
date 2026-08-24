@@ -983,9 +983,11 @@ GitHub issues:
   records views and `lesson_get` records full-body consultations in
   `lesson_usage`; the curator inventory and stale-lesson decay score use those
   counters and timestamps rather than registration age alone.
-- **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
-  shadow edit path that can fix long lessons without re-transcribing them from
-  scratch (#161).
+- **Surgical lesson patching.** ✅ DONE (#161). `lesson_patch(slug,
+  old_string, new_string)` changes one unique lesson substring without
+  reserializing its section. Overlong `source='shadow'` replacements may only
+  bypass the cap for an existing same slug when they do not increase its body
+  size, so old long lessons remain repairable without admitting new growth.
 - **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
   that target merged-away lesson/skill slugs so consolidation does not leave
   dead pointers behind (#162).
