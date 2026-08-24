@@ -427,6 +427,7 @@ class CodexAdapter(CLIAdapter):
     def iter_messages(self, fp: Path) -> Iterator[NormalizedMessage]:
         sess_id = ""
         forced_session_id = ""
+        cwd = ""
         pending: list[NormalizedMessage] = []
         try:
             with fp.open("r", encoding="utf-8", errors="replace") as f:
@@ -442,9 +443,12 @@ class CodexAdapter(CLIAdapter):
                     payload = env.get("payload") or {}
                     if typ == "session_meta" and isinstance(payload, dict):
                         sess_id = payload.get("id") or sess_id
-                        if sess_id and not forced_session_id:
-                            for msg in pending:
+                        cwd = payload.get("cwd") or cwd
+                        for msg in pending:
+                            if sess_id and not forced_session_id:
                                 msg.session_id = sess_id
+                            if cwd:
+                                msg.origin_path = cwd
                         continue
                     if typ != "response_item":
                         continue
@@ -465,8 +469,10 @@ class CodexAdapter(CLIAdapter):
                         forced_session_id = cid
                         for msg in pending:
                             msg.session_id = forced_session_id
-                            yield msg
-                        pending.clear()
+                        if cwd:
+                            for msg in pending:
+                                yield msg
+                            pending.clear()
                     # Stable per-line id: use payload.id when present,
                     # else fall back to timestamp plus line index.
                     uuid = (
@@ -481,8 +487,9 @@ class CodexAdapter(CLIAdapter):
                         model=payload.get("model") or "",
                         created_at=_ts(env.get("timestamp", "")),
                         raw=payload,
+                        origin_path=cwd,
                     )
-                    if forced_session_id:
+                    if forced_session_id and cwd:
                         yield msg
                     else:
                         pending.append(msg)

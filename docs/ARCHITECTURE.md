@@ -227,6 +227,14 @@ Steady-state access is split by intent:
    `*_TOKEN=` / `*_SECRET=` assignments. The redaction is default-on and can be
    disabled with `THREADKEEPER_REDACT_DIALOG_SECRETS=0` only for local debugging
    that intentionally trades away the durable secret-scrubbing guarantee.
+   Before that scrub/embed/write pipeline, adapter-reported project/CWD values
+   are matched against `THREADKEEPER_INGEST_DENY_GLOBS` plus the local
+   `~/.threadkeeper/ingest_denylist.txt` (one path/glob per non-comment line).
+   A match drops the normalized message before any dialog, FTS, vector, skill,
+   or learning-loop input is created, while the file cursor advances normally.
+   Literal paths cover descendants; `mp_dashboard()` exposes configured patterns
+   and the cumulative skipped-message count. Existing data is intentionally not
+   erased by configuration; use `forget` for the #104 post-hoc path.
    Targeted privacy erasure is handled by `forget(selector, dry_run=True)` /
    `tk-forget`: given a session/cid it deletes matching dialog rows and their
    FTS/vector mirrors, plus directly sourced notes, verbatim, dialectic,

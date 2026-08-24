@@ -6,6 +6,11 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+- **Added: pre-ingest transcript privacy denylist (#145).**
+  `THREADKEEPER_INGEST_DENY_GLOBS` and the line-based local denylist file skip
+  matching adapter project/CWD messages before text, FTS, vector embeddings, or
+  learning-loop inputs are written. File watermarks advance normally, and
+  `mp_dashboard()` reports active patterns with the cumulative skipped count.
 - **Added: CI security scanning (#144).** CodeQL analyzes the default Python
   query suite on pull requests and pushes to `main`, plus weekly, and uploads
   results to the Security tab. A blocking `pip-audit` job scans the fully

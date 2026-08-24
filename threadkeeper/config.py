@@ -229,6 +229,15 @@ class Settings(BaseSettings):
             "THREADKEEPER_INGEST_WINDOW_S", "ingest_window_s"
         ),
     )
+    # Comma- or newline-separated project/CWD globs that ingest must skip
+    # before any dialog, FTS, vector, or learning-loop write occurs.
+    ingest_deny_globs: str = ""
+    ingest_denylist_file: Path = Field(
+        default=Path("~/.threadkeeper/ingest_denylist.txt"),
+        validation_alias=AliasChoices(
+            "THREADKEEPER_INGEST_DENYLIST_FILE", "ingest_denylist_file"
+        ),
+    )
     redact_dialog_secrets: bool = True
 
     # ── SQLite retention / compaction ────────────────────────────────────────
@@ -807,6 +816,8 @@ def _derive_constants(s: "Settings") -> dict:
         "INGEST_CAP_PER_CALL": s.ingest_cap,
         "INGEST_INTERVAL_S": s.ingest_interval_s,
         "INGEST_RECENT_WINDOW_S": s.ingest_window_s,
+        "INGEST_DENY_GLOBS": s.ingest_deny_globs,
+        "INGEST_DENYLIST_FILE": s.ingest_denylist_file,
         "RETENTION_INTERVAL_S": s.retention_interval_s,
         "DIALOG_RETENTION_DAYS": s.dialog_retention_days,
         "TASK_RETENTION_DAYS": s.task_retention_days,
