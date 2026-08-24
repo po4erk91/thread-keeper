@@ -157,6 +157,12 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Pre-ingest privacy denylist (#145): configured project/CWD paths and globs
+  now drop matching adapter messages before redaction, embedding, or any dialog
+  write. The per-file ingest watermark still advances past skipped messages;
+  `mp_dashboard()` displays the active patterns and cumulative skipped count.
+  This prevention control complements secret redaction (#37), retention (#45),
+  and selective erasure (#104) for data stored before the denylist was enabled.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

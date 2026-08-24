@@ -322,7 +322,7 @@ friction) out.
 |---|---|---|
 | `feat:` | minor | 0.6.0 |
 | `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`, `build:`, `deps:`, `revert:` | patch | 0.5.4 |
-| `BREAKING CHANGE:` footer | minor while in 0.x (manual promotion to 1.0.0 when API is stable) | 0.6.0 |
+| Ground-up replacement, `!` marker, or `BREAKING CHANGE:` footer | major, including while in 0.x | 1.0.0 |
 
 If a single commit touches multiple concerns (rare — squash-merge
 typically prevents this), pick the highest bump that applies.
@@ -349,9 +349,8 @@ mcp-publisher login github
 mcp-publisher publish
 ```
 
-### Promoting to 1.0.0
+### Major releases
 
-Once the API is stable and the next BREAKING CHANGE should land 1.0.0:
-bump `pyproject.toml` to `1.0.0` directly in that release PR; the same
-auto-tag flow releases it. No config flip needed — manual control by
-design.
+A ground-up replacement or breaking new implementation bumps the major version
+directly, including from 0.x to 1.0.0. The same auto-tag flow releases it; no
+config flip is needed.

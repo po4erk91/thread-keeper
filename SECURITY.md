@@ -183,6 +183,15 @@ pasted by the user, echoed by a tool, or copied from a config file.
 
 Mitigations:
 
+- **Pre-ingest project denylist.** Set `THREADKEEPER_INGEST_DENY_GLOBS` to a
+  comma- or newline-separated list of project/CWD paths or shell globs, or add
+  one pattern per non-comment line to `~/.threadkeeper/ingest_denylist.txt`.
+  Literal paths include descendants. A matching Claude Code, Codex, or Copilot
+  transcript message is skipped before its text is scrubbed, embedded, or
+  written to `dialog_messages`/FTS/vector stores, so it cannot enter the
+  shadow-review, extraction, or dialectic inputs. `mp_dashboard()` displays the
+  active patterns and cumulative skipped-message count. This is preventative
+  only: use `forget` for any rows ingested before a denylist was configured.
 - **Default-on redaction.** Before transcript content is persisted, mirrored
   into FTS, embedded, or inserted by FTS backfill, thread-keeper masks common
   credential-shaped values. Covered shapes include `Authorization:` /

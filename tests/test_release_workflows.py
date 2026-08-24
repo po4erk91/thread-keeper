@@ -138,6 +138,7 @@ def test_ci_security_scanning_covers_code_and_resolved_dependencies():
     audit_text = _workflow_text("test.yml")
     assert pip_audit_job["name"] == "pip-audit (resolved dependencies)"
     assert "python -m pip install -e '.[semantic,dev]'" in audit_text
+    assert "python -m pip uninstall -y threadkeeper" in audit_text
     assert "pip-audit --local --strict" in audit_text
     assert "--ignore-vuln" in audit_text
     assert "Malformed .github/pip-audit-ignores.txt entry" in audit_text

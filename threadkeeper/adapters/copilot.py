@@ -241,16 +241,26 @@ class CopilotAdapter(CLIAdapter):
         except sqlite3.OperationalError:
             return
         try:
-            rows = conn.execute(
-                "SELECT session_id, turn_index, user_message, "
-                "assistant_response, timestamp FROM turns "
-                "ORDER BY session_id, turn_index"
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT turns.session_id, turn_index, user_message, "
+                    "assistant_response, timestamp, sessions.cwd "
+                    "FROM turns LEFT JOIN sessions ON sessions.id=turns.session_id "
+                    "ORDER BY turns.session_id, turn_index"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Older or partial stores may lack the sessions relation. They
+                # remain ingestible, but cannot participate in a CWD denylist.
+                rows = [(*row, "") for row in conn.execute(
+                    "SELECT session_id, turn_index, user_message, "
+                    "assistant_response, timestamp FROM turns "
+                    "ORDER BY session_id, turn_index"
+                ).fetchall()]
         except sqlite3.OperationalError:
             conn.close()
             return
         conn.close()
-        for sess_id, turn_idx, user_msg, asst_msg, ts in rows:
+        for sess_id, turn_idx, user_msg, asst_msg, ts, cwd in rows:
             created = _ts(ts or "")
             if user_msg:
                 yield NormalizedMessage(
@@ -261,6 +271,7 @@ class CopilotAdapter(CLIAdapter):
                     model="",
                     created_at=created,
                     raw={"turn_index": turn_idx},
+                    origin_path=cwd or "",
                 )
             if asst_msg:
                 yield NormalizedMessage(
@@ -271,6 +282,7 @@ class CopilotAdapter(CLIAdapter):
                     model="",
                     created_at=created,
                     raw={"turn_index": turn_idx},
+                    origin_path=cwd or "",
                 )
 
 
