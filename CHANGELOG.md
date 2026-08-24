@@ -18,10 +18,10 @@ version bumps follow semver per the policy in
   applier prompt requires the SemVer bump, matching `server.json` fields,
   Docker release pin, and versioned changelog heading in the same PR; the PR
   checklist mirrors that requirement for human-authored changes. The dependency
-  audit skips only the unreleased editable project itself while continuing to
-  audit its fully resolved transitive dependencies, so a required version bump
-  no longer makes `pip-audit --strict` fail merely because that version is not
-  on PyPI yet.
+  audit now removes only the unreleased editable project after resolving its
+  dependency set, then audits the remaining full environment, so a required
+  version bump no longer makes `pip-audit --strict` fail merely because that
+  version is not on PyPI yet.
 - **Added: CI security scanning (#144).** CodeQL analyzes the default Python
   query suite on pull requests and pushes to `main`, plus weekly, and uploads
   results to the Security tab. A blocking `pip-audit` job scans the fully
