@@ -111,5 +111,8 @@ jobs:
             ignore_args+=(--ignore-vuln "$vulnerability_id")
           done < .github/pip-audit-ignores.txt
           # With no input arguments, pip-audit audits this fully resolved
-          # environment. --strict makes incomplete dependency collection fail.
-          pip-audit --local --strict "${ignore_args[@]}"
+          # environment. The checkout itself is an editable package whose new
+          # release version does not exist on PyPI yet, so skip only that local
+          # package while retaining the full transitive dependency audit.
+          # --strict still makes incomplete dependency collection fail.
+          pip-audit --local --strict --skip-editable "${ignore_args[@]}"
