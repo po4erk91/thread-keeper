@@ -1126,6 +1126,13 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "evolve_mark_roadmap_issue_applied" in prompt
     assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
     assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
+    assert "Releasing is part of EVERY implementation PR" in prompt
+    assert "fix/internal/docs-only change -> PATCH" in prompt
+    assert "new backwards-compatible functionality (`feat:`) -> MINOR" in prompt
+    assert "ground-up replacement or breaking new implementation -> MAJOR" in prompt
+    assert "both `server.json` version fields" in prompt
+    assert "Dockerfile" in prompt
+    assert "Never leave" in prompt and "only under `[Unreleased]`" in prompt
     branch = pkg["ea"].roadmap_issue_branch_name(6, "Telemetry dashboard")
     base_ref = pkg["ea"]._base_ref()
     assert "git fetch origin" in prompt

@@ -6,11 +6,18 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-08-24
+
 - **Added: pre-ingest transcript privacy denylist (#145).**
   `THREADKEEPER_INGEST_DENY_GLOBS` and the line-based local denylist file skip
   matching adapter project/CWD messages before text, FTS, vector embeddings, or
   learning-loop inputs are written. File watermarks advance normally, and
   `mp_dashboard()` reports active patterns with the cumulative skipped count.
+- **Fixed: Evolve implementation PRs now include release metadata.** The
+  applier prompt requires the SemVer bump, matching `server.json` fields,
+  Docker release pin, and versioned changelog heading in the same PR; the PR
+  checklist mirrors that requirement for human-authored changes.
 - **Added: CI security scanning (#144).** CodeQL analyzes the default Python
   query suite on pull requests and pushes to `main`, plus weekly, and uploads
   results to the Security tab. A blocking `pip-audit` job scans the fully

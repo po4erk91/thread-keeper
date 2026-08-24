@@ -381,12 +381,24 @@ the blocker/status so a later agent has enough context.
    and validate it instead of recreating it. If the branch cannot be resumed
    safely, comment with the blocker and stop before editing.
 
-3. Read the relevant code and docs before editing. Also read docs/ROADMAP.md
-   and the issue body so the implementation matches the tracked roadmap item.
+3. Read the relevant code and docs before editing. Also read docs/ROADMAP.md,
+   CONTRIBUTING.md's Releases section, and the issue body so the implementation
+   matches the tracked roadmap item and its release metadata is complete.
 
 4. Implement only this issue. Keep the change surgical, update README /
-   docs/ARCHITECTURE.md / docs/ROADMAP.md / CHANGELOG.md when behavior or
-   documented state changes, and add focused tests proportional to risk.
+   docs/ARCHITECTURE.md / docs/ROADMAP.md when behavior or documented state
+   changes, and add focused tests proportional to risk.
+
+   Releasing is part of EVERY implementation PR. Choose the final Conventional
+   Commit type, then bump from the base branch version using the highest change
+   class present:
+     - fix/internal/docs-only change -> PATCH;
+     - new backwards-compatible functionality (`feat:`) -> MINOR;
+     - ground-up replacement or breaking new implementation -> MAJOR.
+   Update `pyproject.toml`, both `server.json` version fields, the Dockerfile
+   `threadkeeper==...` pin, and add the matching
+   `## vX.Y.Z — YYYY-MM-DD` heading to CHANGELOG.md in this same PR. Never leave
+   implementation notes only under `[Unreleased]`.
 
 5. Run the full suite from the repo root and read the FINAL summary line:
      env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
