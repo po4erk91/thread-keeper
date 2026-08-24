@@ -92,6 +92,11 @@ jobs:
           # Audit the same runtime, semantic, and test dependency set that CI
           # resolves, rather than only direct requirements from pyproject.toml.
           python -m pip install -e '.[semantic,dev]'
+          # Keep the resolved dependencies but remove the editable project:
+          # its bumped version intentionally does not exist on PyPI before the
+          # release, and --strict treats even an explicit editable skip as an
+          # incomplete audit.
+          python -m pip uninstall -y threadkeeper
           python -m pip install pip-audit
 
       - name: Fail on known dependency vulnerabilities
@@ -111,5 +116,6 @@ jobs:
             ignore_args+=(--ignore-vuln "$vulnerability_id")
           done < .github/pip-audit-ignores.txt
           # With no input arguments, pip-audit audits this fully resolved
-          # environment. --strict makes incomplete dependency collection fail.
+          # dependency environment. --strict makes incomplete dependency
+          # collection fail.
           pip-audit --local --strict "${ignore_args[@]}"

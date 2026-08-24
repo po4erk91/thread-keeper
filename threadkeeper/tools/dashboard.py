@@ -371,6 +371,12 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"dialog_vec={emb_health['dialog_vec']} "
         f"generation={emb_health['generation']}"
     )
+    from .. import ingest
+    deny_globs, denied_messages = ingest.ingest_denylist_status(conn)
+    out.append("  ingest_privacy: " + (
+        "denylist=" + ", ".join(deny_globs) if deny_globs else "denylist=(none)"
+    ))
+    out.append(f"  ingest_denied_messages={denied_messages}")
 
     # ── loops ─────────────────────────────────────────────────────────
     # Per loop: fires in window, fires in 30d, age of last fire. A loop
