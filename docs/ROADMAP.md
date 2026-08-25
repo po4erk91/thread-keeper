@@ -989,9 +989,12 @@ GitHub issues:
 - **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
   that target merged-away lesson/skill slugs so consolidation does not leave
   dead pointers behind (#162).
-- **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
-  subtopic, promote it into a structured skill and retire the subsumed lessons
-  instead of leaving a noisy long tail (#163).
+- **Lesson-to-skill promotion.** ✅ DONE (#163). The Curator now flags a
+  deterministic dense subtopic when at least three lessons share a pair of
+  meaningful title terms. An unprotected candidate becomes one validated,
+  checklist-style canonical skill with a `Retired lessons` provenance section
+  before the source lessons are retired; any protected member produces a
+  `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
 - **Spawn worktree isolation.** Each spawned session should get its own git
   worktree, or repo-mutating work should be blocked when sessions would share a
   checkout (#164).

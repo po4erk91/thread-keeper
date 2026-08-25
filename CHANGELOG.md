@@ -7,6 +7,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: dense lesson clusters now promote to canonical skills (#163).**
+  Curator deterministically flags three-or-more lessons sharing a meaningful
+  title-term pair, then directs a validated checklist-style skill promotion
+  before retiring the unprotected source lessons. Clusters containing protected
+  lessons remain an explicit human-review plan.
+
 ## v0.17.0 — 2026-08-24
 
 - **Added: pre-ingest transcript privacy denylist (#145).**

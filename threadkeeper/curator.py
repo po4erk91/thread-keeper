@@ -15,7 +15,8 @@ minutes, the Curator REVIEWS THE STORE every few days:
      research, and the shared manifest/checklist.
   6. Children collectively read every full skill, research current official
      guidance and comparable skills, then choose KEEP / REPAIR / UPDATE / MERGE
-     / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
+     / SPLIT / DEPRECATE / DELETE / CROSS_LINK / PROMOTE_TO_SKILL /
+     HUMAN_REVIEW.
   7. In destructive mode, parent writes a pre-mutation snapshot before
      spawning the child; child tool calls add tombstones/action telemetry.
   8. Parent records `curator_pass` event with high-water timestamp,
@@ -58,11 +59,14 @@ import re
 import sqlite3
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass
+from itertools import combinations
 
 from .config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
+    CURATOR_PROMOTION_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
     CURATOR_MAX_DESTRUCTIVE_PER_PASS,
@@ -202,6 +206,26 @@ why it was filed.
 LESSON RUBRIC (answer for every lesson; skills use the deep validator and
 verdicts above):
 
+DENSE LESSON CLUSTER PROMOTION — the inventory may include deterministic
+`PROMOTE_TO_SKILL` candidates. Each candidate names lessons that share a pair
+of meaningful title terms and crossed the configured density threshold. Treat
+an unprotected `PROMOTE_TO_SKILL` candidate as an affirmative consolidation
+decision, not merely a loose similarity lead:
+  1. Read every named lesson in full with `lesson_get` and preserve its unique
+     procedure, caveats, and examples.
+  2. Create one new, clearly named canonical skill through
+     `skill_manage(action='create', ...)`. Its body must be checklist-style and
+     include a `## Retired lessons` section listing every source slug.
+  3. Call `skill_validate(name=...)`. Only after it passes may you call
+     `lesson_remove(slug=...)` for each named, unprotected source lesson.
+  4. Record `PROMOTED_SKILL: <skill-name>` plus its retired lesson slugs and
+     validation result in REPORT.md. Do not leave copied long-form lesson
+     bodies behind once the validated skill is canonical.
+
+Candidates marked `HUMAN_REVIEW` include protected lessons. Do not mutate
+those lessons or create/retire a partial automatic cluster; write the exact
+promotion and linking plan in REPORT.md for a foreground human instead.
+
   KEEP — entry is class-level, in use, accurate. Note "KEEP: <slug>".
 
   PATCH — entry is mostly right but missing a step, has outdated
@@ -326,6 +350,106 @@ class _InventoryBatch:
     skill_count: int
     concept_count: int
     char_count: int
+
+
+@dataclass(frozen=True)
+class _LessonPromotionCandidate:
+    """A deterministic dense subtopic awaiting one curator decision."""
+
+    topic_terms: tuple[str, str]
+    lesson_slugs: tuple[str, ...]
+    protected_slugs: tuple[str, ...]
+
+    @property
+    def decision(self) -> str:
+        return "HUMAN_REVIEW" if self.protected_slugs else "PROMOTE_TO_SKILL"
+
+
+_LESSON_PROMOTION_TOKEN_RE = re.compile(r"[a-z][a-z0-9]{2,}")
+_LESSON_PROMOTION_STOP_WORDS = frozenset({
+    "about", "after", "also", "always", "before", "being", "bulk",
+    "check", "each", "from", "into", "lesson", "must", "need", "only",
+    "should", "that", "the", "then", "this", "with", "when", "where",
+})
+
+
+def _lesson_promotion_tokens(item: dict) -> frozenset[str]:
+    """Meaningful terms from a lesson's stable slug/title.
+
+    The detector deliberately does not mine arbitrary body prose: broad prose
+    tends to link otherwise unrelated lessons through generic implementation
+    words. Slugs come from the author-facing title and keep the clustering
+    deterministic even with embeddings disabled.
+    """
+    slug = (item.get("slug") or "").replace("-", " ").lower()
+    return frozenset(
+        token for token in _LESSON_PROMOTION_TOKEN_RE.findall(slug)
+        if token not in _LESSON_PROMOTION_STOP_WORDS
+    )
+
+
+def _detect_lesson_promotion_candidates(
+    lesson_items: list[dict],
+    lesson_usage: dict[str, dict],
+    *,
+    min_cluster_size: int = CURATOR_PROMOTION_MIN_LESSONS,
+) -> list[_LessonPromotionCandidate]:
+    """Find dense lesson clusters by recurring pairs of meaningful title terms.
+
+    A pair shared by at least ``min_cluster_size`` lessons is a deliberately
+    conservative offline density signal. It avoids treating one generic word
+    as a subtopic, while making the threshold and promotion decision testable
+    without an embedding model or a curator child.
+    """
+    threshold = max(2, int(min_cluster_size))
+    by_slug = {
+        item.get("slug") or "": item
+        for item in lesson_items
+        if item.get("slug")
+    }
+    pair_members: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for slug, item in by_slug.items():
+        for pair in combinations(sorted(_lesson_promotion_tokens(item)), 2):
+            pair_members[pair].add(slug)
+
+    clusters: dict[frozenset[str], set[tuple[str, str]]] = defaultdict(set)
+    for pair, members in pair_members.items():
+        if len(members) >= threshold:
+            clusters[frozenset(members)].add(pair)
+
+    # A broader cluster subsumes every one of its pair-specific subsets. Keep
+    # only maximal clusters so one topic produces one promotion decision.
+    maximal_clusters = [
+        members for members in clusters
+        if not any(members < other for other in clusters)
+    ]
+    candidates: list[_LessonPromotionCandidate] = []
+    for members in sorted(maximal_clusters, key=lambda group: tuple(sorted(group))):
+        slugs = tuple(sorted(members))
+        protected = tuple(
+            slug for slug in slugs
+            if lessons.lesson_protection(
+                by_slug[slug], lesson_usage.get(slug),
+            )[0]
+        )
+        candidates.append(_LessonPromotionCandidate(
+            topic_terms=min(clusters[members]),
+            lesson_slugs=slugs,
+            protected_slugs=protected,
+        ))
+    return candidates
+
+
+def _format_lesson_promotion_candidate(
+    candidate: _LessonPromotionCandidate,
+) -> str:
+    protected = ", ".join(candidate.protected_slugs) or "-"
+    return (
+        f"- {candidate.decision}: topic={' '.join(candidate.topic_terms)} "
+        f"lesson_count={len(candidate.lesson_slugs)}\n"
+        f"    lessons: {', '.join(candidate.lesson_slugs)}\n"
+        f"    protected_lessons: {protected}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -682,12 +806,18 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
 def _collect_inventory_entry_groups(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> tuple[list[_InventoryEntry], list[_InventoryEntry], str, int, int]:
+) -> tuple[
+    list[_InventoryEntry], list[_InventoryEntry], list[_InventoryEntry],
+    str, int, int,
+]:
     """Collect exhaustive lesson/skill entries without rendering one prompt."""
     lesson_entries: list[_InventoryEntry] = []
+    lesson_items: list[dict] = []
+    usage: dict[str, dict] = {}
     try:
         usage = lessons.lesson_usage_map(conn)
         for item in lessons.iter_lessons():
+            lesson_items.append(item)
             slug = item.get("slug") or ""
             lesson_entries.append(
                 _InventoryEntry(
@@ -698,6 +828,17 @@ def _collect_inventory_entry_groups(
             )
     except Exception:
         logger.debug("curator: iter_lessons failed", exc_info=True)
+
+    promotion_entries = [
+        _InventoryEntry(
+            "lesson_promotion",
+            "/".join(candidate.lesson_slugs),
+            _format_lesson_promotion_candidate(candidate),
+        )
+        for candidate in _detect_lesson_promotion_candidates(
+            lesson_items, usage,
+        )
+    ]
 
     audit = skill_audit or build_skill_audit(conn, include_archived=True)
     checklist_lines = format_skill_checklist(audit).splitlines()[2:]
@@ -710,6 +851,7 @@ def _collect_inventory_entry_groups(
     return (
         lesson_entries,
         skill_entries,
+        promotion_entries,
         stale_text,
         len(lesson_entries),
         len(skill_entries),
@@ -746,7 +888,7 @@ def _collect_inventory(
     char-capped as a defensive floor; the real curator pass uses complete
     bounded batches from `_collect_inventory_batches`.
     """
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    lesson_entries, skill_entries, promotion_entries, stale_text, n_lessons, n_skills = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
 
@@ -765,6 +907,14 @@ def _collect_inventory(
         parts.append("(none)")
         used += len(parts[-1]) + 1
         dropped_lessons = 0
+    parts.append(
+        "\n## LESSON CLUSTER PROMOTION CANDIDATES "
+        f"(n={len(promotion_entries)})\n"
+    )
+    if promotion_entries:
+        parts.extend(entry.text for entry in promotion_entries)
+    else:
+        parts.append("(none)")
     parts.append("\n" + stale_text)
     used += len(parts[-1]) + 1
     parts.append(
@@ -891,6 +1041,9 @@ def _render_batch_inventory(
     n_skills: int,
     n_concepts: int,
 ) -> _InventoryBatch:
+    promotion_entries = [
+        e for e in batch_entries if e.kind == "lesson_promotion"
+    ]
     lesson_entries = [e for e in batch_entries if e.kind == "lesson"]
     skill_entries = [e for e in batch_entries if e.kind == "skill"]
     concept_entries = [e for e in batch_entries if e.kind == "concept"]
@@ -900,6 +1053,7 @@ def _render_batch_inventory(
         (
             f"Coverage: entries {start_entry}-{end_entry} of "
             f"{total_entries}; batch_entries={len(batch_entries)} "
+            f"promotions={len(promotion_entries)} "
             f"lessons={len(lesson_entries)}/{n_lessons} "
             f"skills={len(skill_entries)}/{n_skills} "
             f"concepts={len(concept_entries)}/{n_concepts}."
@@ -910,11 +1064,20 @@ def _render_batch_inventory(
             "fingerprint, so do not infer that omitted entries are absent."
         ),
         (
-            "For CONSOLIDATE, only merge entries whose full lines appear in "
-            "this batch; otherwise recommend a future cross-batch review."
+            "For ordinary CONSOLIDATE, only merge entries whose full lines "
+            "appear in this batch; otherwise recommend a future cross-batch "
+            "review. A named PROMOTE_TO_SKILL candidate is the exception: "
+            "read its source lessons with lesson_get before acting."
         ),
-        f"\n## LESSONS (n={len(lesson_entries)})\n",
+        (
+            "\n## LESSON CLUSTER PROMOTION CANDIDATES "
+            f"(n={len(promotion_entries)})\n"
+        ),
     ]
+    parts.extend(entry.text for entry in promotion_entries)
+    if not promotion_entries:
+        parts.append("(none)")
+    parts.append(f"\n## LESSONS (n={len(lesson_entries)})\n")
     parts.extend(entry.text for entry in lesson_entries)
     if not lesson_entries:
         parts.append("(none)")
@@ -948,11 +1111,11 @@ def _collect_inventory_batches(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
 ) -> tuple[list[_InventoryBatch], int, int, int]:
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    lesson_entries, skill_entries, promotion_entries, stale_text, n_lessons, n_skills = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
     concept_entries, n_concepts = _collect_concept_entries(conn)
-    entries = lesson_entries + skill_entries + concept_entries
+    entries = promotion_entries + lesson_entries + skill_entries + concept_entries
     chunks = _chunk_inventory_entries(entries)
     total = len(chunks)
     batches: list[_InventoryBatch] = []
