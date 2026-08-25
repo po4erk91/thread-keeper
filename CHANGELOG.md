@@ -7,6 +7,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
+  `lesson_remove(replacement_slug=...)` and
+  `skill_manage(action='delete', replacement_name=...)` redirect inbound
+  `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
+  skills. Plain removal reports the complete dangling-link source set.
+
 ## v0.17.0 — 2026-08-24
 
 - **Added: pre-ingest transcript privacy denylist (#145).**
