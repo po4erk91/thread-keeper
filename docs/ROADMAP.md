@@ -986,9 +986,10 @@ GitHub issues:
 - **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
   shadow edit path that can fix long lessons without re-transcribing them from
   scratch (#161).
-- **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
-  that target merged-away lesson/skill slugs so consolidation does not leave
-  dead pointers behind (#162).
+- **Inbound link repair on consolidation.** ✅ DONE (#162). `lesson_remove`
+  and `skill_manage(action='delete')` accept a surviving umbrella target and
+  rewrite inbound `[[wikilinks]]` across lessons and mirrored skills. Plain
+  removals report the full dangling-source set for immediate repair.
 - **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
   subtopic, promote it into a structured skill and retire the subsumed lessons
   instead of leaving a noisy long tail (#163).

@@ -707,7 +707,11 @@ cross-process, while foreground/human deletes are unaffected. `mp_dashboard`
 shows admitted and refused operations with `status=HIT` when the Curator reaches
 the ceiling.
 Before `lesson_remove` or `skill_manage(action='delete')` removes anything, it
-also writes a recovery artifact under `<db dir>/curator/trash/`: lessons store
+also rewrites inbound `[[wikilinks]]` when a consolidation provides
+`replacement_slug` / `replacement_name` for the surviving umbrella. A plain
+removal returns its complete `dangling_wikilinks=` source list instead, so
+those links can be repaired immediately. It writes a recovery artifact under
+`<db dir>/curator/trash/`: lessons store
 the exact sentinel section plus usage row, and skills store the full skill
 directory plus usage row. Restore trash artifacts with `lesson_restore(slug=...)`
 or `skill_manage(action='restore', name=...)`. Trash retention is bounded by

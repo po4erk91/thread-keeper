@@ -1175,6 +1175,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
   foreground writes and every learning-loop child serialize on the shared
   store instead of relying on per-daemon dispatch locks.
+  During consolidation, callers pass the new umbrella as
+  `lesson_remove(replacement_slug=...)` or
+  `skill_manage(action='delete', replacement_name=...)`; inbound
+  `[[wikilinks]]` in lessons and mirrored `SKILL.md` files are rewritten while
+  the merged-away entry is removed. Without a replacement, the delete result
+  reports every dangling source as `lesson:<slug>` or `skill:<name>`.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review` | loop-specific
