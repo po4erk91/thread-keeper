@@ -12,6 +12,22 @@ version bumps follow semver per the policy in
   `skill_manage(action='delete', replacement_name=...)` redirect inbound
   `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
   skills. Plain removal reports the complete dangling-link source set.
+- **Fixed: quota/credit exhaustion in a spawned child now alerts even when its
+  exit code was lost.** The notifier's dead-child source only surfaced children
+  whose row recorded a non-zero `return_code`. A child reaped after the DB
+  writer wedged — or reaped cross-session — closes with `return_code` NULL, so
+  the very failure the notifier exists to catch (a subscription running out
+  mid-run, which can itself stall the writer) produced no notification.
+  `_scan_dead_children` now also inspects NULL-`return_code` children and alerts
+  when the captured log carries a fatal degradation signature (monthly-quota /
+  credit / auth), while clean completions with a lost code stay silent.
+- **Fixed: a solo daemon-host no longer stays wedged indefinitely when a leaked
+  write transaction starves the SQLite writer.** The cross-host recovery only
+  fired when another host booted, so a machine with no new sessions could sit
+  wedged for as long as it was left alone. The host now tracks how long its own
+  heartbeat has been starved and self-terminates after
+  `HOST_WEDGE_KILL_AFTER_S`, letting the supervisor respawn a clean host (whose
+  teardown drops the leaked connection and releases the lock).
 
 ## v0.17.0 — 2026-08-24
 
