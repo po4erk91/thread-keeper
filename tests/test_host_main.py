@@ -36,3 +36,29 @@ def test_serve_wires_local_encoder(monkeypatch, tmp_path):
     assert seen["sock"] == config.HOST_SOCK_PATH
     # the wired encoder delegates to embeddings._encode
     assert callable(seen["enc"])
+
+
+def test_wedge_deadline_self_heal(monkeypatch, tmp_path):
+    host = _reimport(monkeypatch, tmp_path)
+    f = host._wedge_deadline_passed
+    # no starvation streak → never heals
+    assert f(None, 1000.0, 600.0) is False
+    # streak shorter than the window → hold on
+    assert f(1000.0, 1000.0 + 599.0, 600.0) is False
+    # streak reached the window → self-heal
+    assert f(1000.0, 1000.0 + 600.0, 600.0) is True
+    assert f(1000.0, 1000.0 + 900.0, 600.0) is True
+    # feature disabled (wedge_s <= 0) → never heals even when long-starved
+    assert f(1000.0, 1000.0 + 100000.0, 0.0) is False
+
+
+def test_heartbeat_returns_bool(monkeypatch, tmp_path):
+    host = _reimport(monkeypatch, tmp_path)
+    import threadkeeper.db as db
+    monkeypatch.setattr(db, "run_write", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_heartbeat", host._heartbeat)  # ensure real fn
+    assert host._heartbeat() is True
+    def _boom(*a, **k):
+        raise RuntimeError("wedged")
+    monkeypatch.setattr(db, "run_write", _boom)
+    assert host._heartbeat() is False
