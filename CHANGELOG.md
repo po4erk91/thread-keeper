@@ -7,6 +7,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: surgical lesson patching (#161).** `lesson_patch(slug,
+  old_string, new_string)` now changes one unique substring in an existing
+  lesson while preserving its section metadata. Overlong shadow replacements
+  may repair an existing same-slug lesson only when they do not increase its
+  body size; new overlong shadow lessons remain rejected.
 - **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
   `lesson_remove(replacement_slug=...)` and
   `skill_manage(action='delete', replacement_name=...)` redirect inbound

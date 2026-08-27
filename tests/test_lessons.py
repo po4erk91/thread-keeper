@@ -205,6 +205,40 @@ def test_mcp_lesson_append_validates_inputs(tmp_path, monkeypatch):
     assert out.startswith("ok slug=ok-one")
 
 
+def test_mcp_lesson_patch_replaces_one_unique_substring(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lp = _tool(pkg, "lesson_patch")
+    la(
+        title="retry strategy",
+        summary="Retry only transient failures.",
+        body=(
+            "Use equal jitter for transient errors; do not retry errors "
+            "indefinitely."
+        ),
+        source="shadow",
+    )
+
+    out = lp(
+        slug="retry-strategy",
+        old_string="equal jitter",
+        new_string="decorrelated jitter",
+    )
+
+    assert out.startswith("ok slug=retry-strategy")
+    section = pkg["path"].read_text()
+    assert "decorrelated jitter" in section
+    assert "equal jitter" not in section
+    assert "source=shadow" in section
+    assert "Retry only transient failures." in section
+    assert lp(
+        slug="retry-strategy", old_string="missing", new_string="x",
+    ) == "ERR old_string_not_found"
+    assert lp(
+        slug="retry-strategy", old_string="errors", new_string="x",
+    ).startswith("ERR old_string_ambiguous")
+
+
 def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -212,6 +246,28 @@ def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     out = la(title="compact rules only", body=body, source="shadow")
     assert out.startswith("ERR shadow_lesson_too_long")
     assert "max=450" in out
+
+
+def test_shadow_lesson_append_allows_non_growing_same_slug_repair(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    original = "word " * 451
+    repaired = "rule " + "word " * 450
+    pkg["lessons"].append_lesson(
+        title="long shadow lesson", body=original, source="shadow",
+    )
+
+    out = la(title="long shadow lesson", body=repaired, source="shadow")
+
+    assert out.startswith("ok slug=long-shadow-lesson")
+    assert "rule" in pkg["path"].read_text()
+    assert la(
+        title="long shadow lesson",
+        body="longer " + "word " * 450,
+        source="shadow",
+    ).startswith("ERR shadow_lesson_too_long")
 
 
 def test_shadow_lesson_append_rejects_near_duplicate_slug(
