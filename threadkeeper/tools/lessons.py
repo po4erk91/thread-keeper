@@ -15,10 +15,11 @@
     Replace one unique substring in a lesson without reserializing its
     section or changing its metadata.
 
-  lesson_remove(slug, force=False)
+  lesson_remove(slug, force=False, replacement_slug="")
     Remove one lesson section by slug. Refuses protected lessons unless
     force=True from a foreground writer, so autonomous cleanup cannot delete
-    protected memory.
+    protected memory. A consolidation can pass replacement_slug to repoint
+    inbound [[wikilinks]]; a plain removal reports dangling references.
 
   lesson_restore(slug)
     Restore the latest trashed section for a removed lesson slug.
@@ -66,6 +67,8 @@ from ..trash import (
     latest_lesson_artifact,
     read_lesson_artifact,
 )
+from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
+from .skills import _skill_roots
 
 
 SHADOW_LESSON_MAX_WORDS = 450
@@ -552,12 +555,18 @@ def lesson_get(slug: str) -> str:
 
 
 @write_tool(destructive=True, idempotent=True)
-def lesson_remove(slug: str, force: bool = False) -> str:
+def lesson_remove(
+    slug: str,
+    force: bool = False,
+    replacement_slug: str = "",
+) -> str:
     """Remove one materialized lesson section by slug.
 
     Refuses protected lessons unless `force=True` is called from a foreground
     writer. Curator/evolve cleanup may pass force accidentally or maliciously;
-    non-foreground force is ignored.
+    non-foreground force is ignored. Pass ``replacement_slug`` when this is a
+    consolidation to redirect every inbound ``[[wikilink]]`` to the umbrella
+    lesson; without it, the successful response lists all dangling sources.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -571,6 +580,14 @@ def lesson_remove(slug: str, force: bool = False) -> str:
             break
     if not found:
         return f"ERR not_found slug={slug}"
+    replacement_slug = (
+        _slugify(replacement_slug.strip()) if replacement_slug.strip() else ""
+    )
+    if replacement_slug:
+        if replacement_slug == slug:
+            return f"ERR replacement_same_as_removed slug={slug}"
+        if not any(it["slug"] == replacement_slug for it in iter_lessons()):
+            return f"ERR replacement_not_found slug={replacement_slug}"
     usage_row = _row_to_dict(
         conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
     )
@@ -587,9 +604,6 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         )
     source = (found.get("source") or "").strip().lower()
     origin = (found.get("origin") or "").strip().lower()
-    snapshot = lesson_section(slug)
-    if not snapshot:
-        return f"ERR remove_failed slug={slug}"
     if reason := admit_curator_destructive_action(
         conn,
         action="lesson_remove",
@@ -597,6 +611,18 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         key=slug,
     ):
         return f"ERR {reason}"
+    try:
+        inbound_refs = rewrite_inbound_wikilinks(
+            slug,
+            replacement_slug,
+            lessons_path=get_path(),
+            skill_roots=_skill_roots(),
+        )
+    except OSError as e:
+        return f"ERR inbound_link_rewrite_failed slug={slug}: {e}"
+    snapshot = lesson_section(slug)
+    if not snapshot:
+        return f"ERR remove_failed slug={slug}"
     post_remove = (
         snapshot["file_body"][:snapshot["start"]]
         + snapshot["file_body"][snapshot["end"]:]
@@ -639,7 +665,11 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         ),
     )
     conn.commit()
-    return f"ok removed={slug}"
+    inbound = format_inbound_wikilinks(inbound_refs)
+    if not inbound:
+        return f"ok removed={slug}"
+    outcome = "inbound_rewritten" if replacement_slug else "dangling_wikilinks"
+    return f"ok removed={slug} {outcome}={inbound}"
 
 
 @write_tool()
