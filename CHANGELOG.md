@@ -7,6 +7,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: dense lesson clusters now promote to canonical skills (#163).**
+  Curator deterministically flags three-or-more lessons sharing a meaningful
+  title-term pair, then directs a validated checklist-style skill promotion
+  before retiring the unprotected source lessons. Clusters containing protected
+  lessons remain an explicit human-review plan.
 - **Added: surgical lesson patching (#161).** `lesson_patch(slug,
   old_string, new_string)` now changes one unique substring in an existing
   lesson while preserving its section metadata. Overlong shadow replacements
