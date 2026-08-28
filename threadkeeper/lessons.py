@@ -202,6 +202,63 @@ def append_lesson(
     return slug
 
 
+def patch_lesson(
+    slug: str,
+    old_string: str,
+    new_string: str,
+    path: Optional[Path] = None,
+) -> str:
+    """Replace one unique literal within a lesson's markdown body.
+
+    The section heading, summary, sentinel markers, and per-section metadata
+    remain untouched. Returns a short status code so the MCP wrapper can map
+    predictable conflicts to its public error strings.
+    """
+    if not old_string:
+        return "old_string_required"
+    fp = path or _LESSONS_PATH
+    with _lessons_file_lock(fp):
+        if not fp.exists():
+            return "not_found"
+        file_body = fp.read_text()
+        for match in _BLOCK_RE.finditer(file_body):
+            if match.group("slug") != slug:
+                continue
+            lesson_body = match.group("body")
+            body_start = 0
+            heading = re.match(r"\n?## [^\n]*\n", lesson_body)
+            if heading:
+                body_start = heading.end()
+                if lesson_body[body_start:].startswith(">"):
+                    summary_end = lesson_body.find("\n", body_start)
+                    body_start = (
+                        len(lesson_body)
+                        if summary_end < 0 else summary_end + 1
+                    )
+                while (
+                    body_start < len(lesson_body)
+                    and lesson_body[body_start] == "\n"
+                ):
+                    body_start += 1
+            editable_body = lesson_body[body_start:]
+            occurrences = editable_body.count(old_string)
+            if not occurrences:
+                return "old_string_not_found"
+            if occurrences > 1:
+                return "old_string_ambiguous"
+            patched_body = (
+                lesson_body[:body_start]
+                + editable_body.replace(old_string, new_string, 1)
+            )
+            fp.write_text(
+                file_body[:match.start("body")]
+                + patched_body
+                + file_body[match.end("body"):]
+            )
+            return "ok"
+    return "not_found"
+
+
 def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:
     """Remove one lesson section by exact slug. Returns True when removed."""
     fp = path or _LESSONS_PATH

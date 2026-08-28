@@ -35,7 +35,8 @@ Design choices:
   • **Destructive-by-default (Phase 2)** — parent first writes a recoverable
     snapshot under CURATOR_REPORTS_DIR/snapshots/<pass-id>. The child writes
     the REPORT.md first (audit trail), then applies its own PATCH / PRUNE /
-    CONSOLIDATE directly via lesson_append / lesson_remove / skill_manage, and
+    CONSOLIDATE directly via lesson_append / lesson_patch / lesson_remove /
+    skill_manage, and
     its CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
     Set THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
     [PROTECTED] entries are never mutated; lesson_remove and
@@ -1336,13 +1337,17 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
                 "the REPORT.md you MUST apply your own PATCH / PRUNE / "
                 "CONSOLIDATE recommendations directly:\n"
-                "  • PATCH — lesson_append(...) replaces a same-slug lesson in "
-                "place; skill_manage(action='patch') for skills.\n"
+                "  • PATCH — lesson_patch(slug=..., old_string=..., "
+                "new_string=...) changes one unique lesson substring in place; "
+                "skill_manage(action='patch') for skills. Use lesson_append(...) "
+                "only for wholesale same-slug replacements.\n"
                 "  • PRUNE — lesson_remove(slug=...) for a lesson; "
                 "skill_manage(action='delete') for a skill.\n"
                 "  • CONSOLIDATE — write the umbrella entry first, then "
-                "lesson_remove / skill_manage(action='delete') each merged-away "
-                "slug so the duplicate copies are actually gone.\n"
+                "lesson_remove(replacement_slug=<umbrella>) / "
+                "skill_manage(action='delete', replacement_name=<umbrella>) "
+                "for every merged-away entry so inbound [[wikilinks]] follow "
+                "the umbrella and duplicate copies are actually gone.\n"
                 "  • CONSOLIDATE_CONCEPT / PRUNE_CONCEPT — apply concept "
                 "recommendations directly: concept_manage(action='consolidate', "
                 "concept_id=<kept-id>, merge_ids='<id-a>,<id-b>') folds the "
@@ -1366,6 +1371,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__lesson_list,"
                 "mcp__thread-keeper__lesson_get,"
                 "mcp__thread-keeper__lesson_append,"
+                "mcp__thread-keeper__lesson_patch,"
                 "mcp__thread-keeper__lesson_remove,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_manage,"
@@ -1382,7 +1388,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             destructive_clause = (
                 "ADVISORY MODE (you explicitly set "
                 "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
-                "lesson_remove, skill_manage with action in "
+                "lesson_patch, lesson_remove, skill_manage with action in "
                 "{create,patch,delete,write_file}, or any other destructive tool. "
                 "Your output is the REPORT.md ONLY — the human reviews and applies "
                 "changes manually. Unset the knob (or set it to 1) to let the "

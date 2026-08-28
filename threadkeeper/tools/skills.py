@@ -62,6 +62,8 @@ from ..trash import (
     latest_skill_artifact,
     read_skill_artifact,
 )
+from ..lessons import get_path
+from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -652,7 +654,8 @@ def skill_manage(action: str,
                  new_string: str = "",
                  sub_path: str = "",
                  description: str = "",
-                 force: bool = False) -> str:
+                 force: bool = False,
+                 replacement_name: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -675,7 +678,9 @@ def skill_manage(action: str,
                     Requires `name`, `sub_path`.
       delete      — remove a skill entirely. Pinned skills (in skill_usage)
                     are refused. Foreground/unknown-origin skills require
-                    force from a foreground writer.
+                    force from a foreground writer. Pass replacement_name
+                    during consolidation to repoint inbound [[wikilinks]];
+                    otherwise the result lists dangling references.
       restore     — restore the latest trashed copy for `name`.
     """
     action = action.strip()
@@ -695,7 +700,11 @@ def skill_manage(action: str,
     if action == "delete":
         if err := _validate_name(name):
             return f"ERR {err}"
-        return _action_delete(name, force=force)
+        return _action_delete(
+            name,
+            force=force,
+            replacement_name=replacement_name,
+        )
     if action == "restore":
         return _action_restore(name)
     return (
@@ -883,7 +892,12 @@ def _action_remove_file(name: str, sub_path: str) -> str:
     return "ok"
 
 
-def _action_delete(name: str, *, force: bool = False) -> str:
+def _action_delete(
+    name: str,
+    *,
+    force: bool = False,
+    replacement_name: str = "",
+) -> str:
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
@@ -892,6 +906,14 @@ def _action_delete(name: str, *, force: bool = False) -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
+    replacement_name = replacement_name.strip()
+    if replacement_name:
+        if err := _validate_name(replacement_name):
+            return f"ERR {err}"
+        if replacement_name == name:
+            return f"ERR replacement_same_as_removed name={name}"
+        if not _skill_md_path(replacement_name).is_file():
+            return f"ERR replacement_not_found name={replacement_name}"
     if row and row["pinned"]:
         return (
             f"ERR pinned={name} (unpin via UPDATE skill_usage SET pinned=0 "
@@ -931,6 +953,15 @@ def _action_delete(name: str, *, force: bool = False) -> str:
         key=name,
     ):
         return f"ERR {reason}"
+    try:
+        inbound_refs = rewrite_inbound_wikilinks(
+            name,
+            replacement_name,
+            lessons_path=get_path(),
+            skill_roots=_skill_roots(),
+        )
+    except OSError as e:
+        return f"ERR inbound_link_rewrite_failed name={name}: {e}"
     tombstone = ""
     if WRITE_ORIGIN == "curator":
         tombstone = capture_skill_tombstone("skill_deleted", name, sdir)
@@ -958,7 +989,11 @@ def _action_delete(name: str, *, force: bool = False) -> str:
             snapshot_rel=tombstone,
         )
     conn.commit()
-    return "ok"
+    inbound = format_inbound_wikilinks(inbound_refs)
+    if not inbound:
+        return "ok"
+    outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
+    return f"ok {outcome}={inbound}"
 
 
 def _restore_skill_usage_row(
