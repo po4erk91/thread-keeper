@@ -417,10 +417,11 @@ foreground/unknown provenance, and non-foreground children cannot escalate with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
-its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
-Scope: S–M each.
+Completed follow-up: the recovery/UX path outside snapshots now has a
+recoverable lesson-removal trash flow (#52). Remaining open follow-up:
+bound the candidate_reviewer prompt payload so its full queue dump cannot hit
+`E2BIG` (#24) — the Curator inventory side is done in #105.
+Scope: S–M.
 
 ✅ DONE (#106): destructive Curator passes now have a server-side shared
 admission ceiling before `lesson_remove` or `skill_manage(action='delete')`
@@ -600,11 +601,11 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   `.github/pip-audit-ignores.txt`. Dependabot also tracks the Docker base image.
   Scope was S.
 
-**Evolve issue-flow reliability.** The applier posts a claim comment *before*
-spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
-full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
-can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
-spawn-after-claim test. (#23) Scope: S.
+**Evolve issue-flow reliability (done, #23).** The applier now checks for an
+existing issue-linked PR before claiming, resolves multi-host claim races, and
+retracts its claim when spawning raises. Returned `ERR ...` admission results
+that do not raise are tracked separately by the open spawn-result contract
+work (#276). Scope was S.
 
 **Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
 get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
@@ -983,15 +984,21 @@ GitHub issues:
   records views and `lesson_get` records full-body consultations in
   `lesson_usage`; the curator inventory and stale-lesson decay score use those
   counters and timestamps rather than registration age alone.
-- **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
-  shadow edit path that can fix long lessons without re-transcribing them from
-  scratch (#161).
-- **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
-  that target merged-away lesson/skill slugs so consolidation does not leave
-  dead pointers behind (#162).
-- **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
-  subtopic, promote it into a structured skill and retire the subsumed lessons
-  instead of leaving a noisy long tail (#163).
+- **Surgical lesson patching.** ✅ DONE (#161). `lesson_patch(slug,
+  old_string, new_string)` changes one unique lesson substring without
+  reserializing its section. Overlong `source='shadow'` replacements may only
+  bypass the cap for an existing same slug when they do not increase its body
+  size, so old long lessons remain repairable without admitting new growth.
+- **Inbound link repair on consolidation.** ✅ DONE (#162). `lesson_remove`
+  and `skill_manage(action='delete')` accept a surviving umbrella target and
+  rewrite inbound `[[wikilinks]]` across lessons and mirrored skills. Plain
+  removals report the full dangling-source set for immediate repair.
+- **Lesson-to-skill promotion.** ✅ DONE (#163). The Curator now flags a
+  deterministic dense subtopic when at least three lessons share a pair of
+  meaningful title terms. An unprotected candidate becomes one validated,
+  checklist-style canonical skill with a `Retired lessons` provenance section
+  before the source lessons are retired; any protected member produces a
+  `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
 - **Spawn worktree isolation.** Each spawned session should get its own git
   worktree, or repo-mutating work should be blocked when sessions would share a
   checkout (#164).
@@ -1053,6 +1060,21 @@ verified gaps from the present code and test suite:
   drift from collection and the MCP registry (#278).
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
+
+**2026-08-24 reviewer additions (issue-backed).**
+The current audit added two Curator gaps verified against the implementation
+and focused regression suite:
+
+- **Separate Curator research from destructive mutation.** A destructive
+  Curator child currently combines required `WebSearch`/`WebFetch` research
+  with tools that patch or delete durable lessons, skills, and concepts. Split
+  the pass into a bounded read-only evidence phase and a web-free mutation
+  phase, with the separation enforced mechanically (#289).
+- **Durable multi-batch completion.** Track expected Curator batches through
+  dispatch, completion, provenance, and advisory apply state; endorse an
+  inventory only after all batches finish, bound batch fan-out, retry missing
+  batches, and prevent the report applier from silently superseding earlier
+  reports with the newest batch (#290).
 
 ---
 

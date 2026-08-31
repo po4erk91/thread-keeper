@@ -51,6 +51,7 @@ def _bootstrap(
     monkeypatch,
     interval="0",
     min_lessons="3",
+    promotion_min_lessons="3",
     destructive=None,
     retention=None,
     max_destructive=None,
@@ -70,6 +71,7 @@ def _bootstrap(
         "THREADKEEPER_CURATOR_INTERVAL_S": interval,
         "THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS": "0",
         "THREADKEEPER_CURATOR_MIN_LESSONS": min_lessons,
+        "THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS": promotion_min_lessons,
         "THREADKEEPER_CURATOR_REPORTS_DIR": str(tmp_path / "curator"),
         "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
@@ -176,6 +178,61 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
     assert "STALE LESSONS (dry-run decay ranking)" in dump
+
+
+def test_dense_lesson_cluster_crosses_promotion_threshold(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+    ):
+        pkg["lessons"].append_lesson(title=title, body="procedure", source="shadow")
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert candidates == []
+
+    pkg["lessons"].append_lesson(
+        title="curator snapshot restores lesson recovery",
+        body="procedure",
+        source="shadow",
+    )
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.topic_terms == ("curator", "snapshot")
+    assert candidate.decision == "PROMOTE_TO_SKILL"
+    assert candidate.protected_slugs == ()
+    assert candidate.lesson_slugs == (
+        "curator-snapshot-keeps-lesson-evidence",
+        "curator-snapshot-protects-lesson-rollback",
+        "curator-snapshot-restores-lesson-recovery",
+    )
+
+
+def test_protected_dense_cluster_requires_human_review(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+        "curator snapshot restores lesson recovery",
+    ):
+        pkg["lessons"].append_lesson(title=title, body="procedure", source="T123")
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].decision == "HUMAN_REVIEW"
+    assert candidates[0].protected_slugs == candidates[0].lesson_slugs
 
 
 def test_collect_inventory_marks_legacy_and_unknown_skills_protected(
@@ -293,11 +350,13 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "lesson-one" in kw["prompt"]
     assert "lesson-two" in kw["prompt"]
     # Scoped toolset — destructive default (the new default) includes
-    # lesson_append / lesson_remove / skill_manage, but never shell or spawn.
+    # lesson_append / lesson_patch / lesson_remove / skill_manage, but never
+    # shell or spawn.
     allowed = kw["extra_allowed_tools"]
     assert "lesson_list" in allowed
     assert "lesson_get" in allowed
     assert "lesson_append" in allowed
+    assert "lesson_patch" in allowed
     assert "lesson_remove" in allowed
     assert "skill_manage" in allowed
     assert "evolve_format" in allowed
@@ -317,6 +376,42 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+
+def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        min_lessons="3",
+        write_origin="shadow_review",
+    )
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+        "curator snapshot restores lesson recovery",
+    ):
+        pkg["lessons"].append_lesson(title=title, body="procedure", source="shadow")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-promotion-curator pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-promotion-curator" in out
+    assert len(captured) == 1
+    prompt = captured[0]["prompt"]
+    assert "LESSON CLUSTER PROMOTION CANDIDATES (n=1)" in prompt
+    assert "PROMOTE_TO_SKILL: topic=curator snapshot lesson_count=3" in prompt
+    assert "Create one new, clearly named canonical skill" in prompt
+    assert "## Retired lessons" in prompt
+    assert "Only after it passes may you call" in prompt
 
 
 def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
@@ -1089,6 +1184,7 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     # Destructive mode → widened toolset (incl. lesson_remove for prune/consolidate)
     assert "skill_manage" in allowed
     assert "lesson_append" in allowed
+    assert "lesson_patch" in allowed
     assert "lesson_remove" in allowed
     assert "evolve_format" in allowed
     # Prompt explicitly flips into destructive mode
@@ -1102,8 +1198,9 @@ def test_advisory_mode_excludes_destructive_tools(
     tmp_path, monkeypatch,
 ):
     """With THREADKEEPER_CURATOR_DESTRUCTIVE=0 the curator child is read-only:
-    prompt forbids skill_manage/lesson_append/lesson_remove and they aren't in
-    allowed_tools. (Destructive is the default, so advisory is now opt-in.)"""
+    prompt forbids skill_manage/lesson_append/lesson_patch/lesson_remove and
+    they aren't in allowed_tools. (Destructive is the default, so advisory is
+    now opt-in.)"""
     monkeypatch.setenv("THREADKEEPER_CURATOR_DESTRUCTIVE", "0")
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     pkg["lessons"].append_lesson(

@@ -372,6 +372,9 @@ class Settings(BaseSettings):
     # mutation and can be disabled explicitly with interval 0.
     curator_interval_s: float = 259_200.0
     curator_min_lessons: int = 3
+    # A dense lesson subtopic is eligible for promotion once this many lessons
+    # share the same pair of meaningful title terms.
+    curator_promotion_min_lessons: int = 3
     # THREADKEEPER_CURATOR_REPORTS_DIR — default is relative to db dir; computed post-init
     curator_reports_dir: Optional[Path] = None
     # Destructive-by-default: once the curator daemon is enabled
@@ -871,6 +874,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SHADOW_REVIEW_FLUSH_AGE_S": float(s.shadow_review_flush_age_s),
         "CURATOR_INTERVAL_S": s.curator_interval_s,
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
+        "CURATOR_PROMOTION_MIN_LESSONS": s.curator_promotion_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
         "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
