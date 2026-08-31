@@ -60,8 +60,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
-    ├── lessons.py     lesson_append/list/get
-    ├── lessons.py     lesson_append/list/get/remove/restore
+    ├── lessons.py     lesson_append/list/get/patch/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -671,7 +670,8 @@ moving the high-water forward; `force=True` bypasses this due gate.
   it falls back to the latest complete Curator `REPORT-*.md` whose current
   SHA-256 matches a `curator_report_provenance` event, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
-  uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
+  uses memory MCP tools only (`lesson_append`, `lesson_patch`, `lesson_remove`,
+  `skill_manage`)
   and records `curator_report_applied` only after the child supplies the same
   verified hash; no code edit or PR. Legacy code-evolve apply still opens a PR
   and calls `evolve_mark_applied(evolve_id, pr_url)`.
@@ -1047,7 +1047,7 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 4. if a shadow observer task is already running, return `shadow_child_running`
    without advancing the cursor; retry the same window next tick.
 5. spawn a slim child with SHADOW_REVIEW_PROMPT + window dump; write_origin='shadow_review',
-   allowed_tools = lesson_append + lesson_list + lesson_get + skill_manage
+   allowed_tools = lesson_append + lesson_list + lesson_get + lesson_patch + skill_manage
    + skill_list + mark_skill_materialized.
 6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
    first checks existing lessons/skills, then prefers patching or creating a
@@ -1149,9 +1149,20 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Lesson-to-skill promotion** — the curator also deterministically groups
+  lessons that share a pair of meaningful slug/title terms. A group reaches a
+  promotion candidate at `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries
+  (default 3). An unprotected `PROMOTE_TO_SKILL` candidate directs the curator
+  to read every source lesson, create a checklist-style canonical skill with a
+  `Retired lessons` provenance section, validate it, and only then retire those
+  source lessons. Any protected member makes the candidate `HUMAN_REVIEW`, so a
+  background curator never creates a partial promotion or deletes protected
+  memory.
+
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the
-  normal `lesson_append`, `lesson_remove`, or `skill_manage` tools run under
+  normal `lesson_append`, `lesson_patch`, `lesson_remove`, or `skill_manage`
+  tools run under
   that pass, they emit `events.kind='curator_destructive_action'` rows such as
   `lesson_pruned`, `lesson_patched`, `lesson_consolidated`, and
   `skill_deleted`, with a tombstone path when a deleted body is captured.
@@ -1175,6 +1186,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
   foreground writes and every learning-loop child serialize on the shared
   store instead of relying on per-daemon dispatch locks.
+  During consolidation, callers pass the new umbrella as
+  `lesson_remove(replacement_slug=...)` or
+  `skill_manage(action='delete', replacement_name=...)`; inbound
+  `[[wikilinks]]` in lessons and mirrored `SKILL.md` files are rewritten while
+  the merged-away entry is removed. Without a replacement, the delete result
+  reports every dangling source as `lesson:<slug>` or `skill:<name>`.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review` | loop-specific
@@ -1482,7 +1499,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
+| lessons | 6 | lesson_append, lesson_list, lesson_get, lesson_patch, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
@@ -1780,6 +1797,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | review an undersized queue once its oldest candidate is this old (0 = threshold only) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` | 3 | dense same-subtopic lessons required before the curator proposes a skill promotion |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | `0` | explicit snapshot-scoped authority to repair/merge/delete foreground skills; pins and untracked provenance remain protected |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |

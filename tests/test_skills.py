@@ -51,6 +51,7 @@ def _bootstrap_skills(tmp_path, monkeypatch, write_origin="foreground"):
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
         "CLAUDE_SKILLS_DIR": str(skills_root),
+        "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_WRITE_ORIGIN": write_origin,
     }
     for k, v in env.items():
@@ -250,6 +251,32 @@ def test_delete_removes_skill_dir_and_usage_row(skills_pkg):
     artifacts = list(trash_root.glob("*-skill-goner"))
     assert len(artifacts) == 1
     assert (artifacts[0] / "skill" / "SKILL.md").exists()
+
+
+def test_skill_consolidation_rewrites_inbound_wikilinks(skills_pkg):
+    sm = _tool(skills_pkg, "skill_manage")
+    _seed_skill(skills_pkg, name="umbrella-skill")
+    _seed_skill(skills_pkg, name="retired-skill")
+    sm(
+        action="create",
+        name="consumer-skill",
+        description="Uses the retired skill in a test.",
+        content="# Consumer\n\nSee [[retired-skill|the old rule]].\n",
+    )
+
+    out = sm(
+        action="delete",
+        name="retired-skill",
+        force=True,
+        replacement_name="umbrella-skill",
+    )
+
+    assert out == "ok inbound_rewritten=skill:consumer-skill"
+    consumer = (
+        skills_pkg["skills_root"] / "consumer-skill" / "SKILL.md"
+    ).read_text()
+    assert "[[umbrella-skill|the old rule]]" in consumer
+    assert "[[retired-skill" not in consumer
 
 
 def test_delete_restore_recreates_skill_tree_and_usage_row(skills_pkg):
