@@ -1076,6 +1076,17 @@ and focused regression suite:
   batches, and prevent the report applier from silently superseding earlier
   reports with the newest batch (#290).
 
+**2026-08-28 reviewer addition (issue-backed).**
+The current audit reconciled the latest daemon-host incident with the database
+write paths and added the remaining root cause to the live roadmap:
+
+- **SQLite writer transaction and connection lifecycle.** Migrate legacy write
+  paths from caller-managed `get_db()` connections to short, rollback-safe
+  `run_write()` transactions; never hold a writer reservation across child
+  launch or file I/O; and add a leaked-transaction / connection-count guard so
+  a stalled single writer becomes visible before heartbeats, reaping, and
+  notifications cascade into failure (#293).
+
 ---
 
 ## Principle
