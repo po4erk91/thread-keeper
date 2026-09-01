@@ -41,7 +41,7 @@ jobs:
           pip install -e '.[semantic,dev]'
 
       - name: Cache pinned embedding snapshot
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.cache/huggingface
           key: huggingface-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('threadkeeper/config.py') }}
