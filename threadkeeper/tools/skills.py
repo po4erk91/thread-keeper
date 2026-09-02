@@ -392,6 +392,7 @@ def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
             "UPDATE skill_usage SET tier=?, tier_changed_at=? WHERE name=?",
             (new_tier, now_t, name),
         )
+        _ensure_session(conn)
         order = {"hypothesis": 0, "observed": 1, "validated": 2}
         direction = (
             "skill_tier_promoted"

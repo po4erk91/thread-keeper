@@ -973,9 +973,9 @@ GitHub issues:
 - **Spawn worktree isolation.** Each spawned session should get its own git
   worktree, or repo-mutating work should be blocked when sessions would share a
   checkout (#164).
-- **Fail-loud event emission.** `_emit()` should not silently no-op when
-  session setup is missing; forgetting the setup call should be a loud error or
-  an auto-ensure path (#165).
+- **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
+  caller skips session setup, and audited watchdog, format-evolution, and
+  passive skill-tier paths initialize their session before emitting events.
 - **Skill prune heuristic fix.** The curator's false-positive skill prune logic
   should key on real foreground use, not on auto-patch counts that make the
   current gate unreachable (#166).

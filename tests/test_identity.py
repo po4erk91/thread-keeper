@@ -13,6 +13,17 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
+
+def test_emit_requires_session_setup(fresh_mp):
+    """A forgotten session setup must fail instead of dropping telemetry."""
+    identity = fresh_mp["identity"]
+    conn = fresh_mp["db"].get_db()
+
+    with pytest.raises(RuntimeError, match="requires session setup"):
+        identity._emit(conn, "test_missing_session")
+
 
 def test_session_id_set_after_ensure_session(fresh_mp):
     identity = fresh_mp["identity"]

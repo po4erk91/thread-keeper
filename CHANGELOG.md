@@ -5,6 +5,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.16.4 — 2026-09-02
+
+### Fixed
+
+- **Core event emission now fails loudly without session setup (#165).**
+  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
+  spawn watchdog, format evolution, and passive skill-tier paths initialize
+  their session before emitting telemetry.
+
 ## [Unreleased]
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
