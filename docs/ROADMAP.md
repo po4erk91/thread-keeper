@@ -1032,6 +1032,28 @@ verified gaps from the present code and test suite:
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
+**2026-09-03 reviewer additions (issue-backed).**
+The current audit reconciled the late-August backlog and added two gaps found in
+the Curator and status/notification paths:
+
+- **Curator capability separation.** Split current web research from durable
+  lesson/skill/concept mutation so no Curator child holds untrusted web input
+  and destructive memory tools in the same model context (#289).
+- **Durable Curator batch completion.** Track expected, dispatched, completed,
+  failed, and unapplied batches per pass; endorse an inventory fingerprint only
+  after every batch reaches a valid terminal state (#290).
+- **Bounded SQLite write transactions.** Migrate legacy write paths away from
+  long-lived non-autocommit `get_db()` connections, never hold writer locks
+  across subprocess or file I/O, and surface leaked transactions before they
+  wedge the daemon host (#293).
+- **Fail-closed Curator inventory collection.** Distinguish an empty store from
+  a failed lesson/skill/concept read, abort partial audits before dispatch, and
+  keep incomplete snapshots from becoming `unchanged_inventory` fingerprints
+  (#298).
+- **Sanitized status and notification excerpts.** Redact secrets and private
+  home paths from child-log-derived success/failure summaries before they reach
+  the agent-status MCP surface, menu bar, or OS notifications (#299).
+
 ---
 
 ## Principle
