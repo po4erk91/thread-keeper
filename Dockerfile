@@ -3,7 +3,7 @@
 # and inspects tool definitions. End users do NOT need Docker for normal
 # installs — see Quickstart in README.md (pipx / uvx / install.sh).
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
