@@ -2540,6 +2540,9 @@ def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
     (repo / "shared.txt").write_text(
         "issue implementation left on main\n", encoding="utf-8"
     )
+    (repo / "tests").mkdir()
+    orphan = repo / "tests" / "test_other_issue.py"
+    orphan.write_text("raise AssertionError('unrelated unfinished feature')\n")
     monkeypatch.setattr(
         pkg["ea"], "_prs_for_head_branch",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -2568,6 +2571,67 @@ def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
     ).fetchone()
     assert row["target"] == "managed_repo_refresh"
     assert "recovered_abandoned_wip branch=main" in row["summary"]
+    assert not orphan.exists()
+    saved = list((tmp_path / "evolve-recovery").glob("untracked-*/tests/*.py"))
+    assert len(saved) == 1
+    assert "unrelated unfinished feature" in saved[0].read_text()
+
+
+@pytest.mark.parametrize("mode", ["recover", "explicit", "live", "copy_error"])
+def test_untracked_recovery_preserves_work_and_isolates_next_validation(
+    tmp_path, monkeypatch, mode,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    ea = pkg["ea"]
+    repo = ea._managed_repo_dir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    # Use Git's actual ignore rules, including filenames with spaces/newlines.
+    (repo / ".git" / "info" / "exclude").write_text(".venv/\n")
+    (repo / ".venv").mkdir()
+    runtime = repo / ".venv" / "runtime"
+    runtime.write_text("keep runtime")
+    (repo / "tests").mkdir()
+    source = repo / "tests" / "test_orphan with\nnewline.py"
+    source.write_text("unfinished work\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external target")
+    link = repo / "orphan-link"
+    link.symlink_to(outside)
+    if mode == "explicit":
+        monkeypatch.setattr(ea, "EVOLVE_REPO_ROOT", str(repo))
+    if mode == "live":
+        monkeypatch.setattr(ea, "_running_git_writer_children", lambda conn: ["live"])
+    if mode == "copy_error":
+        def fail_copy(*args, **kwargs):
+            raise OSError("backup unavailable")
+        monkeypatch.setattr(ea.shutil, "copy2", fail_copy)
+
+    result = pkg["orig"]["_git_worktree_precondition"](
+        pkg["db"].get_db(), repo, "conflict_repair"
+    )
+
+    assert runtime.read_text() == "keep runtime"
+    assert outside.read_text() == "external target"
+    if mode == "recover":
+        assert result == ""
+        assert not source.exists() and not link.is_symlink()
+        backups = list((tmp_path / "evolve-recovery").glob("untracked-*"))
+        assert len(backups) == 1
+        assert backups[0].stat().st_mode & 0o777 == 0o700
+        assert (backups[0] / source.relative_to(repo)).read_text() == "unfinished work\n"
+        assert (backups[0] / "orphan-link").is_symlink()
+        assert pkg["orig"]["_git_worktree_precondition"](
+            pkg["db"].get_db(), repo, "conflict_repair"
+        ) == ""
+        assert len(list((tmp_path / "evolve-recovery").glob("untracked-*"))) == 1
+    else:
+        assert source.read_text() == "unfinished work\n" and link.is_symlink()
+        if mode == "live":
+            assert result.startswith("evolve_git_writer_running")
+        elif mode == "copy_error":
+            assert "untracked_quarantine_failed" in result
+        else:
+            assert result == ""
 
 
 def test_managed_refresh_checks_live_writer_before_dirty_recovery(

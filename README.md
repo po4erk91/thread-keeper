@@ -859,7 +859,12 @@ throttling the roadmap loop.
 Before any PR-producing reviewer/audit or applier child is spawned, the parent
 checks the target checkout with `git status --porcelain --untracked-files=no`.
 Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
-untracked scratch files do not block. Each managed-checkout child fetches the
+the default managed checkout first preserves orphaned untracked files under
+`~/.threadkeeper/evolve-recovery/untracked-*/` and removes them from the next
+task’s tree. This prevents unrelated unfinished tests from blocking every PR
+repair. Ignored files (including `.venv`) and explicit operator checkouts stay
+in place; live writers prevent recovery, and backup failures block dispatch.
+Each managed-checkout child fetches the
 configured branch only to retrieve the configured immutable commit, then
 prepares or resumes its deterministic local/remote feature branch from
 `THREADKEEPER_EVOLVE_REPO_COMMIT`, never from the branch's moving tip. Retries
