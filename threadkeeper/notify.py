@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import threading
@@ -349,11 +351,43 @@ def _fmt_child(c: dict) -> tuple[str, str]:
 
 
 def _fmt_skill(s: dict) -> tuple[str, str]:
-    return ("Thread-keeper: skill materialized", (s["summary"] or s["target"])[:200])
+    path = (s.get("summary") or "").strip()
+    name = s.get("target", "") if s.get("kind") == "skill_create" else ""
+    if path and path != "(no path recorded)":
+        md = Path(path).expanduser()
+        if md.name == "SKILL.md":
+            name = md.parent.name
+        else:
+            name = md.name
+            md = md / "SKILL.md"
+        try:
+            # A title is near the top. Never load an entire skill (or follow
+            # paths mentioned in its body) just to render a notification.
+            body = ""
+            if md.is_file():
+                with md.open(encoding="utf-8") as stream:
+                    body = stream.read(8192)
+            if body.startswith("---\n"):
+                body = body.split("\n---", 1)[-1]
+            heading = re.search(r"^#\s+(.+?)(?:\s+#+)?\s*$", body, re.MULTILINE)
+            if heading:
+                name = heading.group(1)
+        except (OSError, ValueError):
+            pass
+    return ("Thread-keeper: skill materialized", _artifact_name(name))
+
+
+def _artifact_name(name: str) -> str:
+    """One readable name, without slug separators or Markdown decoration."""
+    name = " ".join((name or "").replace("`", "").split())
+    if " " not in name:
+        name = re.sub(r"[-_]+", " ", name)
+        name = name[:1].upper() + name[1:]
+    return name[:200]
 
 
 def _fmt_lesson(l: dict) -> tuple[str, str]:
-    return ("Thread-keeper: lesson added", f"{l['target']} ({l['summary']})"[:200])
+    return ("Thread-keeper: lesson added", _artifact_name(l["target"]))
 
 
 # ── pass + daemon lifecycle ─────────────────────────────────────────────────
@@ -401,8 +435,10 @@ def run_notify_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 _dispatch(*_fmt_child(c))
                 fired += 1
         for s in skills:
-            _dispatch(*_fmt_skill(s))
-            fired += 1
+            title, body = _fmt_skill(s)
+            if body:  # A pathless mark only silences a nudge; no named artifact.
+                _dispatch(title, body)
+                fired += 1
         for l in lessons:
             _dispatch(*_fmt_lesson(l))
             fired += 1

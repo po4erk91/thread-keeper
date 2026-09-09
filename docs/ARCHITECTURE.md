@@ -90,7 +90,10 @@ status-bar item and a SwiftUI popover for the panel. It polls
 sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
 backlog as due objective probes only, updates the idle chip / running gears
 directly on the status button, keeps loop counts in the popover/tooltip, and
-posts macOS notifications for newly observed useful `recent_results`. The
+posts macOS notifications for named materialization events in `recent_results`.
+The shared notifier formatters resolve a skill heading or readable artifact
+name; completed-task log summaries remain history-only. Skill and lesson
+notification toggles apply independently to their respective write events. The
 popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
 a one-click pause/resume path for autonomous loops. The
