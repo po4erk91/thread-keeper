@@ -5,6 +5,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.3 — 2026-09-09
+
+- **Fixed: skill and lesson notifications name the materialized result.**
+  Banners and logs show one readable artifact name instead of paths, event
+  metadata, or generic agent reports. The menu-bar feed uses actual write
+  events and respects the skill and lesson notification toggles separately.
+
 ## v0.17.2 — 2026-09-09
 
 - **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**

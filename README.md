@@ -1014,7 +1014,10 @@ Three detection sources per tick:
    from an exhausted subscription; the real outcome only lands in
    `tasks.return_code`. The reason is read from the child's log tail.
 3. **Materialization** — `skill_materialized` / `skill_create` (skill) and
-   `lesson_append` (lesson).
+   `lesson_append` (lesson). Each notification contains one readable artifact
+   name: the skill's first heading (falling back to its directory name), or
+   the lesson name with slug separators replaced by spaces. Paths, provenance,
+   and operation metadata stay out of the notification text.
 
 A per-loop cooldown collapses a lapsed-subscription storm into one actionable
 alert; the first run seeds its cursor to the current position, so historical
@@ -1045,12 +1048,16 @@ will register the app in **System Settings ▸ Notifications** and show banners;
 banners are titled **Thread-Keeper** (`CFBundleDisplayName`). The first launch
 after an update shows a one-time permission prompt.
 
-`agent_status` feeds the app two lists — `recent_results` (positive: captured
-skills/lessons) and `recent_failures` (the two failure sources above) — each item
-tagged with a `notify` flag computed from the toggles below. The app **lists**
+`agent_status` feeds the app two lists — `recent_results` (named skill/lesson
+write events plus completed-task history) and `recent_failures` (the two failure
+sources above) — each item tagged with a `notify` flag computed from the toggles
+below. The app **lists**
 every item in its menu but only **posts a banner** for flagged ones, so turning a
-category off silences the banner without hiding the history. Enabling a toggle
-never replays backlog.
+category off silences the banner without hiding the history. Each materialization
+uses its own skill or lesson toggle; generic task reports are history-only.
+Foreground writes appear too, without waiting for a background child to finish.
+A pathless skill mark only silences its reminder and has no materialization
+banner. Enabling a toggle never replays backlog.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
