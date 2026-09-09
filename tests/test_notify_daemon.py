@@ -131,6 +131,41 @@ def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
     assert out == "ok fired=0", out
 
 
+def test_dead_child_returncode_null_with_fatal_log_fires(tmp_path, monkeypatch, caplog):
+    # A child reaped after the DB writer wedged closes its row with the exit
+    # code lost (return_code NULL). It must still alert when the captured log
+    # shows a fatal degradation signature — the quota-exhaustion case that
+    # first exposed the gap.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-q.log").write_text(
+        "booting\nYou have exceeded your monthly quota\n")
+    _task(conn, "child-q", rc=None, role="candidate_reviewer",
+          ended_at=int(time.time()))
+    with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
+        out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=1", out
+    assert "candidate_reviewer child died (rc=unknown)" in caplog.text
+    assert "exceeded your monthly quota" in caplog.text
+
+
+def test_dead_child_returncode_null_clean_log_ignored(tmp_path, monkeypatch):
+    # return_code NULL with no failure evidence in the log is indistinguishable
+    # from a clean completion — must NOT fire (no false positives).
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-clean.log").write_text(
+        "starting\nall done, wrote 2 notes\n")
+    _task(conn, "child-clean", rc=None, role="curator",
+          ended_at=int(time.time()))
+    out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=0", out
+
+
 # ── cooldown / de-dup ───────────────────────────────────────────────────────
 
 def test_cooldown_dedups_repeat_failures(tmp_path, monkeypatch):

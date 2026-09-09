@@ -69,6 +69,22 @@ _FAIL_TOKENS = (
 )
 _SPAWN_TIMEOUT_RETURN_CODE = 124  # spawn_budget.SPAWN_TIMEOUT_RETURN_CODE
 
+# A child can end with return_code=NULL when its exit code was never captured —
+# the parent reaper's waitpid can't see a cross-session child, and a child
+# reaped AFTER the DB writer wedged closes its row (ended_at set) with the code
+# lost. A NULL code is otherwise indistinguishable from a clean completion, so
+# such rows are surfaced ONLY when the captured log carries one of these fatal
+# degradation signatures. This is the case that first exposed the gap: a
+# spawned child hit "exceeded your monthly quota", died, and — because the same
+# exhaustion had wedged the writer — its row closed with no return_code, so the
+# return_code!=0 branch never saw it and no alert fired.
+_CHILD_FATAL_LOG_TOKENS = (
+    "exceeded your monthly quota", "monthly quota", "quota exceeded",
+    "credit balance is too low", "insufficient credits", "out of credits",
+    "usage limit", "invalid api key", "authentication_error",
+    "unauthorized", "login expired", "please run /login",
+)
+
 
 # ── classification ──────────────────────────────────────────────────────────
 
@@ -106,13 +122,18 @@ def _reason_from_summary(summary: str) -> str:
     return (tail[:120] or "spawn failed")
 
 
-def _reason_from_task_log(task_id: str) -> str:
-    """Last meaningful line of a dead child's captured log (the failure reason)."""
+def _child_log_tail(task_id: str) -> str:
+    """Tail of a spawned child's captured log ('' when unavailable)."""
     try:
         from .tools.spawn import task_logs  # lazy: spawn imports identity/config
-        txt = task_logs(task_id, tail_lines=12)
+        return task_logs(task_id, tail_lines=12)
     except Exception:
-        return "no_log"
+        return ""
+
+
+def _reason_from_task_log(task_id: str, tail: str | None = None) -> str:
+    """Last meaningful line of a dead child's captured log (the failure reason)."""
+    txt = _child_log_tail(task_id) if tail is None else tail
     lines = [ln for ln in txt.splitlines() if ln.strip()]
     return (lines[-1][:180] if lines else "no_log")
 
@@ -210,14 +231,26 @@ def _scan_failures(conn: sqlite3.Connection, ev_floor: int,
 
 def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
                         tk_ceil: int) -> list[dict]:
-    """SOURCE 2: spawned children that ended non-zero (excluding timeouts and
-    children superseded by a retry). Catches subscription-exhausted-mid-run."""
+    """SOURCE 2: spawned children that ended badly (excluding timeouts and
+    children superseded by a retry). Catches subscription-exhausted-mid-run.
+
+    Two shapes qualify:
+      * return_code present and non-zero (and not the timeout code) — an
+        outright failed child; always surfaced.
+      * return_code NULL — the exit code was never captured (cross-session
+        reap, or a child reaped after the writer wedged). Indistinguishable
+        from a clean completion on its own, so surfaced ONLY when the captured
+        log carries a fatal degradation signature (_CHILD_FATAL_LOG_TOKENS).
+        This is the branch that catches quota/credit exhaustion whose very
+        failure mode also stalled the DB writer that would have stamped rc.
+    """
     out: list[dict] = []
     try:
         rows = conn.execute(
             "SELECT id, role, chosen_cli, return_code FROM tasks "
             "WHERE ended_at IS NOT NULL AND ended_at > ? AND ended_at <= ? "
-            "AND return_code IS NOT NULL AND return_code != 0 AND return_code != ? "
+            "AND (return_code IS NULL "
+            "     OR (return_code != 0 AND return_code != ?)) "
             "AND timeout_respawned_as IS NULL ORDER BY ended_at",
             (tk_floor, tk_ceil, _SPAWN_TIMEOUT_RETURN_CODE),
         ).fetchall()
@@ -225,11 +258,20 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
         return out
     for r in rows:
         label = r["role"] or r["chosen_cli"] or "child"
+        rc = r["return_code"]
+        tail = _child_log_tail(r["id"])
+        if rc is None:
+            low = tail.lower()
+            if not any(tok in low for tok in _CHILD_FATAL_LOG_TOKENS):
+                continue  # code lost but no failure evidence — likely clean.
+            rc_disp: object = "unknown"
+        else:
+            rc_disp = rc
         out.append({
             "kind": f"child:{label}",
             "label": label,
-            "rc": r["return_code"],
-            "reason": _reason_from_task_log(r["id"]),
+            "rc": rc_disp,
+            "reason": _reason_from_task_log(r["id"], tail=tail),
         })
     return out
 

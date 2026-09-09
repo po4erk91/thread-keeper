@@ -5,7 +5,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
-## v0.16.4 — 2026-09-02
+## v0.17.1 — 2026-09-09
 
 ### Fixed
 
@@ -15,6 +15,76 @@ version bumps follow semver per the policy in
   their session before emitting telemetry.
 
 ## [Unreleased]
+
+- **Added: dense lesson clusters now promote to canonical skills (#163).**
+  Curator deterministically flags three-or-more lessons sharing a meaningful
+  title-term pair, then directs a validated checklist-style skill promotion
+  before retiring the unprotected source lessons. Clusters containing protected
+  lessons remain an explicit human-review plan.
+- **Added: surgical lesson patching (#161).** `lesson_patch(slug,
+  old_string, new_string)` now changes one unique substring in an existing
+  lesson while preserving its section metadata. Overlong shadow replacements
+  may repair an existing same-slug lesson only when they do not increase its
+  body size; new overlong shadow lessons remain rejected.
+- **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
+  `lesson_remove(replacement_slug=...)` and
+  `skill_manage(action='delete', replacement_name=...)` redirect inbound
+  `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
+  skills. Plain removal reports the complete dangling-link source set.
+- **Fixed: quota/credit exhaustion in a spawned child now alerts even when its
+  exit code was lost.** The notifier's dead-child source only surfaced children
+  whose row recorded a non-zero `return_code`. A child reaped after the DB
+  writer wedged — or reaped cross-session — closes with `return_code` NULL, so
+  the very failure the notifier exists to catch (a subscription running out
+  mid-run, which can itself stall the writer) produced no notification.
+  `_scan_dead_children` now also inspects NULL-`return_code` children and alerts
+  when the captured log carries a fatal degradation signature (monthly-quota /
+  credit / auth), while clean completions with a lost code stay silent.
+- **Fixed: a solo daemon-host no longer stays wedged indefinitely when a leaked
+  write transaction starves the SQLite writer.** The cross-host recovery only
+  fired when another host booted, so a machine with no new sessions could sit
+  wedged for as long as it was left alone. The host now tracks how long its own
+  heartbeat has been starved and self-terminates after
+  `HOST_WEDGE_KILL_AFTER_S`, letting the supervisor respawn a clean host (whose
+  teardown drops the leaked connection and releases the lock).
+
+## v0.17.0 — 2026-08-24
+
+- **Added: pre-ingest transcript privacy denylist (#145).**
+  `THREADKEEPER_INGEST_DENY_GLOBS` and the line-based local denylist file skip
+  matching adapter project/CWD messages before text, FTS, vector embeddings, or
+  learning-loop inputs are written. File watermarks advance normally, and
+  `mp_dashboard()` reports active patterns with the cumulative skipped count.
+- **Fixed: Evolve implementation PRs now include release metadata.** The
+  applier prompt requires the SemVer bump, matching `server.json` fields,
+  Docker release pin, and versioned changelog heading in the same PR; the PR
+  checklist mirrors that requirement for human-authored changes. The dependency
+  audit now removes only the unreleased editable project after resolving its
+  dependency set, then audits the remaining full environment, so a required
+  version bump no longer makes `pip-audit --strict` fail merely because that
+  version is not on PyPI yet.
+- **Added: CI security scanning (#144).** CodeQL analyzes the default Python
+  query suite on pull requests and pushes to `main`, plus weekly, and uploads
+  results to the Security tab. A blocking `pip-audit` job scans the fully
+  resolved runtime, semantic, and development dependency set; suppressions are
+  advisory-specific, reviewed entries in `.github/pip-audit-ignores.txt`.
+  Dependabot now tracks the Docker base image as well.
+- **Fixed: managed Evolve clones now execute only a verified pinned commit
+  (#132).** Auto-provisioning accepts only HTTPS `github.com` URLs, detaches at
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, and verifies `HEAD` before reusing or
+  creating the `[semantic,dev]` virtualenv. URL, branch, and commit changes are
+  restart-only and hot-config reload logs then ignores them, closing runtime
+  source redirection through a host settings file. The managed clone's remote
+  code-execution trust boundary and shared-host opt-out are documented.
+- **Fixed: interrupted conflict repair no longer deadlocks Evolve apply.** If a
+  conflict-repair child exited after `git merge` while its PR remained open,
+  managed refresh treated the unresolved merge as permanently dirty and every
+  scheduled pass stopped before the conflicted-PR sweep. With no live git
+  writer, the parent now verifies the exact open applier PR, archives the merge
+  diff as an owner-only recovery patch, aborts the orphaned merge, refreshes the
+  disposable checkout, and retries that same PR through the normal protected
+  conflict-repair flow. Closed-unmerged/unreadable PRs and explicit operator
+  checkouts remain fail-closed.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

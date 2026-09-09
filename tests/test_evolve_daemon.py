@@ -615,7 +615,7 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert pkg["ed"].EVOLVE_RESEARCH_FENCE in calls["prompt"]
     assert "git fetch origin main" in calls["prompt"]
     assert "git checkout -b docs/roadmap-audit-" in calls["prompt"]
-    assert "origin/main" in calls["prompt"]
+    assert pkg["ed"]._base_ref() in calls["prompt"]
     assert "No open reviewer roadmap-doc PR touching docs/ROADMAP.md" in (
         calls["prompt"]
     )

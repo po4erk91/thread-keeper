@@ -62,6 +62,8 @@ class NormalizedMessage:
       raw         — the original parsed dict, in case downstream code
                     needs to peek into adapter-specific fields (e.g.
                     Skill tool_use detection in ingest).
+      origin_path — originating project/CWD when the transcript provides it.
+                    It is used only for pre-persistence ingest policy.
     """
     uuid: str
     session_id: str
@@ -70,6 +72,7 @@ class NormalizedMessage:
     model: str
     created_at: int
     raw: dict
+    origin_path: str = ""
 
 
 class CLIAdapter(ABC):
