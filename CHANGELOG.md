@@ -5,6 +5,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.2 — 2026-09-09
+
+- **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**
+  Managed refresh and the pre-spawn gate preserve a dead child’s non-ignored
+  files outside the checkout before validation. Live writers, explicit
+  checkouts, ignored runtime files, and backup failures retain their guards.
+
 ## v0.17.1 — 2026-09-09
 
 ### Fixed

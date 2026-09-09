@@ -56,6 +56,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -1001,6 +1002,49 @@ def _archive_tracked_diff(
     return path, ""
 
 
+def _quarantine_managed_untracked(repo_root: Path) -> tuple[str, str]:
+    """Preserve a dead child's untracked files outside the next task's tree.
+
+    Call only after excluding live git writers. Ignored runtime files (including
+    the virtualenv) stay in place; explicit operator checkouts are untouched.
+    Copy the complete inventory before removing any source, so a backup failure
+    cannot discard unfinished work or allow a contaminated validation run.
+    """
+    if not _managed_repo_auto_recovery_allowed(repo_root):
+        return "", ""
+    backup = None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "--others",
+             "--exclude-standard", "-z"],
+            capture_output=True, timeout=30, check=False,
+        )
+        if proc.returncode:
+            return "", "untracked_inventory_failed"
+        paths = [Path(os.fsdecode(p)) for p in proc.stdout.split(b"\0") if p]
+        if not paths:
+            return "", ""
+        for relative in paths:
+            source = repo_root / relative
+            if (relative.is_absolute() or ".." in relative.parts
+                    or any((repo_root / p).is_symlink() for p in relative.parents)
+                    or not (source.is_file() or source.is_symlink())):
+                return "", "untracked_inventory_unsafe_path"
+        recovery_dir = DB_PATH.parent / "evolve-recovery"
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        recovery_dir.chmod(0o700)
+        backup = Path(tempfile.mkdtemp(prefix="untracked-", dir=recovery_dir))
+        for relative in paths:
+            target = backup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo_root / relative, target, follow_symlinks=False)
+        for relative in paths:
+            (repo_root / relative).unlink()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", f"untracked_quarantine_failed backup={backup} err={_short(str(exc))}"
+    return f"quarantined_untracked n={len(paths)} backup={backup.name}", ""
+
+
 def _archive_stale_merge_diff(
     repo_root: Path,
     pr_number: int,
@@ -1284,8 +1328,8 @@ def _git_worktree_precondition(
 ) -> str:
     """Parent-side gate before spawning any child that may commit/push.
 
-    Untracked scratch files intentionally do not block, matching auto_update's
-    `git status --porcelain --untracked-files=no` safety contract.
+    The managed checkout quarantines orphaned untracked files as well: pytest
+    collects them even though the tracked-only Git safety check ignores them.
     """
     # Check durable/live writer state before inspecting dirty files: a current
     # child owns its WIP and must never be mistaken for an orphan eligible for
@@ -1295,6 +1339,13 @@ def _git_worktree_precondition(
         outcome = f"evolve_git_writer_running n={len(running)}"
         _record_git_safety_event(conn, actor, outcome)
         return outcome
+    recovery, quarantine_err = _quarantine_managed_untracked(repo_root)
+    if quarantine_err:
+        outcome = f"ERR {quarantine_err}"
+        _record_git_safety_event(conn, actor, outcome)
+        return outcome
+    if recovery:
+        _record_git_safety_event(conn, actor, recovery)
     dirty, err = _tracked_worktree_status(repo_root)
     if err:
         outcome = f"ERR git_status_failed mode=git err={err}"
@@ -1424,6 +1475,11 @@ def _refresh_managed_repo(dest: Path) -> str:
             return f"ERR evolve_repo_refresh_running_check_failed={_short(str(e))}"
         if running:
             return f"ERR evolve_repo_refresh_in_use n={len(running)}"
+        recovery, quarantine_err = _quarantine_managed_untracked(dest)
+        if quarantine_err:
+            return f"ERR evolve_repo_refresh_{quarantine_err}"
+        if recovery:
+            _record_git_safety_event(conn, "managed_repo_refresh", recovery)
         dirty, status_err = _tracked_worktree_status(dest)
         if status_err:
             return f"ERR evolve_repo_refresh_status_failed={_short(status_err)}"

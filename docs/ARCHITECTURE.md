@@ -728,8 +728,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   --porcelain --untracked-files=no` must be empty (`skipped_dirty_worktree
   mode=git` is recorded on `events.kind='evolve_git_safety'` when tracked WIP is
   present), and no other PR-producing evolve reviewer/applier task may already
-  be running. The guard intentionally ignores untracked scratch files, matching
-  `auto_update`'s dirty-check semantics. Applier prompts fetch the base and
+  be running. In the default managed checkout, both refresh and the spawn gate
+  inventory non-ignored untracked files with NUL-delimited `git ls-files`, copy
+  them into an owner-only `evolve-recovery/untracked-*` directory, then remove
+  the originals. All copies must succeed before any source is removed; errors
+  block refresh/dispatch. This keeps orphaned tests out of the next PR suite
+  while preserving unfinished work. Ignored runtime files and explicit operator
+  checkouts are untouched. Applier prompts fetch the base and
   prepare or resume their deterministic local/remote feature branch before any
   reading or editing, then rebase it on the immutable
   `EVOLVE_REPO_COMMIT`. This makes retries validate previous branch work
