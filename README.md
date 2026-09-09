@@ -266,6 +266,12 @@ uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
 inserts the child task row with its RSS estimate before `Popen`, so two
 concurrent spawns cannot both squeeze through the cap.
 
+When `cwd` is inside a Git checkout, `spawn()` also requires the source
+checkout's tracked files to be clean, then starts the child from a unique
+branch/worktree under `THREADKEEPER_TASK_LOG_DIR/worktrees/`. Parallel children
+therefore never share a mutable checkout or Git index. Non-Git directories keep
+their existing behavior; a dirty Git checkout is refused before a child starts.
+
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
 CLI emits a recognizable usage trailer. Optional daily ceilings
@@ -1467,8 +1473,9 @@ Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
 the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
 refused when the configured directory is a symlink or is not owned by the
 current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
-and visible `.command` files with no-follow owner-only opens. `consolidate()`
-garbage-collects task spool files once their task row is no longer retained.
+and visible `.command` files with no-follow owner-only opens. Git-backed spawns
+also create their isolated worktrees there. `consolidate()` garbage-collects
+task spool files once their task row is no longer retained.
 
 ---
 

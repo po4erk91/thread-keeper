@@ -16,6 +16,7 @@ import sys
 import secrets
 import time
 import json as _json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +57,30 @@ _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
 # total ARG_MAX budget is larger. Keep Claude's positional prompt well below
 # that and feed larger prompts through the existing owner-only stdin spool.
 CLAUDE_PROMPT_ARGV_MAX_BYTES = 96 * 1024
+
+# A child that starts from a repository must never share that repository's
+# mutable checkout with another child.  Worktrees live in the protected task
+# spool rather than beside the caller's checkout, where they cannot surprise a
+# developer scanning their project tree.
+_SPAWN_WORKTREE_DIRNAME = "worktrees"
+_SPAWN_WORKTREE_BRANCH_PREFIX = "threadkeeper/spawn-"
+# Keep git preflight independent from tests (and callers) that replace the
+# child-launcher `subprocess.Popen` below.
+_GIT_POPEN = subprocess.Popen
+
+
+@dataclass(frozen=True)
+class _SpawnWorktree:
+    """A per-task checkout derived from a clean caller worktree."""
+
+    repo_root: Path
+    relative_cwd: Path
+    path: Path
+    branch: str
+
+    @property
+    def child_cwd(self) -> Path:
+        return self.path / self.relative_cwd
 
 
 def _utf8_len(text: str) -> int:
@@ -402,6 +427,102 @@ def _build_slim_mcp_config(
     return slim_path
 
 
+def _git_result(args: list[str], cwd: Path) -> tuple[str, str]:
+    """Run a short git query and return stdout plus a compact error string."""
+    try:
+        proc = _GIT_POPEN(
+            ["git", *args],
+            cwd=str(cwd),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = proc.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return "", "git command timed out"
+    except (FileNotFoundError, OSError) as e:
+        return "", str(e)
+    if proc.returncode == 0:
+        return stdout.strip(), ""
+    detail = (stderr or stdout or f"exit={proc.returncode}").strip()
+    return "", detail.replace("\n", " ")[:240]
+
+
+def _spawn_worktree_plan(
+    cwd: str, task_id: str
+) -> tuple[Optional[_SpawnWorktree], str]:
+    """Return an isolated worktree plan or safely decline a git checkout.
+
+    Non-git directories keep the historic behavior.  Git directories must be
+    clean before a child can run: copying uncommitted tracked changes into a
+    second checkout would either lose them or reintroduce the shared-WIP race.
+    """
+    source_cwd = Path(cwd).resolve()
+    root_text, root_err = _git_result(
+        ["rev-parse", "--show-toplevel"], source_cwd
+    )
+    if root_err:
+        if "not a git repository" in root_err.lower():
+            return None, ""
+        return None, f"ERR spawn_worktree_check_failed={root_err}"
+    repo_root = Path(root_text).resolve()
+    try:
+        relative_cwd = source_cwd.relative_to(repo_root)
+    except ValueError:
+        return None, "ERR spawn_worktree_check_failed=cwd_outside_repo"
+
+    dirty, status_err = _git_result(
+        ["status", "--porcelain", "--untracked-files=no"], repo_root
+    )
+    if status_err:
+        return None, f"ERR spawn_worktree_check_failed={status_err}"
+    if dirty:
+        return None, "ERR spawn_dirty_worktree mode=git"
+
+    try:
+        parent = ensure_task_spool_dir(TASK_LOG_DIR / _SPAWN_WORKTREE_DIRNAME)
+    except OSError as e:
+        return None, f"ERR spawn_worktree_spool_unavailable={e}"
+    path = parent / task_id
+    if path.exists() or path.is_symlink():
+        return None, "ERR spawn_worktree_path_in_use"
+    return _SpawnWorktree(
+        repo_root=repo_root,
+        relative_cwd=relative_cwd,
+        path=path,
+        branch=_SPAWN_WORKTREE_BRANCH_PREFIX + task_id,
+    ), ""
+
+
+def _remove_spawn_worktree(worktree: _SpawnWorktree) -> None:
+    """Best-effort cleanup for a worktree whose child never launched."""
+    _git_result(
+        ["worktree", "remove", "--force", str(worktree.path)],
+        worktree.repo_root,
+    )
+    _git_result(["branch", "-D", worktree.branch], worktree.repo_root)
+
+
+def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
+    """Create the task's branch/worktree after the spawn budget is reserved."""
+    _, err = _git_result(
+        [
+            "worktree", "add", "--quiet", "-b", worktree.branch,
+            str(worktree.path), "HEAD",
+        ],
+        worktree.repo_root,
+    )
+    if err:
+        _remove_spawn_worktree(worktree)
+        return f"ERR spawn_worktree_create_failed={err}"
+    if not worktree.child_cwd.is_dir():
+        _remove_spawn_worktree(worktree)
+        return "ERR spawn_worktree_create_failed=cwd_not_in_clean_checkout"
+    return ""
+
+
 def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 model: str = "", effort: str = "",
                 permission_mode: str = "auto",
@@ -519,6 +640,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         for c in task_id
     ):
         return "ERR invalid_task_id"
+    worktree, worktree_err = _spawn_worktree_plan(cwd, task_id)
+    if worktree_err:
+        return worktree_err
     sys_extra = sys_extra_template.format(
         parent=parent_cid or "(unknown)",
         child=child_cid,
@@ -778,6 +902,13 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root or None, int(retry_attempt or 0),
             ),
         )
+        if worktree is not None:
+            worktree_create_err = _create_spawn_worktree(worktree)
+            if worktree_create_err:
+                conn.rollback()
+                return worktree_create_err
+            cwd = str(worktree.child_cwd)
+            conn.execute("UPDATE tasks SET cwd=? WHERE id=?", (cwd, task_id))
     except sqlite3.Error as e:
         conn.rollback()
         return f"ERR spawn_reservation_failed={e}"
@@ -943,6 +1074,8 @@ exit $rc
                 stdin_f.close()
             proc_pid = proc.pid
     except (FileNotFoundError, OSError) as e:
+        if worktree is not None:
+            _remove_spawn_worktree(worktree)
         conn.rollback()
         return f"ERR spawn_failed={e}"
     try:

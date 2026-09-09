@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-09
+
+- **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
+  inside a clean Git checkout now receives its own task branch and worktree;
+  dirty source checkouts are refused before launch, so parallel children cannot
+  share a mutable working tree or Git index.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

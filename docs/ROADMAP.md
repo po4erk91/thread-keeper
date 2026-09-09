@@ -970,9 +970,8 @@ GitHub issues:
 - **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
   subtopic, promote it into a structured skill and retire the subsumed lessons
   instead of leaving a noisy long tail (#163).
-- **Spawn worktree isolation.** Each spawned session should get its own git
-  worktree, or repo-mutating work should be blocked when sessions would share a
-  checkout (#164).
+- **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
+  unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** `_emit()` should not silently no-op when
   session setup is missing; forgetting the setup call should be a loud error or
   an auto-ensure path (#165).

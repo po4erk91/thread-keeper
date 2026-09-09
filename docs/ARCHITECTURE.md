@@ -682,15 +682,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   branch, run the suite, and open PRs; (3) only when auto-clone is disabled does
   the package's parent dir (when it carries a `.git` entry — the
   editable-from-checkout `install.sh`) serve as an in-place fallback. The
-  managed checkout is the default even for editable installs on purpose
-  (**isolation, #164**): the loops branch-switch, merge and hard-reset the tree
-  they work in, and the editable package-parent is the user's own working tree —
-  running there would flip its branch out from under an in-progress edit. It
-  also gives the issue → PR flow a clean origin-tracking base. This makes the
-  loops work by default with no configuration and without touching your
-  checkout. Set `THREADKEEPER_EVOLVE_AUTO_CLONE=0` to disable provisioning and
-  keep the pre-isolation in-place behaviour on an editable install; on a
-  non-checkout install with auto-clone off the loops report
+  managed checkout is the default even for editable installs on purpose: the
+  loops get a clean origin-tracking base without touching the user's own
+  checkout, and the shared spawn path then gives every child its own task
+  worktree (#164). Set `THREADKEEPER_EVOLVE_AUTO_CLONE=0` to disable
+  provisioning and keep the pre-isolation in-place behaviour on an editable
+  install; on a non-checkout install with auto-clone off the loops report
   `ERR evolve_repo_unavailable=<path>` until an explicit `EVOLVE_REPO_ROOT` is
   provided. An explicit override that is not itself a checkout is never
   auto-cloned into and reports `ERR repo_root_not_git`. The disposable managed
@@ -869,6 +866,23 @@ untrusted web content and the exfiltration-capable context are never the same
 child (#79). All spawned children receive the parent's `THREADKEEPER_DB`, task
 log dir, project dir, forced cid, and write-origin env so their direct
 Python/MCP calls hit the same store as the parent.
+
+### Git worktree isolation (#164)
+
+For a `cwd` inside a Git checkout, `spawn()` first checks the source worktree's
+tracked-file status. A dirty tree is refused before task reservation or child
+launch, because replaying its WIP into another checkout would silently lose
+changes or recreate the race. A clean checkout gets a per-task branch named
+`threadkeeper/spawn-<task-id>` and a new worktree under
+`THREADKEEPER_TASK_LOG_DIR/worktrees/<task-id>`; the child runs at the matching
+relative subdirectory in that worktree, and its task row records that isolated
+cwd. Thus parallel children can commit, switch branches, and update their Git
+index without touching each other's worktree or the caller's checkout.
+
+Directories outside a Git repository retain the normal spawn behavior. The
+per-task worktree is deliberately retained after launch so a completed child's
+work remains inspectable and recoverable; it is never deleted while a child may
+still be using it.
 
 ### Slim vs full child
 
