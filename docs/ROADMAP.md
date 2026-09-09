@@ -1002,9 +1002,9 @@ GitHub issues:
 - **Spawn worktree isolation.** Each spawned session should get its own git
   worktree, or repo-mutating work should be blocked when sessions would share a
   checkout (#164).
-- **Fail-loud event emission.** `_emit()` should not silently no-op when
-  session setup is missing; forgetting the setup call should be a loud error or
-  an auto-ensure path (#165).
+- **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
+  caller skips session setup, and audited watchdog, format-evolution, and
+  passive skill-tier paths initialize their session before emitting events.
 - **Skill prune heuristic fix.** The curator's false-positive skill prune logic
   should key on real foreground use, not on auto-patch counts that make the
   current gate unreachable (#166).
@@ -1060,6 +1060,28 @@ verified gaps from the present code and test suite:
   drift from collection and the MCP registry (#278).
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
+
+**2026-09-03 reviewer additions (issue-backed).**
+The current audit reconciled the late-August backlog and added two gaps found in
+the Curator and status/notification paths:
+
+- **Curator capability separation.** Split current web research from durable
+  lesson/skill/concept mutation so no Curator child holds untrusted web input
+  and destructive memory tools in the same model context (#289).
+- **Durable Curator batch completion.** Track expected, dispatched, completed,
+  failed, and unapplied batches per pass; endorse an inventory fingerprint only
+  after every batch reaches a valid terminal state (#290).
+- **Bounded SQLite write transactions.** Migrate legacy write paths away from
+  long-lived non-autocommit `get_db()` connections, never hold writer locks
+  across subprocess or file I/O, and surface leaked transactions before they
+  wedge the daemon host (#293).
+- **Fail-closed Curator inventory collection.** Distinguish an empty store from
+  a failed lesson/skill/concept read, abort partial audits before dispatch, and
+  keep incomplete snapshots from becoming `unchanged_inventory` fingerprints
+  (#298).
+- **Sanitized status and notification excerpts.** Redact secrets and private
+  home paths from child-log-derived success/failure summaries before they reach
+  the agent-status MCP surface, menu bar, or OS notifications (#299).
 
 **2026-08-24 reviewer additions (issue-backed).**
 The current audit added two Curator gaps verified against the implementation

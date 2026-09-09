@@ -5,6 +5,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.1 — 2026-09-09
+
+### Fixed
+
+- **Core event emission now fails loudly without session setup (#165).**
+  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
+  spawn watchdog, format evolution, and passive skill-tier paths initialize
+  their session before emitting telemetry.
+
 ## [Unreleased]
 
 - **Added: dense lesson clusters now promote to canonical skills (#163).**
