@@ -1032,6 +1032,28 @@ verified gaps from the present code and test suite:
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
+**2026-09-10 reviewer additions (issue-backed).**
+The current audit reconciled five late-August/September issues and added one
+newly verified Evolve backlog-governor gap:
+
+- **Curator capability separation.** Split external research from privileged
+  lesson/skill mutation so no spawned Curator child holds web access and
+  destructive memory tools at the same time (#289).
+- **Durable multi-batch completion.** Track every Curator batch to a terminal
+  result and endow the pass only after all expected reports complete, with
+  explicit partial, timeout, and retry outcomes (#290).
+- **Database transaction cleanup.** Prevent non-autocommit `get_db()` callers
+  from leaking implicit transactions that can retain locks and wedge the
+  single-writer path (#293).
+- **Fail-closed Curator inventories.** Treat lesson or skill inventory read
+  failures as a deferred/failed pass instead of silently dispatching an
+  incomplete inventory that can drive unsafe destructive decisions (#298).
+- **Child-log redaction.** Redact captured child-output samples before they are
+  stored in agent status and recent-result telemetry (#299).
+- **Scoped Evolve backlog pressure.** Count only eligible roadmap work in the
+  reviewer backlog governor so unrelated open issues cannot suppress future
+  audits (#304).
+
 ---
 
 ## Principle
