@@ -13,6 +13,7 @@ Contract:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -165,6 +166,49 @@ def test_deleting_key_reverts_to_default(tmp_path, monkeypatch):
     assert out.startswith("reloaded")
     assert config.SHADOW_REVIEW_INTERVAL_S == 0.0
     assert "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S" not in w._applied_keys
+
+
+def test_repo_source_knobs_are_restart_only(tmp_path, monkeypatch, caplog):
+    """A settings.json edit cannot silently re-point executable clone code."""
+    for key in (
+        "THREADKEEPER_EVOLVE_REPO_URL",
+        "THREADKEEPER_EVOLVE_REPO_BRANCH",
+        "THREADKEEPER_EVOLVE_REPO_COMMIT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    pkg = _bootstrap(tmp_path, monkeypatch, shadow="600")
+    config = pkg["config"]
+    w = pkg["watcher"]
+    old = (
+        config.EVOLVE_REPO_URL,
+        config.EVOLVE_REPO_BRANCH,
+        config.EVOLVE_REPO_COMMIT,
+    )
+    w.run_config_watch_pass()  # initialize baseline
+
+    caplog.set_level(logging.WARNING, logger="threadkeeper.config_watcher")
+    _write_env(
+        pkg["settings_json"],
+        {
+            "THREADKEEPER_SHADOW_REVIEW_INTERVAL_S": "600",
+            "THREADKEEPER_EVOLVE_REPO_URL": "https://example.invalid/repo",
+            "THREADKEEPER_EVOLVE_REPO_BRANCH": "attacker-branch",
+            "THREADKEEPER_EVOLVE_REPO_COMMIT": "0" * 40,
+        },
+    )
+    out = w.run_config_watch_pass()
+
+    assert out.startswith("reloaded changed=0"), out
+    assert (
+        config.EVOLVE_REPO_URL,
+        config.EVOLVE_REPO_BRANCH,
+        config.EVOLVE_REPO_COMMIT,
+    ) == old
+    assert not (
+        w._applied_keys
+        & w._RESTART_REQUIRED_REPO_SOURCE_KEYS
+    )
+    assert "ignored restart-required managed repo source change" in caplog.text
 
 
 def test_disabled_watcher_is_noop(tmp_path, monkeypatch):

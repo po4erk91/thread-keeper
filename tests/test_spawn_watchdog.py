@@ -118,6 +118,10 @@ def test_watchdog_kills_overcap_child(mp_with_cid, monkeypatch):
         assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
         # Single-flight releases: an ended row no longer counts as running.
         assert sb._running_tasks_rss(conn) == 0
+        event = conn.execute(
+            "SELECT 1 FROM events WHERE kind='spawn_timeout' AND target='tk_hung'"
+        ).fetchone()
+        assert event is not None
         assert _wait_dead(pid), "watchdog did not actually kill the child"
     finally:
         try:

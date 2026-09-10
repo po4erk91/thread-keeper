@@ -224,7 +224,7 @@ _LOOP_TASK_PREFIXES: dict[str, str] = {
 # skill/tier/reject set, this now counts knowledge-store MUTATIONS — the most
 # consequential autonomous behavior — so a daemon adding to or deleting from
 # the lessons/claims store produces a visible number (issue #61):
-#   lesson_append / lesson_remove   — curator + shadow lesson writes/prunes
+#   lesson_append / lesson_remove   — curator + shadow lesson writes/patches/prunes
 #   curator_report_applied          — evolve_applier applied a curator report
 #   roadmap_issue_applied           — evolve_applier opened a roadmap-issue PR
 #   roadmap_issue_requeued          — closed-unmerged PR made an issue retryable
@@ -371,6 +371,12 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"dialog_vec={emb_health['dialog_vec']} "
         f"generation={emb_health['generation']}"
     )
+    from .. import ingest
+    deny_globs, denied_messages = ingest.ingest_denylist_status(conn)
+    out.append("  ingest_privacy: " + (
+        "denylist=" + ", ".join(deny_globs) if deny_globs else "denylist=(none)"
+    ))
+    out.append(f"  ingest_denied_messages={denied_messages}")
 
     # ── loops ─────────────────────────────────────────────────────────
     # Per loop: fires in window, fires in 30d, age of last fire. A loop
