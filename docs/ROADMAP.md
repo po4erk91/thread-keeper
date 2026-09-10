@@ -999,9 +999,8 @@ GitHub issues:
   checklist-style canonical skill with a `Retired lessons` provenance section
   before the source lessons are retired; any protected member produces a
   `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
-- **Spawn worktree isolation.** Each spawned session should get its own git
-  worktree, or repo-mutating work should be blocked when sessions would share a
-  checkout (#164).
+- **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
+  unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
   caller skips session setup, and audited watchdog, format-evolution, and
   passive skill-tier paths initialize their session before emitting events.

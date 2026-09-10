@@ -30,6 +30,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
+  inside a clean Git checkout now receives its own task branch and worktree;
+  dirty source checkouts are refused before launch, so parallel children cannot
+  share a mutable working tree or Git index.
+
 - **Added: dense lesson clusters now promote to canonical skills (#163).**
   Curator deterministically flags three-or-more lessons sharing a meaningful
   title-term pair, then directs a validated checklist-style skill promotion
