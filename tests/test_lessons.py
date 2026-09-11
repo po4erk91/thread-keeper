@@ -205,6 +205,40 @@ def test_mcp_lesson_append_validates_inputs(tmp_path, monkeypatch):
     assert out.startswith("ok slug=ok-one")
 
 
+def test_mcp_lesson_patch_replaces_one_unique_substring(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lp = _tool(pkg, "lesson_patch")
+    la(
+        title="retry strategy",
+        summary="Retry only transient failures.",
+        body=(
+            "Use equal jitter for transient errors; do not retry errors "
+            "indefinitely."
+        ),
+        source="shadow",
+    )
+
+    out = lp(
+        slug="retry-strategy",
+        old_string="equal jitter",
+        new_string="decorrelated jitter",
+    )
+
+    assert out.startswith("ok slug=retry-strategy")
+    section = pkg["path"].read_text()
+    assert "decorrelated jitter" in section
+    assert "equal jitter" not in section
+    assert "source=shadow" in section
+    assert "Retry only transient failures." in section
+    assert lp(
+        slug="retry-strategy", old_string="missing", new_string="x",
+    ) == "ERR old_string_not_found"
+    assert lp(
+        slug="retry-strategy", old_string="errors", new_string="x",
+    ).startswith("ERR old_string_ambiguous")
+
+
 def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -212,6 +246,28 @@ def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     out = la(title="compact rules only", body=body, source="shadow")
     assert out.startswith("ERR shadow_lesson_too_long")
     assert "max=450" in out
+
+
+def test_shadow_lesson_append_allows_non_growing_same_slug_repair(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    original = "word " * 451
+    repaired = "rule " + "word " * 450
+    pkg["lessons"].append_lesson(
+        title="long shadow lesson", body=original, source="shadow",
+    )
+
+    out = la(title="long shadow lesson", body=repaired, source="shadow")
+
+    assert out.startswith("ok slug=long-shadow-lesson")
+    assert "rule" in pkg["path"].read_text()
+    assert la(
+        title="long shadow lesson",
+        body="longer " + "word " * 450,
+        source="shadow",
+    ).startswith("ERR shadow_lesson_too_long")
 
 
 def test_shadow_lesson_append_rejects_near_duplicate_slug(
@@ -475,6 +531,41 @@ def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
     assert (artifacts[0] / "section.md").read_text().startswith(
         "<!-- LESSON:BEGIN slug=stale-duplicate "
     )
+
+
+def test_lesson_consolidation_rewrites_inbound_wikilinks(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    la(title="umbrella rule", body="new canonical rule", source="shadow")
+    la(title="retired rule", body="old duplicate rule", source="shadow")
+    la(
+        title="consumer rule",
+        body="See [[retired-rule]], [[retired-rule|this rule]], and "
+        "[[retired-rule#details]].",
+        source="shadow",
+    )
+
+    out = lr(slug="retired-rule", replacement_slug="umbrella rule")
+
+    assert out == "ok removed=retired-rule inbound_rewritten=lesson:consumer-rule"
+    consumer = _tool(pkg, "lesson_get")(slug="consumer-rule")
+    assert "[[umbrella-rule]]" in consumer
+    assert "[[umbrella-rule|this rule]]" in consumer
+    assert "[[umbrella-rule#details]]" in consumer
+    assert "[[retired-rule" not in consumer
+
+
+def test_lesson_remove_reports_dangling_wikilink_sources(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    la(title="retired rule", body="old duplicate rule", source="shadow")
+    la(title="consumer rule", body="See [[retired-rule]].", source="shadow")
+
+    out = lr(slug="retired-rule")
+
+    assert out == "ok removed=retired-rule dangling_wikilinks=lesson:consumer-rule"
 
 
 def test_mcp_lesson_restore_recreates_original_bytes(tmp_path, monkeypatch):

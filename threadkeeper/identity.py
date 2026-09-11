@@ -52,9 +52,16 @@ def _ensure_cursor(conn: sqlite3.Connection) -> None:
 
 def _emit(conn: sqlite3.Connection, kind: str,
           target: Optional[str] = None, summary: Optional[str] = None) -> None:
-    """Append to event log + bump heartbeat. Called by every mutating tool."""
+    """Append an event and heartbeat after the caller initializes its session.
+
+    Every mutating path must call :func:`_ensure_session` first. Failing loudly
+    here prevents an incomplete telemetry stream from looking successful.
+    """
     if _session_id is None:
-        return
+        raise RuntimeError(
+            "_emit() requires session setup; call _ensure_session() before "
+            "emitting events"
+        )
     now = int(time.time())
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "

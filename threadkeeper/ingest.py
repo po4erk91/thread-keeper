@@ -2,6 +2,8 @@
 Background daemon ticks every INGEST_INTERVAL_S; brief() can also call _ingest_recent_only directly."""
 from __future__ import annotations
 
+import fnmatch
+import glob
 import json as _json
 import os
 import re
@@ -103,12 +105,78 @@ def _scrub_dialog_secrets(text: str) -> str:
     return scrubbed
 
 
+def ingest_deny_globs() -> tuple[str, ...]:
+    """Return the active pre-ingest CWD/project exclusion patterns.
+
+    The environment value is deliberately read from ``config`` on each pass so
+    hot-config reloads take effect without restarting the ingester. The file is
+    also read per pass: it is a small, local policy file and immediate pickup is
+    more important than caching it in a process that may run for days.
+    """
+    from . import config
+
+    entries: list[str] = []
+    for part in str(config.INGEST_DENY_GLOBS or "").replace("\n", ",").split(","):
+        item = part.strip()
+        if item:
+            entries.append(item)
+    try:
+        lines = Path(config.INGEST_DENYLIST_FILE).expanduser().read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        item = line.strip()
+        if item and not item.startswith("#"):
+            entries.append(item)
+    # Preserve order for status output while making duplicated config harmless.
+    return tuple(dict.fromkeys(entries))
+
+
+def _normalized_path(value: str) -> str:
+    return os.path.normcase(os.path.normpath(
+        os.path.abspath(os.path.expanduser(str(value)))
+    ))
+
+
+def _origin_is_denied(origin_path: str, patterns: tuple[str, ...]) -> bool:
+    """Whether an adapter-reported project/CWD is excluded by policy.
+
+    A literal entry covers the project directory and descendants; wildcard
+    entries use shell-style glob matching against the normalized absolute CWD.
+    """
+    if not origin_path:
+        return False
+    origin = _normalized_path(origin_path)
+    for raw_pattern in patterns:
+        pattern = _normalized_path(raw_pattern)
+        if fnmatch.fnmatchcase(origin, pattern):
+            return True
+        if not glob.has_magic(pattern) and origin.startswith(pattern + os.sep):
+            return True
+    return False
+
+
+def ingest_denylist_status(conn: sqlite3.Connection) -> tuple[tuple[str, ...], int]:
+    """Return active patterns and the durable total of skipped messages."""
+    try:
+        skipped = conn.execute(
+            "SELECT COALESCE(SUM(CAST(target AS INTEGER)), 0) "
+            "FROM events WHERE kind='ingest_deny_skipped'"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        skipped = 0
+    return (ingest_deny_globs(), int(skipped or 0))
+
+
 def _record_ingest_pass(
     conn: sqlite3.Connection,
     *,
     mode: str,
     new_msgs: int,
     files_seen: int,
+    skipped_msgs: int = 0,
 ) -> None:
     """Emit a lightweight telemetry event for status/UI clients.
 
@@ -117,7 +185,8 @@ def _record_ingest_pass(
     """
     global _last_ingest_event_at
     now = int(time.time())
-    if new_msgs <= 0 and now < _last_ingest_event_at + _INGEST_EVENT_IDLE_THROTTLE_S:
+    if (new_msgs <= 0 and skipped_msgs <= 0
+            and now < _last_ingest_event_at + _INGEST_EVENT_IDLE_THROTTLE_S):
         return
     try:
         from . import identity
@@ -129,10 +198,23 @@ def _record_ingest_pass(
             (
                 session_id,
                 str(now),
-                f"ok mode={mode} new={int(new_msgs)} files={int(files_seen)}",
+                f"ok mode={mode} new={int(new_msgs)} files={int(files_seen)} "
+                f"skipped={int(skipped_msgs)}",
                 now,
             ),
         )
+        if skipped_msgs:
+            # Store only a count, never the excluded path or transcript text.
+            conn.execute(
+                "INSERT INTO events (session_id, kind, target, summary, created_at) "
+                "VALUES (?, 'ingest_deny_skipped', ?, ?, ?)",
+                (
+                    session_id,
+                    str(int(skipped_msgs)),
+                    f"mode={mode} skipped={int(skipped_msgs)}",
+                    now,
+                ),
+            )
         conn.commit()
         _last_ingest_event_at = now
     except sqlite3.OperationalError:
@@ -355,7 +437,7 @@ def _extract_text(msg: dict) -> str:
 
 
 def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
-                 adapter=None) -> int:
+                 adapter=None, skipped_counter: Optional[list[int]] = None) -> int:
     """Incrementally ingest one transcript file from the given adapter.
     Returns number of new messages added.
 
@@ -387,6 +469,8 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     # SELECT does not start Python sqlite3's implicit write transaction; this
     # keeps model inference entirely outside the single-writer critical path.
     prepared: list[dict] = []
+    deny_patterns = ingest_deny_globs()
+    skipped = 0
     text_candidates = 0
     hit_cap = False
     try:
@@ -395,6 +479,12 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                 hit_cap = True
                 break
             if not nm.uuid:
+                continue
+            # This must precede every database lookup, scrub, embedding, and
+            # skill scan: excluded transcript content never enters a durable
+            # store or any downstream learning-loop input.
+            if _origin_is_denied(nm.origin_path, deny_patterns):
+                skipped += 1
                 continue
             if conn.execute(
                 "SELECT 1 FROM dialog_messages WHERE uuid=?", (nm.uuid,)
@@ -470,6 +560,8 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
         "  ingested_at=excluded.ingested_at, msg_count=ingest_state.msg_count+excluded.msg_count",
         (str(fp), next_size, next_mtime, int(time.time()), added)
     )
+    if skipped_counter is not None:
+        skipped_counter[0] += skipped
     return added
 
 
@@ -478,6 +570,7 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
     transcript file. Returns (new_msgs, files_seen) across ALL adapters."""
     from .adapters import installed_adapters
     total = 0
+    skipped = [0]
     files_seen = 0
     for adapter in installed_adapters():
         files = adapter.transcript_files()
@@ -490,7 +583,10 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
         for fp in files:
             if total >= max_msgs:
                 break
-            added = _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+            added = _ingest_file(
+                conn, fp, max_msgs - total, adapter=adapter,
+                skipped_counter=skipped,
+            )
             total += added
             # Bound lock duration to one transcript file. Embedding for that
             # file already completed before its first DML statement.
@@ -498,7 +594,10 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
                 conn.commit()
     _normalize_codex_spawned_session_ids(conn)
     conn.commit()
-    _record_ingest_pass(conn, mode="all", new_msgs=total, files_seen=files_seen)
+    _record_ingest_pass(
+        conn, mode="all", new_msgs=total, files_seen=files_seen,
+        skipped_msgs=skipped[0],
+    )
     return (total, files_seen)
 
 
@@ -524,10 +623,14 @@ def _ingest_recent_only(conn: sqlite3.Connection,
                 fresh.append((m, p, adapter))
     fresh.sort(key=lambda x: x[0], reverse=True)
     total = 0
+    skipped = [0]
     for _, fp, adapter in fresh:
         if total >= max_msgs:
             break
-        added = _ingest_file(conn, fp, max_msgs - total, adapter=adapter)
+        added = _ingest_file(
+            conn, fp, max_msgs - total, adapter=adapter,
+            skipped_counter=skipped,
+        )
         total += added
         if conn.in_transaction:
             try:
@@ -542,7 +645,10 @@ def _ingest_recent_only(conn: sqlite3.Connection,
         except sqlite3.OperationalError:
             conn.rollback()
             raise
-    _record_ingest_pass(conn, mode="recent", new_msgs=total, files_seen=len(fresh))
+    _record_ingest_pass(
+        conn, mode="recent", new_msgs=total, files_seen=len(fresh),
+        skipped_msgs=skipped[0],
+    )
     return (total, len(fresh))
 
 

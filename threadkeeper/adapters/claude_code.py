@@ -297,6 +297,7 @@ class ClaudeCodeAdapter(CLIAdapter):
                         model=msg.get("model") or "",
                         created_at=created,
                         raw=msg,
+                        origin_path=(obj.get("cwd") or msg.get("cwd") or ""),
                     )
         except OSError:
             return

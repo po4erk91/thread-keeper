@@ -97,19 +97,26 @@ remains a live question.
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
   with `skipped_dirty_worktree` (untracked scratch files do not block), refuses
   overlapping reviewer/applier git writers in the shared checkout, and prompts
-  children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
-  instead of arbitrary current `HEAD`.
-- Evolve managed-checkout stale-merge recovery: a killed conflict-repair child
-  no longer blocks the entire backlog after its PR was merged elsewhere. The
-  parent first excludes live git writers, requires the default managed checkout
-  plus an applier-owned branch and an exact GitHub `MERGED` state, archives the
-  tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
-  base. Explicit operator checkouts and uncertain PR states remain fail-closed.
+  children to fetch the configured branch but branch only from the configured
+  immutable managed-checkout pin instead of arbitrary current `HEAD`.
+- Evolve managed-checkout interrupted-merge recovery: a killed conflict-repair
+  child no longer blocks the entire backlog whether its exact PR remains open
+  or was merged elsewhere. The parent first excludes live git writers, requires
+  the default managed checkout plus an applier-owned branch, archives the
+  tracked diff under `evolve-recovery/`, aborts open-PR merges for a clean retry,
+  and discards already-merged leftovers as stale before returning to the fetched
+  pinned base. Explicit operator checkouts and uncertain/closed-unmerged PR states
+  remain fail-closed.
 - Evolve managed-checkout lifecycle (#128): the disposable clone now refreshes
-  to the configured `origin/<EVOLVE_REPO_BRANCH>` base before each code pass,
-  without touching explicit checkouts. Clone/venv provisioning has a bounded
+  to its configured base before each code pass, without touching explicit
+  checkouts. Clone/venv provisioning has a bounded
   lock, a configurable free-disk reserve, visible footprint telemetry, and an
   explicit managed-venv prune tool.
+- Evolve managed-clone execution integrity (#132): auto-provisioning accepts
+  only HTTPS `github.com` URLs, checks out and verifies a release-pinned commit
+  before `pip install -e` or tests, and ignores runtime reloads of the source,
+  branch, or pin. The remote-code-execution boundary and shared-host opt-out
+  are documented.
 - Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
   audit child, the parent checks open PRs for automation-owned changes touching
   `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one
@@ -153,6 +160,12 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Pre-ingest privacy denylist (#145): configured project/CWD paths and globs
+  now drop matching adapter messages before redaction, embedding, or any dialog
+  write. The per-file ingest watermark still advances past skipped messages;
+  `mp_dashboard()` displays the active patterns and cumulative skipped count.
+  This prevention control complements secret redaction (#37), retention (#45),
+  and selective erasure (#104) for data stored before the denylist was enabled.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
@@ -407,10 +420,11 @@ foreground/unknown provenance, and non-foreground children cannot escalate with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
-its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
-Scope: S–M each.
+Completed follow-up: the recovery/UX path outside snapshots now has a
+recoverable lesson-removal trash flow (#52). Remaining open follow-up:
+bound the candidate_reviewer prompt payload so its full queue dump cannot hit
+`E2BIG` (#24) — the Curator inventory side is done in #105.
+Scope: S–M.
 
 ✅ DONE (#106): destructive Curator passes now have a server-side shared
 admission ceiling before `lesson_remove` or `skill_manage(action='delete')`
@@ -581,11 +595,20 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   injected content) and #63 (issue-author trust gate); the open web cannot be
   author-allowlisted, so those don't cover this path. Scope was S–M.
 
-**Evolve issue-flow reliability.** The applier posts a claim comment *before*
-spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
-full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
-can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
-spawn-after-claim test. (#23) Scope: S.
+- ✅ DONE (#144). **CI security scanning.** CodeQL now analyzes the default
+  Python query suite on PRs and pushes to `main` plus a weekly schedule, and
+  uploads results to the Security tab. A blocking `pip-audit` job scans the
+  fully resolved runtime, semantic, and development dependency set; the
+  initially clean baseline has no exceptions, and any future advisory-specific
+  suppression must be reviewed, tracked, justified, and dated in
+  `.github/pip-audit-ignores.txt`. Dependabot also tracks the Docker base image.
+  Scope was S.
+
+**Evolve issue-flow reliability (done, #23).** The applier now checks for an
+existing issue-linked PR before claiming, resolves multi-host claim races, and
+retracts its claim when spawning raises. Returned `ERR ...` admission results
+that do not raise are tracked separately by the open spawn-result contract
+work (#276). Scope was S.
 
 **Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
 get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
@@ -964,21 +987,30 @@ GitHub issues:
   records views and `lesson_get` records full-body consultations in
   `lesson_usage`; the curator inventory and stale-lesson decay score use those
   counters and timestamps rather than registration age alone.
-- **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
-  shadow edit path that can fix long lessons without re-transcribing them from
-  scratch (#161).
-- **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
-  that target merged-away lesson/skill slugs so consolidation does not leave
-  dead pointers behind (#162).
-- **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
-  subtopic, promote it into a structured skill and retire the subsumed lessons
-  instead of leaving a noisy long tail (#163).
-- **Spawn worktree isolation.** Each spawned session should get its own git
-  worktree, or repo-mutating work should be blocked when sessions would share a
-  checkout (#164).
-- **Fail-loud event emission.** `_emit()` should not silently no-op when
-  session setup is missing; forgetting the setup call should be a loud error or
-  an auto-ensure path (#165).
+- **Surgical lesson patching.** ✅ DONE (#161). `lesson_patch(slug,
+  old_string, new_string)` changes one unique lesson substring without
+  reserializing its section. Overlong `source='shadow'` replacements may only
+  bypass the cap for an existing same slug when they do not increase its body
+  size, so old long lessons remain repairable without admitting new growth.
+- **Inbound link repair on consolidation.** ✅ DONE (#162). `lesson_remove`
+  and `skill_manage(action='delete')` accept a surviving umbrella target and
+  rewrite inbound `[[wikilinks]]` across lessons and mirrored skills. Plain
+  removals report the full dangling-source set for immediate repair.
+- **Lesson-to-skill promotion.** ✅ DONE (#163). The Curator now flags a
+  deterministic dense subtopic when at least three lessons share a pair of
+  meaningful title terms. An unprotected candidate becomes one validated,
+  checklist-style canonical skill with a `Retired lessons` provenance section
+  before the source lessons are retired; any protected member produces a
+  `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
+- **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
+  unique task branch/worktree; a dirty source checkout is refused before launch.
+- **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
+  caller skips session setup, and audited watchdog, format-evolution, and
+  passive skill-tier paths initialize their session before emitting events.
+- **Skill prune heuristic fix.** ✅ DONE (#166). The curator's
+  false-positive prune rubric now keys on foreground consultations: a
+  background-review skill with `fg_uses=0` remains eligible after 14 days even
+  when automated maintenance increments its patch counter.
 - **Lesson contradiction reconciliation.** When a new lesson debunks an older
   permissive lesson or encodes an absolute user directive, flag the older
   guidance for patch/cross-link/supersession review (#167).
@@ -1031,6 +1063,54 @@ verified gaps from the present code and test suite:
   drift from collection and the MCP registry (#278).
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
+
+**2026-09-03 reviewer additions (issue-backed).**
+The current audit reconciled the late-August backlog and added two gaps found in
+the Curator and status/notification paths:
+
+- **Curator capability separation.** Split current web research from durable
+  lesson/skill/concept mutation so no Curator child holds untrusted web input
+  and destructive memory tools in the same model context (#289).
+- **Durable Curator batch completion.** Track expected, dispatched, completed,
+  failed, and unapplied batches per pass; endorse an inventory fingerprint only
+  after every batch reaches a valid terminal state (#290).
+- **Bounded SQLite write transactions.** Migrate legacy write paths away from
+  long-lived non-autocommit `get_db()` connections, never hold writer locks
+  across subprocess or file I/O, and surface leaked transactions before they
+  wedge the daemon host (#293).
+- **Fail-closed Curator inventory collection.** Distinguish an empty store from
+  a failed lesson/skill/concept read, abort partial audits before dispatch, and
+  keep incomplete snapshots from becoming `unchanged_inventory` fingerprints
+  (#298).
+- **Sanitized status and notification excerpts.** Redact secrets and private
+  home paths from child-log-derived success/failure summaries before they reach
+  the agent-status MCP surface, menu bar, or OS notifications (#299).
+
+**2026-08-24 reviewer additions (issue-backed).**
+The current audit added two Curator gaps verified against the implementation
+and focused regression suite:
+
+- **Separate Curator research from destructive mutation.** A destructive
+  Curator child currently combines required `WebSearch`/`WebFetch` research
+  with tools that patch or delete durable lessons, skills, and concepts. Split
+  the pass into a bounded read-only evidence phase and a web-free mutation
+  phase, with the separation enforced mechanically (#289).
+- **Durable multi-batch completion.** Track expected Curator batches through
+  dispatch, completion, provenance, and advisory apply state; endorse an
+  inventory only after all batches finish, bound batch fan-out, retry missing
+  batches, and prevent the report applier from silently superseding earlier
+  reports with the newest batch (#290).
+
+**2026-08-28 reviewer addition (issue-backed).**
+The current audit reconciled the latest daemon-host incident with the database
+write paths and added the remaining root cause to the live roadmap:
+
+- **SQLite writer transaction and connection lifecycle.** Migrate legacy write
+  paths from caller-managed `get_db()` connections to short, rollback-safe
+  `run_write()` transactions; never hold a writer reservation across child
+  launch or file I/O; and add a leaked-transaction / connection-count guard so
+  a stalled single writer becomes visible before heartbeats, reaping, and
+  notifications cascade into failure (#293).
 
 ---
 

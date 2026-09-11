@@ -14,14 +14,16 @@ stat per target per tick — cheap):
    Desktop, Codex, Antigravity, Copilot, VS Code) — not just Claude.
    On change we call `config.reload_settings()` with NO os.environ mirroring:
    pydantic re-reads the file natively and real spawn-time env vars keep their
-   precedence (env var > .env file > default). No precedence inversion.
+   precedence (env var > .env file > default). No precedence inversion. The
+   managed-clone source, branch, and commit stay at their process-start values.
 
 2. **The host CLI's own env-block file**, resolved from the active-CLI
    identity (Claude Code → `~/.claude/settings.json`). Its `env` block is
    mirrored into `os.environ` and republished — MINUS any key a
-   higher-priority layer already pinned at spawn (see below). CLIs whose env
-   block we cannot yet parse as a flat map rely on target 1 alone (they still
-   hot-reload, just via the universal `.env`).
+   higher-priority layer already pinned at spawn and the restart-only
+   `THREADKEEPER_EVOLVE_REPO_{URL,BRANCH,COMMIT}` keys (see below). CLIs whose
+   env block we cannot yet parse as a flat map rely on target 1 alone (they
+   still hot-reload, just via the universal `.env`).
 
 `THREADKEEPER_CONFIG_WATCH_PATH` is an escape hatch / test seam: when set it
 pins ONE file (watched as a CLI-settings target), and the universal env-file
@@ -32,7 +34,8 @@ On a real change the daemon:
 1. parses the changed file (target 2) or re-reads natively (target 1),
 2. for target 2, mirrors the threadkeeper-relevant keys into `os.environ`
    (applying new values and dropping keys the user deleted), excluding keys a
-   higher-priority scope pinned at spawn (issue #133 precedence guard),
+   higher-priority scope pinned at spawn (issue #133 precedence guard) and the
+   restart-only managed-clone source keys,
 3. calls `config.reload_settings()` which re-instantiates `Settings`,
    re-publishes the module constants, and propagates every changed value into
    the loaded `threadkeeper.*` modules that imported a copy, and
@@ -50,6 +53,10 @@ Caveats (from the roadmap item):
 - Racy multi-writer edits are handled by debounce (poll granularity) + a
   JSON-parse guard: a half-written file is skipped and retried next tick, and
   the mtime cursor is only advanced on a clean read.
+- Changes to `THREADKEEPER_EVOLVE_REPO_URL`,
+  `THREADKEEPER_EVOLVE_REPO_BRANCH`, or `THREADKEEPER_EVOLVE_REPO_COMMIT` are
+  logged and ignored until the host process is restarted. Those settings govern
+  a checkout whose build and tests execute remote code.
 """
 
 from __future__ import annotations
@@ -90,6 +97,27 @@ _shadowed_keys: set[str] = set()             # cli-file keys a higher layer pins
 _UNPREFIXED_KEYS: frozenset[str] = frozenset(
     {"CLAUDE_SKILLS_DIR", "CLAUDE_PROJECTS_DIR"}
 )
+
+# The managed checkout installs and tests remote code. Its source and immutable
+# commit are accepted only at process start, never from a hot-reloaded file.
+# A restart makes any attempted change explicit in the host's process boundary.
+_RESTART_REQUIRED_REPO_SOURCE_KEYS: frozenset[str] = frozenset({
+    "THREADKEEPER_EVOLVE_REPO_URL",
+    "THREADKEEPER_EVOLVE_REPO_BRANCH",
+    "THREADKEEPER_EVOLVE_REPO_COMMIT",
+})
+_RESTART_REQUIRED_REPO_SOURCE_CONSTANTS: frozenset[str] = frozenset({
+    "EVOLVE_REPO_URL",
+    "EVOLVE_REPO_BRANCH",
+    "EVOLVE_REPO_COMMIT",
+})
+_RESTART_REQUIRED_REPO_SOURCE_FIELDS: dict[str, str] = {
+    "THREADKEEPER_EVOLVE_REPO_URL": "evolve_repo_url",
+    "THREADKEEPER_EVOLVE_REPO_BRANCH": "evolve_repo_branch",
+    "THREADKEEPER_EVOLVE_REPO_COMMIT": "evolve_repo_commit",
+}
+_env_repo_source_values: dict[str, str] = {}
+_cli_repo_source_values: dict[str, str] = {}
 
 # Host CLI -> its env-block settings file (relative to $HOME). Only CLIs whose
 # env block we can parse as a flat {key: value} JSON map appear here. Others
@@ -162,6 +190,23 @@ def _relevant_env(path: Path) -> dict[str, str]:
     }
 
 
+def _warn_ignored_repo_source_changes(
+    previous: dict[str, str], current: dict[str, str], *, source: str,
+) -> None:
+    """Log restart-required managed-checkout changes without their values."""
+    changed = sorted(
+        key for key in set(previous) | set(current)
+        if previous.get(key) != current.get(key)
+    )
+    if changed:
+        logger.warning(
+            "config_watch: ignored restart-required managed repo source "
+            "change(s) from %s: %s",
+            source,
+            ", ".join(changed),
+        )
+
+
 def _record_pass(conn: sqlite3.Connection, mtime: float, outcome: str) -> None:
     """Write a `config_watch_pass` event for observability (status tool +
     dashboards). `target` carries the mtime cursor, `summary` the outcome."""
@@ -208,7 +253,7 @@ def _tick_env_file(force: bool) -> Optional[str]:
     NO os.environ mirroring, so the real spawn-time env still wins (pydantic
     precedence: env vars > .env file). Returns a per-target status string, or
     None when the file is absent (nothing to watch)."""
-    global _env_last_mtime
+    global _env_last_mtime, _env_repo_source_values
     path = _env_file_path()
     try:
         mtime = path.stat().st_mtime
@@ -223,13 +268,29 @@ def _tick_env_file(force: bool) -> Optional[str]:
     # First sighting (cold process): the file was already loaded by Settings()
     # at spawn, so just record the baseline. No reload — nothing changed yet.
     if not force and _env_last_mtime is None:
+        loaded = config.Settings()
+        _env_repo_source_values = {
+            key: str(getattr(loaded, field))
+            for key, field in _RESTART_REQUIRED_REPO_SOURCE_FIELDS.items()
+        }
         _env_last_mtime = mtime
         return "initialized"
 
     # Native re-read: reload_settings() re-instantiates Settings(), which reads
-    # os.environ + the .env file fresh. Passing no env/remove means we never
-    # mirror the (lower-priority) file into os.environ.
-    changed = config.reload_settings()
+    # os.environ + the .env file fresh. Source settings remain restart-only so
+    # a file edit cannot re-point the managed remote in a running process.
+    loaded = config.Settings()
+    repo_source_values = {
+        key: str(getattr(loaded, field))
+        for key, field in _RESTART_REQUIRED_REPO_SOURCE_FIELDS.items()
+    }
+    _warn_ignored_repo_source_changes(
+        _env_repo_source_values, repo_source_values, source="env-file",
+    )
+    _env_repo_source_values = repo_source_values
+    changed = config.reload_settings(
+        preserve=set(_RESTART_REQUIRED_REPO_SOURCE_CONSTANTS),
+    )
     _env_last_mtime = mtime
     started = _restart_changed_daemons(changed)
     return f"reloaded changed={len(changed)} started={started}"
@@ -245,7 +306,7 @@ def _tick_cli_settings(force: bool) -> Optional[str]:
     Returns a per-target status string, or None when there is no CLI env-block
     file for this host (the universal env-file target covers it instead).
     """
-    global _last_mtime, _applied_keys, _shadowed_keys
+    global _last_mtime, _applied_keys, _shadowed_keys, _cli_repo_source_values
     path = _cli_settings_path()
     if path is None:
         return None
@@ -273,7 +334,15 @@ def _tick_cli_settings(force: bool) -> Optional[str]:
             k for k, v in present.items()
             if os.environ.get(k) not in (None, v)
         }
-        _applied_keys = set(present) - _shadowed_keys
+        _cli_repo_source_values = {
+            key: value for key, value in present.items()
+            if key in _RESTART_REQUIRED_REPO_SOURCE_KEYS
+        }
+        _applied_keys = (
+            set(present)
+            - _shadowed_keys
+            - _RESTART_REQUIRED_REPO_SOURCE_KEYS
+        )
         _last_mtime = mtime
         return "initialized"
 
@@ -284,7 +353,19 @@ def _tick_cli_settings(force: bool) -> Optional[str]:
         # has finished. This is the debounce/lock guard for racy writers.
         return f"parse_error: {e}"
 
-    desired = {k: v for k, v in present.items() if k not in _shadowed_keys}
+    repo_source_values = {
+        key: value for key, value in present.items()
+        if key in _RESTART_REQUIRED_REPO_SOURCE_KEYS
+    }
+    _warn_ignored_repo_source_changes(
+        _cli_repo_source_values, repo_source_values, source="cli-settings",
+    )
+    _cli_repo_source_values = repo_source_values
+    desired = {
+        k: v for k, v in present.items()
+        if k not in _shadowed_keys
+        and k not in _RESTART_REQUIRED_REPO_SOURCE_KEYS
+    }
     remove = sorted(_applied_keys - set(desired))
     changed = config.reload_settings(env=desired, remove=remove)
     _applied_keys = set(desired)
