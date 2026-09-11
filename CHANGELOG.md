@@ -6,6 +6,7 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
@@ -97,6 +98,17 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.16.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
 
 ## v0.16.3 — 2026-07-19
 

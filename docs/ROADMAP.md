@@ -35,6 +35,9 @@ remains a live question.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
+- Curator false-positive skill pruning (#166): background-review skills with
+  zero foreground consultations remain eligible after 14 days even when
+  automated maintenance has increased their patch counts.
 - Dialectic user model: `dialectic_claim` / `evidence` / `synthesis` /
   `review` / `supersede`, smoothed-ratio confidence, grouping by domain
   in brief.
@@ -976,9 +979,6 @@ GitHub issues:
 - **Fail-loud event emission.** `_emit()` should not silently no-op when
   session setup is missing; forgetting the setup call should be a loud error or
   an auto-ensure path (#165).
-- **Skill prune heuristic fix.** The curator's false-positive skill prune logic
-  should key on real foreground use, not on auto-patch counts that make the
-  current gate unreachable (#166).
 - **Lesson contradiction reconciliation.** When a new lesson debunks an older
   permissive lesson or encodes an absolute user directive, flag the older
   guidance for patch/cross-link/supersession review (#167).

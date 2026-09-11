@@ -223,10 +223,11 @@ verdicts above):
   superseded by a newer entry, or a **FALSE POSITIVE** (auto-created
   by the background-review loop but never validated by actual use).
   Specifically flag as PRUNE:
-    • origin=background_review AND use_count=0 AND patches=0 AND
-      created >14 days ago → strong false-positive signal: nobody ever
-      consulted it, and the agent that created it never came back to
-      refine it.
+    • origin=background_review AND fg_uses=0 AND created >14 days ago
+      → strong false-positive signal: no foreground user or agent ever
+      consulted it. `maintenance_patches` count automated or other maintenance
+      writes; they are not foreground consultation and never reset this
+      eligibility signal.
     • SKILL_OUTCOME signals (in the events table) marking the skill
       as 'wrong' more often than 'helped' → user-judgment override.
   Format:

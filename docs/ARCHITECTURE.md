@@ -1173,7 +1173,11 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `foreground`, `pinned=1`, or **`tier='validated'`** (proven externally).
   Hypothesis-tier ages at half the configured window (unproven skills
   don't linger); observed-tier uses the default window. On apply,
-  physically archives into `.archive/<name>`.
+  physically archives into `.archive/<name>`. Its false-positive rubric uses
+  `foreground_use_count` and creation age: a background-review skill with
+  `fg_uses=0` after 14 days remains eligible for prune review even when
+  automation has incremented `patch_count`. Patch activity is maintenance, not
+  evidence of a foreground consultation.
 
 - **Skill tier** (`hypothesis`/`observed`/`validated`) — discrete trust
   signal driven by `foreground_use_count` and `wrong_count`. Mirrors
