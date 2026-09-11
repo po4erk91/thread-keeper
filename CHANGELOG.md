@@ -5,6 +5,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
+
 ## v0.17.3 — 2026-09-09
 
 - **Fixed: skill and lesson notifications name the materialized result.**

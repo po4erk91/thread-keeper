@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import time
 from typing import Iterable
 
 import yaml
@@ -245,7 +246,8 @@ def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[st
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
             "last_viewed_at, last_patched_at, use_count, view_count, "
-            "patch_count, pinned, state, tier FROM skill_usage" + where
+            "patch_count, foreground_use_count, pinned, state, tier "
+            "FROM skill_usage" + where
             + " ORDER BY name"
         ).fetchall()
     except sqlite3.OperationalError:
@@ -327,7 +329,7 @@ def _record_for(
             for key in (
                 "created_at", "last_used_at", "last_viewed_at",
                 "last_patched_at", "use_count", "view_count", "patch_count",
-                "pinned",
+                "foreground_use_count", "pinned",
             )
         },
         "source_path": str(source) if source else None,
@@ -533,9 +535,20 @@ def format_skill_checklist(manifest: dict) -> str:
     for index, record in enumerate(manifest["skills"], start=1):
         flags = ",".join(record["findings"]) or "clean"
         protected = " [PROTECTED]" if record["protected"] else ""
+        telemetry = record["telemetry"]
+        created_at = int(telemetry.get("created_at") or 0)
+        created_age = (
+            max(0, int(time.time()) - created_at) // 86400
+            if created_at else "?"
+        )
         lines.append(
             f"{index}. SKILL {record['name']}{protected} "
             f"state={record['state']} origin={record['origin']} "
+            f"fg_uses={telemetry.get('foreground_use_count') or 0} "
+            f"uses={telemetry.get('use_count') or 0} "
+            f"views={telemetry.get('view_count') or 0} "
+            f"maintenance_patches={telemetry.get('patch_count') or 0} "
+            f"created={created_age}d_ago "
             f"source_kind={record['source_kind']} "
             f"source={record['source_path'] or '-'} findings={flags}"
         )

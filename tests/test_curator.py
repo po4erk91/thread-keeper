@@ -843,6 +843,48 @@ def test_skill_validator_is_exhaustive_and_semantic(tmp_path, monkeypatch):
     assert "3. SKILL second-skill" in checklist
 
 
+def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    _write_audit_skill(
+        pkg["skills_dir"], "patched-background-skill", "# Rule\nDo the test.",
+    )
+    now = int(time.time())
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, last_patched_at, patch_count, "
+        "foreground_use_count, state) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "patched-background-skill", now - 30 * 86400,
+            "background_review", now, 4, 0, "active",
+        ),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=patched-background-skill pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    pkg["curator"].run_curator_pass(force=True)
+
+    prompt = captured[0]["prompt"]
+    assert "origin=background_review AND fg_uses=0" in prompt
+    assert "they are not foreground consultation" in prompt
+    assert "SKILL patched-background-skill" in prompt
+    assert "fg_uses=0" in prompt
+    assert "maintenance_patches=4" in prompt
+    assert "created=30d_ago" in prompt
+    assert "patches=0" not in prompt
+
+
 def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     primary = pkg["skills_dir"]

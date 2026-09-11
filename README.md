@@ -672,6 +672,12 @@ non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
 
+For automation-created skills, the audit keeps foreground consultation separate
+from maintenance: a background-review skill with `fg_uses=0` after 14 days is
+still a false-positive prune candidate even if automatic review or sync loops
+have increased its patch counter. Patches are maintenance activity, not proof
+that a foreground user or agent consulted the skill.
+
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. Repeated manual calls over identical bytes
 return `unchanged_inventory`; the scheduled three-day pass still runs because
