@@ -567,7 +567,9 @@ can correct one unique substring without reserializing a lesson. Shadow-origin
 though an existing same-slug long lesson may be corrected without increasing
 its body size; near-duplicate slugs are blocked, and semantic body matches are
 routed to the incumbent lesson or surfaced for curation instead of minting a
-sibling lesson.
+sibling lesson. A clear new directive or debunk also flags older permissive
+lessons on the same concrete practice for patch, cross-link, or supersession
+review.
 
 #### 3. Extract daemon
 

@@ -1073,7 +1073,10 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
    + skill_list + mark_skill_materialized.
 6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
    first checks existing lessons/skills, then prefers patching or creating a
-   broad skill. `lesson_append(source='shadow')` is the compact fallback.
+   broad skill. `lesson_append(source='shadow')` is the compact fallback; a
+   clear new directive or debunk records `lesson_reconciliation` events for
+   older permissive lessons on the same concrete practice so a curator can
+   patch, cross-link, or supersede them.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
 8. Write events.kind='shadow_review_pass' with the new high-water rowid only

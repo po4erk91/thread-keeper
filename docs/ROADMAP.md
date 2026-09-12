@@ -1011,9 +1011,11 @@ GitHub issues:
   false-positive prune rubric now keys on foreground consultations: a
   background-review skill with `fg_uses=0` remains eligible after 14 days even
   when automated maintenance increments its patch counter.
-- **Lesson contradiction reconciliation.** When a new lesson debunks an older
-  permissive lesson or encodes an absolute user directive, flag the older
-  guidance for patch/cross-link/supersession review (#167).
+- **Lesson contradiction reconciliation.** ✅ DONE (#167). `lesson_append`
+  now detects clear debunks and absolute directives, records a
+  `lesson_reconciliation` event for each older permissive lesson on the same
+  concrete practice, and returns those slugs for patch/cross-link/supersession
+  review.
 - **Skill telemetry sanity.** Skill view/use counters need to be verified and
   surfaced correctly so the curator can trust the disuse/prune signal instead of
   operating on a dead or undercounted metric (#168).

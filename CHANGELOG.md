@@ -207,6 +207,16 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-09-12
+
+### Added
+
+- **Lesson contradiction reconciliation (#167).** A clear new absolute
+  directive or concrete-practice debunk now scans older lessons for permissive
+  guidance on the same topic. Each match emits a `lesson_reconciliation` event
+  and is returned from `lesson_append` for patch, cross-link, or supersession
+  review; conflicting lessons no longer take the normal semantic-dedup route.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed
