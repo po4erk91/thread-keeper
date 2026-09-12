@@ -300,6 +300,74 @@ def test_shadow_lesson_append_semantic_duplicate_patches_incumbent(
     assert "serialize AVD boot lock acquisition" in body
 
 
+def test_new_directive_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    first = la(
+        title="module globals for test configuration",
+        body=(
+            "You can use module globals to pass test configuration between "
+            "runner steps when setup is simple."
+        ),
+        source="shadow",
+    )
+    assert first.startswith("ok")
+
+    out = la(
+        title="inject test configuration explicitly",
+        body=(
+            "Never use module globals to pass test configuration between "
+            "runner steps; inject dependencies explicitly instead."
+        ),
+        source="shadow",
+    )
+
+    assert out.startswith("ok slug=inject-test-configuration-explicitly")
+    assert "reconciliation=module-globals-for-test-configuration" in out
+    assert "review=patch_or_cross_link" in out
+    assert pkg["lessons"].count_lessons() == 2
+    row = pkg["db"].get_db().execute(
+        "SELECT target, summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert row["target"] == "module-globals-for-test-configuration"
+    assert "new=inject-test-configuration-explicitly" in row["summary"]
+    assert "reason=absolute_directive" in row["summary"]
+
+
+def test_new_debunk_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    la(
+        title="shared runner environment state",
+        body=(
+            "It is safe to keep shared runner environment state throughout "
+            "a test workflow."
+        ),
+        source="shadow",
+    )
+
+    out = la(
+        title="shared runner environment state is unreliable",
+        body=(
+            "Keeping shared runner environment state is unreliable; pass the "
+            "environment to each command instead."
+        ),
+        source="shadow",
+    )
+
+    assert "reconciliation=shared-runner-environment-state" in out
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert "reason=debunk" in row["summary"]
+
+
 def test_shadow_lesson_append_semantic_borderline_surfaces_duplicate(
     tmp_path, monkeypatch,
 ):
