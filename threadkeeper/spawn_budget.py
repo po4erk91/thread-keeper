@@ -396,7 +396,8 @@ def _reap_timed_out(conn, row, now: int) -> bool:
             row["id"], age, SPAWN_MAX_RUNTIME_S,
         )
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(conn, "spawn_timeout", target=row["id"],
                   summary=f"runtime {age}s exceeded cap {SPAWN_MAX_RUNTIME_S}s")
         except Exception:
@@ -477,7 +478,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     """
     if SPAWN_TIMEOUT_RETRY_LIMIT <= 0:
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(conn, "spawn_timeout_retry_skipped", target=row["id"],
                   summary="disabled limit=0")
             conn.commit()
@@ -489,7 +491,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     next_attempt = current_attempt + 1
     if next_attempt > SPAWN_TIMEOUT_RETRY_LIMIT:
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(
                 conn,
                 "spawn_timeout_retry_skipped",
@@ -536,7 +539,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
 
     retry_id = _parse_spawned_task_id(result)
     try:
-        from .identity import _emit
+        from .identity import _emit, _ensure_session
+        _ensure_session(conn)
         if retry_id:
             conn.execute(
                 "UPDATE tasks SET timeout_respawned_as=? WHERE id=?",

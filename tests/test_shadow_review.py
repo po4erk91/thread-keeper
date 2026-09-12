@@ -375,6 +375,7 @@ def test_run_shadow_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "lesson_list(k=80)" in kw["prompt"]
     assert "hard cap 450" in kw["prompt"]
     assert "mcp__thread-keeper__lesson_get" in kw["extra_allowed_tools"]
+    assert "mcp__thread-keeper__lesson_patch" in kw["extra_allowed_tools"]
     assert long_msg.strip()[:40] in kw["prompt"]
     # De-privileged (issue #76): no bare Read/Write — path-scoped skill/
     # lesson MCP tools only.
