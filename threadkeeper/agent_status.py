@@ -878,17 +878,47 @@ def _extract_useful_result(task_id: str) -> str:
     return ""
 
 
-def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+def _recent_materializations(conn, now: int, limit: int) -> list[dict[str, Any]]:
+    """Name actual writes, including foreground writes without a child task."""
     from . import config
-    # Positive materialization notifications (#257). These are captured skills /
-    # lessons surfaced as useful loop output; the app posts a banner only when
-    # notifications are enabled (NOTIFY_POLL_S master gate) and a positive toggle
-    # is on, but the menu always lists them (`notify` flag).
+    from .notify import _fmt_skill, _fmt_lesson
+
     enabled = float(getattr(config, "NOTIFY_POLL_S", 0) or 0) > 0
-    positive_notify = enabled and bool(
-        getattr(config, "NOTIFY_SKILL_MATERIALIZED", False)
-        or getattr(config, "NOTIFY_LESSON", False)
-    )
+    rows = conn.execute(
+        "SELECT id, kind, target, summary, created_at FROM events "
+        "WHERE kind IN ('skill_create', 'skill_materialized', 'lesson_append') "
+        "AND created_at>=? ORDER BY created_at DESC, id DESC LIMIT ?",
+        (now - _RESULT_WINDOW_S, int(limit)),
+    ).fetchall()
+    results = []
+    for row in rows:
+        skill = row["kind"] != "lesson_append"
+        title, summary = (_fmt_skill if skill else _fmt_lesson)(dict(row))
+        if not summary:
+            continue
+        age_s = max(0, now - row["created_at"])
+        results.append({
+            "id": f"materialization:{row['id']}",
+            "task_id": "",
+            "role": "skill" if skill else "lesson",
+            "loop_id": "",
+            "loop_name": "Skill" if skill else "Lesson",
+            "title": title,
+            "summary": summary,
+            "ended_at": row["created_at"],
+            "age_s": age_s,
+            "age": fmt_age(age_s),
+            "notify": enabled and bool(
+                config.NOTIFY_SKILL_MATERIALIZED if skill else config.NOTIFY_LESSON
+            ),
+        })
+    return results
+
+
+def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+    # Event-backed materializations carry names and per-category toggles.
+    # Generic completion reports remain in history without duplicate banners.
+    materializations = _recent_materializations(conn, now, limit)
     role_loop = _role_to_loop()
     rows = conn.execute(
         "SELECT id, prompt, ended_at, return_code FROM tasks "
@@ -919,11 +949,12 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
             "ended_at": ended_at,
             "age_s": age_s,
             "age": fmt_age(age_s),
-            "notify": positive_notify,
+            "notify": False,
         })
         if len(results) >= limit:
             break
-    return results
+    return sorted(materializations + results, key=lambda r: r["ended_at"],
+                  reverse=True)[:limit]
 
 
 def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
