@@ -98,6 +98,17 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.16.4 — 2026-09-13
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

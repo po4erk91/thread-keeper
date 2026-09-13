@@ -35,6 +35,10 @@ remains a live question.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
+- Skill telemetry sanity (#168): passive `Skill` invocations increment raw and
+  foreground use counters, `skill_list` records visibility, and curator
+  inventory shows raw uses, foreground uses, views, and patches without
+  counting its own automated inventory read as a consultation.
 - Dialectic user model: `dialectic_claim` / `evidence` / `synthesis` /
   `review` / `supersede`, smoothed-ratio confidence, grouping by domain
   in brief.
@@ -982,9 +986,6 @@ GitHub issues:
 - **Lesson contradiction reconciliation.** When a new lesson debunks an older
   permissive lesson or encodes an absolute user directive, flag the older
   guidance for patch/cross-link/supersession review (#167).
-- **Skill telemetry sanity.** Skill view/use counters need to be verified and
-  surfaced correctly so the curator can trust the disuse/prune signal instead of
-  operating on a dead or undercounted metric (#168).
 
 **2026-06-26 reviewer additions (issue-backed).**
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
