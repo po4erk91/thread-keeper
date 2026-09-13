@@ -38,6 +38,10 @@ remains a live question.
 - Curator false-positive skill pruning (#166): background-review skills with
   zero foreground consultations remain eligible after 14 days even when
   automated maintenance has increased their patch counts.
+- Skill telemetry sanity (#168): passive `Skill` invocations increment raw and
+  foreground use counters, `skill_list` records visibility, and curator
+  inventory shows raw uses, foreground uses, views, and patches without
+  counting its own automated inventory read as a consultation.
 - Dialectic user model: `dialectic_claim` / `evidence` / `synthesis` /
   `review` / `supersede`, smoothed-ratio confidence, grouping by domain
   in brief.
@@ -1016,9 +1020,11 @@ GitHub issues:
   `lesson_reconciliation` event for each older permissive lesson on the same
   concrete practice, and returns those slugs for patch/cross-link/supersession
   review.
-- **Skill telemetry sanity.** Skill view/use counters need to be verified and
-  surfaced correctly so the curator can trust the disuse/prune signal instead of
-  operating on a dead or undercounted metric (#168).
+- **Skill telemetry sanity.** ✅ DONE (#168). `skill_list` increments view
+  counters, transcripted `Skill` invocations record raw and foreground use
+  where appropriate, and the curator inventory shows raw uses, foreground
+  uses, views, and patches without counting its own inventory read as a
+  consultation.
 
 **2026-06-26 reviewer additions (issue-backed).**
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson

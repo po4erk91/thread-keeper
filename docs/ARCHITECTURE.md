@@ -1158,12 +1158,14 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `outcome='wrong'` bumps `wrong_count` and may demote a tier.
 
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
-  from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
-  the curator gets real numbers without the agent being required to call
-  `skill_record` manually. `foreground_use_count` is gated by the same harvest
-  lineage exclusion, so autonomous child self-use cannot promote a skill tier.
-  The `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
-  directly, not through skill_manage).
+  from jsonl: sees `name=Skill` → raw `use_count++`, `last_used_at=ts`. The
+  `foreground_use_count` is the authoritative promotion/trust signal: it is
+  the foreground subset of raw uses, with spawned review-fork activity
+  excluded so automation cannot promote a skill tier. `skill_list` records a
+  `view_count` bump for every returned row. The curator checklist shows raw
+  uses, foreground uses, views, and patches, but the curator's own automated
+  inventory read does not count as a view. The `skill_watcher` daemon catches
+  external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
 
 - **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
   `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a

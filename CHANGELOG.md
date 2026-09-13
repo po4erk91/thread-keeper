@@ -5,6 +5,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.5 — 2026-09-13
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
 ## v0.17.4 — 2026-09-11
 
 ### Fixed

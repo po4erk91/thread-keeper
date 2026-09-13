@@ -152,15 +152,15 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     conn.execute(
         "INSERT INTO skill_usage "
         "(name, created_at, created_by_origin, last_used_at, "
-        " use_count, pinned, state) "
-        "VALUES (?, ?, 'foreground', ?, 5, 1, 'active')",
+        " use_count, foreground_use_count, view_count, pinned, state) "
+        "VALUES (?, ?, 'foreground', ?, 5, 4, 3, 1, 'active')",
         ("pinned-skill", now - 86400, now - 3600),
     )
     conn.execute(
         "INSERT INTO skill_usage "
         "(name, created_at, created_by_origin, last_used_at, "
-        " use_count, state) "
-        "VALUES (?, ?, 'background_review', ?, 2, 'active')",
+        " use_count, foreground_use_count, view_count, state) "
+        "VALUES (?, ?, 'background_review', ?, 2, 1, 6, 'active')",
         ("auto-created-skill", now - 172800, now - 7200),
     )
     conn.commit()
@@ -177,6 +177,8 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     # background_review skill (not pinned) is NOT protected
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
+    assert "fg_uses=4 uses=5 views=3 maintenance_patches=0" in dump
+    assert "fg_uses=1 uses=2 views=6 maintenance_patches=0" in dump
     assert "STALE LESSONS (dry-run decay ranking)" in dump
 
 
