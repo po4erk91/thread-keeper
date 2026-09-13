@@ -120,15 +120,54 @@ def main() -> int:
             # confirmed empirically while building this).
             stop = threading.Event()
             signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            # Self-heal: a leaked write transaction elsewhere in this process
+            # (a legacy get_db() connection left mid-write) holds SQLite's
+            # single-writer lock, starving every run_write — including this
+            # heartbeat — indefinitely. The cross-host recovery in
+            # _recover_wedged_host only fires when ANOTHER host boots, so a
+            # solo host with no new sessions would stay wedged forever. When
+            # heartbeats have been starved for HOST_WEDGE_KILL_AFTER_S, exit so
+            # the supervisor respawns a clean host (process teardown drops the
+            # leaked connection and releases the lock).
+            starved_since: float | None = None
+            wedge_s = float(getattr(config, "HOST_WEDGE_KILL_AFTER_S", 0.0) or 0.0)
             while not stop.is_set():
-                _heartbeat()
+                if _heartbeat():
+                    starved_since = None
+                else:
+                    if starved_since is None:
+                        starved_since = time.monotonic()
+                    if _wedge_deadline_passed(starved_since, time.monotonic(),
+                                              wedge_s):
+                        logger.error(
+                            "host: heartbeat starved >= %.0fs (DB writer wedged); "
+                            "self-terminating for a clean supervisor respawn",
+                            wedge_s,
+                        )
+                        break
                 stop.wait(min(30.0, config.HOST_HEARTBEAT_TTL_S / 2))
         finally:
             _clear_host_pidfile(only_pid=os.getpid())
     return 0
 
 
-def _heartbeat() -> None:
+def _wedge_deadline_passed(starved_since: float | None, now: float,
+                           wedge_s: float) -> bool:
+    """True when the host has gone without a successful heartbeat for at least
+    ``wedge_s`` seconds — i.e. the DB writer is wedged and this solo host should
+    self-terminate so the supervisor respawns a clean one. Disabled when
+    ``wedge_s`` <= 0 or no starvation streak is in progress."""
+    return (
+        wedge_s > 0
+        and starved_since is not None
+        and (now - starved_since) >= wedge_s
+    )
+
+
+def _heartbeat() -> bool:
+    """Write one host heartbeat. Returns True on success, False on any failure
+    (the sustained-failure case is a wedged DB writer — see the self-heal in
+    :func:`main`)."""
     from .db import run_write
     from . import identity
     try:
@@ -136,8 +175,10 @@ def _heartbeat() -> None:
         # Session initialization and recurring heartbeat are intentionally
         # separate: ordinary read tools no longer turn into writers.
         run_write("host-heartbeat", identity._heartbeat, deadline_s=2.0)
+        return True
     except Exception:
         logger.debug("host: heartbeat failed", exc_info=True)
+        return False
 
 
 def ensure_host_running() -> bool:

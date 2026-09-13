@@ -171,7 +171,7 @@ def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=True)
+    out = spawn_fn(prompt="do a thing", cwd=str(pkg["tmp"]), visible=True)
     assert out.startswith("ok task="), out
 
     cmd_files = list(spawn_mod.TASK_LOG_DIR.glob("*.command"))
@@ -197,7 +197,12 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=False, capture_output=True)
+    out = spawn_fn(
+        prompt="do a thing",
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=True,
+    )
     assert out.startswith("ok task="), out
 
     log_files = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
