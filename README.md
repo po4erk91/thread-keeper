@@ -307,7 +307,10 @@ repair partial work, and continue rather than restart blindly.
 `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` (default 3; 0 disables) bounds the
 retry chain, with `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` available for a
 non-zero delay. Timed-out children are surfaced as `tasks_timed_out` in
-`mp_dashboard` and `timed_out` in `agent_status`.
+`mp_dashboard` and `timed_out` in `agent_status`. `agent_status` and
+`tk-agent-status` are observation-only and never terminate or respawn a
+child; timeout enforcement and the continuation retry live solely in the
+spawn-budget daemon.
 
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
