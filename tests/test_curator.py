@@ -222,6 +222,64 @@ def test_collect_inventory_preview_truncates_large_store(tmp_path, monkeypatch):
     assert "live curator pass reviews complete bounded batches" in dump
 
 
+def test_curator_reuses_merge_verdicts_and_wikilink_adjacency(
+    tmp_path, monkeypatch,
+):
+    """A later pass receives durable keep-both context without body reads."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="general-prevention",
+        body="The broad guard points to [[specific-recovery]].",
+        source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="specific-recovery",
+        body="The repair path points to [[general-prevention]].",
+        source="shadow",
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return f"spawn task_id=curator-{len(captured)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    assert "curator-1" in pkg["curator"].run_curator_pass(force=True)
+
+    from threadkeeper._mcp import mcp
+    verdict = mcp._tool_manager._tools["curator_merge_verdict"].fn
+    out = verdict(
+        "specific-recovery",
+        "general-prevention",
+        "prevention/recovery",
+    )
+    assert out == (
+        "ok merge_verdict=general-prevention,specific-recovery "
+        "decision=keep_both"
+    )
+
+    assert "curator-2" in pkg["curator"].run_curator_pass(force=True)
+    prompt = captured[-1]["prompt"]
+    assert "general-prevention" in prompt
+    assert "specific-recovery" in prompt
+    assert "links=[specific-recovery]" in prompt
+    assert "links=[general-prevention]" in prompt
+    assert "## PRIOR MERGE VERDICTS (n=1)" in prompt
+    assert "decision=keep_both reason=prevention/recovery" in prompt
+
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT left_slug, right_slug, decision, reason "
+        "FROM curator_merge_verdicts"
+    ).fetchone()
+    assert tuple(row) == (
+        "general-prevention", "specific-recovery", "keep_both",
+        "prevention/recovery",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # run_curator_pass — dispatch logic
 # ──────────────────────────────────────────────────────────────────────
@@ -303,6 +361,7 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "evolve_format" in allowed
     assert "Read" in allowed
     assert "curator_report_write" in allowed
+    assert "curator_merge_verdict" in allowed
     assert "Write" not in allowed
     assert "WebSearch" in allowed
     assert "WebFetch" in allowed

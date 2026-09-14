@@ -658,6 +658,14 @@ non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
 
+When a Curator reviews a lesson pair and deliberately keeps both, it records a
+structured `keep_both` merge verdict with the two slugs and a short reason.
+Later inventories show those prior verdicts and each lesson's current
+bidirectional `[[wikilink]]` adjacency (`links=[...]`), including for the
+relevant side of a multi-batch review. This preserves intentional
+general/specific and prevention/recovery layering without making a child
+re-read both lesson bodies to rediscover it.
+
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. Repeated manual calls over identical bytes
 return `unchanged_inventory`; the scheduled three-day pass still runs because

@@ -6,6 +6,15 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-14
+
+- **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
+  candidates now persist as structured `keep_both` rows with a normalized slug
+  pair and short reason. Later Curator inventories surface those verdicts and
+  each lesson's current bidirectional wikilink adjacency, preventing repeated
+  full-body reviews of deliberately layered pairs.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

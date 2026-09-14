@@ -491,6 +491,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   local-byte change. Each batch prompt carries an explicit entry range and
   per-kind counts; multi-batch runs write
   `REPORT-<pass>-batch-NNN-of-MMM.md` files.
+  A curator child records each rejected lesson merge through a structured
+  `keep_both` verdict row (normalized pair of lesson slugs plus reason). The
+  next inventory includes applicable verdict rows and the current
+  bidirectional `[[wikilink]]` adjacency on each lesson line, so intentionally
+  layered pairs do not require repeat full-body review.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking

@@ -91,6 +91,10 @@ INVENTORY_FINGERPRINT_KEY = "inventory_sha256"
 _INVENTORY_FINGERPRINT_RE = re.compile(
     rf"\b{INVENTORY_FINGERPRINT_KEY}=([0-9a-f]{{64}})\b"
 )
+_WIKILINK_RE = re.compile(
+    r"\[\[([A-Za-z0-9][A-Za-z0-9_.:-]*)(?:\|[^\]]+)?\]\]"
+)
+_MAX_MERGE_VERDICT_REASON_CHARS = 500
 
 _CURATABLE_SKILL_ORIGINS = {
     "background_review",
@@ -140,6 +144,16 @@ Use one of these verdicts: KEEP, REPAIR, UPDATE, MERGE, SPLIT, DEPRECATE,
 DELETE, CROSS_LINK, HUMAN_REVIEW. No skill may be omitted. A lexical score,
 similar name, or matching character count is only a lead — decide overlap by
 intent, inputs, workflow, and expected outcome after reading both full bodies.
+
+MERGE MEMORY — the inventory's `links=[...]` field is the current undirected
+wikilink adjacency for each lesson. Its `## PRIOR MERGE VERDICTS` section lists
+previously examined lesson pairs that must remain separate. Treat a prior
+`keep_both` row as the durable reason not to re-litigate that pair or re-read
+both full lesson bodies. Revisit it only when the current inventory indicates a
+materially changed lesson. When you examine a new candidate pair and decide to
+keep both entries, call `curator_merge_verdict(slug_a=..., slug_b=...,
+reason=...)` before completing the report. Use a short reason such as
+`cross-linked`, `general/specific`, or `prevention/recovery`.
 
 WEB RESEARCH is mandatory for every skill (researching a coherent cluster in
 one search is allowed). Prefer current official product/CLI documentation,
@@ -443,6 +457,7 @@ def _curator_inventory_snapshot(
         "skills": [],
         "skill_files": [],
         "concepts": [],
+        "merge_verdicts": [],
     }
 
     try:
@@ -530,6 +545,24 @@ def _curator_inventory_snapshot(
     except sqlite3.OperationalError:
         pass
 
+    try:
+        rows = conn.execute(
+            "SELECT left_slug, right_slug, decision, reason "
+            "FROM curator_merge_verdicts "
+            "ORDER BY left_slug, right_slug"
+        ).fetchall()
+        snapshot["merge_verdicts"] = [
+            {
+                "left_slug": row["left_slug"] or "",
+                "right_slug": row["right_slug"] or "",
+                "decision": row["decision"] or "",
+                "reason": row["reason"] or "",
+            }
+            for row in rows
+        ]
+    except sqlite3.OperationalError:
+        pass
+
     snapshot["lessons"].sort(key=lambda row: row["slug"])
     return snapshot
 
@@ -583,7 +616,11 @@ def _last_inventory_fingerprint(
     return None, None
 
 
-def _format_lesson(item: dict, usage: dict | None = None) -> str:
+def _format_lesson(
+    item: dict,
+    usage: dict | None = None,
+    adjacent_slugs: tuple[str, ...] = (),
+) -> str:
     """One inventory line per lesson.
 
     Foreground/user lessons, pinned lesson_usage rows, and validated
@@ -605,13 +642,103 @@ def _format_lesson(item: dict, usage: dict | None = None) -> str:
     body_preview = (item.get("body") or "")[:200].replace("\n", " ")
     if len(item.get("body") or "") > 200:
         body_preview += "…"
+    links = ", ".join(adjacent_slugs) or "-"
     return (
         f"- LESSON {item['slug']}{protected} "
         f"(source={src or '?'}, tier={usage.get('tier') or 'hypothesis'}, "
         f"uses={usage.get('use_count', 0)}, views={usage.get('view_count', 0)}, "
         f"pinned={usage.get('pinned', 0)}, age={age_d}d, "
-        f"last_active={last_active_d}d_ago)\n"
+        f"last_active={last_active_d}d_ago, links=[{links}])\n"
         f"    body: {body_preview}"
+    )
+
+
+def _lesson_adjacency(items: list[dict]) -> dict[str, tuple[str, ...]]:
+    """Return current, bidirectional wikilink neighbors for stored lessons."""
+    slugs = {str(item.get("slug") or "") for item in items}
+    adjacency: dict[str, set[str]] = {slug: set() for slug in slugs if slug}
+    for item in items:
+        slug = str(item.get("slug") or "")
+        if not slug:
+            continue
+        for target in _WIKILINK_RE.findall(str(item.get("body") or "")):
+            if target == slug or target not in adjacency:
+                continue
+            adjacency[slug].add(target)
+            adjacency[target].add(slug)
+    return {
+        slug: tuple(sorted(targets))
+        for slug, targets in adjacency.items()
+    }
+
+
+def _clean_merge_verdict_slug(value: str, field: str) -> str:
+    slug = str(value or "").strip()
+    if not slug or len(slug) > 200 or any(char.isspace() for char in slug):
+        raise ValueError(f"invalid_{field}")
+    return slug
+
+
+def record_merge_verdict(
+    conn: sqlite3.Connection,
+    slug_a: str,
+    slug_b: str,
+    reason: str,
+) -> tuple[str, str]:
+    """Persist or refresh one curator keep-both verdict for a lesson pair."""
+    left, right = sorted((
+        _clean_merge_verdict_slug(slug_a, "slug_a"),
+        _clean_merge_verdict_slug(slug_b, "slug_b"),
+    ))
+    if left == right:
+        raise ValueError("identical_slugs")
+    clean_reason = " ".join(str(reason or "").split())
+    if not clean_reason or len(clean_reason) > _MAX_MERGE_VERDICT_REASON_CHARS:
+        raise ValueError("invalid_reason")
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO curator_merge_verdicts "
+        "(left_slug, right_slug, decision, reason, recorded_at, updated_at) "
+        "VALUES (?, ?, 'keep_both', ?, ?, ?) "
+        "ON CONFLICT(left_slug, right_slug) DO UPDATE SET "
+        "decision=excluded.decision, reason=excluded.reason, "
+        "updated_at=excluded.updated_at",
+        (left, right, clean_reason, now, now),
+    )
+    conn.commit()
+    return left, right
+
+
+def _collect_merge_verdicts(
+    conn: sqlite3.Connection,
+    lesson_slugs: set[str],
+) -> list[dict[str, str]]:
+    """Load verdicts that still describe two lessons in this inventory."""
+    try:
+        rows = conn.execute(
+            "SELECT left_slug, right_slug, decision, reason "
+            "FROM curator_merge_verdicts "
+            "ORDER BY left_slug, right_slug"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [
+        {
+            "left_slug": row["left_slug"],
+            "right_slug": row["right_slug"],
+            "decision": row["decision"],
+            "reason": row["reason"],
+        }
+        for row in rows
+        if row["left_slug"] in lesson_slugs
+        and row["right_slug"] in lesson_slugs
+    ]
+
+
+def _format_merge_verdict(row: dict[str, str]) -> str:
+    return (
+        f"- {row['left_slug']} ↔ {row['right_slug']} "
+        f"decision={row['decision']} reason={row['reason']}"
     )
 
 
@@ -682,18 +809,23 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
 def _collect_inventory_entry_groups(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> tuple[list[_InventoryEntry], list[_InventoryEntry], str, int, int]:
+) -> tuple[
+    list[_InventoryEntry], list[_InventoryEntry], str, list[dict[str, str]],
+    int, int,
+]:
     """Collect exhaustive lesson/skill entries without rendering one prompt."""
     lesson_entries: list[_InventoryEntry] = []
     try:
         usage = lessons.lesson_usage_map(conn)
-        for item in lessons.iter_lessons():
+        items = list(lessons.iter_lessons())
+        adjacency = _lesson_adjacency(items)
+        for item in items:
             slug = item.get("slug") or ""
             lesson_entries.append(
                 _InventoryEntry(
                     "lesson",
                     slug,
-                    _format_lesson(item, usage.get(slug)),
+                    _format_lesson(item, usage.get(slug), adjacency.get(slug, ())),
                 )
             )
     except Exception:
@@ -707,10 +839,14 @@ def _collect_inventory_entry_groups(
     ]
 
     stale_text, _n_stale = _collect_stale_lessons(conn)
+    merge_verdicts = _collect_merge_verdicts(
+        conn, {entry.key for entry in lesson_entries},
+    )
     return (
         lesson_entries,
         skill_entries,
         stale_text,
+        merge_verdicts,
         len(lesson_entries),
         len(skill_entries),
     )
@@ -746,7 +882,7 @@ def _collect_inventory(
     char-capped as a defensive floor; the real curator pass uses complete
     bounded batches from `_collect_inventory_batches`.
     """
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    lesson_entries, skill_entries, stale_text, merge_verdicts, n_lessons, n_skills = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
 
@@ -765,6 +901,11 @@ def _collect_inventory(
         parts.append("(none)")
         used += len(parts[-1]) + 1
         dropped_lessons = 0
+    parts.append(f"\n## PRIOR MERGE VERDICTS (n={len(merge_verdicts)})\n")
+    if merge_verdicts:
+        parts.extend(_format_merge_verdict(row) for row in merge_verdicts)
+    else:
+        parts.append("(none)")
     parts.append("\n" + stale_text)
     used += len(parts[-1]) + 1
     parts.append(
@@ -887,6 +1028,7 @@ def _render_batch_inventory(
     start_entry: int,
     total_entries: int,
     stale_text: str,
+    merge_verdicts: list[dict[str, str]],
     n_lessons: int,
     n_skills: int,
     n_concepts: int,
@@ -895,6 +1037,12 @@ def _render_batch_inventory(
     skill_entries = [e for e in batch_entries if e.kind == "skill"]
     concept_entries = [e for e in batch_entries if e.kind == "concept"]
     end_entry = start_entry + len(batch_entries) - 1
+    batch_lesson_slugs = {entry.key for entry in lesson_entries}
+    relevant_verdicts = [
+        row for row in merge_verdicts
+        if row["left_slug"] in batch_lesson_slugs
+        or row["right_slug"] in batch_lesson_slugs
+    ]
     parts = [
         f"## CURATOR BATCH {index}/{total}",
         (
@@ -917,6 +1065,11 @@ def _render_batch_inventory(
     ]
     parts.extend(entry.text for entry in lesson_entries)
     if not lesson_entries:
+        parts.append("(none)")
+    parts.append(f"\n## PRIOR MERGE VERDICTS (n={len(relevant_verdicts)})\n")
+    if relevant_verdicts:
+        parts.extend(_format_merge_verdict(row) for row in relevant_verdicts)
+    else:
         parts.append("(none)")
     if lesson_entries:
         parts.append("\n" + stale_text)
@@ -948,7 +1101,7 @@ def _collect_inventory_batches(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
 ) -> tuple[list[_InventoryBatch], int, int, int]:
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    lesson_entries, skill_entries, stale_text, merge_verdicts, n_lessons, n_skills = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
     concept_entries, n_concepts = _collect_concept_entries(conn)
@@ -965,6 +1118,7 @@ def _collect_inventory_batches(
             start_entry=cursor,
             total_entries=len(entries),
             stale_text=stale_text,
+            merge_verdicts=merge_verdicts,
             n_lessons=n_lessons,
             n_skills=n_skills,
             n_concepts=n_concepts,
@@ -1209,6 +1363,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__skill_validate,"
                 "mcp__thread-keeper__curator_report_write,"
                 "mcp__thread-keeper__curator_restore,"
+                "mcp__thread-keeper__curator_merge_verdict,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__concept_manage,"
@@ -1231,6 +1386,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_validate,"
                 "mcp__thread-keeper__curator_report_write,"
+                "mcp__thread-keeper__curator_merge_verdict,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__evolve_format,"
