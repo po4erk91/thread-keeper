@@ -1030,9 +1030,11 @@ GitHub issues:
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
 path:
 
-- **Curator merge-verdict memory.** Persist rejected merge candidates and
-  surface cross-link adjacency in the curator inventory so later passes stop
-  re-litigating the same layered pairs (#189).
+- ✅ DONE (#189): Curator now persists rejected lesson merge candidates as
+  structured `keep_both` verdicts (normalized pair plus short reason), and each
+  later inventory surfaces applicable verdicts alongside current bidirectional
+  `[[wikilink]]` adjacency. Deliberately layered pairs no longer need a repeated
+  full-body review.
 - **Lesson neighbor suggestions at birth.** Before a new lesson is written,
   surface nearest-neighbor lesson slugs so shadow/candidate authors can add
   cross-links or consolidate while the lesson is being materialized (#190).

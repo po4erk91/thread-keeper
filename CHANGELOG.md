@@ -52,6 +52,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
+  candidates now persist as structured `keep_both` rows with a normalized slug
+  pair and short reason. Later Curator inventories surface those verdicts and
+  each lesson's current bidirectional wikilink adjacency, preventing repeated
+  full-body reviews of deliberately layered pairs.
+
 - **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
   inside a clean Git checkout now receives its own task branch and worktree;
   dirty source checkouts are refused before launch, so parallel children cannot
