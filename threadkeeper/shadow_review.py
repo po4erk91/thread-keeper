@@ -102,7 +102,13 @@ PROCEDURE
       lesson title so lesson_append replaces in-place. `lesson_append`
       also enforces slug and semantic body duplicate gates for shadow
       writes; do not append a second overlapping lesson.
-   c. Only create new memory if no existing lesson/skill covers the rule.
+   c. Before a genuinely new `lesson_append`, call
+      `lesson_neighbors(title=<prospective>, summary=<prospective>,
+      body=<prospective>, k=3)`. Read any relevant suggested slug. Patch or
+      consolidate when it covers the rule; when the new rule is distinct but
+      related, add a `[[suggested-slug]]` cross-link to its body before
+      writing it.
+   d. Only create new memory if no existing lesson/skill covers the rule.
 4. Materialization preference order:
    a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an
       existing auto-triggered skill covers the rule.
@@ -627,6 +633,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     "mcp__thread-keeper__lesson_append,"
                     "mcp__thread-keeper__lesson_list,"
                     "mcp__thread-keeper__lesson_get,"
+                    "mcp__thread-keeper__lesson_neighbors,"
                     "mcp__thread-keeper__skill_manage,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__mark_skill_materialized"

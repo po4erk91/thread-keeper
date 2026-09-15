@@ -11,6 +11,9 @@
   lesson_get(slug)
     Return the full body of a single lesson by slug.
 
+  lesson_neighbors(title, body, summary, k)
+    Preview the nearest existing lessons before a new lesson is written.
+
   lesson_remove(slug, force=False)
     Remove one lesson section by slug. Refuses protected lessons unless
     force=True from a foreground writer, so autonomous cleanup cannot delete
@@ -33,7 +36,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from .._mcp import write_tool
+from .._mcp import read_tool, write_tool
 from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
@@ -68,6 +71,7 @@ SHADOW_DUPLICATE_SLUG_THRESHOLD = 0.70
 LESSON_SEMANTIC_DUPLICATE_THRESHOLD = 0.85
 LESSON_SEMANTIC_BORDERLINE_THRESHOLD = 0.78
 LESSON_DUPLICATE_EVIDENCE_MAX_WORDS = 160
+LESSON_NEIGHBOR_SUGGESTION_LIMIT = 3
 _LESSON_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _LESSON_SLUG_STOPWORDS = {
     "a", "an", "and", "as", "before", "for", "in", "is", "not", "of",
@@ -227,6 +231,74 @@ def _semantic_lesson_match(
     if best_score >= LESSON_SEMANTIC_BORDERLINE_THRESHOLD:
         return best_item, best_score
     return None
+
+
+def _semantic_lesson_neighbors(
+    title: str,
+    summary: str,
+    body: str,
+    *,
+    k: int = LESSON_NEIGHBOR_SUGGESTION_LIMIT,
+) -> list[tuple[dict, float]] | None:
+    """Rank existing lesson bodies nearest to a prospective new lesson.
+
+    This is deliberately a read-only preflight: authors call it while they
+    still control the prospective body, before ``lesson_append`` commits it.
+    The exact-slug incumbent is excluded because that path is an in-place
+    replacement, not a new relationship to consider.
+    """
+    candidate_slug = _slugify(title)
+    existing = [
+        item for item in iter_lessons()
+        if item.get("slug") != candidate_slug
+    ]
+    if not existing:
+        return []
+
+    texts = [_semantic_text(title, summary, body)]
+    texts.extend(item.get("body", "") for item in existing)
+    try:
+        from ..embeddings import encode_many
+        vectors = encode_many(texts)
+    except Exception:
+        return None
+    if vectors is None or len(vectors) != len(texts):
+        return None
+
+    query = vectors[0]
+    ranked = [
+        (item, _dot(query, vector))
+        for item, vector in zip(existing, vectors[1:])
+    ]
+    ranked.sort(key=lambda pair: (-pair[1], pair[0]["slug"]))
+    return ranked[:max(1, min(int(k), 10))]
+
+
+def _lexical_lesson_neighbors(
+    title: str,
+    summary: str,
+    body: str,
+    *,
+    k: int,
+) -> list[tuple[dict, float]]:
+    """Use token overlap when the optional embedding backend is unavailable."""
+    candidate_slug = _slugify(title)
+    candidate_tokens = _lesson_slug_tokens(_semantic_text(title, summary, body))
+    if not candidate_tokens:
+        return []
+    ranked: list[tuple[dict, float]] = []
+    for item in iter_lessons():
+        if item.get("slug") == candidate_slug:
+            continue
+        item_tokens = _lesson_slug_tokens(item.get("body", ""))
+        if not item_tokens:
+            continue
+        shared = candidate_tokens & item_tokens
+        if not shared:
+            continue
+        ranked.append((item, len(shared) / len(candidate_tokens | item_tokens)))
+    ranked.sort(key=lambda pair: (-pair[1], pair[0]["slug"]))
+    return ranked[:k]
 
 
 def _candidate_evidence(body: str) -> str:
@@ -412,6 +484,44 @@ def lesson_append(
     except sqlite3.OperationalError:
         conn.commit()
     return f"ok slug={slug} path={get_path()}"
+
+
+@read_tool()
+def lesson_neighbors(
+    title: str,
+    body: str,
+    summary: str = "",
+    k: int = LESSON_NEIGHBOR_SUGGESTION_LIMIT,
+) -> str:
+    """Suggest nearby existing lessons before creating a new one.
+
+    Pass the prospective title, summary, and body before ``lesson_append``.
+    The result is a ranked, read-only list of semantic neighbors. Read a
+    relevant slug and either patch/consolidate it or add a ``[[slug]]`` link
+    to the new lesson while it is still being authored.
+    """
+    if not title.strip():
+        return "ERR empty_title"
+    if not body.strip():
+        return "ERR empty_body"
+    try:
+        limit = max(1, min(int(k), 10))
+    except (TypeError, ValueError):
+        return "ERR bad_k"
+    ranked = _semantic_lesson_neighbors(title, summary, body, k=limit)
+    mode = "semantic"
+    if ranked is None:
+        ranked = _lexical_lesson_neighbors(title, summary, body, k=limit)
+        mode = "lexical"
+    if not ranked:
+        return f"lesson_neighbors total=0 mode={mode}"
+    lines = [
+        f"lesson_neighbors total={len(ranked)} "
+        f"mode={mode} prospective_slug={_slugify(title)}"
+    ]
+    for index, (item, score) in enumerate(ranked, start=1):
+        lines.append(f"  {index}. {item['slug']} score={score:.2f}")
+    return "\n".join(lines)
 
 
 @write_tool()

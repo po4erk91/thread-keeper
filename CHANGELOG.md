@@ -6,6 +6,18 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-15
+
+### Added
+
+- **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
+  three semantic neighbors (with a lexical fallback) for a prospective lesson
+  before it is written. Shadow-review and candidate-reviewer authors now use the preview to
+  patch/consolidate an incumbent or add a `[[slug]]` cross-link while creating
+  a related, distinct lesson. Existing `lesson_append` write semantics are
+  unchanged.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

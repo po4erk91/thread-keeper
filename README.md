@@ -558,7 +558,12 @@ Before writing memory, the observer now checks existing lessons/skills and
 prefers patching broad skills. Shadow-origin `lesson_append` is a compact
 fallback only: oversized bodies are rejected, near-duplicate slugs are blocked,
 and semantic body matches are routed to the incumbent lesson or surfaced for
-curation instead of minting a sibling lesson.
+curation instead of minting a sibling lesson. Before a genuinely new fallback
+lesson is written, `lesson_neighbors(title, body, summary, k=3)` shows the
+nearest existing lesson slugs (semantic, with a lexical fallback). Shadow and
+candidate reviewers use that
+preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link to a
+related, distinct lesson while its body is still editable.
 
 #### 3. Extract daemon
 

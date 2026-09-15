@@ -60,8 +60,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
-    ├── lessons.py     lesson_append/list/get
-    ├── lessons.py     lesson_append/list/get/remove/restore
+    ├── lessons.py     lesson_append/list/get/neighbors/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -1467,7 +1466,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 5 | lesson_append, lesson_list, lesson_get, lesson_remove, lesson_restore |
+| lessons | 6 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |

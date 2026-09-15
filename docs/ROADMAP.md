@@ -993,9 +993,10 @@ path:
 - **Curator merge-verdict memory.** Persist rejected merge candidates and
   surface cross-link adjacency in the curator inventory so later passes stop
   re-litigating the same layered pairs (#189).
-- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
-  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
-  cross-links or consolidate while the lesson is being materialized (#190).
+- **Lesson neighbor suggestions at birth.** `lesson_neighbors(...)` now
+  surfaces the nearest lesson slugs before a new lesson is written, so
+  shadow/candidate authors can add `[[slug]]` cross-links or consolidate while
+  the lesson is being materialized (#190).
 
 **2026-07-03 reviewer additions (issue-backed).**
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
