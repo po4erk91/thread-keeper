@@ -154,7 +154,9 @@ def test_status_tools_emit_validating_structured_content(fresh_mp, name):
     assert tool.output_schema is not None, f"{name} must advertise outputSchema"
 
     fn = pkg["mcp"]._tool_manager._tools[name].fn
-    kwargs = {"refresh": False} if name == "agent_status" else {}
+    # agent_status is now side-effect-free under its default, so the
+    # annotation test exercises the default path.
+    kwargs: dict = {}
     result = fn(**kwargs)
 
     # legacy human-readable text block preserved
