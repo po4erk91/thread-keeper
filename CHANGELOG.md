@@ -52,6 +52,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
+  scans all materialized lesson and skill bodies for unresolved `[[slug]]`
+  references and reports each source entry with its dead target. The read-only
+  detector complements, rather than changes, consolidation-time link repair.
+
 - **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
   three semantic neighbors (with a lexical fallback) for a prospective lesson
   before it is written. Shadow-review and candidate-reviewer authors use the preview to

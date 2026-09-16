@@ -41,6 +41,7 @@ threadkeeper/
 ├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── skill_updater.py   daemon: twice-weekly installed skill update + mirror sync
+├── link_health.py     read-only lesson/skill wikilink integrity scan
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
 ├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
@@ -1181,6 +1182,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Wikilink health** — `wikilink_health(include_archived=True)` is a
+  deterministic, read-only scan across every materialized lesson and skill
+  body. It resolves `[[slug]]` targets against the combined lesson/skill
+  inventory and returns every unresolved target with its source entry. It
+  detects global link drift; it does not repair links during a scan.
+
 - **Lesson-to-skill promotion** — the curator also deterministically groups
   lessons that share a pair of meaningful slug/title terms. A group reaches a
   promotion candidate at `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries
@@ -1512,7 +1519,7 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (120 total)
+## MCP tools (121 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -1538,7 +1545,7 @@ below).
 | lessons | 7 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
+| curator | 6 | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |

@@ -975,6 +975,68 @@ def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch)
     }
 
 
+def test_wikilink_health_reports_dangling_lesson_and_skill_links(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons"].append_lesson(
+        title="valid lesson",
+        body="Available target.",
+        source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson source",
+        body="See [[valid-lesson]] and [[missing-lesson]].",
+        source="shadow",
+    )
+    _write_audit_skill(
+        pkg["skills_dir"], "skill-source",
+        "See [[valid-lesson]] and [[missing-skill]].",
+    )
+    conn = pkg["db"].get_db()
+
+    from threadkeeper.link_health import scan_wikilink_health
+
+    result = scan_wikilink_health(conn)
+
+    assert result["summary"] == {
+        "lessons_scanned": 2,
+        "skills_scanned": 1,
+        "references_scanned": 4,
+        "dangling_references": 2,
+    }
+    assert result["dangling_references"] == [
+        {
+            "source_kind": "lesson",
+            "source": "lesson-source",
+            "target": "missing-lesson",
+        },
+        {
+            "source_kind": "skill",
+            "source": "skill-source",
+            "target": "missing-skill",
+        },
+    ]
+
+
+def test_wikilink_health_tool_exposes_checker_result(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons"].append_lesson(
+        title="lesson source", body="See [[missing-target]].", source="shadow",
+    )
+    from threadkeeper._mcp import mcp
+
+    result = mcp._tool_manager._tools["wikilink_health"].fn()
+    payload = json.loads(result)
+
+    assert payload["summary"]["dangling_references"] == 1
+    assert payload["dangling_references"] == [{
+        "source_kind": "lesson",
+        "source": "lesson-source",
+        "target": "missing-target",
+    }]
+
+
 def test_curator_report_write_is_path_scoped_and_replaceable(
     tmp_path, monkeypatch,
 ):

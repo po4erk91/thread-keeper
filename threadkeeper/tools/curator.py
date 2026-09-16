@@ -50,6 +50,7 @@ from ..curator_snapshots import (
     snapshots_root,
 )
 from ..permissions import chmod_private_file
+from ..link_health import scan_wikilink_health
 from ..skill_audit import build_skill_audit
 from ..config import (
     CURATOR_INTERVAL_S,
@@ -280,6 +281,23 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "exact_duplicate_groups": manifest["exact_duplicate_groups"],
             "semantic_candidates": manifest["semantic_candidates"],
         },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+@read_tool()
+def wikilink_health(include_archived: bool = True) -> str:
+    """List unresolved ``[[slug]]`` links in all lesson and skill bodies.
+
+    This detector is read-only. It reports each dead target with the lesson
+    or skill that references it; repair remains a separate curator action.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    return json.dumps(
+        scan_wikilink_health(conn, include_archived=include_archived),
         ensure_ascii=False,
         indent=2,
         sort_keys=True,

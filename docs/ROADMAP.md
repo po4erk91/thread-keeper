@@ -1043,10 +1043,11 @@ path:
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
 path:
 
-- **Dangling wikilink health check.** Scan lesson and skill bodies for
-  unresolved `[[slug]]` references and surface the dead targets in a
-  read-only health view so manual body reads are not the only way to spot
-  broken cross-links (#202).
+- **Dangling wikilink health check.** ✅ DONE (#202). `wikilink_health()`
+  deterministically scans every materialized lesson and skill body for
+  unresolved `[[slug]]` references, reporting each source entry and dead
+  target without mutating either store. It complements, rather than replaces,
+  the consolidation-time repair path in #162.
 
 **2026-08-10 reviewer additions (issue-backed).**
 The current audit reconciled three post-July open issues and added four newly
