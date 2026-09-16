@@ -52,6 +52,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
+  three semantic neighbors (with a lexical fallback) for a prospective lesson
+  before it is written. Shadow-review and candidate-reviewer authors use the preview to
+  patch/consolidate an incumbent or add a `[[slug]]` cross-link while creating
+  a related, distinct lesson. Existing `lesson_append` write semantics are
+  unchanged.
+
 - **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
   candidates now persist as structured `keep_both` rows with a normalized slug
   pair and short reason. Later Curator inventories surface those verdicts and

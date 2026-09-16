@@ -1035,9 +1035,9 @@ path:
   later inventory surfaces applicable verdicts alongside current bidirectional
   `[[wikilink]]` adjacency. Deliberately layered pairs no longer need a repeated
   full-body review.
-- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
-  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
-  cross-links or consolidate while the lesson is being materialized (#190).
+- ✅ DONE (#190): Before a new lesson is written, `lesson_neighbors(...)`
+  surfaces nearest-neighbor lesson slugs so shadow/candidate authors can add
+  `[[slug]]` cross-links or consolidate while the lesson is being materialized.
 
 **2026-07-03 reviewer additions (issue-backed).**
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
