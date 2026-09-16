@@ -570,6 +570,11 @@ routed to the incumbent lesson or surfaced for curation instead of minting a
 sibling lesson. A clear new directive or debunk also flags older permissive
 lessons on the same concrete practice for patch, cross-link, or supersession
 review.
+Before a genuinely new fallback lesson is written,
+`lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
+slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
+that preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link
+to a related, distinct lesson while its body is still editable.
 
 #### 3. Extract daemon
 
