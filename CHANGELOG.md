@@ -98,6 +98,15 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-09-16
+
+### Added
+
+- **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
+  scans all materialized lesson and skill bodies for unresolved `[[slug]]`
+  references and reports each source entry with its dead target. The read-only
+  detector complements, rather than changes, consolidation-time link repair.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

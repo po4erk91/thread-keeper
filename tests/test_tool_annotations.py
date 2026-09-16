@@ -35,7 +35,7 @@ READ_TOOLS = {
     "review_candidates", "run_probe", "search", "shadow_review_status",
     "skill_list", "skill_validate", "spawn_budget_status", "spawn_status",
     "sync_peers", "sync_status", "task_logs",
-    "task_thread", "tasks", "weak_spots", "whoami",
+    "task_thread", "tasks", "weak_spots", "whoami", "wikilink_health",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------

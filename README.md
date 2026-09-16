@@ -173,7 +173,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
-| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
