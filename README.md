@@ -93,6 +93,9 @@ config, copies hooks to
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 `copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
+The generated MCP entry pins imports to this configured installation, so an
+agent launched inside another thread-keeper checkout cannot load that checkout's
+unmerged code against the live memory database.
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
 message; hookless clients such as Codex and Antigravity CLI either follow the
