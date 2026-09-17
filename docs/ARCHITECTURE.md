@@ -60,6 +60,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
+    ├── evolve_research.py evolve_research_handoff
     ├── lessons.py     lesson_append/list/get
     ├── lessons.py     lesson_append/list/get/remove/restore
     ├── concepts.py    register/list/expand/manage
@@ -522,13 +523,19 @@ moving the high-water forward; `force=True` bypasses this due gate.
   To avoid completing the lethal trifecta (private data + untrusted web content +
   exfiltration) in one child (#79), the pass is **split across two alternating
   phases**, chosen by the last recorded spawn phase: (1) a **research** child
-  (`permission_mode="auto"`, tools `WebSearch,WebFetch,Read,Glob,Grep,Write` —
-  no `Bash`, no `bypassPermissions`, no `gh`) that distills external findings to
-  `~/.threadkeeper/evolve-research/RESEARCH-<ts>.md` and has no network-write
-  tool to exfiltrate with; then (2) an **audit** child (`bypassPermissions` +
-  `Bash,Edit,Write` but **no** `WebSearch`/`WebFetch`) that audits the repo and
-  does the GitHub/ROADMAP writes, consuming the digest inside an explicit
-  `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA` fence it must treat as data.
+  (`permission_mode="auto"`, tools `WebSearch,WebFetch,Read,Glob,Grep` plus the
+  narrow `evolve_research_handoff` MCP tool — no generic `Write`, no `Bash`, no
+  `bypassPermissions`, no `gh`) that can submit content only for its
+  parent-registered pass ID. The parent binds that pass to the child's CID and
+  one `~/.threadkeeper/evolve-research/RESEARCH-<pass>.md` target; the handoff
+  accepts at most 12,000 characters / 400 lines, atomically writes the derived
+  target, and records its final SHA-256 plus rejected/failed states in telemetry.
+  The audit accepts only a fresh, accepted digest whose current content and hash
+  still match that handoff record. Then (2) an **audit** child
+  (`bypassPermissions` + `Bash,Edit,Write` but **no** `WebSearch`/`WebFetch`)
+  audits the repo and does the GitHub/ROADMAP writes, consuming the verified
+  digest inside an explicit `<<<EVOLVE_RESEARCH_DATA … EVOLVE_RESEARCH_DATA`
+  fence it must treat as data.
   GitHub issue creation goes through `evolve_issue_create(...)`: it fetches a
   paginated oldest-first REST issue listing with `state=all`, includes closed
   `not_planned` issues in the duplicate/rejected set, compares candidates
@@ -1471,6 +1478,7 @@ below).
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
+| evolve_research | 1 | evolve_research_handoff |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |

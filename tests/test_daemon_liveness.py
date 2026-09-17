@@ -14,7 +14,7 @@ def test_daemon_health_is_additive_without_schema_version_bump(mp_with_cid):
     db = pkg["db"]
     conn = db.get_db()
     conn.execute("DROP TABLE daemon_health")
-    conn.execute("PRAGMA user_version = 4")
+    conn.execute(f"PRAGMA user_version = {db.CURRENT_SCHEMA_VERSION}")
     conn.commit()
     conn.close()
 
@@ -23,7 +23,9 @@ def test_daemon_health_is_additive_without_schema_version_bump(mp_with_cid):
 
     conn = db.get_db()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            db.CURRENT_SCHEMA_VERSION
+        )
         assert conn.execute(
             "SELECT 1 FROM sqlite_master "
             "WHERE type='table' AND name='daemon_health'"

@@ -6,6 +6,19 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs (#263).** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
