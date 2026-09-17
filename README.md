@@ -93,6 +93,9 @@ config, copies hooks to
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 `copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
+The generated MCP entry pins imports to this configured installation, so an
+agent launched inside another thread-keeper checkout cannot load that checkout's
+unmerged code against the live memory database.
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
 message; hookless clients such as Codex and Antigravity CLI either follow the
@@ -173,7 +176,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
-| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
@@ -265,6 +268,12 @@ via `search_via_parent` — no per-child copy of the embedding model. Admission
 uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
 inserts the child task row with its RSS estimate before `Popen`, so two
 concurrent spawns cannot both squeeze through the cap.
+
+When `cwd` is inside a Git checkout, `spawn()` also requires the source
+checkout's tracked files to be clean, then starts the child from a unique
+branch/worktree under `THREADKEEPER_TASK_LOG_DIR/worktrees/`. Parallel children
+therefore never share a mutable checkout or Git index. Non-Git directories keep
+their existing behavior; a dirty Git checkout is refused before a child starts.
 
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
@@ -561,7 +570,14 @@ can correct one unique substring without reserializing a lesson. Shadow-origin
 though an existing same-slug long lesson may be corrected without increasing
 its body size; near-duplicate slugs are blocked, and semantic body matches are
 routed to the incumbent lesson or surfaced for curation instead of minting a
-sibling lesson.
+sibling lesson. A clear new directive or debunk also flags older permissive
+lessons on the same concrete practice for patch, cross-link, or supersession
+review.
+Before a genuinely new fallback lesson is written,
+`lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
+slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
+that preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link
+to a related, distinct lesson while its body is still editable.
 
 #### 3. Extract daemon
 
@@ -665,6 +681,20 @@ recorded `curator_pass` high-water, so fresh MCP server restarts and
 non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
+
+When a Curator reviews a lesson pair and deliberately keeps both, it records a
+structured `keep_both` merge verdict with the two slugs and a short reason.
+Later inventories show those prior verdicts and each lesson's current
+bidirectional `[[wikilink]]` adjacency (`links=[...]`), including for the
+relevant side of a multi-batch review. This preserves intentional
+general/specific and prevention/recovery layering without making a child
+re-read both lesson bodies to rediscover it.
+
+For automation-created skills, the audit keeps foreground consultation separate
+from maintenance: a background-review skill with `fg_uses=0` after 14 days is
+still a false-positive prune candidate even if automatic review or sync loops
+have increased its patch counter. Patches are maintenance activity, not proof
+that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. Repeated manual calls over identical bytes
@@ -794,10 +824,16 @@ runs as **two alternating phases**, never co-granting web research and
 shell/`bypassPermissions` to the same child:
 
 - **research phase** — a read-only child with `WebSearch`/`WebFetch` and
-  read-only repo reads but **no shell, no `bypassPermissions`, and no GitHub
-  access**. It distills external findings into a digest file under
-  `~/.threadkeeper/evolve-research/`. With no `Bash`/`gh`/network-write tool it
-  has no exfiltration channel, so the untrusted pages it reads cannot act.
+  read-only repo reads but **no shell, no generic `Write`, no
+  `bypassPermissions`, and no GitHub access**. Before dispatch, the parent
+  registers one pass ID, owner child, and digest target. The child can submit
+  only that pass through `evolve_research_handoff(...)`; it cannot choose a
+  path. The handoff is one-shot, capped at 12,000 characters / 400 lines,
+  atomically persisted with a SHA-256, and records rejected, failed, expired,
+  and tampered outcomes in Evolve telemetry. The later audit reads only a
+  fresh accepted handoff whose final file still matches that hash. With no
+  `Bash`/`gh`/network-write tool it has no exfiltration channel, so the
+  untrusted pages it reads cannot act.
 - **audit phase** — the privileged child (`bypassPermissions` + `Bash`/`Edit`/
   `Write`) that audits the repo, opens the `docs/ROADMAP.md` PR, and creates or
   updates GitHub issues. It holds **no web tools**; it consumes the research
@@ -1505,8 +1541,9 @@ Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
 the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
 refused when the configured directory is a symlink or is not owned by the
 current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
-and visible `.command` files with no-follow owner-only opens. `consolidate()`
-garbage-collects task spool files once their task row is no longer retained.
+and visible `.command` files with no-follow owner-only opens. Git-backed spawns
+also create their isolated worktrees there. `consolidate()` garbage-collects
+task spool files once their task row is no longer retained.
 
 ---
 

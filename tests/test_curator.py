@@ -152,15 +152,15 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     conn.execute(
         "INSERT INTO skill_usage "
         "(name, created_at, created_by_origin, last_used_at, "
-        " use_count, pinned, state) "
-        "VALUES (?, ?, 'foreground', ?, 5, 1, 'active')",
+        " use_count, foreground_use_count, view_count, pinned, state) "
+        "VALUES (?, ?, 'foreground', ?, 5, 4, 3, 1, 'active')",
         ("pinned-skill", now - 86400, now - 3600),
     )
     conn.execute(
         "INSERT INTO skill_usage "
         "(name, created_at, created_by_origin, last_used_at, "
-        " use_count, state) "
-        "VALUES (?, ?, 'background_review', ?, 2, 'active')",
+        " use_count, foreground_use_count, view_count, state) "
+        "VALUES (?, ?, 'background_review', ?, 2, 1, 6, 'active')",
         ("auto-created-skill", now - 172800, now - 7200),
     )
     conn.commit()
@@ -177,6 +177,8 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     # background_review skill (not pinned) is NOT protected
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
+    assert "fg_uses=4 uses=5 views=3 maintenance_patches=0" in dump
+    assert "fg_uses=1 uses=2 views=6 maintenance_patches=0" in dump
     assert "STALE LESSONS (dry-run decay ranking)" in dump
 
 
@@ -279,6 +281,64 @@ def test_collect_inventory_preview_truncates_large_store(tmp_path, monkeypatch):
     assert "live curator pass reviews complete bounded batches" in dump
 
 
+def test_curator_reuses_merge_verdicts_and_wikilink_adjacency(
+    tmp_path, monkeypatch,
+):
+    """A later pass receives durable keep-both context without body reads."""
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(
+        title="general-prevention",
+        body="The broad guard points to [[specific-recovery]].",
+        source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="specific-recovery",
+        body="The repair path points to [[general-prevention]].",
+        source="shadow",
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return f"spawn task_id=curator-{len(captured)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    assert "curator-1" in pkg["curator"].run_curator_pass(force=True)
+
+    from threadkeeper._mcp import mcp
+    verdict = mcp._tool_manager._tools["curator_merge_verdict"].fn
+    out = verdict(
+        "specific-recovery",
+        "general-prevention",
+        "prevention/recovery",
+    )
+    assert out == (
+        "ok merge_verdict=general-prevention,specific-recovery "
+        "decision=keep_both"
+    )
+
+    assert "curator-2" in pkg["curator"].run_curator_pass(force=True)
+    prompt = captured[-1]["prompt"]
+    assert "general-prevention" in prompt
+    assert "specific-recovery" in prompt
+    assert "links=[specific-recovery]" in prompt
+    assert "links=[general-prevention]" in prompt
+    assert "## PRIOR MERGE VERDICTS (n=1)" in prompt
+    assert "decision=keep_both reason=prevention/recovery" in prompt
+
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT left_slug, right_slug, decision, reason "
+        "FROM curator_merge_verdicts"
+    ).fetchone()
+    assert tuple(row) == (
+        "general-prevention", "specific-recovery", "keep_both",
+        "prevention/recovery",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # run_curator_pass — dispatch logic
 # ──────────────────────────────────────────────────────────────────────
@@ -362,6 +422,7 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "evolve_format" in allowed
     assert "Read" in allowed
     assert "curator_report_write" in allowed
+    assert "curator_merge_verdict" in allowed
     assert "Write" not in allowed
     assert "WebSearch" in allowed
     assert "WebFetch" in allowed
@@ -843,6 +904,48 @@ def test_skill_validator_is_exhaustive_and_semantic(tmp_path, monkeypatch):
     assert "3. SKILL second-skill" in checklist
 
 
+def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    _write_audit_skill(
+        pkg["skills_dir"], "patched-background-skill", "# Rule\nDo the test.",
+    )
+    now = int(time.time())
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, last_patched_at, patch_count, "
+        "foreground_use_count, state) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "patched-background-skill", now - 30 * 86400,
+            "background_review", now, 4, 0, "active",
+        ),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=patched-background-skill pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    pkg["curator"].run_curator_pass(force=True)
+
+    prompt = captured[0]["prompt"]
+    assert "origin=background_review AND fg_uses=0" in prompt
+    assert "they are not foreground consultation" in prompt
+    assert "SKILL patched-background-skill" in prompt
+    assert "fg_uses=0" in prompt
+    assert "maintenance_patches=4" in prompt
+    assert "created=30d_ago" in prompt
+    assert "patches=0" not in prompt
+
+
 def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     primary = pkg["skills_dir"]
@@ -870,6 +973,68 @@ def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch)
         "codex": "PASS",
         "threadkeeper": "PASS",
     }
+
+
+def test_wikilink_health_reports_dangling_lesson_and_skill_links(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons"].append_lesson(
+        title="valid lesson",
+        body="Available target.",
+        source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="lesson source",
+        body="See [[valid-lesson]] and [[missing-lesson]].",
+        source="shadow",
+    )
+    _write_audit_skill(
+        pkg["skills_dir"], "skill-source",
+        "See [[valid-lesson]] and [[missing-skill]].",
+    )
+    conn = pkg["db"].get_db()
+
+    from threadkeeper.link_health import scan_wikilink_health
+
+    result = scan_wikilink_health(conn)
+
+    assert result["summary"] == {
+        "lessons_scanned": 2,
+        "skills_scanned": 1,
+        "references_scanned": 4,
+        "dangling_references": 2,
+    }
+    assert result["dangling_references"] == [
+        {
+            "source_kind": "lesson",
+            "source": "lesson-source",
+            "target": "missing-lesson",
+        },
+        {
+            "source_kind": "skill",
+            "source": "skill-source",
+            "target": "missing-skill",
+        },
+    ]
+
+
+def test_wikilink_health_tool_exposes_checker_result(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    pkg["lessons"].append_lesson(
+        title="lesson source", body="See [[missing-target]].", source="shadow",
+    )
+    from threadkeeper._mcp import mcp
+
+    result = mcp._tool_manager._tools["wikilink_health"].fn()
+    payload = json.loads(result)
+
+    assert payload["summary"]["dangling_references"] == 1
+    assert payload["dangling_references"] == [{
+        "source_kind": "lesson",
+        "source": "lesson-source",
+        "target": "missing-target",
+    }]
 
 
 def test_curator_report_write_is_path_scoped_and_replaceable(

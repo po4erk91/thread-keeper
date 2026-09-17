@@ -35,6 +35,13 @@ remains a live question.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
+- Curator false-positive skill pruning (#166): background-review skills with
+  zero foreground consultations remain eligible after 14 days even when
+  automated maintenance has increased their patch counts.
+- Skill telemetry sanity (#168): passive `Skill` invocations increment raw and
+  foreground use counters, `skill_list` records visibility, and curator
+  inventory shows raw uses, foreground uses, views, and patches without
+  counting its own automated inventory read as a consultation.
 - Dialectic user model: `dialectic_claim` / `evidence` / `synthesis` /
   `review` / `supersede`, smoothed-ratio confidence, grouping by domain
   in brief.
@@ -999,41 +1006,48 @@ GitHub issues:
   checklist-style canonical skill with a `Retired lessons` provenance section
   before the source lessons are retired; any protected member produces a
   `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
-- **Spawn worktree isolation.** Each spawned session should get its own git
-  worktree, or repo-mutating work should be blocked when sessions would share a
-  checkout (#164).
+- **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
+  unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
   caller skips session setup, and audited watchdog, format-evolution, and
   passive skill-tier paths initialize their session before emitting events.
-- **Skill prune heuristic fix.** The curator's false-positive skill prune logic
-  should key on real foreground use, not on auto-patch counts that make the
-  current gate unreachable (#166).
-- **Lesson contradiction reconciliation.** When a new lesson debunks an older
-  permissive lesson or encodes an absolute user directive, flag the older
-  guidance for patch/cross-link/supersession review (#167).
-- **Skill telemetry sanity.** Skill view/use counters need to be verified and
-  surfaced correctly so the curator can trust the disuse/prune signal instead of
-  operating on a dead or undercounted metric (#168).
+- **Skill prune heuristic fix.** ✅ DONE (#166). The curator's
+  false-positive prune rubric now keys on foreground consultations: a
+  background-review skill with `fg_uses=0` remains eligible after 14 days even
+  when automated maintenance increments its patch counter.
+- **Lesson contradiction reconciliation.** ✅ DONE (#167). `lesson_append`
+  now detects clear debunks and absolute directives, records a
+  `lesson_reconciliation` event for each older permissive lesson on the same
+  concrete practice, and returns those slugs for patch/cross-link/supersession
+  review.
+- **Skill telemetry sanity.** ✅ DONE (#168). `skill_list` increments view
+  counters, transcripted `Skill` invocations record raw and foreground use
+  where appropriate, and the curator inventory shows raw uses, foreground
+  uses, views, and patches without counting its own inventory read as a
+  consultation.
 
 **2026-06-26 reviewer additions (issue-backed).**
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
 path:
 
-- **Curator merge-verdict memory.** Persist rejected merge candidates and
-  surface cross-link adjacency in the curator inventory so later passes stop
-  re-litigating the same layered pairs (#189).
-- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
-  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
-  cross-links or consolidate while the lesson is being materialized (#190).
+- ✅ DONE (#189): Curator now persists rejected lesson merge candidates as
+  structured `keep_both` verdicts (normalized pair plus short reason), and each
+  later inventory surfaces applicable verdicts alongside current bidirectional
+  `[[wikilink]]` adjacency. Deliberately layered pairs no longer need a repeated
+  full-body review.
+- ✅ DONE (#190): Before a new lesson is written, `lesson_neighbors(...)`
+  surfaces nearest-neighbor lesson slugs so shadow/candidate authors can add
+  `[[slug]]` cross-links or consolidate while the lesson is being materialized.
 
 **2026-07-03 reviewer additions (issue-backed).**
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
 path:
 
-- **Dangling wikilink health check.** Scan lesson and skill bodies for
-  unresolved `[[slug]]` references and surface the dead targets in a
-  read-only health view so manual body reads are not the only way to spot
-  broken cross-links (#202).
+- **Dangling wikilink health check.** ✅ DONE (#202). `wikilink_health()`
+  deterministically scans every materialized lesson and skill body for
+  unresolved `[[slug]]` references, reporting each source entry and dead
+  target without mutating either store. It complements, rather than replaces,
+  the consolidation-time repair path in #162.
 
 **2026-08-10 reviewer additions (issue-backed).**
 The current audit reconciled three post-July open issues and added four newly
@@ -1042,9 +1056,12 @@ verified gaps from the present code and test suite:
 - **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
   state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
   cut repeated managed-checkout setup in Evolve tests (#217).
-- **Research-phase write confinement.** Replace the Evolve research child's
-  generic `Write` capability with a mechanically destination-scoped, bounded,
-  pass-linked digest handoff (#263).
+- **Research-phase write confinement (done, #263).** The Evolve researcher has
+  no generic `Write`; the parent registers a child-bound pass and the sole
+  `evolve_research_handoff` route writes its bounded digest to the derived
+  target. Audit consumes only a fresh handoff whose final SHA-256 still matches
+  the accepted pass record; rejected, failed, stale, and tampered handoffs stay
+  visible in telemetry.
 - **Loop-authored skill re-screening.** Re-run the existing injection-marker
   screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
   record a review flag, and surface it without auto-deleting the skill (#268).

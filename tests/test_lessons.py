@@ -205,6 +205,73 @@ def test_mcp_lesson_append_validates_inputs(tmp_path, monkeypatch):
     assert out.startswith("ok slug=ok-one")
 
 
+def test_lesson_neighbors_previews_ranked_slugs_without_writing(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    ln = _tool(pkg, "lesson_neighbors")
+    la(title="reset ios network", body="Reset iOS simulator network settings.")
+    la(title="serialize device boot", body="Serialize device boot locks.")
+    la(title="unrelated release notes", body="Document release notes.")
+
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "encode_many",
+        lambda texts: [[1.0, 0.0], [0.96, 0.0], [0.83, 0.0], [0.40, 0.0]],
+    )
+
+    out = ln(
+        title="recover simulator connectivity",
+        summary="Restore device networking before a test run.",
+        body="Reset simulator network settings before retrying device tests.",
+        k=2,
+    )
+
+    assert out.splitlines() == [
+        "lesson_neighbors total=2 mode=semantic prospective_slug=recover-simulator-connectivity",
+        "  1. reset-ios-network score=0.96",
+        "  2. serialize-device-boot score=0.83",
+    ]
+    assert pkg["lessons"].count_lessons() == 3
+
+
+def test_lesson_neighbors_leaves_existing_lesson_write_semantics_unchanged(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ln = _tool(pkg, "lesson_neighbors")
+    la = _tool(pkg, "lesson_append")
+
+    assert ln(title="new lesson", body="new body") == (
+        "lesson_neighbors total=0 mode=semantic"
+    )
+    assert la(title="new lesson", body="new body") == (
+        f"ok slug=new-lesson path={pkg['path']}"
+    )
+
+
+def test_lesson_neighbors_falls_back_to_lexical_ranking(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    ln = _tool(pkg, "lesson_neighbors")
+    la(
+        title="reset simulator network",
+        body="Reset simulator network settings before device tests.",
+    )
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "encode_many", lambda texts: None)
+    out = ln(
+        title="repair simulator connectivity",
+        body="Reset simulator network before retrying device tests.",
+    )
+    assert "mode=lexical" in out
+    assert "reset-simulator-network" in out
+
+
 def test_mcp_lesson_patch_replaces_one_unique_substring(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -354,6 +421,74 @@ def test_shadow_lesson_append_semantic_duplicate_patches_incumbent(
     assert "ci-device-startup-coordination" not in body
     assert "Additional evidence:" in body
     assert "serialize AVD boot lock acquisition" in body
+
+
+def test_new_directive_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    first = la(
+        title="module globals for test configuration",
+        body=(
+            "You can use module globals to pass test configuration between "
+            "runner steps when setup is simple."
+        ),
+        source="shadow",
+    )
+    assert first.startswith("ok")
+
+    out = la(
+        title="inject test configuration explicitly",
+        body=(
+            "Never use module globals to pass test configuration between "
+            "runner steps; inject dependencies explicitly instead."
+        ),
+        source="shadow",
+    )
+
+    assert out.startswith("ok slug=inject-test-configuration-explicitly")
+    assert "reconciliation=module-globals-for-test-configuration" in out
+    assert "review=patch_or_cross_link" in out
+    assert pkg["lessons"].count_lessons() == 2
+    row = pkg["db"].get_db().execute(
+        "SELECT target, summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert row["target"] == "module-globals-for-test-configuration"
+    assert "new=inject-test-configuration-explicitly" in row["summary"]
+    assert "reason=absolute_directive" in row["summary"]
+
+
+def test_new_debunk_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    la(
+        title="shared runner environment state",
+        body=(
+            "It is safe to keep shared runner environment state throughout "
+            "a test workflow."
+        ),
+        source="shadow",
+    )
+
+    out = la(
+        title="shared runner environment state is unreliable",
+        body=(
+            "Keeping shared runner environment state is unreliable; pass the "
+            "environment to each command instead."
+        ),
+        source="shadow",
+    )
+
+    assert "reconciliation=shared-runner-environment-state" in out
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert "reason=debunk" in row["summary"]
 
 
 def test_shadow_lesson_append_semantic_borderline_surfaces_duplicate(

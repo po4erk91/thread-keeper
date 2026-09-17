@@ -5,6 +5,50 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.7 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs.** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
+## v0.17.6 — 2026-09-17
+
+### Fixed
+
+- **Spawned agents keep the ThreadKeeper MCP server on the configured install.**
+  MCP launch settings now enable Python safe-path mode, and Codex spawns apply
+  the same setting as a per-invocation MCP override. A managed or per-task
+  checkout can no longer shadow the installed package and then trip the live-DB
+  safety guard when an Evolve child records its completed PR handoff.
+
+## v0.17.5 — 2026-09-13
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
+## v0.17.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
+
 ## v0.17.3 — 2026-09-09
 
 - **Fixed: skill and lesson notifications name the materialized result.**
@@ -29,6 +73,29 @@ version bumps follow semver per the policy in
   their session before emitting telemetry.
 
 ## [Unreleased]
+
+- **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
+  scans all materialized lesson and skill bodies for unresolved `[[slug]]`
+  references and reports each source entry with its dead target. The read-only
+  detector complements, rather than changes, consolidation-time link repair.
+
+- **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
+  three semantic neighbors (with a lexical fallback) for a prospective lesson
+  before it is written. Shadow-review and candidate-reviewer authors use the preview to
+  patch/consolidate an incumbent or add a `[[slug]]` cross-link while creating
+  a related, distinct lesson. Existing `lesson_append` write semantics are
+  unchanged.
+
+- **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
+  candidates now persist as structured `keep_both` rows with a normalized slug
+  pair and short reason. Later Curator inventories surface those verdicts and
+  each lesson's current bidirectional wikilink adjacency, preventing repeated
+  full-body reviews of deliberately layered pairs.
+
+- **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
+  inside a clean Git checkout now receives its own task branch and worktree;
+  dirty source checkouts are refused before launch, so parallel children cannot
+  share a mutable working tree or Git index.
 
 - **Added: dense lesson clusters now promote to canonical skills (#163).**
   Curator deterministically flags three-or-more lessons sharing a meaningful
@@ -190,6 +257,16 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.17.0 — 2026-09-12
+
+### Added
+
+- **Lesson contradiction reconciliation (#167).** A clear new absolute
+  directive or concrete-practice debunk now scans older lessons for permissive
+  guidance on the same topic. Each match emits a `lesson_reconciliation` event
+  and is returned from `lesson_append` for patch, cross-link, or supersession
+  review; conflicting lessons no longer take the normal semantic-dedup route.
 
 ## v0.16.3 — 2026-07-19
 
