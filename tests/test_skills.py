@@ -466,6 +466,42 @@ def test_skill_record_bumps_counters(skills_pkg):
     assert r["last_viewed_at"] is not None
 
 
+def test_skill_list_records_views_for_returned_skills(skills_pkg):
+    _seed_skill(skills_pkg, name="listed-active")
+    _seed_skill(skills_pkg, name="listed-archived")
+    conn = skills_pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET state='archived' WHERE name='listed-archived'"
+    )
+    conn.commit()
+
+    listed = _tool(skills_pkg, "skill_list")
+    rendered = listed()
+    assert "listed-active" in rendered
+    assert "views=1" in rendered
+    rows = {
+        row["name"]: row
+        for row in conn.execute(
+            "SELECT name, view_count, last_viewed_at FROM skill_usage "
+            "WHERE name IN ('listed-active', 'listed-archived')"
+        ).fetchall()
+    }
+    assert rows["listed-active"]["view_count"] == 1
+    assert rows["listed-active"]["last_viewed_at"] is not None
+    assert rows["listed-archived"]["view_count"] == 0
+
+    assert "listed-archived" in listed(include_archived=True)
+    rows = {
+        row["name"]: row
+        for row in conn.execute(
+            "SELECT name, view_count FROM skill_usage "
+            "WHERE name IN ('listed-active', 'listed-archived')"
+        ).fetchall()
+    }
+    assert rows["listed-active"]["view_count"] == 2
+    assert rows["listed-archived"]["view_count"] == 1
+
+
 def test_skill_list_omits_archived_by_default(skills_pkg):
     _seed_skill(skills_pkg, name="alive")
     _seed_skill(skills_pkg, name="ghost")

@@ -108,7 +108,15 @@ choose exactly one action:
      brief(). Call:
         accept_candidate(id=..., target_kind='verbatim')
 
-  6. REJECT — false positive that slipped past extract's noise
+  6. LESSON — only when a compact lesson is a better fallback than a
+     SKILL.md. Before a new `lesson_append`, call:
+        lesson_neighbors(title=<prospective>, summary=<prospective>,
+                         body=<prospective>, k=3)
+     Read relevant suggested slugs. Patch/consolidate an incumbent when it
+     covers the rule; otherwise add `[[suggested-slug]]` to the new body when
+     the lessons are related, then call `lesson_append(...)`.
+
+  7. REJECT — false positive that slipped past extract's noise
      filters (system prompt fragment, log dump, etc.). Call:
         reject_candidate(id=..., reason='<one-line>')
 
@@ -401,6 +409,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     "mcp__thread-keeper__accept_candidate,"
                     "mcp__thread-keeper__reject_candidate,"
                     "mcp__thread-keeper__lesson_append,"
+                    "mcp__thread-keeper__lesson_neighbors,"
                     "mcp__thread-keeper__mark_skill_materialized"
                 ),
             )

@@ -41,6 +41,7 @@ threadkeeper/
 ├── auto_update.py     daemon: daily git/pip self-update + restart-on-update
 ├── skill_watcher.py   daemon: external edits to SKILL.md → patch_count++
 ├── skill_updater.py   daemon: twice-weekly installed skill update + mirror sync
+├── link_health.py     read-only lesson/skill wikilink integrity scan
 ├── search_proxy.py    daemon: serves search_via_parent from slim children
 ├── spawn_budget.py    daemon: measures subtree RSS, admission control
 ├── shadow_review.py   daemon: periodically decides "is it worth materializing a skill"
@@ -60,7 +61,8 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
-    ├── lessons.py     lesson_append/list/get/patch/remove/restore
+    ├── evolve_research.py evolve_research_handoff
+    ├── lessons.py     lesson_append/list/get/neighbors/patch/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
     ├── correlation.py tag_signal/task_thread
@@ -501,6 +503,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   local-byte change. Each batch prompt carries an explicit entry range and
   per-kind counts; multi-batch runs write
   `REPORT-<pass>-batch-NNN-of-MMM.md` files.
+  A curator child records each rejected lesson merge through a structured
+  `keep_both` verdict row (normalized pair of lesson slugs plus reason). The
+  next inventory includes applicable verdict rows and the current
+  bidirectional `[[wikilink]]` adjacency on each lesson line, so intentionally
+  layered pairs do not require repeat full-body review.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
@@ -1158,12 +1165,14 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `outcome='wrong'` bumps `wrong_count` and may demote a tier.
 
 - **skill_usage telemetry (passive)** — `ingest.py` parses `tool_use` blocks
-  from jsonl: sees `name=Skill` → `use_count++`, `last_used_at=ts`. This way
-  the curator gets real numbers without the agent being required to call
-  `skill_record` manually. `foreground_use_count` is gated by the same harvest
-  lineage exclusion, so autonomous child self-use cannot promote a skill tier.
-  The `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
-  directly, not through skill_manage).
+  from jsonl: sees `name=Skill` → raw `use_count++`, `last_used_at=ts`. The
+  `foreground_use_count` is the authoritative promotion/trust signal: it is
+  the foreground subset of raw uses, with spawned review-fork activity
+  excluded so automation cannot promote a skill tier. `skill_list` records a
+  `view_count` bump for every returned row. The curator checklist shows raw
+  uses, foreground uses, views, and patches, but the curator's own automated
+  inventory read does not count as a view. The `skill_watcher` daemon catches
+  external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
 
 - **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
   `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
@@ -1173,6 +1182,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   with no recent access and low pull-count. The section is advisory only; it is
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
+
+- **Wikilink health** — `wikilink_health(include_archived=True)` is a
+  deterministic, read-only scan across every materialized lesson and skill
+  body. It resolves `[[slug]]` targets against the combined lesson/skill
+  inventory and returns every unresolved target with its source entry. It
+  detects global link drift; it does not repair links during a scan.
 
 - **Lesson-to-skill promotion** — the curator also deterministically groups
   lessons that share a pair of meaningful slug/title terms. A group reaches a
@@ -1505,7 +1520,7 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (120 total)
+## MCP tools (121 total)
 
 Compact grouping by module. Full signatures are in the code; `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
@@ -1528,10 +1543,11 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 6 | lesson_append, lesson_list, lesson_get, lesson_patch, lesson_remove, lesson_restore |
+| lessons | 7 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 5 | curator_review, curator_review_status, skill_validate, curator_report_write, curator_restore |
+| curator | 6 | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
+| evolve_research | 1 | evolve_research_handoff |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |

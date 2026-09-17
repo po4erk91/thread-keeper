@@ -1053,12 +1053,17 @@ def _action_restore(name: str) -> str:
 # skill_list
 # ──────────────────────────────────────────────────────────────────────────
 
-@read_tool()
+@write_tool()
 def skill_list(include_archived: bool = False) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
             state=<active|stale|archived> uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
+
+    Each returned row is a visibility event: its ``view_count`` and
+    ``last_viewed_at`` are updated before the list is returned. The curator
+    inventory itself is deliberately excluded, so an automated audit cannot
+    make every skill look recently consulted.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -1074,6 +1079,13 @@ def skill_list(include_archived: bool = False) -> str:
     if not rows:
         return "no_skills_tracked"
     now = int(time.time())
+    conn.executemany(
+        "UPDATE skill_usage SET last_viewed_at=?, view_count=view_count+1, "
+        "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
+        "WHERE name=?",
+        ((now, r["name"]) for r in rows),
+    )
+    conn.commit()
     out: list[str] = []
     for r in rows:
         last = max(
@@ -1104,8 +1116,9 @@ def skill_list(include_archived: bool = False) -> str:
         )
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
-            f"state={r['state']} uses={r['use_count']} "
-            f"fg_uses={fg_uses} views={r['view_count']} "
+            f"state={'active' if r['state'] == 'stale' else r['state']} "
+            f"uses={r['use_count']} "
+            f"fg_uses={fg_uses} views={(r['view_count'] or 0) + 1} "
             f"patches={r['patch_count']} wrong={wrong_n} "
             f"pinned={r['pinned']} last_active={age}_ago"
         )

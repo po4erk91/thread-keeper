@@ -337,6 +337,14 @@ class CodexAdapter(CLIAdapter):
         if {"websearch", "webfetch"} & requested_tools:
             argv.append("--search")
         argv += ["exec", "--skip-git-repo-check"]
+        # Codex launches configured stdio MCP servers from the agent cwd.  A
+        # repository checkout can therefore shadow the installed package used
+        # by thread-keeper's MCP entry.  Scope safe-path mode to the MCP server
+        # only; shell/test Python processes in the child keep normal semantics.
+        argv += [
+            "-c",
+            'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
+        ]
         if model:
             argv += ["-m", model]
         if effort:

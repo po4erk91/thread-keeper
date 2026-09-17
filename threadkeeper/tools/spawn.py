@@ -352,7 +352,9 @@ ROLE_PROMPTS: dict[str, str] = {
 # MCP entry — is dropped so it never lands in the slim config (#68). The
 # transient run values the child actually needs arrive via env_overrides;
 # these cover package/runtime discovery plus thread-keeper's own knobs.
-_SLIM_MCP_ENV_ALLOW = frozenset({"PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME"})
+_SLIM_MCP_ENV_ALLOW = frozenset({
+    "PYTHONPATH", "PYTHONSAFEPATH", "VIRTUAL_ENV", "PYTHONHOME",
+})
 _SLIM_MCP_ENV_ALLOW_PREFIXES = ("THREADKEEPER_",)
 
 
@@ -413,6 +415,10 @@ def _build_slim_mcp_config(
     }
     if env_overrides:
         env.update(env_overrides)
+    # A spawned agent may run from a managed or per-task checkout containing
+    # another copy of ``threadkeeper``.  Keep the slim MCP server pinned to the
+    # configured PYTHONPATH instead of letting Python prepend the child cwd.
+    env["PYTHONSAFEPATH"] = "1"
     mp_entry["env"] = env
     try:
         write_spool_text(
@@ -537,7 +543,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
-                task_id_override: str = "") -> str:
+                task_id_override: str = "",
+                child_cid_override: str = "",
+                allowed_tools_override: Optional[tuple[str, ...]] = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -633,7 +641,14 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # server-process resolves itself to it via THREADKEEPER_FORCE_CID
     # (no ppid-walk needed for spawned children).
     import uuid as _uuid
-    child_cid = str(_uuid.uuid4())
+    requested_child_cid = child_cid_override.strip()
+    if requested_child_cid:
+        try:
+            child_cid = str(_uuid.UUID(requested_child_cid))
+        except (AttributeError, ValueError):
+            return "ERR invalid_child_cid"
+    else:
+        child_cid = str(_uuid.uuid4())
     task_id = task_id_override.strip() or ("tk_" + secrets.token_hex(3))
     if not task_id.startswith("tk_") or any(
         c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
@@ -840,7 +855,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "mcp__thread-keeper__search_via_parent",
         ]
         extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-        allow = _claude_default_allow + extra_list
+        allow = (
+            list(allowed_tools_override)
+            if allowed_tools_override is not None
+            else _claude_default_allow
+        ) + extra_list
         cmd += ["--allowedTools"] + allow
         if chosen_model:
             cmd += ["--model", chosen_model]
