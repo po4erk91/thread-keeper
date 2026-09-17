@@ -1078,53 +1078,39 @@ verified gaps from the present code and test suite:
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
-**2026-09-03 reviewer additions (issue-backed).**
-The current audit reconciled the late-August backlog and added two gaps found in
-the Curator and status/notification paths:
+**2026-09-10 reviewer additions (issue-backed).**
+The current audit reconciled five late-August/September issues and added one
+newly verified Evolve backlog-governor gap:
 
-- **Curator capability separation.** Split current web research from durable
-  lesson/skill/concept mutation so no Curator child holds untrusted web input
-  and destructive memory tools in the same model context (#289).
-- **Durable Curator batch completion.** Track expected, dispatched, completed,
-  failed, and unapplied batches per pass; endorse an inventory fingerprint only
-  after every batch reaches a valid terminal state (#290).
-- **Bounded SQLite write transactions.** Migrate legacy write paths away from
-  long-lived non-autocommit `get_db()` connections, never hold writer locks
-  across subprocess or file I/O, and surface leaked transactions before they
-  wedge the daemon host (#293).
-- **Fail-closed Curator inventory collection.** Distinguish an empty store from
-  a failed lesson/skill/concept read, abort partial audits before dispatch, and
-  keep incomplete snapshots from becoming `unchanged_inventory` fingerprints
-  (#298).
-- **Sanitized status and notification excerpts.** Redact secrets and private
-  home paths from child-log-derived success/failure summaries before they reach
-  the agent-status MCP surface, menu bar, or OS notifications (#299).
+- **Curator capability separation.** Split external research from privileged
+  lesson/skill mutation so no spawned Curator child holds web access and
+  destructive memory tools at the same time (#289).
+- **Durable multi-batch completion.** Track every Curator batch to a terminal
+  result and endow the pass only after all expected reports complete, with
+  explicit partial, timeout, and retry outcomes (#290).
+- **Database transaction cleanup.** Prevent non-autocommit `get_db()` callers
+  from leaking implicit transactions that can retain locks and wedge the
+  single-writer path (#293).
+- **Fail-closed Curator inventories.** Treat lesson or skill inventory read
+  failures as a deferred/failed pass instead of silently dispatching an
+  incomplete inventory that can drive unsafe destructive decisions (#298).
+- **Child-log redaction.** Redact captured child-output samples before they are
+  stored in agent status and recent-result telemetry (#299).
+- **Scoped Evolve backlog pressure.** Count only eligible roadmap work in the
+  reviewer backlog governor so unrelated open issues cannot suppress future
+  audits (#304).
 
-**2026-08-24 reviewer additions (issue-backed).**
-The current audit added two Curator gaps verified against the implementation
-and focused regression suite:
+**2026-09-13 reviewer additions (issue-backed).**
+The current audit found two boundary violations in the spawn and status paths:
 
-- **Separate Curator research from destructive mutation.** A destructive
-  Curator child currently combines required `WebSearch`/`WebFetch` research
-  with tools that patch or delete durable lessons, skills, and concepts. Split
-  the pass into a bounded read-only evidence phase and a web-free mutation
-  phase, with the separation enforced mechanically (#289).
-- **Durable multi-batch completion.** Track expected Curator batches through
-  dispatch, completion, provenance, and advisory apply state; endorse an
-  inventory only after all batches finish, bound batch fan-out, retry missing
-  batches, and prevent the report applier from silently superseding earlier
-  reports with the newest batch (#290).
-
-**2026-08-28 reviewer addition (issue-backed).**
-The current audit reconciled the latest daemon-host incident with the database
-write paths and added the remaining root cause to the live roadmap:
-
-- **SQLite writer transaction and connection lifecycle.** Migrate legacy write
-  paths from caller-managed `get_db()` connections to short, rollback-safe
-  `run_write()` transactions; never hold a writer reservation across child
-  launch or file I/O; and add a leaked-transaction / connection-count guard so
-  a stalled single writer becomes visible before heartbeats, reaping, and
-  notifications cascade into failure (#293).
+- **Server-controlled privileged spawning.** Remove caller-controlled role and
+  origin strings from the authorization decision for `bypassPermissions`.
+  Public MCP callers must not be able to impersonate an Evolve child and obtain
+  an unsandboxed process; privileged Evolve launches need a private,
+  server-controlled path (#308).
+- **Side-effect-free agent status.** Keep `agent_status` observation separate
+  from watchdog enforcement so a read-only MCP call or menu poll cannot kill an
+  overdue child, mutate its lifecycle state, or spend a retry spawn (#309).
 
 ---
 
