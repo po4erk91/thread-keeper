@@ -352,7 +352,9 @@ ROLE_PROMPTS: dict[str, str] = {
 # MCP entry — is dropped so it never lands in the slim config (#68). The
 # transient run values the child actually needs arrive via env_overrides;
 # these cover package/runtime discovery plus thread-keeper's own knobs.
-_SLIM_MCP_ENV_ALLOW = frozenset({"PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME"})
+_SLIM_MCP_ENV_ALLOW = frozenset({
+    "PYTHONPATH", "PYTHONSAFEPATH", "VIRTUAL_ENV", "PYTHONHOME",
+})
 _SLIM_MCP_ENV_ALLOW_PREFIXES = ("THREADKEEPER_",)
 
 
@@ -413,6 +415,10 @@ def _build_slim_mcp_config(
     }
     if env_overrides:
         env.update(env_overrides)
+    # A spawned agent may run from a managed or per-task checkout containing
+    # another copy of ``threadkeeper``.  Keep the slim MCP server pinned to the
+    # configured PYTHONPATH instead of letting Python prepend the child cwd.
+    env["PYTHONSAFEPATH"] = "1"
     mp_entry["env"] = env
     try:
         write_spool_text(
