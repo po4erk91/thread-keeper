@@ -6,6 +6,17 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-17
+
+### Changed
+
+- **CI now runs the full suite in parallel (#217).** The standard runner is
+  `pytest -n auto --dist loadscope`, which uses xdist worker processes rather
+  than per-test `--forked` startup. Worker-safe temporary fixture state and
+  ready temporary Evolve checkouts keep the suite isolated while removing the
+  former process and checkout overhead.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

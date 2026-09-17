@@ -48,13 +48,15 @@ threadkeeper/            # the package
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[semantic,dev]'
-python -m pytest                 # full suite
-python -m pytest -m "not slow"   # fast inner loop — skips the embedding-warmup tests
+python -m pytest -n auto --dist loadscope  # full suite, same parallel runner as CI
+python -m pytest -m "not slow"             # fast inner loop — skips the embedding-warmup tests
 ```
 
-CI runs the full suite under `--forked` (each test in its own process; the
-per-test package re-import otherwise piles up native ONNX/tokenizer thread
-pools that can deadlock sqlite finalize in one long-lived interpreter).
+CI runs the full suite with `pytest-xdist` using `-n auto --dist loadscope`.
+Each worker is a separate process, and test fixtures give every test its own
+temporary database and on-disk state. `loadscope` keeps each test module on one
+worker, which reduces cross-worker fixture interaction without making the fast
+Evolve modules a meaningful scheduling bottleneck.
 
 Test isolation uses a tempdir DB per test, all daemons disabled via env
 (`THREADKEEPER_*_INTERVAL_S=0`). See `tests/conftest.py`.
@@ -65,12 +67,11 @@ suite's dominant cost — each ran a real `git clone` + venv + `pip install` —
 their bootstraps (and the shared `fresh_mp` fixture) now pin a ready tmp
 checkout, so they are fast and run in every mode.
 
-`pytest-xdist` ships in the `dev` extra as an **opt-in local** accelerator
-(`pytest -n auto`). It is not the CI default: the suite is not yet fully
-parallel-safe (a few tests race on shared state) and `-n auto` does not compose
-with `--forked`. See [#217](https://github.com/po4erk91/thread-keeper/issues/217).
-On macOS, combining `-n` with `--forked` also needs
-`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
+`pytest-xdist` ships in the `dev` extra and is the standard local and CI
+accelerator. Do not add `--forked` to the parallel command: the plugins manage
+their worker directories independently and are intentionally not composed.
+For an isolated debugging run on macOS, `--forked` remains available, but it
+needs `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`.
 
 ## Schema migrations
 

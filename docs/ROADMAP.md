@@ -10,6 +10,10 @@ remains a live question.
 
 ## Closed
 
+- Parallel test runner and Evolve test cost (#217): fixtures and scratch state
+  are safe under `pytest-xdist`; CI and the documented full-suite command use
+  `pytest -n auto --dist loadscope` without `--forked`. Evolve test bootstraps
+  pin a ready temporary checkout instead of provisioning a managed clone.
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
@@ -1010,9 +1014,6 @@ path:
 The current audit reconciled three post-July open issues and added four newly
 verified gaps from the present code and test suite:
 
-- **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
-  state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
-  cut repeated managed-checkout setup in Evolve tests (#217).
 - **Research-phase write confinement.** Replace the Evolve research child's
   generic `Write` capability with a mechanically destination-scoped, bounded,
   pass-linked digest handoff (#263).
