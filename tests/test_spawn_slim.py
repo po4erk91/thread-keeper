@@ -59,6 +59,7 @@ def test_build_slim_mcp_config_from_claude_json(tmp_path, monkeypatch):
     assert mp["command"] == "/path/to/python"
     assert mp["args"] == ["-m", "threadkeeper.server"]
     assert mp["env"]["PYTHONPATH"] == "/path/to/repo"
+    assert mp["env"]["PYTHONSAFEPATH"] == "1"
     assert mp["env"]["THREADKEEPER_FORCE_CID"] == _FAKE_CID
     assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
     assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
@@ -92,6 +93,7 @@ def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeyp
     assert mp["command"] == sys.executable
     assert "threadkeeper.server" in mp["args"]
     assert "PYTHONPATH" in mp["env"]
+    assert mp["env"]["PYTHONSAFEPATH"] == "1"
     assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
     assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
 
@@ -142,6 +144,7 @@ def test_slim_config_is_owner_only_and_minimizes_env(tmp_path, monkeypatch):
     env = json.loads(slim_path.read_text())["mcpServers"]["thread-keeper"]["env"]
     # Needed keys survive: package discovery + thread-keeper knobs + overrides.
     assert env["PYTHONPATH"] == "/path/to/repo"
+    assert env["PYTHONSAFEPATH"] == "1"
     assert env["THREADKEEPER_TZ"] == "Europe/Kyiv"
     assert env["THREADKEEPER_FORCE_CID"] == _FAKE_CID
     assert env["THREADKEEPER_NO_EMBEDDINGS"] == "1"
@@ -171,7 +174,7 @@ def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=True)
+    out = spawn_fn(prompt="do a thing", cwd=str(pkg["tmp"]), visible=True)
     assert out.startswith("ok task="), out
 
     cmd_files = list(spawn_mod.TASK_LOG_DIR.glob("*.command"))
@@ -197,7 +200,12 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=False, capture_output=True)
+    out = spawn_fn(
+        prompt="do a thing",
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=True,
+    )
     assert out.startswith("ok task="), out
 
     log_files = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
