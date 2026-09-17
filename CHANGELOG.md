@@ -5,6 +5,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.7 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs.** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
 ## v0.17.6 — 2026-09-17
 
 ### Fixed

@@ -824,10 +824,16 @@ runs as **two alternating phases**, never co-granting web research and
 shell/`bypassPermissions` to the same child:
 
 - **research phase** — a read-only child with `WebSearch`/`WebFetch` and
-  read-only repo reads but **no shell, no `bypassPermissions`, and no GitHub
-  access**. It distills external findings into a digest file under
-  `~/.threadkeeper/evolve-research/`. With no `Bash`/`gh`/network-write tool it
-  has no exfiltration channel, so the untrusted pages it reads cannot act.
+  read-only repo reads but **no shell, no generic `Write`, no
+  `bypassPermissions`, and no GitHub access**. Before dispatch, the parent
+  registers one pass ID, owner child, and digest target. The child can submit
+  only that pass through `evolve_research_handoff(...)`; it cannot choose a
+  path. The handoff is one-shot, capped at 12,000 characters / 400 lines,
+  atomically persisted with a SHA-256, and records rejected, failed, expired,
+  and tampered outcomes in Evolve telemetry. The later audit reads only a
+  fresh accepted handoff whose final file still matches that hash. With no
+  `Bash`/`gh`/network-write tool it has no exfiltration channel, so the
+  untrusted pages it reads cannot act.
 - **audit phase** — the privileged child (`bypassPermissions` + `Bash`/`Edit`/
   `Write`) that audits the repo, opens the `docs/ROADMAP.md` PR, and creates or
   updates GitHub issues. It holds **no web tools**; it consumes the research

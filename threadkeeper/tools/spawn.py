@@ -543,7 +543,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
-                task_id_override: str = "") -> str:
+                task_id_override: str = "",
+                child_cid_override: str = "",
+                allowed_tools_override: Optional[tuple[str, ...]] = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -639,7 +641,14 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # server-process resolves itself to it via THREADKEEPER_FORCE_CID
     # (no ppid-walk needed for spawned children).
     import uuid as _uuid
-    child_cid = str(_uuid.uuid4())
+    requested_child_cid = child_cid_override.strip()
+    if requested_child_cid:
+        try:
+            child_cid = str(_uuid.UUID(requested_child_cid))
+        except (AttributeError, ValueError):
+            return "ERR invalid_child_cid"
+    else:
+        child_cid = str(_uuid.uuid4())
     task_id = task_id_override.strip() or ("tk_" + secrets.token_hex(3))
     if not task_id.startswith("tk_") or any(
         c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
@@ -846,7 +855,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "mcp__thread-keeper__search_via_parent",
         ]
         extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-        allow = _claude_default_allow + extra_list
+        allow = (
+            list(allowed_tools_override)
+            if allowed_tools_override is not None
+            else _claude_default_allow
+        ) + extra_list
         cmd += ["--allowedTools"] + allow
         if chosen_model:
             cmd += ["--model", chosen_model]

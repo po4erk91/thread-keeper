@@ -35,7 +35,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -556,6 +556,25 @@ CREATE TABLE IF NOT EXISTS evolve_issues (
     created_at    INTEGER NOT NULL
 );
 
+-- Parent-authorized handoffs from an unprivileged Evolve web-research child.
+-- The child never chooses a path: it can only submit content for the exact
+-- pass row created before it was spawned.  The audit phase accepts only a
+-- completed row whose final on-disk SHA-256 still matches this record.
+CREATE TABLE IF NOT EXISTS evolve_research_handoffs (
+    pass_id        TEXT PRIMARY KEY,
+    target_path    TEXT NOT NULL UNIQUE,
+    owner_cid      TEXT NOT NULL,
+    authorized_at  INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    status         TEXT NOT NULL CHECK(status IN (
+        'pending', 'writing', 'accepted', 'failed', 'tampered', 'expired'
+    )),
+    content_sha256 TEXT,
+    content_chars  INTEGER,
+    completed_at   INTEGER,
+    failure        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -582,6 +601,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_evolve_issues_fingerprint
     ON evolve_issues(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_hash
     ON evolve_issues(content_hash);
+CREATE INDEX IF NOT EXISTS idx_evolve_research_handoffs_ready
+    ON evolve_research_handoffs(status, completed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_number
     ON evolve_issues(issue_number);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
@@ -925,7 +946,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3):
+    if from_version not in (0, 1, 2, 3, 4):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"

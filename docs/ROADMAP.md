@@ -1056,9 +1056,12 @@ verified gaps from the present code and test suite:
 - **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
   state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
   cut repeated managed-checkout setup in Evolve tests (#217).
-- **Research-phase write confinement.** Replace the Evolve research child's
-  generic `Write` capability with a mechanically destination-scoped, bounded,
-  pass-linked digest handoff (#263).
+- **Research-phase write confinement (done, #263).** The Evolve researcher has
+  no generic `Write`; the parent registers a child-bound pass and the sole
+  `evolve_research_handoff` route writes its bounded digest to the derived
+  target. Audit consumes only a fresh handoff whose final SHA-256 still matches
+  the accepted pass record; rejected, failed, stale, and tampered handoffs stay
+  visible in telemetry.
 - **Loop-authored skill re-screening.** Re-run the existing injection-marker
   screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
   record a review flag, and surface it without auto-deleting the skill (#268).

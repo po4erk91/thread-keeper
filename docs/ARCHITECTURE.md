@@ -61,6 +61,7 @@ threadkeeper/
     ├── extract.py     extract_recent/review/accept/reject candidates
     ├── candidate_reviewer.py candidate_review_run/status
     ├── curator.py     curator_review/status/restore
+    ├── evolve_research.py evolve_research_handoff
     ├── lessons.py     lesson_append/list/get/neighbors/patch/remove/restore
     ├── concepts.py    register/list/expand/manage
     ├── graph.py       link/unlink/neighbors
@@ -1546,6 +1547,7 @@ below).
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 6 | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
+| evolve_research | 1 | evolve_research_handoff |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |
 | process_health | 2 | mp_health, mp_cleanup |
