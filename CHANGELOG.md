@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.8 — 2026-09-21
+
+### Changed
+
+- **CI now runs the full suite in parallel.** The standard runner is
+  `pytest -n auto --dist loadscope`, which uses xdist worker processes rather
+  than per-test `--forked` startup. Worker-safe temporary fixture state and
+  ready temporary Evolve checkouts keep the suite isolated while removing the
+  former process and checkout overhead.
+
 ## v0.17.7 — 2026-09-17
 
 - **Added: mechanically scoped Evolve research handoffs.** The web

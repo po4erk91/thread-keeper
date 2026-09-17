@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.17.7"
+version = "0.17.8"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Antigravity CLI, Copilot, and VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -59,13 +59,10 @@ semantic-st = [
     "numpy>=1.24.0",
     "sqlite-vec>=0.1.9",
 ]
-# Test runner + coverage. pytest-forked isolates each test in its own
-# process: the per-test package re-import (tests/conftest.py) accumulates
-# native ONNX/tokenizer thread pools that can deadlock sqlite finalize in a
-# single long-lived process, so CI runs `pytest --forked`. pytest-xdist is an
-# opt-in LOCAL accelerator (`-n auto`); it is NOT used in CI because it does
-# not compose with --forked (collides on the xdist worker tmp dir) and a few
-# tests still race under it. See CONTRIBUTING → Running tests.
+# Test runner + coverage. pytest-xdist is the standard local and CI runner:
+# `-n auto --dist loadscope` keeps modules on isolated worker processes while
+# fixtures provide worker-safe temporary state. pytest-forked remains useful
+# for an explicitly isolated debugging run, but is not composed with xdist.
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
