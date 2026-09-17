@@ -212,6 +212,30 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Edit" not in tool_list
 
 
+def test_returned_spawn_error_does_not_advance_candidate_review_cursor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="1")
+    conn = pkg["db"].get_db()
+    _seed_pending(conn, "verbatim", "candidate to retry")
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+    assert pkg["candidate_reviewer"]._last_review_ts(conn) == 0
+    event = conn.execute(
+        "SELECT summary FROM events WHERE kind='candidate_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert event["summary"].startswith("spawn_error:")
+
+
 def test_run_recent_high_water_is_not_due(tmp_path, monkeypatch):
     pkg = _bootstrap(
         tmp_path, monkeypatch, interval="3600", min_n="3",

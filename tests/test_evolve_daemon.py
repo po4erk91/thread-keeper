@@ -490,6 +490,26 @@ def test_run_evolve_pass_force_spawns_research_first(
     assert "Bash" not in calls["extra_allowed_tools"]
 
 
+def test_returned_spawn_error_preserves_evolve_audit_cursor_and_phase(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _seed_research(pkg, conn)
+    before = pkg["ed"]._last_evolve_ts(conn)
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+    assert pkg["ed"]._last_evolve_ts(conn) == before
+    assert pkg["ed"]._last_spawn_phase(conn) == "research"
+
+
 def test_run_evolve_pass_skips_empty_until_interval(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
     conn = pkg["db"].get_db()

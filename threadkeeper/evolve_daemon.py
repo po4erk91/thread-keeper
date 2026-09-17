@@ -1126,6 +1126,7 @@ def _spawn_research(repo_root: Path, now_t: int) -> str:
     With no Bash/gh/network-write tool it has no exfiltration channel."""
     research_file = _new_research_path(now_t)
     prompt = EVOLVE_RESEARCH_PROMPT.format(research_file=str(research_file))
+    from .spawn_result import parse_spawn_result
     from .tools.spawn import spawn  # late import — avoids import cycle
     result = spawn(
         prompt=prompt,
@@ -1141,7 +1142,13 @@ def _spawn_research(repo_root: Path, now_t: int) -> str:
             "mcp__thread-keeper__broadcast"
         ),
     )
-    return f"spawned research file={research_file.name} {str(result)[:120]}"
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
+    return (
+        f"spawned research file={research_file.name} "
+        f"{spawn_result.text[:120]}"
+    )
 
 
 def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
@@ -1170,6 +1177,7 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
         research=_fence_research(research_text),
         queue=_fence_untrusted_data(EVOLVE_LEGACY_QUEUE_TAG, queue),
     )
+    from .spawn_result import parse_spawn_result
     from .tools.spawn import spawn  # late import — avoids import cycle
     result = spawn(
         prompt=prompt,
@@ -1188,7 +1196,10 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
             "mcp__thread-keeper__broadcast"
         ),
     )
-    return f"spawned audit pending={len(pending)} {str(result)[:120]}"
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
+    return f"spawned audit pending={len(pending)} {spawn_result.text[:120]}"
 
 
 def run_evolve_pass(force: bool = False) -> str:
@@ -1267,7 +1278,10 @@ def run_evolve_pass(force: bool = False) -> str:
             _record_transient_evolve_pass(conn, out)
             return out
         # A real spawn is the only outcome that consumes the review slot.
-        _record_evolve_pass(conn, now_t, out)
+        if out.startswith("spawned "):
+            _record_evolve_pass(conn, now_t, out)
+        else:
+            _record_transient_evolve_pass(conn, out)
         return out
 
 

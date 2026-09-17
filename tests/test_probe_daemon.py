@@ -195,6 +195,22 @@ def test_run_probe_pass_spawns_due_probe(tmp_path, monkeypatch):
     assert pkg["pd"]._last_probe_ts(conn) > 0
 
 
+def test_returned_spawn_error_does_not_advance_probe_cursor(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _add_probe(conn, "PERR", "date_arithmetic", grader="regex", pattern="42")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["pd"].run_probe_pass(force=True)
+
+    assert out == "graded=0 spawn_error: spawn_reservation_failed=busy"
+    assert pkg["pd"]._last_probe_ts(conn) == 0
+
+
 def test_run_probe_pass_single_flight(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()

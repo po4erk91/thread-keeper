@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-18
+- **Fixed: returned spawn admission failures no longer masquerade as child
+  launches.** Internal callers now share a parsed launch-result contract, so
+  Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
+  pickups, automatic thread review, and tournaments only advance after a real
+  task identifier is returned.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

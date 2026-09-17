@@ -339,6 +339,7 @@ def _last_curator_ts(conn: sqlite3.Connection) -> int:
     try:
         row = conn.execute(
             "SELECT target FROM events WHERE kind='curator_pass' "
+            "AND summary NOT LIKE 'report_authorized %' "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
@@ -1237,6 +1238,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "Read,WebSearch,WebFetch"
             )
 
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # type: ignore
         old_pass = os.environ.get(PASS_ID_ENV)
         old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
@@ -1287,15 +1289,15 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                         slim=True,
                         extra_allowed_tools=allowed_tools,
                     )
-                    result_s = str(result)
-                    if result_s.startswith("ERR "):
+                    spawn_result = parse_spawn_result(result)
+                    if not spawn_result.ok:
                         out = (
                             f"spawn_error batch={batch.index}/{batch.total}: "
-                            f"{result_s}"
+                            f"{spawn_result.reason}"
                         )
-                        _record_curator_pass(conn, now, out)
+                        _record_curator_pass(conn, _last_curator_ts(conn), out)
                         return out
-                    results.append(result_s)
+                    results.append(spawn_result.text)
             finally:
                 if old_pass is None:
                     os.environ.pop(PASS_ID_ENV, None)
@@ -1306,7 +1308,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 else:
                     os.environ[SNAPSHOT_DIR_ENV] = old_snap
         except Exception as e:
-            _record_curator_pass(conn, now, f"spawn_error: {e}")
+            _record_curator_pass(conn, _last_curator_ts(conn), f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
         batch_entries = _summarize_batch_entries(batches)

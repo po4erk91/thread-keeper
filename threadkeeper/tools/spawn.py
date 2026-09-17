@@ -19,6 +19,7 @@ import json as _json
 from pathlib import Path
 from typing import Optional
 
+from ..spawn_result import parse_spawn_result
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
@@ -1053,14 +1054,14 @@ def tournament(prompt: str,
             permission_mode="auto",
             role=role,
         )
-        m = re.search(r"task=(\S+)\s+.*child_cid=(\S+)", result)
-        if m:
+        spawn_result = parse_spawn_result(result)
+        if spawn_result.ok:
             spawned.append({
-                "role": role, "task_id": m.group(1),
-                "cid_short": m.group(2), "spawn_result": result,
+                "role": role, "task_id": spawn_result.task_id,
+                "spawn_result": spawn_result.text,
             })
         else:
-            spawned.append({"role": role, "error": result})
+            spawned.append({"role": role, "error": spawn_result.reason})
 
     started_at = int(time.time())
     deadline = started_at + max(15, min(int(timeout_s), 600))

@@ -609,6 +609,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
         # Late import — spawn module imports identity / config; importing it
         # at module load time would create cycles.
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # type: ignore
         try:
             result = spawn(
@@ -638,14 +639,14 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_shadow_pass(conn, floor, f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
-        result_s = str(result)
-        if result_s.startswith("ERR"):
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
             # spawn() returns ERR strings for admission/budget rejections.
             # Treat those like a running child: no child processed the window.
-            _record_shadow_pass(conn, floor, result_s[:200])
+            _record_shadow_pass(conn, floor, spawn_result.text[:200])
         else:
-            _record_shadow_pass(conn, high_water, result_s[:200])
-        return result_s
+            _record_shadow_pass(conn, high_water, spawn_result.text[:200])
+        return spawn_result.text
 
 
 def _serve_loop() -> None:

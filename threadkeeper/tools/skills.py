@@ -1348,6 +1348,7 @@ def review_thread(thread_id: str,
     # avoids a circular import on package load. slim=True loads ONLY
     # thread-keeper MCP for the child (no context7/figma/etc) — review
     # work doesn't need any of those, and it cuts startup RAM dramatically.
+    from ..spawn_result import parse_spawn_result
     from .spawn import spawn  # type: ignore
     result = spawn(
         prompt=full_prompt,
@@ -1369,6 +1370,10 @@ def review_thread(thread_id: str,
             "mcp__thread-keeper__skill_list"
         ),
     )
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
+
     # The spawned child IS an application of the ai-memory-learning-loop
     # skill (review prompt = that skill's procedure baked in). The child
     # won't invoke Skill(...) explicitly, so bump the counter here so
@@ -1391,4 +1396,4 @@ def review_thread(thread_id: str,
         conn.commit()
     except sqlite3.OperationalError:
         pass  # skill_usage missing on this conn
-    return result
+    return spawn_result.text

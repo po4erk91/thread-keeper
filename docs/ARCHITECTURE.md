@@ -870,6 +870,16 @@ child (#79). All spawned children receive the parent's `THREADKEEPER_DB`, task
 log dir, project dir, forced cid, and write-origin env so their direct
 Python/MCP calls hit the same store as the parent.
 
+### Internal spawn-result contract
+
+The public `spawn()` tool preserves its human-readable text response for MCP
+compatibility. Internal Python callers must pass that text through
+`spawn_result.parse_spawn_result()`: only a response containing `task=` (or
+the legacy `task_id=` spelling) is a launched child. `ERR ...` responses and
+unrecognized text are failed launches with an explicit reason. This prevents
+an admission rejection from advancing a loop cursor, recording spawned/use
+telemetry, retaining a child-only claim, or counting a panel member.
+
 ### Slim vs full child
 
 `slim=True` (default):
