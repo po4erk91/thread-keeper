@@ -379,6 +379,20 @@ CREATE TABLE IF NOT EXISTS lesson_usage (
                    CHECK(tier IN ('hypothesis','observed','validated'))
 );
 
+-- Curator decisions to retain deliberately adjacent lesson pairs.  The pair
+-- is normalized alphabetically by the writer so it has one durable identity
+-- regardless of which lesson the curator considered first.
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+
 -- Auto-extraction queue: heuristic candidates for note/concept/distill that
 -- a session can review in batch and accept/reject — saves manual scanning.
 CREATE TABLE IF NOT EXISTS extract_candidates (
@@ -594,6 +608,8 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
 
 -- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
 -- Node identity + Hybrid Logical Clock singleton.
@@ -659,6 +675,18 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
 """
 
 # Historical column migrations layered on top of the baseline SCHEMA.
