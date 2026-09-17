@@ -93,6 +93,9 @@ config, copies hooks to
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 `copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
+The generated MCP entry pins imports to this configured installation, so an
+agent launched inside another thread-keeper checkout cannot load that checkout's
+unmerged code against the live memory database.
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
 message; hookless clients such as Codex and Antigravity CLI either follow the
@@ -173,7 +176,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
-| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
@@ -573,6 +576,11 @@ routed to the incumbent lesson or surfaced for curation instead of minting a
 sibling lesson. A clear new directive or debunk also flags older permissive
 lessons on the same concrete practice for patch, cross-link, or supersession
 review.
+Before a genuinely new fallback lesson is written,
+`lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
+slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
+that preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link
+to a related, distinct lesson while its body is still editable.
 
 #### 3. Extract daemon
 
@@ -676,6 +684,14 @@ recorded `curator_pass` high-water, so fresh MCP server restarts and
 non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
+
+When a Curator reviews a lesson pair and deliberately keeps both, it records a
+structured `keep_both` merge verdict with the two slugs and a short reason.
+Later inventories show those prior verdicts and each lesson's current
+bidirectional `[[wikilink]]` adjacency (`links=[...]`), including for the
+relevant side of a multi-batch review. This preserves intentional
+general/specific and prevention/recovery layering without making a child
+re-read both lesson bodies to rediscover it.
 
 For automation-created skills, the audit keeps foreground consultation separate
 from maintenance: a background-review skill with `fg_uses=0` after 14 days is
@@ -811,10 +827,16 @@ runs as **two alternating phases**, never co-granting web research and
 shell/`bypassPermissions` to the same child:
 
 - **research phase** — a read-only child with `WebSearch`/`WebFetch` and
-  read-only repo reads but **no shell, no `bypassPermissions`, and no GitHub
-  access**. It distills external findings into a digest file under
-  `~/.threadkeeper/evolve-research/`. With no `Bash`/`gh`/network-write tool it
-  has no exfiltration channel, so the untrusted pages it reads cannot act.
+  read-only repo reads but **no shell, no generic `Write`, no
+  `bypassPermissions`, and no GitHub access**. Before dispatch, the parent
+  registers one pass ID, owner child, and digest target. The child can submit
+  only that pass through `evolve_research_handoff(...)`; it cannot choose a
+  path. The handoff is one-shot, capped at 12,000 characters / 400 lines,
+  atomically persisted with a SHA-256, and records rejected, failed, expired,
+  and tampered outcomes in Evolve telemetry. The later audit reads only a
+  fresh accepted handoff whose final file still matches that hash. With no
+  `Bash`/`gh`/network-write tool it has no exfiltration channel, so the
+  untrusted pages it reads cannot act.
 - **audit phase** — the privileged child (`bypassPermissions` + `Bash`/`Edit`/
   `Write`) that audits the repo, opens the `docs/ROADMAP.md` PR, and creates or
   updates GitHub issues. It holds **no web tools**; it consumes the research

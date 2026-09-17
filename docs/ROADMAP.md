@@ -1030,21 +1030,24 @@ GitHub issues:
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
 path:
 
-- **Curator merge-verdict memory.** Persist rejected merge candidates and
-  surface cross-link adjacency in the curator inventory so later passes stop
-  re-litigating the same layered pairs (#189).
-- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
-  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
-  cross-links or consolidate while the lesson is being materialized (#190).
+- ✅ DONE (#189): Curator now persists rejected lesson merge candidates as
+  structured `keep_both` verdicts (normalized pair plus short reason), and each
+  later inventory surfaces applicable verdicts alongside current bidirectional
+  `[[wikilink]]` adjacency. Deliberately layered pairs no longer need a repeated
+  full-body review.
+- ✅ DONE (#190): Before a new lesson is written, `lesson_neighbors(...)`
+  surfaces nearest-neighbor lesson slugs so shadow/candidate authors can add
+  `[[slug]]` cross-links or consolidate while the lesson is being materialized.
 
 **2026-07-03 reviewer additions (issue-backed).**
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
 path:
 
-- **Dangling wikilink health check.** Scan lesson and skill bodies for
-  unresolved `[[slug]]` references and surface the dead targets in a
-  read-only health view so manual body reads are not the only way to spot
-  broken cross-links (#202).
+- **Dangling wikilink health check.** ✅ DONE (#202). `wikilink_health()`
+  deterministically scans every materialized lesson and skill body for
+  unresolved `[[slug]]` references, reporting each source entry and dead
+  target without mutating either store. It complements, rather than replaces,
+  the consolidation-time repair path in #162.
 
 **2026-08-10 reviewer additions (issue-backed).**
 The current audit reconciled three post-July open issues and added four newly
@@ -1053,9 +1056,12 @@ verified gaps from the present code and test suite:
 - **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
   state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
   cut repeated managed-checkout setup in Evolve tests (#217).
-- **Research-phase write confinement.** Replace the Evolve research child's
-  generic `Write` capability with a mechanically destination-scoped, bounded,
-  pass-linked digest handoff (#263).
+- **Research-phase write confinement (done, #263).** The Evolve researcher has
+  no generic `Write`; the parent registers a child-bound pass and the sole
+  `evolve_research_handoff` route writes its bounded digest to the derived
+  target. Audit consumes only a fresh handoff whose final SHA-256 still matches
+  the accepted pass record; rejected, failed, stale, and tampered handoffs stay
+  visible in telemetry.
 - **Loop-authored skill re-screening.** Re-run the existing injection-marker
   screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
   record a review flag, and surface it without auto-deleting the skill (#268).

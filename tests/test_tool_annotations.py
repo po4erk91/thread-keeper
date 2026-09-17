@@ -35,7 +35,8 @@ READ_TOOLS = {
     "review_candidates", "run_probe", "search", "shadow_review_status",
     "skill_validate", "spawn_budget_status", "spawn_status",
     "sync_peers", "sync_status", "task_logs",
-    "task_thread", "tasks", "weak_spots", "whoami",
+    "task_thread", "tasks", "weak_spots", "whoami", "wikilink_health",
+    "lesson_neighbors",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------
@@ -50,7 +51,8 @@ DELETE_CLASS_TOOLS = {
 WRITE_TOOLS = {
     "accept_candidate", "ask", "auto_review_trigger", "broadcast",
     "candidate_review_run", "claim_pickup", "close_thread", "config_reload",
-    "convene_panel", "core_set", "curator_report_write", "curator_review",
+    "convene_panel", "core_set", "curator_merge_verdict",
+    "curator_report_write", "curator_review",
     "db_compact", "db_deduplicate_embeddings", "dialectic_claim",
     "dialectic_evidence", "dialectic_mine_run", "dialectic_observation_resolve",
     "dialectic_supersede", "dialectic_validate_run", "distill", "evolve_apply",
@@ -58,7 +60,8 @@ WRITE_TOOLS = {
     "evolve_apply_roadmap_issue", "evolve_decide",
     "evolve_format", "evolve_issue_create", "evolve_mark_applied",
     "evolve_mark_curator_report_applied",
-    "evolve_mark_roadmap_issue_applied", "export_distillates", "extract_recent",
+    "evolve_mark_roadmap_issue_applied", "evolve_research_handoff",
+    "export_distillates", "extract_recent",
     "idle_thread", "inbox", "ingest", "lesson_append", "lesson_restore",
     "link", "live_status", "lesson_get", "lesson_list", "mark_skill_materialized",
     "memory_guard_reclaim", "note",
