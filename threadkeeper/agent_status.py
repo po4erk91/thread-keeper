@@ -330,15 +330,15 @@ def _status_for(pid: int | None, ended_at: int | None) -> str:
 
 
 def _refresh_rss(conn) -> None:
-    """Refresh task liveness/RSS using the existing spawn-budget sweeper.
+    """Refresh task liveness/RSS in observation-only mode.
 
-    This intentionally reuses the production measurement path, so the widget
-    and spawn-budget tool agree on memory numbers.
+    Status reads measure only and never kill or respawn; lifecycle
+    enforcement stays daemon-owned.
     """
     try:
         from .spawn_budget import _refresh_all_running
 
-        _refresh_all_running(conn)
+        _refresh_all_running(conn, enforce=False)
     except Exception:
         # A status widget should degrade to the last cached RSS instead of
         # failing when ps is briefly unavailable or the DB is locked.
