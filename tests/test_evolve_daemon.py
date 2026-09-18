@@ -103,21 +103,47 @@ def _add_evolve(conn, suggestion, rationale=None, applied=0, status="pending"):
 
 def _seed_research(pkg, conn, text="- idea: adopt Y\n  sources: https://ex.com\n"):
     """Make run_evolve_pass take the AUDIT branch on its next call: record a
-    prior research spawn so _last_spawn_phase()=='research', and write a fresh
-    digest file the audit phase will fence into its prompt."""
+    prior research spawn so _last_spawn_phase()=='research', and create a
+    fresh, accepted handoff that the audit phase may fence into its prompt."""
     now = int(time.time())
-    rdir = pkg["ed"]._research_dir()
-    rdir.mkdir(parents=True, exist_ok=True)
-    f = rdir / f"RESEARCH-{now}.md"
-    f.write_text(text, encoding="utf-8")
+    pass_id, f = pkg["ed"]._authorize_research_handoff(
+        conn, now, _FAKE_CID,
+    )
+    persisted = text.rstrip() + "\n"
+    f.write_text(persisted, encoding="utf-8")
+    digest = pkg["ed"].hashlib.sha256(persisted.encode("utf-8")).hexdigest()
+    conn.execute(
+        "UPDATE evolve_research_handoffs SET status='accepted', "
+        "content_sha256=?, content_chars=?, completed_at=? WHERE pass_id=?",
+        (digest, len(persisted), now, pass_id),
+    )
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
         "VALUES (?, 'evolve_review_pass', ?, ?, ?)",
-        ("s_prev", str(now), "spawned research file=RESEARCH.md ok task=tk pid=1",
+        ("s_prev", str(now), "spawned research pass=seeded ok task=tk pid=1",
          now),
     )
     conn.commit()
     return f, text
+
+
+def _authorize_researcher(pkg, conn, now=None):
+    """Create the parent/task state a real researcher handoff requires."""
+    now = int(time.time()) if now is None else int(now)
+    pass_id, target = pkg["ed"]._authorize_research_handoff(
+        conn, now, _FAKE_CID,
+    )
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, pid, parent_cid, spawned_cid, cwd, prompt, started_at, role, write_origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            f"tk_research_{pass_id[-6:]}", 0, "parent", _FAKE_CID,
+            str(target.parent), "research", now, "evolve_researcher", "evolve",
+        ),
+    )
+    conn.commit()
+    return pass_id, target
 
 
 def test_audit_prompt_uses_paginated_issue_dedup(tmp_path, monkeypatch):
@@ -475,7 +501,7 @@ def test_run_evolve_pass_force_spawns_research_first(
     pkg = _bootstrap(tmp_path, monkeypatch)
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -533,7 +559,7 @@ def test_run_evolve_pass_below_min(tmp_path, monkeypatch):
     _add_evolve(conn, "only one")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -559,7 +585,7 @@ def test_run_evolve_pass_skips_legacy_backlog_until_interval(
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1",
     )
 
@@ -578,7 +604,7 @@ def test_run_evolve_pass_research_phase_is_read_only(tmp_path, monkeypatch):
     _add_evolve(conn, "suggestion alpha")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("spawned research")
@@ -587,11 +613,128 @@ def test_run_evolve_pass_research_phase_is_read_only(tmp_path, monkeypatch):
     # web research yes; bypass/shell/GitHub-write no
     assert "WebSearch" in calls["extra_allowed_tools"]
     assert "WebFetch" in calls["extra_allowed_tools"]
+    assert "Write" not in calls["extra_allowed_tools"]
+    assert "evolve_research_handoff" in calls["extra_allowed_tools"]
+    assert calls["allowed_tools_override"] == (
+        "mcp__thread-keeper__broadcast",
+    )
     assert calls["permission_mode"] != "bypassPermissions"
     assert "Bash" not in calls["extra_allowed_tools"]
     assert "Edit" not in calls["extra_allowed_tools"]
     assert "evolve_decide" not in calls["extra_allowed_tools"]
     assert pkg["ed"]._last_evolve_ts(conn) > 0
+    handoff = conn.execute(
+        "SELECT owner_cid, status, target_path FROM evolve_research_handoffs"
+    ).fetchone()
+    assert handoff["owner_cid"] == calls["child_cid_override"]
+    assert handoff["status"] == "pending"
+    assert Path(handoff["target_path"]).name.startswith("RESEARCH-")
+
+
+def test_research_handoff_accepts_only_registered_owner_and_target(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    pass_id, target = _authorize_researcher(pkg, conn)
+    sentinel = tmp_path / "source.py"
+    sentinel.write_text("unchanged\n", encoding="utf-8")
+    monkeypatch.setenv("THREADKEEPER_SPAWNED_CHILD", "1")
+    monkeypatch.setenv("THREADKEEPER_WRITE_ORIGIN", "evolve")
+
+    out = _tool(pkg, "evolve_research_handoff")(
+        pass_id=pass_id,
+        content="- idea: scoped handoff\n  sources: https://example.test\n",
+    )
+
+    persisted = "- idea: scoped handoff\n  sources: https://example.test\n"
+    assert out.startswith("ok pass_id=")
+    assert target.read_text(encoding="utf-8") == persisted
+    assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    row = conn.execute(
+        "SELECT status, content_chars, content_sha256 FROM evolve_research_handoffs "
+        "WHERE pass_id=?", (pass_id,),
+    ).fetchone()
+    assert row["status"] == "accepted"
+    assert row["content_chars"] == len(persisted)
+    assert row["content_sha256"] == pkg["ed"].hashlib.sha256(
+        persisted.encode("utf-8")
+    ).hexdigest()
+    assert pkg["ed"]._latest_research(int(time.time())) == (target, persisted)
+
+
+def test_research_handoff_rejects_wrong_owner_and_malformed_content(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setenv("THREADKEEPER_SPAWNED_CHILD", "1")
+    monkeypatch.setenv("THREADKEEPER_WRITE_ORIGIN", "evolve")
+
+    pass_id, target = _authorize_researcher(pkg, conn)
+    monkeypatch.setattr(pkg["ed"].identity, "_detect_self_cid", lambda: "other")
+    assert _tool(pkg, "evolve_research_handoff")(
+        pass_id=pass_id, content="- harmless\n",
+    ) == "ERR research_handoff_not_authorized"
+    assert not target.exists()
+    assert conn.execute(
+        "SELECT status FROM evolve_research_handoffs WHERE pass_id=?", (pass_id,)
+    ).fetchone()["status"] == "pending"
+
+    monkeypatch.setattr(pkg["ed"].identity, "_detect_self_cid", lambda: _FAKE_CID)
+    malformed_id, malformed_target = _authorize_researcher(pkg, conn)
+    out = _tool(pkg, "evolve_research_handoff")(
+        pass_id=malformed_id, content="bad\x00digest",
+    )
+    assert out == "ERR digest_malformed reason=malformed_nul"
+    malformed = conn.execute(
+        "SELECT status, failure FROM evolve_research_handoffs WHERE pass_id=?",
+        (malformed_id,),
+    ).fetchone()
+    assert malformed["status"] == "failed"
+    assert malformed["failure"] == "malformed_nul"
+    assert not malformed_target.exists()
+    telemetry = conn.execute(
+        "SELECT summary FROM events WHERE kind=? AND summary LIKE ? "
+        "ORDER BY id DESC LIMIT 1",
+        (pkg["ed"].EVOLVE_RESEARCH_HANDOFF_KIND, f"pass_id={malformed_id}%"),
+    ).fetchone()["summary"]
+    assert "status=failed reason=malformed_nul" in telemetry
+
+
+def test_research_handoff_rejects_oversize_and_audit_rejects_tampering(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setenv("THREADKEEPER_SPAWNED_CHILD", "1")
+    monkeypatch.setenv("THREADKEEPER_WRITE_ORIGIN", "evolve")
+
+    oversize_id, _ = _authorize_researcher(pkg, conn)
+    out = _tool(pkg, "evolve_research_handoff")(
+        pass_id=oversize_id,
+        content="x" * (pkg["ed"].EVOLVE_RESEARCH_MAX_CHARS + 1),
+    )
+    assert out == (
+        f"ERR digest_too_large max_chars={pkg['ed'].EVOLVE_RESEARCH_MAX_CHARS}"
+    )
+    assert conn.execute(
+        "SELECT status, failure FROM evolve_research_handoffs WHERE pass_id=?",
+        (oversize_id,),
+    ).fetchone()["failure"] == "too_large"
+
+    pass_id, target = _authorize_researcher(pkg, conn)
+    assert _tool(pkg, "evolve_research_handoff")(
+        pass_id=pass_id, content="- trusted before replacement\n",
+    ).startswith("ok pass_id=")
+    target.write_text("- replacement after handoff\n", encoding="utf-8")
+    assert pkg["ed"]._latest_research(int(time.time())) == (None, "")
+    tampered = conn.execute(
+        "SELECT status, failure FROM evolve_research_handoffs WHERE pass_id=?",
+        (pass_id,),
+    ).fetchone()
+    assert tampered["status"] == "tampered"
+    assert tampered["failure"] == "sha256_mismatch"
 
 
 def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
@@ -635,7 +778,7 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     assert pkg["ed"].EVOLVE_RESEARCH_FENCE in calls["prompt"]
     assert "git fetch origin main" in calls["prompt"]
     assert "git checkout -b docs/roadmap-audit-" in calls["prompt"]
-    assert "origin/main" in calls["prompt"]
+    assert pkg["ed"]._base_ref() in calls["prompt"]
     assert "No open reviewer roadmap-doc PR touching docs/ROADMAP.md" in (
         calls["prompt"]
     )
@@ -728,10 +871,12 @@ def test_web_research_and_privileged_write_never_cogranted(tmp_path, monkeypatch
     _add_evolve(conn, "suggestion alpha")
     captured = []
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(
-        spawn_mod, "spawn",
-        lambda **kw: captured.append(dict(kw)) or "ok task=tk_ev pid=1",
-    )
+    def capture(**kw):
+        captured.append(dict(kw))
+        return "ok task=tk_ev pid=1"
+
+    monkeypatch.setattr(spawn_mod, "spawn", capture)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", capture)
 
     # Phase 1 records a real "spawned research" pass, so phase 2 takes the audit
     # branch on the next forced call.
@@ -768,7 +913,7 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
     monkeypatch.setattr(pkg["ed"], "_ensure_repo_ready", lambda: (repo, ""))
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -857,7 +1002,7 @@ def test_run_evolve_pass_single_flight_lock_race(tmp_path, monkeypatch):
             errors.append(e)
             release_spawn.set()
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     t = threading.Thread(target=run_pass)
     t.start()

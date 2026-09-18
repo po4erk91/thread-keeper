@@ -203,6 +203,8 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "skill_manage" in allowed
     assert "accept_candidate" in allowed
     assert "reject_candidate" in allowed
+    assert "lesson_neighbors(title=<prospective>" in kw["prompt"]
+    assert "lesson_neighbors" in allowed
     assert "Bash" not in allowed
     # De-privileged (issue #76): no bare Read/Write/Edit — only the
     # path-scoped skill/lesson/candidate MCP tools.
