@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Spawn launch-result contract: internal callers parse the public text response
+  and treat a child as launched only when it has a task identifier, so returned
+  admission failures cannot advance loop state, inflate telemetry, or retain
+  child-only claims.
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
   RSS instead of ~1.3GB.
 - Search proxy in parent process — slim child performs semantic search

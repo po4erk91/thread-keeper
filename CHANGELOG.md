@@ -74,6 +74,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: returned spawn admission failures no longer masquerade as child
+  launches.** Internal callers now share a parsed launch-result contract, so
+  Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
+  pickups, automatic thread review, and tournaments only advance after a real
+  task identifier is returned.
+
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
   references and reports each source entry with its dead target. The read-only

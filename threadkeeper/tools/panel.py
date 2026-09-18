@@ -25,7 +25,6 @@ child's vote to full weight.
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import Optional
 
@@ -157,6 +156,7 @@ def convene_panel(target_kind: str, target_id: str,
     )
 
     from .spawn import spawn  # late import — avoids import cycle
+    from ..spawn_result import parse_spawn_result
     spawned: list[str] = []
     errors: list[str] = []
     for role in role_list:
@@ -177,8 +177,11 @@ def convene_panel(target_kind: str, target_id: str,
         except Exception as e:  # noqa: BLE001 — never crash the caller
             errors.append(f"{role}:{e}")
             continue
-        m = re.search(r"task=(\S+)", str(res))
-        spawned.append(m.group(1) if m else role)
+        spawn_result = parse_spawn_result(res)
+        if not spawn_result.ok:
+            errors.append(f"{role}:{spawn_result.reason}")
+            continue
+        spawned.append(spawn_result.task_id or role)
 
     _emit(conn, "convene_panel", target=target_id.strip(),
           summary=f"{kind} origin={origin} roles={','.join(role_list)} "

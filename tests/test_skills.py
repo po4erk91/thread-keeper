@@ -670,6 +670,31 @@ def test_review_thread_auto_bumps_learning_loop_counter(skills_pkg, monkeypatch)
     assert row["use_count"] == 2
 
 
+def test_review_thread_returned_spawn_error_does_not_record_skill_use(
+    skills_pkg, monkeypatch,
+):
+    import threadkeeper.config as cfg
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(cfg, "AUTO_REVIEW_ENABLED", False)
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+    open_t = _tool(skills_pkg, "open_thread")
+    close = _tool(skills_pkg, "close_thread")
+    tid = open_t(question="review spawn failure")
+    close(thread_id=tid, outcome="done")
+
+    out = _tool(skills_pkg, "review_thread")(thread_id=tid, mode="auto")
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+    conn = skills_pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT use_count FROM skill_usage WHERE name='ai-memory-learning-loop'"
+    ).fetchone()
+    assert row is None
+
+
 def test_review_thread_rejects_unknown_thread(skills_pkg):
     rev = _tool(skills_pkg, "review_thread")
     result = rev(thread_id="T_nope", mode="inline")

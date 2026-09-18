@@ -1419,13 +1419,18 @@ def _spawn_research(repo_root: Path, now_t: int) -> str:
             "mcp__thread-keeper__broadcast"
         ),
     )
-    result_s = str(result)
-    if result_s.startswith("ERR "):
-        _fail_research_handoff(conn, pass_id, "spawn_failed")
-        return f"research_handoff_failed pass={pass_id} {result_s[:120]}"
+    from .spawn_result import parse_spawn_result
+
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        _fail_research_handoff(conn, pass_id, spawn_result.reason)
+        return (
+            f"research_handoff_failed pass={pass_id} "
+            f"{spawn_result.text[:120]}"
+        )
     return (
         f"spawned research pass={pass_id} file={research_file.name} "
-        f"{result_s[:120]}"
+        f"{spawn_result.text[:120]}"
     )
 
 
@@ -1478,10 +1483,15 @@ def _spawn_audit(
             "mcp__thread-keeper__broadcast"
         ),
     )
+    from .spawn_result import parse_spawn_result
+
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
     research_status = research_name or "unavailable"
     return (
         f"spawned audit pending={len(pending)} research={research_status} "
-        f"{str(result)[:120]}"
+        f"{spawn_result.text[:120]}"
     )
 
 
