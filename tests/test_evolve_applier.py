@@ -253,10 +253,18 @@ def _pr(number, title=None, head=None, merge_state="DIRTY",
     }
 
 
-def _claim_comment(created_at="2026-06-14T12:00:00Z"):
+def _claim_comment(
+    created_at="2026-06-14T12:00:00Z",
+    author_association="OWNER",
+    author_login="maintainer",
+    url="",
+):
     return {
         "body": "<!-- thread-keeper:evolve-applier-claim -->\nclaimed",
         "createdAt": created_at,
+        "authorAssociation": author_association,
+        "authorLogin": author_login,
+        "url": url,
     }
 
 
@@ -1592,6 +1600,57 @@ def test_apply_roadmap_issue_aborts_when_issue_already_claimed(
     assert out == "ERR roadmap_issue_claimed=6"
 
 
+def test_apply_roadmap_issue_ignores_untrusted_claim_comment(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [_claim_comment(author_association="NONE", author_login="spoof")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out.startswith("spawned roadmap_issue=#6"), out
+    assert "ISSUE #6: Telemetry dashboard" in calls["prompt"]
+
+
+def test_claim_comment_trust_requires_metadata_or_allowed_actor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    now_t = 1781438400.0
+
+    for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+        assert pkg["ea"]._issue_comment_is_active_claim(
+            _claim_comment(author_association=association), now_t,
+        )
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="NONE", author_login="spoof"), now_t,
+    )
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="", author_login=""), now_t,
+    )
+
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_CLAIM_AUTOMATION_ACTORS", ["claim-bot"],
+    )
+    assert pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="NONE", author_login="Claim-Bot"),
+        now_t,
+    )
+
+
 def test_mark_roadmap_issue_applied_tool_requires_pr_url(
     tmp_path, monkeypatch,
 ):
@@ -1770,11 +1829,15 @@ def test_resolve_claim_race_wins_when_oldest_active_claim_is_ours(
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
                     "url": "https://x/issues/6#issuecomment-100",
                     "createdAt": "2026-06-14T12:00:00Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
                 {
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
                     "url": "https://x/issues/6#issuecomment-200",
                     "createdAt": "2026-06-14T12:00:03Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
             ],
             "",
@@ -1802,11 +1865,15 @@ def test_resolve_claim_race_loses_and_deletes_own_claim(
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
                     "url": "https://x/issues/6#issuecomment-100",
                     "createdAt": "2026-06-14T12:00:00Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
                 {
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
                     "url": "https://x/issues/6#issuecomment-200",
                     "createdAt": "2026-06-14T12:00:03Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
             ],
             "",
@@ -1827,6 +1894,83 @@ def test_resolve_claim_race_loses_and_deletes_own_claim(
     assert err == ""
     assert won is False
     assert deleted == ["https://x/issues/6#issuecomment-200"]
+
+
+def test_resolve_claim_race_ignores_untrusted_earlier_marker(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [
+                _claim_comment(
+                    author_association="NONE",
+                    author_login="spoof",
+                    url="https://x/issues/6#issuecomment-spoof",
+                ),
+                _claim_comment(
+                    created_at="2026-06-14T12:00:03Z",
+                    url="https://x/issues/6#issuecomment-mine",
+                ),
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    monkeypatch.setattr(pkg["ea"].time, "sleep", lambda _s: None)
+
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda url, repo_root=None: (deleted.append(url) or ""),
+    )
+
+    won, err = pkg["ea"]._resolve_claim_race(
+        6, "https://x/issues/6#issuecomment-mine",
+    )
+
+    assert err == ""
+    assert won is True
+    assert deleted == []
+
+
+def test_fetch_issue_comments_preserves_author_metadata(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    payload = [
+        {
+            "body": "<!-- thread-keeper:evolve-applier-claim -->\nclaimed",
+            "created_at": "2026-06-14T12:00:00Z",
+            "html_url": "https://x/issues/6#issuecomment-1",
+            "author_association": "MEMBER",
+            "user": {"login": "maintainer"},
+        },
+        {
+            "body": "<!-- thread-keeper:evolve-applier-claim -->\nspoof",
+            "created_at": "2026-06-14T12:00:01Z",
+        },
+    ]
+    calls = []
+
+    def _run_gh(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload),
+                                           stderr="")
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", _run_gh)
+
+    comments, err = pkg["orig"]["_fetch_issue_comments"](6)
+
+    assert err == ""
+    assert comments[0]["authorAssociation"] == "MEMBER"
+    assert comments[0]["authorLogin"] == "maintainer"
+    assert comments[1]["authorAssociation"] == ""
+    assert comments[1]["authorLogin"] == ""
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        comments[1], 1781438400.0,
+    )
+    assert calls[0][:4] == ["gh", "api", "--include", "--paginate"]
+    assert calls[0][-1].endswith("/issues/6/comments?per_page=100")
 
 
 def test_claim_body_redacts_host_identity_to_opaque_token(tmp_path, monkeypatch):
@@ -2136,7 +2280,7 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
 
     def _run_gh(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:2] == ["gh", "api"]:
+        if cmd[:2] == ["gh", "api"] and "/issues?state=open" in cmd[-1]:
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=json.dumps([
@@ -2146,9 +2290,9 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
                 ]),
                 stderr="",
             )
-        if cmd[:3] == ["gh", "issue", "view"]:
+        if cmd[:2] == ["gh", "api"] and "/issues/1/comments?" in cmd[-1]:
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps({"comments": []}), stderr="",
+                cmd, 0, stdout="[]", stderr="",
             )
         if cmd[:3] == ["gh", "issue", "comment"]:
             return subprocess.CompletedProcess(
@@ -2172,14 +2316,15 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
         cmd for cmd in calls
         if cmd[:2] == ["gh", "api"] and "/issues?state=open" in cmd[-1]
     ]
-    claim_view_calls = [
-        cmd for cmd in calls if cmd[:3] == ["gh", "issue", "view"]
+    claim_comment_calls = [
+        cmd for cmd in calls
+        if cmd[:2] == ["gh", "api"] and "/comments?" in cmd[-1]
     ]
     assert len(issue_list_calls) == 1
     # The selected issue gets its initial and post-claim race checks; no other
     # backlog candidate has its comments read.
-    assert len(claim_view_calls) == 2
-    assert {cmd[3] for cmd in claim_view_calls} == {"1"}
+    assert len(claim_comment_calls) == 2
+    assert all("/issues/1/comments?" in cmd[-1] for cmd in claim_comment_calls)
 
 
 def test_run_apply_pass_repairs_conflicted_pr_before_new_work(

@@ -98,6 +98,16 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.16.4 — 2026-09-18
+
+### Fixed
+
+- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
+  reads GitHub REST comment author metadata and accepts a visible claim marker
+  only from a trusted repository association or an explicitly configured
+  automation login. Spoofed, malformed, and metadata-free markers remain
+  visible but cannot block issue pickup or affect claim-race tie-breaking.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed
