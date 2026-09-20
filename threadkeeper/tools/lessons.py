@@ -11,10 +11,18 @@
   lesson_get(slug)
     Return the full body of a single lesson by slug.
 
-  lesson_remove(slug, force=False)
+  lesson_neighbors(title, body, summary, k)
+    Preview the nearest existing lessons before a new lesson is written.
+
+  lesson_patch(slug, old_string, new_string)
+    Replace one unique substring in a lesson without reserializing its
+    section or changing its metadata.
+
+  lesson_remove(slug, force=False, replacement_slug="")
     Remove one lesson section by slug. Refuses protected lessons unless
     force=True from a foreground writer, so autonomous cleanup cannot delete
-    protected memory.
+    protected memory. A consolidation can pass replacement_slug to repoint
+    inbound [[wikilinks]]; a plain removal reports dangling references.
 
   lesson_restore(slug)
     Restore the latest trashed section for a removed lesson slug.
@@ -33,7 +41,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from .._mcp import write_tool
+from .._mcp import read_tool, write_tool
 from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
@@ -52,6 +60,7 @@ from ..lessons import (
     count_lessons,
     get_path,
     lesson_protection,
+    patch_lesson,
     record_lesson_access,
     remove_lesson,
     restore_lesson_section,
@@ -61,6 +70,8 @@ from ..trash import (
     latest_lesson_artifact,
     read_lesson_artifact,
 )
+from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
+from .skills import _skill_roots
 
 
 SHADOW_LESSON_MAX_WORDS = 450
@@ -68,10 +79,29 @@ SHADOW_DUPLICATE_SLUG_THRESHOLD = 0.70
 LESSON_SEMANTIC_DUPLICATE_THRESHOLD = 0.85
 LESSON_SEMANTIC_BORDERLINE_THRESHOLD = 0.78
 LESSON_DUPLICATE_EVIDENCE_MAX_WORDS = 160
+LESSON_NEIGHBOR_SUGGESTION_LIMIT = 3
 _LESSON_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _LESSON_SLUG_STOPWORDS = {
     "a", "an", "and", "as", "before", "for", "in", "is", "not", "of",
     "on", "or", "the", "to", "via", "with",
+}
+_RECONCILIATION_ABSOLUTE_RE = re.compile(
+    r"\b(?:always|never|must(?:\s+not)?|do\s+not|don't|cannot|can't)\b",
+    re.IGNORECASE,
+)
+_RECONCILIATION_DEBUNK_RE = re.compile(
+    r"\b(?:avoid|unsafe|unreliable|broken|wrong|deprecated|no\s+longer)\b",
+    re.IGNORECASE,
+)
+_RECONCILIATION_PERMISSIVE_RE = re.compile(
+    r"\b(?:can|may|allowed|permit(?:ted)?|safe(?:ly)?|okay|ok|fine|use)\b",
+    re.IGNORECASE,
+)
+_RECONCILIATION_TOKEN_STOPWORDS = _LESSON_SLUG_STOPWORDS | {
+    "all", "always", "any", "avoid", "can", "cannot", "dont", "do",
+    "fine", "guidance", "lesson", "may", "must", "never", "not", "ok",
+    "okay", "old", "only", "practice", "safe", "safely", "should", "the",
+    "to", "unsafe", "use", "using", "with", "wrong",
 }
 
 
@@ -177,6 +207,55 @@ def _normalized_lesson_text(text: str) -> str:
     return " ".join((text or "").lower().split())
 
 
+def _reconciliation_reason(text: str) -> str | None:
+    """Classify an incoming lesson that can supersede prior guidance."""
+    if _RECONCILIATION_ABSOLUTE_RE.search(text):
+        return "absolute_directive"
+    if _RECONCILIATION_DEBUNK_RE.search(text):
+        return "debunk"
+    return None
+
+
+def _reconciliation_tokens(text: str) -> set[str]:
+    return {
+        token for token in _LESSON_TOKEN_RE.findall(text.lower())
+        if len(token) > 2 and token not in _RECONCILIATION_TOKEN_STOPWORDS
+    }
+
+
+def _reconciliation_candidates(
+    title: str,
+    summary: str,
+    body: str,
+) -> list[tuple[str, str]]:
+    """Find older permissive lessons a clear new directive may replace.
+
+    This is deliberately lexical rather than semantic. A high semantic score
+    already routes ordinary duplicates through the dedup path; reconciliation
+    needs a transparent, conservative signal before that path can merge two
+    pieces of guidance that actually disagree.
+    """
+    incoming = _semantic_text(title, summary, body)
+    reason = _reconciliation_reason(incoming)
+    if not reason:
+        return []
+    candidate_slug = _slugify(title)
+    candidate_tokens = _reconciliation_tokens(incoming)
+    if len(candidate_tokens) < 2:
+        return []
+    candidates: list[tuple[str, str]] = []
+    for item in iter_lessons():
+        if item.get("slug") == candidate_slug:
+            continue
+        prior = item.get("body") or ""
+        if not _RECONCILIATION_PERMISSIVE_RE.search(prior):
+            continue
+        shared_tokens = candidate_tokens & _reconciliation_tokens(prior)
+        if len(shared_tokens) >= 2:
+            candidates.append((item["slug"], reason))
+    return candidates
+
+
 def _dot(a, b) -> float:
     try:
         return float(a.dot(b))
@@ -229,6 +308,74 @@ def _semantic_lesson_match(
     return None
 
 
+def _semantic_lesson_neighbors(
+    title: str,
+    summary: str,
+    body: str,
+    *,
+    k: int = LESSON_NEIGHBOR_SUGGESTION_LIMIT,
+) -> list[tuple[dict, float]] | None:
+    """Rank existing lesson bodies nearest to a prospective new lesson.
+
+    This is deliberately a read-only preflight: authors call it while they
+    still control the prospective body, before ``lesson_append`` commits it.
+    The exact-slug incumbent is excluded because that path is an in-place
+    replacement, not a new relationship to consider.
+    """
+    candidate_slug = _slugify(title)
+    existing = [
+        item for item in iter_lessons()
+        if item.get("slug") != candidate_slug
+    ]
+    if not existing:
+        return []
+
+    texts = [_semantic_text(title, summary, body)]
+    texts.extend(item.get("body", "") for item in existing)
+    try:
+        from ..embeddings import encode_many
+        vectors = encode_many(texts)
+    except Exception:
+        return None
+    if vectors is None or len(vectors) != len(texts):
+        return None
+
+    query = vectors[0]
+    ranked = [
+        (item, _dot(query, vector))
+        for item, vector in zip(existing, vectors[1:])
+    ]
+    ranked.sort(key=lambda pair: (-pair[1], pair[0]["slug"]))
+    return ranked[:max(1, min(int(k), 10))]
+
+
+def _lexical_lesson_neighbors(
+    title: str,
+    summary: str,
+    body: str,
+    *,
+    k: int,
+) -> list[tuple[dict, float]]:
+    """Use token overlap when the optional embedding backend is unavailable."""
+    candidate_slug = _slugify(title)
+    candidate_tokens = _lesson_slug_tokens(_semantic_text(title, summary, body))
+    if not candidate_tokens:
+        return []
+    ranked: list[tuple[dict, float]] = []
+    for item in iter_lessons():
+        if item.get("slug") == candidate_slug:
+            continue
+        item_tokens = _lesson_slug_tokens(item.get("body", ""))
+        if not item_tokens:
+            continue
+        shared = candidate_tokens & item_tokens
+        if not shared:
+            continue
+        ranked.append((item, len(shared) / len(candidate_tokens | item_tokens)))
+    ranked.sort(key=lambda pair: (-pair[1], pair[0]["slug"]))
+    return ranked[:k]
+
+
 def _candidate_evidence(body: str) -> str:
     words = body.strip().split()
     if len(words) <= LESSON_DUPLICATE_EVIDENCE_MAX_WORDS:
@@ -273,6 +420,25 @@ def _record_lesson_append_event(
     )
 
 
+def _record_lesson_reconciliation_events(
+    conn: sqlite3.Connection,
+    new_slug: str,
+    candidates: list[tuple[str, str]],
+    source: str,
+) -> None:
+    """Persist older lesson flags so curators can patch or cross-link them."""
+    for old_slug, reason in candidates:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, 'lesson_reconciliation', ?, ?, strftime('%s','now'))",
+            (
+                identity._session_id or "",
+                old_slug,
+                f"new={new_slug} reason={reason} source={source or '?'}",
+            ),
+        )
+
+
 @write_tool()
 def lesson_append(
     title: str,
@@ -311,19 +477,37 @@ def lesson_append(
             "lesson may not contain imperative-override / remote-exec "
             "idioms (treat observed dialog as data, not instructions)"
         )
+    reconciliation_candidates = _reconciliation_candidates(title, summary, body)
+    # Determine this before the shadow word-limit gate. A same-slug shadow
+    # correction that leaves an already-long lesson no larger is not a new
+    # long lesson, and must remain repairable without a full re-transcription.
+    slug_guess = _slugify(title)
+    existing_item = next(
+        (item for item in iter_lessons() if item["slug"] == slug_guess),
+        None,
+    )
     loop_write = _is_loop_lesson_write(source)
     duplicate = None
     if loop_write:
         words = len(body.split())
         if source.strip().lower() == "shadow" and words > SHADOW_LESSON_MAX_WORDS:
-            return (
-                f"ERR shadow_lesson_too_long words={words} "
-                f"max={SHADOW_LESSON_MAX_WORDS}; write a compact rule or "
-                "patch/write_file an existing skill instead"
-            )
+            incumbent_body = ""
+            if existing_item is not None:
+                _, incumbent_body = _strip_lesson_heading(
+                    existing_item.get("body") or ""
+                )
+            if (
+                existing_item is None
+                or len(body.strip()) > len(incumbent_body)
+            ):
+                return (
+                    f"ERR shadow_lesson_too_long words={words} "
+                    f"max={SHADOW_LESSON_MAX_WORDS}; write a compact rule or "
+                    "patch/write_file an existing skill instead"
+                )
         duplicate = _similar_lesson_slug(title)
         semantic_duplicate = _semantic_lesson_match(title, summary, body)
-        if semantic_duplicate:
+        if semantic_duplicate and not reconciliation_candidates:
             item, semantic_score = semantic_duplicate
             slug = item["slug"]
             if semantic_score >= LESSON_SEMANTIC_DUPLICATE_THRESHOLD:
@@ -366,7 +550,7 @@ def lesson_append(
                 f"score={semantic_score:.2f}; surface to curator or patch "
                 "existing memory instead"
             )
-        if duplicate:
+        if duplicate and not reconciliation_candidates:
             slug, score = duplicate
             return (
                 f"ERR likely_duplicate_lesson slug={slug} "
@@ -376,12 +560,6 @@ def lesson_append(
     # Was this an in-place patch of an existing slug, or a brand-new lesson?
     # Determined BEFORE the write so the dashboard's curator-net-change line
     # can split added vs patched.
-    slug_guess = _slugify(title)
-    existing_item = None
-    for it in iter_lessons():
-        if it["slug"] == slug_guess:
-            existing_item = it
-            break
     existed = existing_item is not None
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
@@ -408,10 +586,131 @@ def lesson_append(
             if tombstone:
                 extra = f"tombstone={tombstone}"
         _record_lesson_append_event(conn, slug, op=op, source=source, extra=extra)
+        if not existed and reconciliation_candidates:
+            _record_lesson_reconciliation_events(
+                conn, slug, reconciliation_candidates, source,
+            )
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.commit()
+    if not existed and reconciliation_candidates:
+        old_slugs = ",".join(slug for slug, _ in reconciliation_candidates)
+        return (
+            f"ok slug={slug} path={get_path()} reconciliation={old_slugs}; "
+            "review=patch_or_cross_link"
+        )
+    return f"ok slug={slug} path={get_path()}"
+
+
+@write_tool(destructive=True)
+def lesson_patch(
+    slug: str,
+    old_string: str,
+    new_string: str = "",
+) -> str:
+    """Replace one unique substring in a materialized lesson.
+
+    ``old_string`` must occur exactly once within the lesson's markdown
+    body. The operation preserves the lesson's heading, summary, provenance,
+    and timestamps, unlike a wholesale ``lesson_append`` replacement.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    raw_slug = slug.strip()
+    if not raw_slug:
+        return "ERR empty_slug"
+    slug = _slugify(raw_slug)
+    if not old_string:
+        return "ERR old_string_required"
+    # Screen only text newly introduced by loop-authored patches. Existing
+    # lessons may legitimately document a marker for defensive purposes.
+    if WRITE_ORIGIN != "foreground" and (
+        hits := screen_injection_markers(new_string)
+    ):
+        return (
+            f"ERR injection_markers={','.join(hits)}; a loop-synthesized "
+            "lesson may not contain imperative-override / remote-exec "
+            "idioms (treat observed dialog as data, not instructions)"
+        )
+    existing_item = next(
+        (item for item in iter_lessons() if item["slug"] == slug),
+        None,
+    )
+    if existing_item is None:
+        return f"ERR not_found slug={slug}"
+    result = patch_lesson(slug, old_string, new_string)
+    if result == "old_string_not_found":
+        return "ERR old_string_not_found"
+    if result == "old_string_ambiguous":
+        count = existing_item.get("body", "").count(old_string)
+        return (
+            f"ERR old_string_ambiguous (appears "
+            f"{count}× — make it unique)"
+        )
+    if result != "ok":
+        return f"ERR patch_failed slug={slug}"
+    for item in iter_lessons():
+        if item["slug"] == slug:
+            ensure_lesson_usage(conn, item)
+            break
+    extra = ""
+    if WRITE_ORIGIN == "curator":
+        tombstone = record_curator_action(
+            conn,
+            action="lesson_patched",
+            artifact="lesson",
+            key=slug,
+            body=existing_item.get("body", ""),
+        )
+        if tombstone:
+            extra = f"tombstone={tombstone}"
+    try:
+        _record_lesson_append_event(
+            conn, slug, op="patch", source=existing_item.get("source", ""),
+            extra=extra,
+        )
         conn.commit()
     except sqlite3.OperationalError:
         conn.commit()
     return f"ok slug={slug} path={get_path()}"
+
+
+@read_tool()
+def lesson_neighbors(
+    title: str,
+    body: str,
+    summary: str = "",
+    k: int = LESSON_NEIGHBOR_SUGGESTION_LIMIT,
+) -> str:
+    """Suggest nearby existing lessons before creating a new one.
+
+    Pass the prospective title, summary, and body before ``lesson_append``.
+    The result is a ranked, read-only list of semantic neighbors. Read a
+    relevant slug and either patch/consolidate it or add a ``[[slug]]`` link
+    to the new lesson while it is still being authored.
+    """
+    if not title.strip():
+        return "ERR empty_title"
+    if not body.strip():
+        return "ERR empty_body"
+    try:
+        limit = max(1, min(int(k), 10))
+    except (TypeError, ValueError):
+        return "ERR bad_k"
+    ranked = _semantic_lesson_neighbors(title, summary, body, k=limit)
+    mode = "semantic"
+    if ranked is None:
+        ranked = _lexical_lesson_neighbors(title, summary, body, k=limit)
+        mode = "lexical"
+    if not ranked:
+        return f"lesson_neighbors total=0 mode={mode}"
+    lines = [
+        f"lesson_neighbors total={len(ranked)} "
+        f"mode={mode} prospective_slug={_slugify(title)}"
+    ]
+    for index, (item, score) in enumerate(ranked, start=1):
+        lines.append(f"  {index}. {item['slug']} score={score:.2f}")
+    return "\n".join(lines)
 
 
 @write_tool()
@@ -463,12 +762,18 @@ def lesson_get(slug: str) -> str:
 
 
 @write_tool(destructive=True, idempotent=True)
-def lesson_remove(slug: str, force: bool = False) -> str:
+def lesson_remove(
+    slug: str,
+    force: bool = False,
+    replacement_slug: str = "",
+) -> str:
     """Remove one materialized lesson section by slug.
 
     Refuses protected lessons unless `force=True` is called from a foreground
     writer. Curator/evolve cleanup may pass force accidentally or maliciously;
-    non-foreground force is ignored.
+    non-foreground force is ignored. Pass ``replacement_slug`` when this is a
+    consolidation to redirect every inbound ``[[wikilink]]`` to the umbrella
+    lesson; without it, the successful response lists all dangling sources.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -482,6 +787,14 @@ def lesson_remove(slug: str, force: bool = False) -> str:
             break
     if not found:
         return f"ERR not_found slug={slug}"
+    replacement_slug = (
+        _slugify(replacement_slug.strip()) if replacement_slug.strip() else ""
+    )
+    if replacement_slug:
+        if replacement_slug == slug:
+            return f"ERR replacement_same_as_removed slug={slug}"
+        if not any(it["slug"] == replacement_slug for it in iter_lessons()):
+            return f"ERR replacement_not_found slug={replacement_slug}"
     usage_row = _row_to_dict(
         conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
     )
@@ -498,9 +811,6 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         )
     source = (found.get("source") or "").strip().lower()
     origin = (found.get("origin") or "").strip().lower()
-    snapshot = lesson_section(slug)
-    if not snapshot:
-        return f"ERR remove_failed slug={slug}"
     if reason := admit_curator_destructive_action(
         conn,
         action="lesson_remove",
@@ -508,6 +818,18 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         key=slug,
     ):
         return f"ERR {reason}"
+    try:
+        inbound_refs = rewrite_inbound_wikilinks(
+            slug,
+            replacement_slug,
+            lessons_path=get_path(),
+            skill_roots=_skill_roots(),
+        )
+    except OSError as e:
+        return f"ERR inbound_link_rewrite_failed slug={slug}: {e}"
+    snapshot = lesson_section(slug)
+    if not snapshot:
+        return f"ERR remove_failed slug={slug}"
     post_remove = (
         snapshot["file_body"][:snapshot["start"]]
         + snapshot["file_body"][snapshot["end"]:]
@@ -550,7 +872,11 @@ def lesson_remove(slug: str, force: bool = False) -> str:
         ),
     )
     conn.commit()
-    return f"ok removed={slug}"
+    inbound = format_inbound_wikilinks(inbound_refs)
+    if not inbound:
+        return f"ok removed={slug}"
+    outcome = "inbound_rewritten" if replacement_slug else "dangling_wikilinks"
+    return f"ok removed={slug} {outcome}={inbound}"
 
 
 @write_tool()

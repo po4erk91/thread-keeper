@@ -131,6 +131,41 @@ def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
     assert out == "ok fired=0", out
 
 
+def test_dead_child_returncode_null_with_fatal_log_fires(tmp_path, monkeypatch, caplog):
+    # A child reaped after the DB writer wedged closes its row with the exit
+    # code lost (return_code NULL). It must still alert when the captured log
+    # shows a fatal degradation signature — the quota-exhaustion case that
+    # first exposed the gap.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-q.log").write_text(
+        "booting\nYou have exceeded your monthly quota\n")
+    _task(conn, "child-q", rc=None, role="candidate_reviewer",
+          ended_at=int(time.time()))
+    with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
+        out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=1", out
+    assert "candidate_reviewer child died (rc=unknown)" in caplog.text
+    assert "exceeded your monthly quota" in caplog.text
+
+
+def test_dead_child_returncode_null_clean_log_ignored(tmp_path, monkeypatch):
+    # return_code NULL with no failure evidence in the log is indistinguishable
+    # from a clean completion — must NOT fire (no false positives).
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-clean.log").write_text(
+        "starting\nall done, wrote 2 notes\n")
+    _task(conn, "child-clean", rc=None, role="curator",
+          ended_at=int(time.time()))
+    out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=0", out
+
+
 # ── cooldown / de-dup ───────────────────────────────────────────────────────
 
 def test_cooldown_dedups_repeat_failures(tmp_path, monkeypatch):
@@ -193,8 +228,48 @@ def test_positives_on_fire(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=2", out
-    assert "skill materialized" in caplog.text
-    assert "lesson added" in caplog.text and "my-lesson" in caplog.text
+    assert "skill materialized | Foo" in caplog.text
+    assert "lesson added | My lesson" in caplog.text
+    assert "/skills/" not in caplog.text
+    assert "op=create" not in caplog.text and "source=shadow" not in caplog.text
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_skill_notification_uses_heading(tmp_path, monkeypatch, directory):
+    m = _bootstrap(tmp_path, monkeypatch, skill="true")
+    md = tmp_path / "api-contract-testing" / "SKILL.md"
+    md.parent.mkdir()
+    md.write_text("---\nname: api-contract-testing\ndescription: |\n"
+                  "  Internal description\n---\n\n# API contract testing\n"
+                  "\nLong implementation details that do not belong in a banner.\n")
+    notify = m["notify"]
+    conn = m["db"].get_db()
+    sent = []
+    monkeypatch.setattr(notify, "_dispatch", lambda *args: sent.append(args))
+    assert notify.run_notify_pass(force=True) == "seed"
+    _ev(conn, "skill_materialized", target="T1",
+        summary=str(md.parent if directory else md))
+    assert notify.run_notify_pass(force=True) == "ok fired=1"
+    assert sent == [("Thread-keeper: skill materialized", "API contract testing")]
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
+
+
+@pytest.mark.parametrize("body", [b"---\nname: foo\n---\nNo heading.", b"\xff"])
+def test_skill_notification_falls_back_to_name(tmp_path, monkeypatch, body):
+    notify = _bootstrap(tmp_path, monkeypatch)["notify"]
+    md = tmp_path / "api-contract-testing" / "SKILL.md"
+    md.parent.mkdir()
+    md.write_bytes(body)
+    assert notify._fmt_skill({"kind": "skill_create", "target": "api-contract-testing",
+                              "summary": str(md)})[1] == "Api contract testing"
+
+
+def test_pathless_skill_mark_does_not_claim_a_materialization(tmp_path, monkeypatch):
+    m = _bootstrap(tmp_path, monkeypatch, skill="true")
+    notify, conn = m["notify"], m["db"].get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    _ev(conn, "skill_materialized", target="T1", summary="(no path recorded)")
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
 
 
 # ── disabled ────────────────────────────────────────────────────────────────

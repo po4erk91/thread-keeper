@@ -15,7 +15,8 @@ minutes, the Curator REVIEWS THE STORE every few days:
      research, and the shared manifest/checklist.
   6. Children collectively read every full skill, research current official
      guidance and comparable skills, then choose KEEP / REPAIR / UPDATE / MERGE
-     / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
+     / SPLIT / DEPRECATE / DELETE / CROSS_LINK / PROMOTE_TO_SKILL /
+     HUMAN_REVIEW.
   7. In destructive mode, parent writes a pre-mutation snapshot before
      spawning the child; child tool calls add tombstones/action telemetry.
   8. Parent records `curator_pass` event with high-water timestamp,
@@ -34,7 +35,8 @@ Design choices:
   • **Destructive-by-default (Phase 2)** — parent first writes a recoverable
     snapshot under CURATOR_REPORTS_DIR/snapshots/<pass-id>. The child writes
     the REPORT.md first (audit trail), then applies its own PATCH / PRUNE /
-    CONSOLIDATE directly via lesson_append / lesson_remove / skill_manage, and
+    CONSOLIDATE directly via lesson_append / lesson_patch / lesson_remove /
+    skill_manage, and
     its CONSOLIDATE_CONCEPT / PRUNE_CONCEPT recommendations via concept_manage.
     Set THREADKEEPER_CURATOR_DESTRUCTIVE=0 to revert to advisory REPORT-only.
     [PROTECTED] entries are never mutated; lesson_remove and
@@ -58,11 +60,14 @@ import re
 import sqlite3
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass
+from itertools import combinations
 
 from .config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
+    CURATOR_PROMOTION_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
     CURATOR_MAX_DESTRUCTIVE_PER_PASS,
@@ -91,6 +96,10 @@ INVENTORY_FINGERPRINT_KEY = "inventory_sha256"
 _INVENTORY_FINGERPRINT_RE = re.compile(
     rf"\b{INVENTORY_FINGERPRINT_KEY}=([0-9a-f]{{64}})\b"
 )
+_WIKILINK_RE = re.compile(
+    r"\[\[([A-Za-z0-9][A-Za-z0-9_.:-]*)(?:\|[^\]]+)?\]\]"
+)
+_MAX_MERGE_VERDICT_REASON_CHARS = 500
 
 _CURATABLE_SKILL_ORIGINS = {
     "background_review",
@@ -140,6 +149,16 @@ Use one of these verdicts: KEEP, REPAIR, UPDATE, MERGE, SPLIT, DEPRECATE,
 DELETE, CROSS_LINK, HUMAN_REVIEW. No skill may be omitted. A lexical score,
 similar name, or matching character count is only a lead — decide overlap by
 intent, inputs, workflow, and expected outcome after reading both full bodies.
+
+MERGE MEMORY — the inventory's `links=[...]` field is the current undirected
+wikilink adjacency for each lesson. Its `## PRIOR MERGE VERDICTS` section lists
+previously examined lesson pairs that must remain separate. Treat a prior
+`keep_both` row as the durable reason not to re-litigate that pair or re-read
+both full lesson bodies. Revisit it only when the current inventory indicates a
+materially changed lesson. When you examine a new candidate pair and decide to
+keep both entries, call `curator_merge_verdict(slug_a=..., slug_b=...,
+reason=...)` before completing the report. Use a short reason such as
+`cross-linked`, `general/specific`, or `prevention/recovery`.
 
 WEB RESEARCH is mandatory for every skill (researching a coherent cluster in
 one search is allowed). Prefer current official product/CLI documentation,
@@ -202,6 +221,26 @@ why it was filed.
 LESSON RUBRIC (answer for every lesson; skills use the deep validator and
 verdicts above):
 
+DENSE LESSON CLUSTER PROMOTION — the inventory may include deterministic
+`PROMOTE_TO_SKILL` candidates. Each candidate names lessons that share a pair
+of meaningful title terms and crossed the configured density threshold. Treat
+an unprotected `PROMOTE_TO_SKILL` candidate as an affirmative consolidation
+decision, not merely a loose similarity lead:
+  1. Read every named lesson in full with `lesson_get` and preserve its unique
+     procedure, caveats, and examples.
+  2. Create one new, clearly named canonical skill through
+     `skill_manage(action='create', ...)`. Its body must be checklist-style and
+     include a `## Retired lessons` section listing every source slug.
+  3. Call `skill_validate(name=...)`. Only after it passes may you call
+     `lesson_remove(slug=...)` for each named, unprotected source lesson.
+  4. Record `PROMOTED_SKILL: <skill-name>` plus its retired lesson slugs and
+     validation result in REPORT.md. Do not leave copied long-form lesson
+     bodies behind once the validated skill is canonical.
+
+Candidates marked `HUMAN_REVIEW` include protected lessons. Do not mutate
+those lessons or create/retire a partial automatic cluster; write the exact
+promotion and linking plan in REPORT.md for a foreground human instead.
+
   KEEP — entry is class-level, in use, accurate. Note "KEEP: <slug>".
 
   PATCH — entry is mostly right but missing a step, has outdated
@@ -223,10 +262,11 @@ verdicts above):
   superseded by a newer entry, or a **FALSE POSITIVE** (auto-created
   by the background-review loop but never validated by actual use).
   Specifically flag as PRUNE:
-    • origin=background_review AND use_count=0 AND patches=0 AND
-      created >14 days ago → strong false-positive signal: nobody ever
-      consulted it, and the agent that created it never came back to
-      refine it.
+    • origin=background_review AND fg_uses=0 AND created >14 days ago
+      → strong false-positive signal: no foreground user or agent ever
+      consulted it. `maintenance_patches` count automated or other maintenance
+      writes; they are not foreground consultation and never reset this
+      eligibility signal.
     • SKILL_OUTCOME signals (in the events table) marking the skill
       as 'wrong' more often than 'helped' → user-judgment override.
   Format:
@@ -326,6 +366,106 @@ class _InventoryBatch:
     skill_count: int
     concept_count: int
     char_count: int
+
+
+@dataclass(frozen=True)
+class _LessonPromotionCandidate:
+    """A deterministic dense subtopic awaiting one curator decision."""
+
+    topic_terms: tuple[str, str]
+    lesson_slugs: tuple[str, ...]
+    protected_slugs: tuple[str, ...]
+
+    @property
+    def decision(self) -> str:
+        return "HUMAN_REVIEW" if self.protected_slugs else "PROMOTE_TO_SKILL"
+
+
+_LESSON_PROMOTION_TOKEN_RE = re.compile(r"[a-z][a-z0-9]{2,}")
+_LESSON_PROMOTION_STOP_WORDS = frozenset({
+    "about", "after", "also", "always", "before", "being", "bulk",
+    "check", "each", "from", "into", "lesson", "must", "need", "only",
+    "should", "that", "the", "then", "this", "with", "when", "where",
+})
+
+
+def _lesson_promotion_tokens(item: dict) -> frozenset[str]:
+    """Meaningful terms from a lesson's stable slug/title.
+
+    The detector deliberately does not mine arbitrary body prose: broad prose
+    tends to link otherwise unrelated lessons through generic implementation
+    words. Slugs come from the author-facing title and keep the clustering
+    deterministic even with embeddings disabled.
+    """
+    slug = (item.get("slug") or "").replace("-", " ").lower()
+    return frozenset(
+        token for token in _LESSON_PROMOTION_TOKEN_RE.findall(slug)
+        if token not in _LESSON_PROMOTION_STOP_WORDS
+    )
+
+
+def _detect_lesson_promotion_candidates(
+    lesson_items: list[dict],
+    lesson_usage: dict[str, dict],
+    *,
+    min_cluster_size: int = CURATOR_PROMOTION_MIN_LESSONS,
+) -> list[_LessonPromotionCandidate]:
+    """Find dense lesson clusters by recurring pairs of meaningful title terms.
+
+    A pair shared by at least ``min_cluster_size`` lessons is a deliberately
+    conservative offline density signal. It avoids treating one generic word
+    as a subtopic, while making the threshold and promotion decision testable
+    without an embedding model or a curator child.
+    """
+    threshold = max(2, int(min_cluster_size))
+    by_slug = {
+        item.get("slug") or "": item
+        for item in lesson_items
+        if item.get("slug")
+    }
+    pair_members: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for slug, item in by_slug.items():
+        for pair in combinations(sorted(_lesson_promotion_tokens(item)), 2):
+            pair_members[pair].add(slug)
+
+    clusters: dict[frozenset[str], set[tuple[str, str]]] = defaultdict(set)
+    for pair, members in pair_members.items():
+        if len(members) >= threshold:
+            clusters[frozenset(members)].add(pair)
+
+    # A broader cluster subsumes every one of its pair-specific subsets. Keep
+    # only maximal clusters so one topic produces one promotion decision.
+    maximal_clusters = [
+        members for members in clusters
+        if not any(members < other for other in clusters)
+    ]
+    candidates: list[_LessonPromotionCandidate] = []
+    for members in sorted(maximal_clusters, key=lambda group: tuple(sorted(group))):
+        slugs = tuple(sorted(members))
+        protected = tuple(
+            slug for slug in slugs
+            if lessons.lesson_protection(
+                by_slug[slug], lesson_usage.get(slug),
+            )[0]
+        )
+        candidates.append(_LessonPromotionCandidate(
+            topic_terms=min(clusters[members]),
+            lesson_slugs=slugs,
+            protected_slugs=protected,
+        ))
+    return candidates
+
+
+def _format_lesson_promotion_candidate(
+    candidate: _LessonPromotionCandidate,
+) -> str:
+    protected = ", ".join(candidate.protected_slugs) or "-"
+    return (
+        f"- {candidate.decision}: topic={' '.join(candidate.topic_terms)} "
+        f"lesson_count={len(candidate.lesson_slugs)}\n"
+        f"    lessons: {', '.join(candidate.lesson_slugs)}\n"
+        f"    protected_lessons: {protected}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -443,6 +583,7 @@ def _curator_inventory_snapshot(
         "skills": [],
         "skill_files": [],
         "concepts": [],
+        "merge_verdicts": [],
     }
 
     try:
@@ -530,6 +671,24 @@ def _curator_inventory_snapshot(
     except sqlite3.OperationalError:
         pass
 
+    try:
+        rows = conn.execute(
+            "SELECT left_slug, right_slug, decision, reason "
+            "FROM curator_merge_verdicts "
+            "ORDER BY left_slug, right_slug"
+        ).fetchall()
+        snapshot["merge_verdicts"] = [
+            {
+                "left_slug": row["left_slug"] or "",
+                "right_slug": row["right_slug"] or "",
+                "decision": row["decision"] or "",
+                "reason": row["reason"] or "",
+            }
+            for row in rows
+        ]
+    except sqlite3.OperationalError:
+        pass
+
     snapshot["lessons"].sort(key=lambda row: row["slug"])
     return snapshot
 
@@ -583,7 +742,11 @@ def _last_inventory_fingerprint(
     return None, None
 
 
-def _format_lesson(item: dict, usage: dict | None = None) -> str:
+def _format_lesson(
+    item: dict,
+    usage: dict | None = None,
+    adjacent_slugs: tuple[str, ...] = (),
+) -> str:
     """One inventory line per lesson.
 
     Foreground/user lessons, pinned lesson_usage rows, and validated
@@ -605,13 +768,103 @@ def _format_lesson(item: dict, usage: dict | None = None) -> str:
     body_preview = (item.get("body") or "")[:200].replace("\n", " ")
     if len(item.get("body") or "") > 200:
         body_preview += "…"
+    links = ", ".join(adjacent_slugs) or "-"
     return (
         f"- LESSON {item['slug']}{protected} "
         f"(source={src or '?'}, tier={usage.get('tier') or 'hypothesis'}, "
         f"uses={usage.get('use_count', 0)}, views={usage.get('view_count', 0)}, "
         f"pinned={usage.get('pinned', 0)}, age={age_d}d, "
-        f"last_active={last_active_d}d_ago)\n"
+        f"last_active={last_active_d}d_ago, links=[{links}])\n"
         f"    body: {body_preview}"
+    )
+
+
+def _lesson_adjacency(items: list[dict]) -> dict[str, tuple[str, ...]]:
+    """Return current, bidirectional wikilink neighbors for stored lessons."""
+    slugs = {str(item.get("slug") or "") for item in items}
+    adjacency: dict[str, set[str]] = {slug: set() for slug in slugs if slug}
+    for item in items:
+        slug = str(item.get("slug") or "")
+        if not slug:
+            continue
+        for target in _WIKILINK_RE.findall(str(item.get("body") or "")):
+            if target == slug or target not in adjacency:
+                continue
+            adjacency[slug].add(target)
+            adjacency[target].add(slug)
+    return {
+        slug: tuple(sorted(targets))
+        for slug, targets in adjacency.items()
+    }
+
+
+def _clean_merge_verdict_slug(value: str, field: str) -> str:
+    slug = str(value or "").strip()
+    if not slug or len(slug) > 200 or any(char.isspace() for char in slug):
+        raise ValueError(f"invalid_{field}")
+    return slug
+
+
+def record_merge_verdict(
+    conn: sqlite3.Connection,
+    slug_a: str,
+    slug_b: str,
+    reason: str,
+) -> tuple[str, str]:
+    """Persist or refresh one curator keep-both verdict for a lesson pair."""
+    left, right = sorted((
+        _clean_merge_verdict_slug(slug_a, "slug_a"),
+        _clean_merge_verdict_slug(slug_b, "slug_b"),
+    ))
+    if left == right:
+        raise ValueError("identical_slugs")
+    clean_reason = " ".join(str(reason or "").split())
+    if not clean_reason or len(clean_reason) > _MAX_MERGE_VERDICT_REASON_CHARS:
+        raise ValueError("invalid_reason")
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO curator_merge_verdicts "
+        "(left_slug, right_slug, decision, reason, recorded_at, updated_at) "
+        "VALUES (?, ?, 'keep_both', ?, ?, ?) "
+        "ON CONFLICT(left_slug, right_slug) DO UPDATE SET "
+        "decision=excluded.decision, reason=excluded.reason, "
+        "updated_at=excluded.updated_at",
+        (left, right, clean_reason, now, now),
+    )
+    conn.commit()
+    return left, right
+
+
+def _collect_merge_verdicts(
+    conn: sqlite3.Connection,
+    lesson_slugs: set[str],
+) -> list[dict[str, str]]:
+    """Load verdicts that still describe two lessons in this inventory."""
+    try:
+        rows = conn.execute(
+            "SELECT left_slug, right_slug, decision, reason "
+            "FROM curator_merge_verdicts "
+            "ORDER BY left_slug, right_slug"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [
+        {
+            "left_slug": row["left_slug"],
+            "right_slug": row["right_slug"],
+            "decision": row["decision"],
+            "reason": row["reason"],
+        }
+        for row in rows
+        if row["left_slug"] in lesson_slugs
+        and row["right_slug"] in lesson_slugs
+    ]
+
+
+def _format_merge_verdict(row: dict[str, str]) -> str:
+    return (
+        f"- {row['left_slug']} ↔ {row['right_slug']} "
+        f"decision={row['decision']} reason={row['reason']}"
     )
 
 
@@ -682,22 +935,42 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
 def _collect_inventory_entry_groups(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> tuple[list[_InventoryEntry], list[_InventoryEntry], str, int, int]:
+) -> tuple[
+    list[_InventoryEntry], list[_InventoryEntry], list[_InventoryEntry],
+    str, list[dict[str, str]], int, int,
+]:
     """Collect exhaustive lesson/skill entries without rendering one prompt."""
     lesson_entries: list[_InventoryEntry] = []
+    lesson_items: list[dict] = []
+    usage: dict[str, dict] = {}
     try:
         usage = lessons.lesson_usage_map(conn)
-        for item in lessons.iter_lessons():
+        items = list(lessons.iter_lessons())
+        adjacency = _lesson_adjacency(items)
+        for item in items:
+            lesson_items.append(item)
+            lesson_items.append(item)
             slug = item.get("slug") or ""
             lesson_entries.append(
                 _InventoryEntry(
                     "lesson",
                     slug,
-                    _format_lesson(item, usage.get(slug)),
+                    _format_lesson(item, usage.get(slug), adjacency.get(slug, ())),
                 )
             )
     except Exception:
         logger.debug("curator: iter_lessons failed", exc_info=True)
+
+    promotion_entries = [
+        _InventoryEntry(
+            "lesson_promotion",
+            "/".join(candidate.lesson_slugs),
+            _format_lesson_promotion_candidate(candidate),
+        )
+        for candidate in _detect_lesson_promotion_candidates(
+            lesson_items, usage,
+        )
+    ]
 
     audit = skill_audit or build_skill_audit(conn, include_archived=True)
     checklist_lines = format_skill_checklist(audit).splitlines()[2:]
@@ -707,10 +980,15 @@ def _collect_inventory_entry_groups(
     ]
 
     stale_text, _n_stale = _collect_stale_lessons(conn)
+    merge_verdicts = _collect_merge_verdicts(
+        conn, {entry.key for entry in lesson_entries},
+    )
     return (
         lesson_entries,
         skill_entries,
+        promotion_entries,
         stale_text,
+        merge_verdicts,
         len(lesson_entries),
         len(skill_entries),
     )
@@ -746,7 +1024,15 @@ def _collect_inventory(
     char-capped as a defensive floor; the real curator pass uses complete
     bounded batches from `_collect_inventory_batches`.
     """
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    (
+        lesson_entries,
+        skill_entries,
+        promotion_entries,
+        stale_text,
+        merge_verdicts,
+        n_lessons,
+        n_skills,
+    ) = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
 
@@ -765,6 +1051,19 @@ def _collect_inventory(
         parts.append("(none)")
         used += len(parts[-1]) + 1
         dropped_lessons = 0
+    parts.append(
+        "\n## LESSON CLUSTER PROMOTION CANDIDATES "
+        f"(n={len(promotion_entries)})\n"
+    )
+    if promotion_entries:
+        parts.extend(entry.text for entry in promotion_entries)
+    else:
+        parts.append("(none)")
+    parts.append(f"\n## PRIOR MERGE VERDICTS (n={len(merge_verdicts)})\n")
+    if merge_verdicts:
+        parts.extend(_format_merge_verdict(row) for row in merge_verdicts)
+    else:
+        parts.append("(none)")
     parts.append("\n" + stale_text)
     used += len(parts[-1]) + 1
     parts.append(
@@ -887,19 +1186,30 @@ def _render_batch_inventory(
     start_entry: int,
     total_entries: int,
     stale_text: str,
+    merge_verdicts: list[dict[str, str]],
     n_lessons: int,
     n_skills: int,
     n_concepts: int,
 ) -> _InventoryBatch:
+    promotion_entries = [
+        e for e in batch_entries if e.kind == "lesson_promotion"
+    ]
     lesson_entries = [e for e in batch_entries if e.kind == "lesson"]
     skill_entries = [e for e in batch_entries if e.kind == "skill"]
     concept_entries = [e for e in batch_entries if e.kind == "concept"]
     end_entry = start_entry + len(batch_entries) - 1
+    batch_lesson_slugs = {entry.key for entry in lesson_entries}
+    relevant_verdicts = [
+        row for row in merge_verdicts
+        if row["left_slug"] in batch_lesson_slugs
+        or row["right_slug"] in batch_lesson_slugs
+    ]
     parts = [
         f"## CURATOR BATCH {index}/{total}",
         (
             f"Coverage: entries {start_entry}-{end_entry} of "
             f"{total_entries}; batch_entries={len(batch_entries)} "
+            f"promotions={len(promotion_entries)} "
             f"lessons={len(lesson_entries)}/{n_lessons} "
             f"skills={len(skill_entries)}/{n_skills} "
             f"concepts={len(concept_entries)}/{n_concepts}."
@@ -910,13 +1220,27 @@ def _render_batch_inventory(
             "fingerprint, so do not infer that omitted entries are absent."
         ),
         (
-            "For CONSOLIDATE, only merge entries whose full lines appear in "
-            "this batch; otherwise recommend a future cross-batch review."
+            "For ordinary CONSOLIDATE, only merge entries whose full lines "
+            "appear in this batch; otherwise recommend a future cross-batch "
+            "review. A named PROMOTE_TO_SKILL candidate is the exception: "
+            "read its source lessons with lesson_get before acting."
         ),
-        f"\n## LESSONS (n={len(lesson_entries)})\n",
+        (
+            "\n## LESSON CLUSTER PROMOTION CANDIDATES "
+            f"(n={len(promotion_entries)})\n"
+        ),
     ]
+    parts.extend(entry.text for entry in promotion_entries)
+    if not promotion_entries:
+        parts.append("(none)")
+    parts.append(f"\n## LESSONS (n={len(lesson_entries)})\n")
     parts.extend(entry.text for entry in lesson_entries)
     if not lesson_entries:
+        parts.append("(none)")
+    parts.append(f"\n## PRIOR MERGE VERDICTS (n={len(relevant_verdicts)})\n")
+    if relevant_verdicts:
+        parts.extend(_format_merge_verdict(row) for row in relevant_verdicts)
+    else:
         parts.append("(none)")
     if lesson_entries:
         parts.append("\n" + stale_text)
@@ -948,11 +1272,19 @@ def _collect_inventory_batches(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
 ) -> tuple[list[_InventoryBatch], int, int, int]:
-    lesson_entries, skill_entries, stale_text, n_lessons, n_skills = (
+    (
+        lesson_entries,
+        skill_entries,
+        promotion_entries,
+        stale_text,
+        merge_verdicts,
+        n_lessons,
+        n_skills,
+    ) = (
         _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
     )
     concept_entries, n_concepts = _collect_concept_entries(conn)
-    entries = lesson_entries + skill_entries + concept_entries
+    entries = promotion_entries + lesson_entries + skill_entries + concept_entries
     chunks = _chunk_inventory_entries(entries)
     total = len(chunks)
     batches: list[_InventoryBatch] = []
@@ -965,6 +1297,7 @@ def _collect_inventory_batches(
             start_entry=cursor,
             total_entries=len(entries),
             stale_text=stale_text,
+            merge_verdicts=merge_verdicts,
             n_lessons=n_lessons,
             n_skills=n_skills,
             n_concepts=n_concepts,
@@ -1173,13 +1506,17 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "DESTRUCTIVE MODE ENABLED (this is the default). After writing "
                 "the REPORT.md you MUST apply your own PATCH / PRUNE / "
                 "CONSOLIDATE recommendations directly:\n"
-                "  • PATCH — lesson_append(...) replaces a same-slug lesson in "
-                "place; skill_manage(action='patch') for skills.\n"
+                "  • PATCH — lesson_patch(slug=..., old_string=..., "
+                "new_string=...) changes one unique lesson substring in place; "
+                "skill_manage(action='patch') for skills. Use lesson_append(...) "
+                "only for wholesale same-slug replacements.\n"
                 "  • PRUNE — lesson_remove(slug=...) for a lesson; "
                 "skill_manage(action='delete') for a skill.\n"
                 "  • CONSOLIDATE — write the umbrella entry first, then "
-                "lesson_remove / skill_manage(action='delete') each merged-away "
-                "slug so the duplicate copies are actually gone.\n"
+                "lesson_remove(replacement_slug=<umbrella>) / "
+                "skill_manage(action='delete', replacement_name=<umbrella>) "
+                "for every merged-away entry so inbound [[wikilinks]] follow "
+                "the umbrella and duplicate copies are actually gone.\n"
                 "  • CONSOLIDATE_CONCEPT / PRUNE_CONCEPT — apply concept "
                 "recommendations directly: concept_manage(action='consolidate', "
                 "concept_id=<kept-id>, merge_ids='<id-a>,<id-b>') folds the "
@@ -1203,12 +1540,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__lesson_list,"
                 "mcp__thread-keeper__lesson_get,"
                 "mcp__thread-keeper__lesson_append,"
+                "mcp__thread-keeper__lesson_patch,"
                 "mcp__thread-keeper__lesson_remove,"
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_manage,"
                 "mcp__thread-keeper__skill_validate,"
                 "mcp__thread-keeper__curator_report_write,"
                 "mcp__thread-keeper__curator_restore,"
+                "mcp__thread-keeper__curator_merge_verdict,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__concept_manage,"
@@ -1219,7 +1558,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             destructive_clause = (
                 "ADVISORY MODE (you explicitly set "
                 "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
-                "lesson_remove, skill_manage with action in "
+                "lesson_patch, lesson_remove, skill_manage with action in "
                 "{create,patch,delete,write_file}, or any other destructive tool. "
                 "Your output is the REPORT.md ONLY — the human reviews and applies "
                 "changes manually. Unset the knob (or set it to 1) to let the "
@@ -1231,6 +1570,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "mcp__thread-keeper__skill_list,"
                 "mcp__thread-keeper__skill_validate,"
                 "mcp__thread-keeper__curator_report_write,"
+                "mcp__thread-keeper__curator_merge_verdict,"
                 "mcp__thread-keeper__list_concepts,"
                 "mcp__thread-keeper__expand_concept,"
                 "mcp__thread-keeper__evolve_format,"

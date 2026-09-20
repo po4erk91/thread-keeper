@@ -5,7 +5,177 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.8 — 2026-09-18
+
+### Fixed
+
+- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
+  reads GitHub REST comment author metadata and accepts a visible claim marker
+  only from a trusted repository association or an explicitly configured
+  automation login. Spoofed, malformed, and metadata-free markers remain
+  visible but cannot block issue pickup or affect claim-race tie-breaking.
+
+## v0.17.7 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs.** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
+## v0.17.6 — 2026-09-17
+
+### Fixed
+
+- **Spawned agents keep the ThreadKeeper MCP server on the configured install.**
+  MCP launch settings now enable Python safe-path mode, and Codex spawns apply
+  the same setting as a per-invocation MCP override. A managed or per-task
+  checkout can no longer shadow the installed package and then trip the live-DB
+  safety guard when an Evolve child records its completed PR handoff.
+
+## v0.17.5 — 2026-09-13
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
+## v0.17.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
+
+## v0.17.3 — 2026-09-09
+
+- **Fixed: skill and lesson notifications name the materialized result.**
+  Banners and logs show one readable artifact name instead of paths, event
+  metadata, or generic agent reports. The menu-bar feed uses actual write
+  events and respects the skill and lesson notification toggles separately.
+
+## v0.17.2 — 2026-09-09
+
+- **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**
+  Managed refresh and the pre-spawn gate preserve a dead child’s non-ignored
+  files outside the checkout before validation. Live writers, explicit
+  checkouts, ignored runtime files, and backup failures retain their guards.
+
+## v0.17.1 — 2026-09-09
+
+### Fixed
+
+- **Core event emission now fails loudly without session setup (#165).**
+  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
+  spawn watchdog, format evolution, and passive skill-tier paths initialize
+  their session before emitting telemetry.
+
 ## [Unreleased]
+
+- **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
+  scans all materialized lesson and skill bodies for unresolved `[[slug]]`
+  references and reports each source entry with its dead target. The read-only
+  detector complements, rather than changes, consolidation-time link repair.
+
+- **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
+  three semantic neighbors (with a lexical fallback) for a prospective lesson
+  before it is written. Shadow-review and candidate-reviewer authors use the preview to
+  patch/consolidate an incumbent or add a `[[slug]]` cross-link while creating
+  a related, distinct lesson. Existing `lesson_append` write semantics are
+  unchanged.
+
+- **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
+  candidates now persist as structured `keep_both` rows with a normalized slug
+  pair and short reason. Later Curator inventories surface those verdicts and
+  each lesson's current bidirectional wikilink adjacency, preventing repeated
+  full-body reviews of deliberately layered pairs.
+
+- **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
+  inside a clean Git checkout now receives its own task branch and worktree;
+  dirty source checkouts are refused before launch, so parallel children cannot
+  share a mutable working tree or Git index.
+
+- **Added: dense lesson clusters now promote to canonical skills (#163).**
+  Curator deterministically flags three-or-more lessons sharing a meaningful
+  title-term pair, then directs a validated checklist-style skill promotion
+  before retiring the unprotected source lessons. Clusters containing protected
+  lessons remain an explicit human-review plan.
+- **Added: surgical lesson patching (#161).** `lesson_patch(slug,
+  old_string, new_string)` now changes one unique substring in an existing
+  lesson while preserving its section metadata. Overlong shadow replacements
+  may repair an existing same-slug lesson only when they do not increase its
+  body size; new overlong shadow lessons remain rejected.
+- **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
+  `lesson_remove(replacement_slug=...)` and
+  `skill_manage(action='delete', replacement_name=...)` redirect inbound
+  `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
+  skills. Plain removal reports the complete dangling-link source set.
+- **Fixed: quota/credit exhaustion in a spawned child now alerts even when its
+  exit code was lost.** The notifier's dead-child source only surfaced children
+  whose row recorded a non-zero `return_code`. A child reaped after the DB
+  writer wedged — or reaped cross-session — closes with `return_code` NULL, so
+  the very failure the notifier exists to catch (a subscription running out
+  mid-run, which can itself stall the writer) produced no notification.
+  `_scan_dead_children` now also inspects NULL-`return_code` children and alerts
+  when the captured log carries a fatal degradation signature (monthly-quota /
+  credit / auth), while clean completions with a lost code stay silent.
+- **Fixed: a solo daemon-host no longer stays wedged indefinitely when a leaked
+  write transaction starves the SQLite writer.** The cross-host recovery only
+  fired when another host booted, so a machine with no new sessions could sit
+  wedged for as long as it was left alone. The host now tracks how long its own
+  heartbeat has been starved and self-terminates after
+  `HOST_WEDGE_KILL_AFTER_S`, letting the supervisor respawn a clean host (whose
+  teardown drops the leaked connection and releases the lock).
+
+## v0.17.0 — 2026-08-24
+
+- **Added: pre-ingest transcript privacy denylist (#145).**
+  `THREADKEEPER_INGEST_DENY_GLOBS` and the line-based local denylist file skip
+  matching adapter project/CWD messages before text, FTS, vector embeddings, or
+  learning-loop inputs are written. File watermarks advance normally, and
+  `mp_dashboard()` reports active patterns with the cumulative skipped count.
+- **Fixed: Evolve implementation PRs now include release metadata.** The
+  applier prompt requires the SemVer bump, matching `server.json` fields,
+  Docker release pin, and versioned changelog heading in the same PR; the PR
+  checklist mirrors that requirement for human-authored changes. The dependency
+  audit now removes only the unreleased editable project after resolving its
+  dependency set, then audits the remaining full environment, so a required
+  version bump no longer makes `pip-audit --strict` fail merely because that
+  version is not on PyPI yet.
+- **Added: CI security scanning (#144).** CodeQL analyzes the default Python
+  query suite on pull requests and pushes to `main`, plus weekly, and uploads
+  results to the Security tab. A blocking `pip-audit` job scans the fully
+  resolved runtime, semantic, and development dependency set; suppressions are
+  advisory-specific, reviewed entries in `.github/pip-audit-ignores.txt`.
+  Dependabot now tracks the Docker base image as well.
+- **Fixed: managed Evolve clones now execute only a verified pinned commit
+  (#132).** Auto-provisioning accepts only HTTPS `github.com` URLs, detaches at
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, and verifies `HEAD` before reusing or
+  creating the `[semantic,dev]` virtualenv. URL, branch, and commit changes are
+  restart-only and hot-config reload logs then ignores them, closing runtime
+  source redirection through a host settings file. The managed clone's remote
+  code-execution trust boundary and shared-host opt-out are documented.
+- **Fixed: interrupted conflict repair no longer deadlocks Evolve apply.** If a
+  conflict-repair child exited after `git merge` while its PR remained open,
+  managed refresh treated the unresolved merge as permanently dirty and every
+  scheduled pass stopped before the conflicted-PR sweep. With no live git
+  writer, the parent now verifies the exact open applier PR, archives the merge
+  diff as an owner-only recovery patch, aborts the orphaned merge, refreshes the
+  disposable checkout, and retries that same PR through the normal protected
+  conflict-repair flow. Closed-unmerged/unreadable PRs and explicit operator
+  checkouts remain fail-closed.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
@@ -98,15 +268,15 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
-## v0.16.4 — 2026-09-18
+## v0.17.0 — 2026-09-12
 
-### Fixed
+### Added
 
-- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
-  reads GitHub REST comment author metadata and accepts a visible claim marker
-  only from a trusted repository association or an explicitly configured
-  automation login. Spoofed, malformed, and metadata-free markers remain
-  visible but cannot block issue pickup or affect claim-race tie-breaking.
+- **Lesson contradiction reconciliation (#167).** A clear new absolute
+  directive or concrete-practice debunk now scans older lessons for permissive
+  guidance on the same topic. Each match emits a `lesson_reconciliation` event
+  and is returned from `lesson_append` for patch, cross-link, or supersession
+  review; conflicting lessons no longer take the normal semantic-dedup route.
 
 ## v0.16.3 — 2026-07-19
 
