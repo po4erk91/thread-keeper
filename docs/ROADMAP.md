@@ -1032,6 +1032,31 @@ verified gaps from the present code and test suite:
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
+**2026-09-21 reviewer additions (issue-backed).**
+The current audit reconciled the roadmap with eight open issues filed after the
+August review:
+
+- **Curator research/mutation separation.** Keep untrusted web research out of
+  the same child context that can mutate lessons and skills (#289).
+- **Durable Curator batch completion.** Do not endorse a large inventory until
+  every planned batch has completed and the result survives restarts (#290).
+- **SQLite transaction ownership.** Make `get_db()` callers close, commit, or
+  roll back non-autocommit write transactions so one leaked connection cannot
+  wedge the shared writer (#293).
+- **Fail-closed Curator inventory reads.** Treat a failed lesson, skill, concept,
+  or usage source as an incomplete audit instead of silently reviewing and
+  endorsing a partial inventory (#298).
+- **Child-log redaction.** Scrub secrets and private data from child-log excerpts
+  before status views and notifications expose them (#299).
+- **Scoped Evolve backlog governor.** Count only issues that the roadmap applier
+  can actually select, rather than letting unrelated open issues suppress the
+  reviewer loop (#304).
+- **Privileged spawn authorization.** Move trusted role/origin assignment behind
+  a private boundary so public callers cannot self-authorize
+  `bypassPermissions` (#308).
+- **Side-effect-free status reads.** Keep `agent_status` inspection read-only;
+  process termination and retry must stay in explicit maintenance paths (#309).
+
 ---
 
 ## Principle
