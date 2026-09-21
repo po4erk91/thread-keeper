@@ -6,6 +6,7 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
@@ -97,6 +98,15 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.16.4 — 2026-09-21
+
+### Changed
+
+- **Documentation inventories no longer use hand-maintained test or MCP tool
+  totals.** README and architecture documentation now point to the full test
+  suite and live tool registry, and a focused test rejects reintroducing those
+  stale-prone totals.
 
 ## v0.16.3 — 2026-07-19
 
