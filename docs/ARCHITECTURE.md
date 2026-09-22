@@ -364,7 +364,8 @@ observability only: the supervisor restarts dead threads, never a live child.
   continuation retry with the original assignment plus the previous
   task/cid/log pointers so the new child can inspect workspace state and resume
   instead of restarting blindly. (When the RSS budget is disabled but the
-  watchdog is on, the daemon still runs.)
+  watchdog is on, the daemon still runs.) Status surfaces observe only; the
+  daemon alone enforces timeouts and retries.
 - **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
   all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
   and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.

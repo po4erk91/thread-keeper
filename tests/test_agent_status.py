@@ -784,3 +784,42 @@ def test_recent_failures_notify_flag_off_when_toggle_disabled(
     fails = {f["task_id"]: f for f in snap["recent_failures"]}
     assert "deadchild2" in fails                 # still listed in the menu
     assert fails["deadchild2"]["notify"] is False  # but no banner posted
+
+
+def test_agent_status_tool_default_read_does_not_enforce_lifecycle(
+    fresh_mp, monkeypatch
+):
+    pkg = fresh_mp
+    _insert_task(pkg, "tk_overdue", "Build a compact menu-bar status app.")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE tasks SET started_at=? WHERE id=?",
+        (int(time.time()) - 10000, "tk_overdue"),
+    )
+    conn.commit()
+
+    import threadkeeper.spawn_budget as sb
+
+    reap_calls: list = []
+    respawn_calls: list = []
+    monkeypatch.setattr(
+        sb, "_reap_timed_out",
+        lambda conn, row, now: reap_calls.append(row["id"]) or True,
+    )
+    monkeypatch.setattr(
+        sb, "_respawn_timed_out",
+        lambda conn, row, age: respawn_calls.append(row["id"]),
+    )
+
+    result = _txt(_tool(pkg, "agent_status")())
+
+    assert reap_calls == []
+    assert respawn_calls == []
+    row = conn.execute(
+        "SELECT ended_at, return_code FROM tasks WHERE id='tk_overdue'"
+    ).fetchone()
+    assert row["ended_at"] is None
+    assert row["return_code"] is None
+    count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert count == 1
+    assert "tk_overdue" in result or "agents=1" in result
