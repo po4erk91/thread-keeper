@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-22
+
+- **Added: MCP SDK 2.x support (#279).** ThreadKeeper now supports both MCP
+  SDK 1.x and 2.x through a narrow internal `MCPServer`/`FastMCP` compatibility
+  adapter. Fresh installs resolve the supported 2.x line; the documented range
+  is `mcp>=1.10.0,<3`, so the temporary `<2` cap is gone. Tool/resource/prompt
+  registration, annotations, output schemas, structured content, elicitation,
+  and stdio transport retain their existing contracts. CI now runs the full
+  suite against both SDK majors and includes a subprocess stdio smoke test.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

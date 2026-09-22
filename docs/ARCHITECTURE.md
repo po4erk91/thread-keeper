@@ -9,11 +9,22 @@ One process per session, one SQLite store in WAL mode. Multiple windows can
 read concurrently; SQLite still admits only one writer at a time, so writers
 use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
+## MCP SDK compatibility
+
+ThreadKeeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). The
+single adapter in `_mcp.py` imports the SDK 2.x `MCPServer` and `Context` names,
+then falls back to SDK 1.x's `FastMCP` and `Context` only when needed. Tool
+modules import `Context` through that adapter, keeping server construction,
+tool/resource/prompt registration, annotations, output schemas, structured
+content, elicitation, and stdio transport behavior identical across supported
+majors. Fresh installs resolve SDK 2.x; CI runs the full suite and a real stdio
+subprocess smoke test against both majors.
+
 ## Package map
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
@@ -1488,7 +1499,7 @@ below).
 | panel | 1 | convene_panel |
 | session | 1 | session_end |
 
-Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+Each tool is a synchronous Python function; MCPServer wraps it in JSON-Schema
 automatically from type annotations. One process — one mcp instance
 (`threadkeeper._mcp.mcp`).
 
@@ -1541,7 +1552,7 @@ the other two for the read/act split they fit naturally:
   one instruction message that drives the existing read/act tools (it does not act
   on its own).
 
-Both are **additive**: FastMCP advertises the `resources` / `prompts`
+Both are **additive**: MCPServer advertises the `resources` / `prompts`
 capabilities, which only changes what a capability-aware host *sees* — never the
 tool surface. A host that uses neither falls back to the hook-injected brief and
 the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on
