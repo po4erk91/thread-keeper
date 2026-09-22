@@ -59,6 +59,18 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
         "interval_key": "THREADKEEPER_CURATOR_INTERVAL_S",
     },
     {
+        "role": "curator_researcher",
+        "name": "Curator researcher",
+        "description": (
+            "Collects bounded external evidence for one Curator batch before "
+            "a separate web-free Curator can evaluate it."
+        ),
+        "reads": "One Curator inventory batch, audit manifest, and public sources",
+        "writes": "A destination-scoped research handoff only",
+        "impact": "read_only",
+        "interval_key": "THREADKEEPER_CURATOR_INTERVAL_S",
+    },
+    {
         "role": "dialectic_validator",
         "name": "Dialectic validator",
         "description": (

@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-22
+- **Added: Curator research/evaluation capability split.** Web-enabled
+  research children can write only bounded, pass-and-batch-scoped handoffs.
+  Web-free Curator evaluators consume those handoffs as fenced untrusted data;
+  missing, malformed, swapped, or mismatched evidence stops at `HUMAN_REVIEW`
+  before any advisory report, snapshot, or memory mutation.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
