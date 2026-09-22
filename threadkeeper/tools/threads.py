@@ -302,6 +302,7 @@ def evolve_format(suggestion: str, rationale: str = "") -> str:
     """Propose a change to the brief format itself. The format is not fixed — this
     is how it adapts. Examples: 'field X unused this session, drop it';
     'add field failed_attempts under each open thread'; 'shorten Z to single token'."""
+    identity.ensure_session_started()
     conn = get_db()
     now = int(time.time())
     conn.execute(

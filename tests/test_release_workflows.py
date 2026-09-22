@@ -7,6 +7,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 DOCKERFILE = ROOT / "Dockerfile"
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+PIP_AUDIT_IGNORES = ROOT / ".github" / "pip-audit-ignores.txt"
 
 BOT_TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -117,3 +119,33 @@ def test_ci_matrix_covers_both_supported_mcp_sdk_majors():
     text = _workflow_text("test.yml")
     assert 'mcp: [">=1.10.0,<2", ">=2.0.0,<3"]' in text
     assert '"mcp${{ matrix.mcp }}"' in text
+
+def test_ci_security_scanning_covers_code_and_resolved_dependencies():
+    codeql = _workflow("codeql.yml")
+    codeql_text = _workflow_text("codeql.yml")
+    pip_audit_job = _workflow("test.yml")["jobs"]["pip-audit"]
+    dependabot = yaml.safe_load(DEPENDABOT.read_text())
+
+    assert codeql["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+    }
+    assert "branches: [main]" in codeql_text
+    assert "cron:" in codeql_text
+    assert "github/codeql-action/init@v4" in codeql_text
+    assert "github/codeql-action/analyze@v4" in codeql_text
+    assert "languages: python" in codeql_text
+    assert "build-mode: none" in codeql_text
+    assert "queries:" not in codeql_text  # Keep the default suite for now.
+
+    audit_text = _workflow_text("test.yml")
+    assert pip_audit_job["name"] == "pip-audit (resolved dependencies)"
+    assert "python -m pip install -e '.[semantic,dev]'" in audit_text
+    assert "python -m pip uninstall -y threadkeeper" in audit_text
+    assert "pip-audit --local --strict" in audit_text
+    assert "--ignore-vuln" in audit_text
+    assert "Malformed .github/pip-audit-ignores.txt entry" in audit_text
+    assert "There are no active suppressions at present." in PIP_AUDIT_IGNORES.read_text()
+
+    ecosystems = {entry["package-ecosystem"] for entry in dependabot["updates"]}
+    assert "docker" in ecosystems
