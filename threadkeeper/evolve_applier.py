@@ -1489,9 +1489,76 @@ def _latest_complete_curator_report(
     return None
 
 
+def _manifest_pending_curator_reports(
+    conn: sqlite3.Connection,
+) -> list[Path] | None:
+    """All eligible reports from the oldest endorsed pass with a backlog.
+
+    ``None`` means this database predates the durable Curator manifest and
+    keeps the legacy single-report compatibility path.  An empty list means
+    manifests exist but no complete report is ready to apply.
+    """
+    try:
+        manifest_count = conn.execute(
+            "SELECT COUNT(*) FROM curator_passes"
+        ).fetchone()[0]
+        if not manifest_count:
+            return None
+        current = conn.execute(
+            "SELECT p.pass_id FROM curator_passes p WHERE p.endorsed_at IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM curator_batches b "
+            "WHERE b.pass_id=p.pass_id AND b.state='complete' "
+            "AND b.apply_state='unapplied') "
+            "ORDER BY p.endorsed_at ASC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if current is None:
+        return []
+    rows = conn.execute(
+        "SELECT report_name FROM curator_batches WHERE pass_id=? "
+        "AND state='complete' AND apply_state='unapplied' "
+        "ORDER BY batch_index ASC",
+        (current["pass_id"],),
+    ).fetchall()
+    reports: list[Path] = []
+    for row in rows:
+        path = CURATOR_REPORTS_DIR / row["report_name"]
+        report_text = _read_curator_report(path)
+        if not _is_complete_curator_report(path):
+            return []
+        if not _curator_report_provenanced(conn, path, report_text):
+            return []
+        reports.append(path)
+    return reports
+
+
 def _pending_curator_reports(conn: sqlite3.Connection) -> list[Path]:
+    manifest_reports = _manifest_pending_curator_reports(conn)
+    if manifest_reports is not None:
+        return manifest_reports
     latest = _latest_complete_curator_report(conn)
     return [latest] if latest else []
+
+
+def _manifest_report_is_eligible(
+    conn: sqlite3.Connection, path: Path,
+) -> bool | None:
+    """True/False for manifest reports; None for pre-manifest compatibility."""
+    try:
+        row = conn.execute(
+            "SELECT p.endorsed_at, b.state, b.apply_state FROM curator_batches b "
+            "JOIN curator_passes p ON p.pass_id=b.pass_id "
+            "WHERE b.report_name=? ORDER BY p.created_at DESC LIMIT 1",
+            (path.name,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    return bool(row["endorsed_at"]) and row["state"] == "complete" and (
+        row["apply_state"] == "unapplied"
+    )
 
 
 def _issue_labels(issue: dict) -> list[str]:
@@ -2838,6 +2905,15 @@ def mark_curator_report_applied(
             int(time.time()),
         ),
     )
+    try:
+        conn.execute(
+            "UPDATE curator_batches SET apply_state='applied', applied_at=? "
+            "WHERE report_name=? AND state='complete'",
+            (int(time.time()), path.name),
+        )
+    except sqlite3.OperationalError:
+        # Pre-manifest databases retain event-only idempotency.
+        pass
     conn.commit()
     return f"ok report={path.name} applied=1"
 
@@ -3175,6 +3251,9 @@ def apply_curator_report(report_path: str = "") -> str:
                 return f"ERR report_unprovenanced={path.name}"
             if _curator_report_applied(conn, path):
                 return f"ERR report_already_applied={path.name}"
+            manifest_eligible = _manifest_report_is_eligible(conn, path)
+            if manifest_eligible is False:
+                return f"ERR report_pass_incomplete={path.name}"
         else:
             pending = _pending_curator_reports(conn)
             if not pending:

@@ -418,6 +418,45 @@ def test_authorized_curator_report_writer_is_applied_once(
     assert f"REPORT_SHA256\n-------------\n{digest}" in calls["prompt"]
 
 
+def test_pending_curator_reports_enumerates_every_batch_in_one_pass(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    pass_id = "manifest-pass"
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO curator_passes "
+        "(pass_id, inventory_fingerprint, expected_batches, mode, "
+        "audit_manifest_path, created_at, updated_at, completed_at, endorsed_at) "
+        "VALUES (?, 'a', 2, 'advisory', '/tmp/audit.json', ?, ?, ?, ?)",
+        (pass_id, now, now, now, now),
+    )
+    conn.commit()
+    reports = [
+        _write_report(pkg, name=f"REPORT-{pass_id}-batch-{index:03d}-of-002.md")
+        for index in (1, 2)
+    ]
+    for index, report in enumerate(reports, start=1):
+        conn.execute(
+            "INSERT INTO curator_batches "
+            "(pass_id, batch_index, report_name, state, completed_at, "
+            "provenance_sha256) VALUES (?, ?, ?, 'complete', ?, ?)",
+            (
+                pass_id, index, report.name, now,
+                pkg["ea"].curator_report_sha256(report.read_text()),
+            ),
+        )
+    conn.commit()
+
+    assert pkg["ea"]._pending_curator_reports(conn) == reports
+    first_digest = pkg["ea"].curator_report_sha256(reports[0].read_text())
+    assert pkg["ea"].mark_curator_report_applied(
+        conn, str(reports[0]), first_digest, "handled first batch",
+    ).endswith("applied=1")
+    assert pkg["ea"]._pending_curator_reports(conn) == [reports[1]]
+
+
 def test_apply_curator_report_requires_complete_unapplied_report(
     tmp_path, monkeypatch,
 ):

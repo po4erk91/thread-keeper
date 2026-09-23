@@ -98,6 +98,22 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-09-23
+
+### Added
+
+- **Durable Curator multi-batch completion.** Each Curator pass now persists
+  its inventory fingerprint, expected report batches, dispatch/task state,
+  final report provenance, and advisory apply state. An inventory is endorsed
+  only after every batch succeeds with a matching complete report; failed,
+  timed-out, or resource-refused work remains retryable without re-running
+  completed batches. `CURATOR_MAX_CONCURRENT_BATCHES` bounds live fan-out
+  (default 1), while the existing spawn admission remains the global resource
+  budget gate; incomplete passes are polled every 60 seconds by default.
+  Curator status and agent status expose expected, running,
+  failed, complete, and unapplied batch counts. The advisory applier now
+  consumes every complete report from an endorsed pass in batch order.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

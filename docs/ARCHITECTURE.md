@@ -255,12 +255,18 @@ Steady-state access is split by intent:
    `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
    recommendations.
 
-7. **curator snapshots** — file archives under
-   `<curator_reports_dir>/snapshots/<pass-id>/` written before a destructive
-   curator child is spawned. Each snapshot contains `lessons.md`, copied
-   in-scope skill dirs, `manifest.json`, and tombstones emitted by curator
-   prune/delete tool calls. `curator_restore` restores a lesson or skill from
-   that archive. Retention is bounded by
+7. **curator pass manifests + snapshots** — `curator_passes` records a pass
+   ID, inventory fingerprint, expected batch count, audit path, timestamps,
+   and endorsement. `curator_batches` records each report destination,
+   dispatch attempt/task, terminal state, final report digest, and advisory
+   apply state. A dispatch is never an endorsement: only every batch ending
+   successfully with its exact final report provenance can endorse the
+   fingerprint. Failed, timed-out, and resource-refused batches remain
+   retryable while completed batches are not redispatched. Destructive passes
+   also retain file archives under `<curator_reports_dir>/snapshots/<pass-id>/`;
+   each contains `lessons.md`, copied in-scope skill dirs, `manifest.json`, and
+   tombstones emitted by curator prune/delete tool calls. `curator_restore`
+   restores a lesson or skill from that archive. Retention is bounded by
    `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION`.
 
 8. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
@@ -490,15 +496,23 @@ moving the high-water forward; `force=True` bypasses this due gate.
   scheduled passes still run because external relevance can change without a
   local-byte change. Each batch prompt carries an explicit entry range and
   per-kind counts; multi-batch runs write
-  `REPORT-<pass>-batch-NNN-of-MMM.md` files.
+  `REPORT-<pass>-batch-NNN-of-MMM.md` files. The durable pass manifest records
+  every expected batch before launch, separates dispatch from completion, and
+  retries only pending or failed batches. At most
+  `CURATOR_MAX_CONCURRENT_BATCHES` (default 1) may be running from one pass;
+  the normal spawn admission remains the atomic global RSS-budget gate. While
+  unfinished work exists, the daemon reconciles and refills it every
+  `CURATOR_BATCH_POLL_S` seconds (default 60), then returns to its normal
+  interval after endorsement.
   The last `curator_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due` before any snapshot or child spawn.
   Wake-ups also coalesce behind the shared helper's non-blocking
   `curator.lock` plus the running curator-task check, so multiple foreground
   servers do not re-read and spawn against the same snapshot.
-  `curator_review_status()` exposes the last
-  endorsed `inventory_sha256` and the current inventory hash. Spawned
-  `curator_pass` events record total entries, batch count, compressed
+  `curator_review_status()` exposes the last endorsed `inventory_sha256`, the
+  current inventory hash, and expected/running/failed/complete/unapplied batch
+  counts. The same counts are available on the Curator row of `agent_status`.
+  Dispatch telemetry records total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
   Before dispatching each child, the parent also authorizes that exact
   `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
@@ -660,8 +674,9 @@ moving the high-water forward; `force=True` bypasses this due gate.
   common token shapes before the real GitHub CLI receives the body, refusing if
   a known unsafe pattern remains. Parent-authored claim/dead-letter comments use
   the same scrubber before spawning `gh`. If no issue is pending,
-  it falls back to the latest complete Curator `REPORT-*.md` whose current
-  SHA-256 matches a `curator_report_provenance` event, then to the oldest
+  it falls back to every complete, unapplied Curator report from the oldest
+  endorsed pass whose current SHA-256 matches a `curator_report_provenance`
+  event, then to the oldest
   promoted + unapplied legacy `evolve_format` suggestion. Curator report apply
   uses memory MCP tools only (`lesson_append`, `lesson_remove`, `skill_manage`)
   and records `curator_report_applied` only after the child supplies the same

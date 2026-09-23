@@ -409,6 +409,18 @@ plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
 its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
 Scope: S–M each.
 
+✅ DONE: Curator multi-batch completion is now durable. A SQLite pass manifest
+records the inventory fingerprint, expected batches, individual dispatch/task
+state, final report provenance, and advisory apply state. An inventory is
+endorsed only after every expected child succeeds with its matching final
+report; failed, timed-out, and resource-refused batches remain visible and are
+the only ones retried. `CURATOR_MAX_CONCURRENT_BATCHES` (default 1) bounds a
+pass's live fan-out before the normal atomic spawn-budget admission. Advisory
+application enumerates all complete, unapplied reports from one endorsed pass
+in batch order. Incomplete passes are reconciled at `CURATOR_BATCH_POLL_S`
+(default 60) rather than waiting a full audit interval, and Curator status
+exposes expected/running/failed/complete/unapplied counts.
+
 ✅ DONE (#106): destructive Curator passes now have a server-side shared
 admission ceiling before `lesson_remove` or `skill_manage(action='delete')`
 can mutate. `CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 10, is keyed by the

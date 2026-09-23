@@ -36,7 +36,10 @@ from ..curator import (
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
+    _record_batch_report_provenance,
     curator_report_sha256,
+    curator_pass_status,
+    CURATOR_REPORT_COMPLETE_MARKER,
     run_curator_pass,
 )
 from ..curator_snapshots import (
@@ -52,6 +55,7 @@ from ..config import (
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_MAX_CONCURRENT_BATCHES,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
     SPAWNED_CHILD,
     WRITE_ORIGIN,
@@ -113,6 +117,7 @@ def curator_review_status() -> str:
     lines = [
         f"interval_s={CURATOR_INTERVAL_S:.0f} "
         f"min_lessons={CURATOR_MIN_LESSONS} "
+        f"max_concurrent_batches={CURATOR_MAX_CONCURRENT_BATCHES} "
         f"mode={mode} "
         f"manage_foreground_skills={int(CURATOR_MANAGE_FOREGROUND_SKILLS)} "
         f"reports_dir={CURATOR_REPORTS_DIR}",
@@ -126,6 +131,17 @@ def curator_review_status() -> str:
         )
     else:
         lines.append("inventory_sha256=(none)")
+    batch_state = curator_pass_status(conn)
+    lines.append(
+        "batch_state "
+        f"pass_id={batch_state['pass_id'] or '-'} "
+        f"expected={batch_state['expected']} "
+        f"running={batch_state['running']} "
+        f"failed={batch_state['failed']} "
+        f"complete={batch_state['complete']} "
+        f"unapplied={batch_state['unapplied']} "
+        f"endorsed={int(bool(batch_state['endorsed']))}"
+    )
     try:
         current_fp, n_lessons, n_skills, n_concepts = (
             _current_inventory_fingerprint(conn)
@@ -339,6 +355,14 @@ def curator_report_write(
                 f"pass_id={clean_id} sha256={digest}",
                 int(time.time()),
             ),
+        )
+        _record_batch_report_provenance(
+            conn,
+            pass_id=clean_id,
+            report_name=report_name,
+            digest=digest,
+            complete=CURATOR_REPORT_COMPLETE_MARKER in persisted,
+            now=int(time.time()),
         )
         conn.commit()
     except Exception as exc:

@@ -714,6 +714,15 @@ def _loop_status(
     elif last_summary:
         work = _human_summary(last_summary, loop["work"])
 
+    curator_batches: dict[str, object] = {}
+    if loop["id"] == "curator":
+        try:
+            from .curator import curator_pass_status
+
+            curator_batches = curator_pass_status(conn)
+        except Exception:
+            curator_batches = {}
+
     return {
         "id": loop["id"],
         "name": loop["name"],
@@ -735,6 +744,7 @@ def _loop_status(
         "running_agent_count": len(running),
         "rss_mb": rss_mb,
         "rss_kb": rss_mb * 1024,
+        **({"batches": curator_batches} if curator_batches else {}),
         **health,
     }
 
