@@ -19,6 +19,9 @@ audit pass:
   curator_research_write(pass_id, content, batch_index, batch_total)
     Persist one parent-authorized, bounded web-research handoff. Only the
     read-only Curator research phase can call it.
+
+  curator_merge_verdict(slug_a, slug_b, reason)
+    Remember a reviewed lesson pair that must remain separate.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from ..curator import (
     curator_research_authorization,
     curator_research_payload,
     curator_report_sha256,
+    record_merge_verdict,
     run_curator_pass,
 )
 from ..curator_snapshots import (
@@ -54,6 +58,7 @@ from ..curator_snapshots import (
     snapshots_root,
 )
 from ..permissions import chmod_private_file
+from ..link_health import scan_wikilink_health
 from ..skill_audit import build_skill_audit
 from ..config import (
     CURATOR_INTERVAL_S,
@@ -69,6 +74,24 @@ from ..config import (
 _PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MAX_REPORT_CHARS = 2_000_000
 logger = logging.getLogger(__name__)
+
+
+@write_tool(idempotent=True)
+def curator_merge_verdict(slug_a: str, slug_b: str, reason: str) -> str:
+    """Remember a curator-reviewed lesson pair that should remain separate.
+
+    This records only the safe `keep_both` outcome for a rejected merge
+    candidate. The next curator inventory includes the pair and short reason,
+    so a later pass can respect the deliberate layering without re-reading
+    both full lesson bodies.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    try:
+        left, right = record_merge_verdict(conn, slug_a, slug_b, reason)
+    except ValueError as exc:
+        return f"ERR {exc}"
+    return f"ok merge_verdict={left},{right} decision=keep_both"
 
 
 @write_tool()
@@ -266,6 +289,23 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "exact_duplicate_groups": manifest["exact_duplicate_groups"],
             "semantic_candidates": manifest["semantic_candidates"],
         },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+@read_tool()
+def wikilink_health(include_archived: bool = True) -> str:
+    """List unresolved ``[[slug]]`` links in all lesson and skill bodies.
+
+    This detector is read-only. It reports each dead target with the lesson
+    or skill that references it; repair remains a separate curator action.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    return json.dumps(
+        scan_wikilink_health(conn, include_archived=include_archived),
         ensure_ascii=False,
         indent=2,
         sort_keys=True,

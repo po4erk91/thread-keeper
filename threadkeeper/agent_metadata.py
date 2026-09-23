@@ -102,7 +102,7 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
             "evolve reviewer before a roadmap decision."
         ),
         "reads": "Repository code, documentation, and research sources",
-        "writes": "Research findings for the evolve review",
+        "writes": "One parent-authorized, pass-scoped research digest",
         "impact": "read_only",
         "interval_key": "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S",
     },
