@@ -118,6 +118,10 @@ def test_watchdog_kills_overcap_child(mp_with_cid, monkeypatch):
         assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
         # Single-flight releases: an ended row no longer counts as running.
         assert sb._running_tasks_rss(conn) == 0
+        event = conn.execute(
+            "SELECT 1 FROM events WHERE kind='spawn_timeout' AND target='tk_hung'"
+        ).fetchone()
+        assert event is not None
         assert _wait_dead(pid), "watchdog did not actually kill the child"
     finally:
         try:
@@ -398,3 +402,39 @@ def test_agent_status_reports_timed_out(mp_with_cid, monkeypatch):
     snap = agent_status_snapshot(refresh=False)
     assert snap["timed_out_count"] == 1
     assert "timed_out=1" in format_agent_status(snap)
+
+
+def test_refresh_all_running_enforce_false_skips_kill_and_respawn(
+    mp_with_cid, monkeypatch
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+
+    reap_calls: list = []
+    respawn_calls: list = []
+    monkeypatch.setattr(
+        sb, "_reap_timed_out",
+        lambda conn, row, now: reap_calls.append(row["id"]) or True,
+    )
+    monkeypatch.setattr(
+        sb, "_respawn_timed_out",
+        lambda conn, row, age: respawn_calls.append(row["id"]),
+    )
+
+    old = int(time.time()) - 200
+    conn = _insert_running(pkg, "tk_enforce", os.getpid(), old)
+
+    sb._refresh_all_running(conn, enforce=False)
+
+    assert reap_calls == []
+    assert respawn_calls == []
+    row = conn.execute(
+        "SELECT ended_at FROM tasks WHERE id='tk_enforce'"
+    ).fetchone()
+    assert row["ended_at"] is None
+
+    sb._refresh_all_running(conn)
+
+    assert len(reap_calls) == 1

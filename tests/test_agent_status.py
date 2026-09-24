@@ -4,6 +4,8 @@ import json
 import os
 import time
 
+import pytest
+
 
 _FAKE_CID = "33334444-5555-6666-7777-888899990000"
 
@@ -468,6 +470,42 @@ def test_agent_status_recent_results_for_useful_completed_tasks(mp_with_cid):
     assert snap["recent_results"][0]["summary"] == (
         "Processed 2 candidates into durable notes."
     )
+    assert snap["recent_results"][0]["notify"] is False
+
+
+@pytest.mark.parametrize("poll,skill,lesson", [
+    (30, True, True), (30, True, False), (30, False, True), (0, True, True),
+])
+def test_materialization_results_name_actual_writes(mp_with_cid, poll, skill, lesson):
+    pkg = mp_with_cid(_FAKE_CID)
+    pkg["config"].NOTIFY_POLL_S = poll
+    pkg["config"].NOTIFY_SKILL_MATERIALIZED = skill
+    pkg["config"].NOTIFY_LESSON = lesson
+    result = _txt(_tool(pkg, "skill_manage")(
+        action="create", name="api-contract-testing",
+        description="Test API contracts.", content="# API contract testing\n\nUse schemas.",
+    ))
+    assert result.startswith("ok"), result
+    result = _txt(_tool(pkg, "lesson_append")(
+        title="Verify state transitions", body="Assert the state after the action.",
+        source="T1",
+    ))
+    assert result.startswith("ok"), result
+    _insert_completed_task(pkg, "tk_generic_done",
+                           "You are a CANDIDATE REVIEWER for thread-keeper's extract queue.",
+                           "Processed 2 candidates into durable notes.\n")
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    items = agent_status_snapshot(refresh=False)["recent_results"]
+    by_role = {item["role"]: item for item in items}
+    assert by_role["skill"]["summary"] == "API contract testing"
+    assert by_role["lesson"]["summary"] == "Verify state transitions"
+    assert by_role["skill"]["notify"] is bool(poll and skill)
+    assert by_role["lesson"]["notify"] is bool(poll and lesson)
+    assert by_role["candidate_reviewer"]["notify"] is False
+    assert all(item["id"].startswith("materialization:")
+               for item in items if item["role"] in ("skill", "lesson"))
 
 
 def test_agent_status_mcp_json_output(mp_with_cid):
@@ -746,3 +784,42 @@ def test_recent_failures_notify_flag_off_when_toggle_disabled(
     fails = {f["task_id"]: f for f in snap["recent_failures"]}
     assert "deadchild2" in fails                 # still listed in the menu
     assert fails["deadchild2"]["notify"] is False  # but no banner posted
+
+
+def test_agent_status_tool_default_read_does_not_enforce_lifecycle(
+    fresh_mp, monkeypatch
+):
+    pkg = fresh_mp
+    _insert_task(pkg, "tk_overdue", "Build a compact menu-bar status app.")
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE tasks SET started_at=? WHERE id=?",
+        (int(time.time()) - 10000, "tk_overdue"),
+    )
+    conn.commit()
+
+    import threadkeeper.spawn_budget as sb
+
+    reap_calls: list = []
+    respawn_calls: list = []
+    monkeypatch.setattr(
+        sb, "_reap_timed_out",
+        lambda conn, row, now: reap_calls.append(row["id"]) or True,
+    )
+    monkeypatch.setattr(
+        sb, "_respawn_timed_out",
+        lambda conn, row, age: respawn_calls.append(row["id"]),
+    )
+
+    result = _txt(_tool(pkg, "agent_status")())
+
+    assert reap_calls == []
+    assert respawn_calls == []
+    row = conn.execute(
+        "SELECT ended_at, return_code FROM tasks WHERE id='tk_overdue'"
+    ).fetchone()
+    assert row["ended_at"] is None
+    assert row["return_code"] is None
+    count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert count == 1
+    assert "tk_overdue" in result or "agents=1" in result

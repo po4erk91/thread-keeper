@@ -93,6 +93,9 @@ config, copies hooks to
 each CLI's per-user instructions file (`CLAUDE.md` / `AGENTS.md` /
 `copilot-instructions.md` — Claude Desktop and VS Code
 have no global instructions file, so that step is skipped for them).
+The generated MCP entry pins imports to this configured installation, so an
+agent launched inside another thread-keeper checkout cannot load that checkout's
+unmerged code against the live memory database.
 
 Restart your CLI of choice. Hook-capable clients inject a brief on the first
 message; hookless clients such as Codex and Antigravity CLI either follow the
@@ -173,7 +176,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
-| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
+| **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
@@ -266,6 +269,12 @@ uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
 inserts the child task row with its RSS estimate before `Popen`, so two
 concurrent spawns cannot both squeeze through the cap.
 
+When `cwd` is inside a Git checkout, `spawn()` also requires the source
+checkout's tracked files to be clean, then starts the child from a unique
+branch/worktree under `THREADKEEPER_TASK_LOG_DIR/worktrees/`. Parallel children
+therefore never share a mutable checkout or Git index. Non-Git directories keep
+their existing behavior; a dirty Git checkout is refused before a child starts.
+
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
 CLI emits a recognizable usage trailer. Optional daily ceilings
@@ -301,7 +310,10 @@ repair partial work, and continue rather than restart blindly.
 `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` (default 3; 0 disables) bounds the
 retry chain, with `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` available for a
 non-zero delay. Timed-out children are surfaced as `tasks_timed_out` in
-`mp_dashboard` and `timed_out` in `agent_status`.
+`mp_dashboard` and `timed_out` in `agent_status`. `agent_status` and
+`tk-agent-status` are observation-only and never terminate or respawn a
+child; timeout enforcement and the continuation retry live solely in the
+spawn-budget daemon.
 
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
@@ -555,10 +567,20 @@ daemon even if a CLI drops the no-embeddings env. Idempotent through
 `events.kind='shadow_review_pass'`.
 
 Before writing memory, the observer now checks existing lessons/skills and
-prefers patching broad skills. Shadow-origin `lesson_append` is a compact
-fallback only: oversized bodies are rejected, near-duplicate slugs are blocked,
-and semantic body matches are routed to the incumbent lesson or surfaced for
-curation instead of minting a sibling lesson.
+prefers patching broad skills. `lesson_patch(slug, old_string, new_string)`
+can correct one unique substring without reserializing a lesson. Shadow-origin
+`lesson_append` is a compact fallback only: oversized new bodies are rejected,
+though an existing same-slug long lesson may be corrected without increasing
+its body size; near-duplicate slugs are blocked, and semantic body matches are
+routed to the incumbent lesson or surfaced for curation instead of minting a
+sibling lesson. A clear new directive or debunk also flags older permissive
+lessons on the same concrete practice for patch, cross-link, or supersession
+review.
+Before a genuinely new fallback lesson is written,
+`lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
+slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
+that preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link
+to a related, distinct lesson while its body is still editable.
 
 #### 3. Extract daemon
 
@@ -638,7 +660,12 @@ ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The child reads every
+rows with no real `SKILL.md` remain explicit orphans. The same inventory also
+flags a dense lesson subtopic when at least
+`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share a pair
+of meaningful title terms. A non-protected candidate must become one validated,
+checklist-style canonical skill before its source lessons are retired; protected
+clusters are left for human review. The child reads every
 complete skill and relevant support file, performs current web research against
 official docs and comparable
 public skills, then writes numbered per-skill verdicts to
@@ -657,6 +684,20 @@ recorded `curator_pass` high-water, so fresh MCP server restarts and
 non-forced direct `curator_review()` calls return `not_due` inside the
 configured interval and record that status without spawning. A manual
 `curator_review(force=True)` bypasses the interval but still respects the lock.
+
+When a Curator reviews a lesson pair and deliberately keeps both, it records a
+structured `keep_both` merge verdict with the two slugs and a short reason.
+Later inventories show those prior verdicts and each lesson's current
+bidirectional `[[wikilink]]` adjacency (`links=[...]`), including for the
+relevant side of a multi-batch review. This preserves intentional
+general/specific and prevention/recovery layering without making a child
+re-read both lesson bodies to rediscover it.
+
+For automation-created skills, the audit keeps foreground consultation separate
+from maintenance: a background-review skill with `fg_uses=0` after 14 days is
+still a false-positive prune candidate even if automatic review or sync loops
+have increased its patch counter. Patches are maintenance activity, not proof
+that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. It then persists a pass manifest with the
@@ -714,7 +755,11 @@ cross-process, while foreground/human deletes are unaffected. `mp_dashboard`
 shows admitted and refused operations with `status=HIT` when the Curator reaches
 the ceiling.
 Before `lesson_remove` or `skill_manage(action='delete')` removes anything, it
-also writes a recovery artifact under `<db dir>/curator/trash/`: lessons store
+also rewrites inbound `[[wikilinks]]` when a consolidation provides
+`replacement_slug` / `replacement_name` for the surviving umbrella. A plain
+removal returns its complete `dangling_wikilinks=` source list instead, so
+those links can be repaired immediately. It writes a recovery artifact under
+`<db dir>/curator/trash/`: lessons store
 the exact sentinel section plus usage row, and skills store the full skill
 directory plus usage row. Restore trash artifacts with `lesson_restore(slug=...)`
 or `skill_manage(action='restore', name=...)`. Trash retention is bounded by
@@ -726,14 +771,15 @@ enumerates every complete, unapplied report in the oldest endorsed Curator pass
 (`CURATOR_PASS_COMPLETE`) whose path and current SHA-256 match an unapplied
 `curator_report_provenance` event, then spawns an `evolve_applier` child to
 apply only safe, still-current memory
-maintenance through `lesson_append` / `lesson_remove` / `skill_manage` /
+maintenance through `lesson_append` / `lesson_patch` / `lesson_remove` /
+`skill_manage` /
 `concept_manage`. It never touches `[PROTECTED]`,
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)` with the verified hash;
 the mark rechecks that hash and prevents replaying the same report.
 
 The shared lesson file has its own write serialization: `lesson_append`,
-`lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
+`lesson_patch`, `lesson_remove`, and `lesson_restore` hold a blocking `fcntl.flock` on
 `lessons.md.lock` around file creation/read/mutate/write, so foreground calls
 and learning-loop children cannot last-writer-win over each other's sections.
 
@@ -790,10 +836,16 @@ runs as **two alternating phases**, never co-granting web research and
 shell/`bypassPermissions` to the same child:
 
 - **research phase** — a read-only child with `WebSearch`/`WebFetch` and
-  read-only repo reads but **no shell, no `bypassPermissions`, and no GitHub
-  access**. It distills external findings into a digest file under
-  `~/.threadkeeper/evolve-research/`. With no `Bash`/`gh`/network-write tool it
-  has no exfiltration channel, so the untrusted pages it reads cannot act.
+  read-only repo reads but **no shell, no generic `Write`, no
+  `bypassPermissions`, and no GitHub access**. Before dispatch, the parent
+  registers one pass ID, owner child, and digest target. The child can submit
+  only that pass through `evolve_research_handoff(...)`; it cannot choose a
+  path. The handoff is one-shot, capped at 12,000 characters / 400 lines,
+  atomically persisted with a SHA-256, and records rejected, failed, expired,
+  and tampered outcomes in Evolve telemetry. The later audit reads only a
+  fresh accepted handoff whose final file still matches that hash. With no
+  `Bash`/`gh`/network-write tool it has no exfiltration channel, so the
+  untrusted pages it reads cannot act.
 - **audit phase** — the privileged child (`bypassPermissions` + `Bash`/`Edit`/
   `Write`) that audits the repo, opens the `docs/ROADMAP.md` PR, and creates or
   updates GitHub issues. It holds **no web tools**; it consumes the research
@@ -855,28 +907,45 @@ throttling the roadmap loop.
 Before any PR-producing reviewer/audit or applier child is spawned, the parent
 checks the target checkout with `git status --porcelain --untracked-files=no`.
 Tracked-file WIP records `skipped_dirty_worktree` and no child is dispatched;
-untracked scratch files do not block. Each applier child fetches the configured
-base and prepares or resumes its deterministic local/remote feature branch
-before reading or editing; retries therefore validate prior branch work instead
-of discovering a branch-name collision after changing the base checkout. A
-shared git-writer running-task check prevents the privileged reviewer audit and
-code/PR applier from overlapping in the same checkout.
+the default managed checkout first preserves orphaned untracked files under
+`~/.threadkeeper/evolve-recovery/untracked-*/` and removes them from the next
+task’s tree. This prevents unrelated unfinished tests from blocking every PR
+repair. Ignored files (including `.venv`) and explicit operator checkouts stay
+in place; live writers prevent recovery, and backup failures block dispatch.
+Each managed-checkout child fetches the
+configured branch only to retrieve the configured immutable commit, then
+prepares or resumes its deterministic local/remote feature branch from
+`THREADKEEPER_EVOLVE_REPO_COMMIT`, never from the branch's moving tip. Retries
+therefore validate prior branch work instead of discovering a branch-name
+collision after changing the base checkout. A shared git-writer running-task
+check prevents the privileged reviewer audit and code/PR applier from
+overlapping in the same checkout.
 
 If a killed child leaves an unresolved merge or plain tracked WIP in the default
 auto-managed checkout, the next code-producing pass archives the diff before
 recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
-branches whose exact PR is confirmed merged. Plain abandoned WIP is recoverable
-on those applier branches when PR state is readable, and also on the configured
+branches whose exact PR is confirmed open or merged. For an open PR, the parent
+archives the interrupted merge, aborts it, refreshes the disposable checkout,
+and lets the normal conflict-repair sweep retry that same PR. A merged PR's
+leftover merge is discarded as stale. Plain abandoned WIP is recoverable on
+those applier branches when PR state is readable, and also on the configured
 base branch: the disposable base can contain orphaned edits when an older child
 failed during late branch creation. Recovery patches are owner-only files under
 `~/.threadkeeper/evolve-recovery/`, and `evolve_git_safety` records the action.
-Unknown ownership, a live writer, or unreadable required PR state remains
-fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is never auto-reset.
+Unknown ownership, a live writer, a closed-unmerged PR, or unreadable required
+PR state remains fail-closed. An explicit `THREADKEEPER_EVOLVE_REPO_ROOT` is
+never auto-reset.
 
 The default managed checkout is refreshed before every code-producing pass:
 after checking that no Evolve git writer is live, it archives and recovers any
-eligible orphaned tracked WIP, then fetches the configured branch, checks it out,
-and resets to `origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>`. Explicit
+eligible orphaned tracked WIP, fetches the configured branch, and checks out the
+pinned `THREADKEEPER_EVOLVE_REPO_COMMIT`. Provisioning refuses clone URLs
+outside the HTTPS `github.com` allowlist, verifies `HEAD` against that pin before
+creating or reusing its virtualenv, and the config watcher ignores source/pin
+edits until the process is restarted. The managed clone runs `pip install -e`
+and its test suite, so leave auto-clone off
+(`THREADKEEPER_EVOLVE_AUTO_CLONE=0`) on shared or multi-user hosts unless that
+execution boundary is explicitly acceptable. Explicit
 `THREADKEEPER_EVOLVE_REPO_ROOT` checkouts are never refreshed or reset by this
 path. Provisioning reserves 5 GiB by default before clone or `.venv` creation
 (`THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES=0` disables that preflight), and a
@@ -993,7 +1062,10 @@ Three detection sources per tick:
    from an exhausted subscription; the real outcome only lands in
    `tasks.return_code`. The reason is read from the child's log tail.
 3. **Materialization** — `skill_materialized` / `skill_create` (skill) and
-   `lesson_append` (lesson).
+   `lesson_append` (lesson). Each notification contains one readable artifact
+   name: the skill's first heading (falling back to its directory name), or
+   the lesson name with slug separators replaced by spaces. Paths, provenance,
+   and operation metadata stay out of the notification text.
 
 A per-loop cooldown collapses a lapsed-subscription storm into one actionable
 alert; the first run seeds its cursor to the current position, so historical
@@ -1024,12 +1096,16 @@ will register the app in **System Settings ▸ Notifications** and show banners;
 banners are titled **Thread-Keeper** (`CFBundleDisplayName`). The first launch
 after an update shows a one-time permission prompt.
 
-`agent_status` feeds the app two lists — `recent_results` (positive: captured
-skills/lessons) and `recent_failures` (the two failure sources above) — each item
-tagged with a `notify` flag computed from the toggles below. The app **lists**
+`agent_status` feeds the app two lists — `recent_results` (named skill/lesson
+write events plus completed-task history) and `recent_failures` (the two failure
+sources above) — each item tagged with a `notify` flag computed from the toggles
+below. The app **lists**
 every item in its menu but only **posts a banner** for flagged ones, so turning a
-category off silences the banner without hiding the history. Enabling a toggle
-never replays backlog.
+category off silences the banner without hiding the history. Each materialization
+uses its own skill or lesson toggle; generic task reports are history-only.
+Foreground writes appear too, without waiting for a background child to finish.
+A pathless skill mark only silences its reminder and has no materialization
+banner. Enabling a toggle never replays backlog.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
@@ -1169,6 +1245,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_MEMORY_GUARD_RETIRE_LIVE` | "" (off) | allow retiring parent-alive MCP servers; off protects live clients |
 | `THREADKEEPER_MEMORY_GUARD_NOTIFY` | "1" | send macOS desktop notification when possible |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | transcript ingest tick (s) |
+| `THREADKEEPER_INGEST_DENY_GLOBS` | "" | comma/newline-separated project/CWD paths or shell globs to exclude before transcript content is persisted; literal paths also exclude descendants. `~/.threadkeeper/ingest_denylist.txt` adds one pattern per non-comment line; use `THREADKEEPER_INGEST_DENYLIST_FILE` to relocate it. Active patterns and the cumulative skipped count appear in `mp_dashboard()` |
 | `THREADKEEPER_REDACT_DIALOG_SECRETS` | true | scrub common credential-shaped values before transcript text is persisted to `dialog_messages` / `dialog_fts`; set `0` only for rare local debugging where raw transcript fidelity is more important than durable secret protection; the v2 schema migration also scrubs legacy pre-redaction rows in place |
 | `THREADKEEPER_NO_EMBEDDINGS` | "" | force-disable the embedding model (FTS5 + delegate only) |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
@@ -1187,9 +1264,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied roadmap issues before the issue-creating audit is skipped and records `backlog_saturated`; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
-| `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision (git clone + `.venv` with `[semantic,dev]`) a managed checkout when installed without a source tree (PyPI/site-packages), so the evolve loops work by default. Set `0`/`false` to disable — then a non-checkout install requires an editable install or an explicit `EVOLVE_REPO_ROOT`, otherwise the loops return `ERR evolve_repo_unavailable` |
-| `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | git URL the managed checkout is cloned from |
-| `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch the managed checkout tracks |
+| `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
+| `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
+| `THREADKEEPER_EVOLVE_REPO_BRANCH` | `main` | branch used only to retrieve the pinned commit; restart-only |
+| `THREADKEEPER_EVOLVE_REPO_COMMIT` | `3580726833b6a3d7ed872aa2bc5512552ca94532` | required immutable 40-character commit SHA checked before any managed virtualenv install or test; restart-only |
 | `THREADKEEPER_EVOLVE_REPO_MIN_FREE_BYTES` | 5368709120 (5 GiB) | minimum free space required before a managed clone or managed `.venv` is created; `0` disables the preflight |
 | `THREADKEEPER_EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` | 5 | maximum seconds to wait for another clone/venv provisioning operation before returning `ERR evolve_repo_provisioning_in_progress retry_later=1`; `0` is immediate |
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
@@ -1324,7 +1402,7 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
   `thread_janitor`), and
   **outcomes** (what those loops actually produced — skills materialized,
   tier promotions, candidate accept-vs-reject rate, plus knowledge-store
-  mutation counts: `lesson_append` / `lesson_remove`,
+  mutation counts: `lesson_append` (including patches) / `lesson_remove`,
   `curator_report_applied`, `roadmap_issue_applied`,
   `roadmap_issue_skipped`, `evolve_applied`, `dialectic_claim` /
   `dialectic_supersede`). A `curator_net_change
@@ -1475,8 +1553,9 @@ Spawn task spool files live in `THREADKEEPER_TASK_LOG_DIR` (default
 the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
 refused when the configured directory is a symlink or is not owned by the
 current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
-and visible `.command` files with no-follow owner-only opens. `consolidate()`
-garbage-collects task spool files once their task row is no longer retained.
+and visible `.command` files with no-follow owner-only opens. Git-backed spawns
+also create their isolated worktrees there. `consolidate()` garbage-collects
+task spool files once their task row is no longer retained.
 
 ---
 
@@ -1714,7 +1793,10 @@ python -m pytest
 ```
 
 869 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
-the suite on every push and PR.
+the suite and a resolved-dependency `pip-audit` gate on every push and PR.
+CodeQL scans the Python source on those changes and weekly; see
+[SECURITY.md](SECURITY.md#continuous-security-scanning) for the exception
+process and reporting policy.
 
 ---
 

@@ -383,6 +383,7 @@ def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
     assert argv[:3] == ["/usr/local/bin/codex", "exec", "--skip-git-repo-check"]
     assert argv[-1] == "-"
     assert "-m" in argv and "gpt-5.5" in argv
+    assert 'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"' in argv
     # Default (non-bypass) path still sandboxes.
     assert "--sandbox" in argv and "workspace-write" in argv
 
