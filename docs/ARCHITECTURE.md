@@ -1234,6 +1234,17 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   the merged-away entry is removed. Without a replacement, the delete result
   reports every dangling source as `lesson:<slug>` or `skill:<name>`.
 
+- **Curator research/evaluation boundary** — one pass first dispatches a
+  `curator_researcher` with only read tools, `WebSearch`/`WebFetch`, and
+  `curator_research_write`. The parent authorizes exactly one JSON handoff path
+  per pass and inventory batch, binding the handoff to the inventory and audit
+  manifest digests. The writer records a content hash as provenance. Only a
+  complete, matching, provenanced handoff can dispatch the web-free `curator`
+  evaluator; it receives the JSON inside an untrusted data fence. The evaluator
+  has the lesson/skill/concept mutation tools appropriate to destructive or
+  advisory mode, but never web tools. Missing, malformed, swapped, or
+  mismatched handoffs stop at `HUMAN_REVIEW` before a snapshot or mutation.
+
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review` | loop-specific
   origins such as `curator` / `evolve_apply`) is written to
@@ -1547,7 +1558,7 @@ below).
 | lessons | 7 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 6 | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
+| curator | 8 | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore |
 | evolve_research | 1 | evolve_research_handoff |
 | evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
 | style | 2 | style_set, verbatim_user |

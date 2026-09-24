@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: Curator research/evaluation capability split.** Web-enabled
+  research children can write only bounded, pass-and-batch-scoped handoffs.
+  Web-free Curator evaluators consume those handoffs as fenced untrusted data;
+  missing, malformed, swapped, or mismatched evidence stops at `HUMAN_REVIEW`
+  before any advisory report, snapshot, or memory mutation.
+
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
   references and reports each source entry with its dead target. The read-only

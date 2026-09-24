@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
@@ -102,6 +104,43 @@ def _bootstrap(
         "lessons_path": Path(env["THREADKEEPER_LESSONS"]),
         "skills_dir": Path(env["CLAUDE_SKILLS_DIR"]),
     }
+
+
+def _complete_research_handoffs(pkg, *, evidence: str = "evidence\nCURATOR_RESEARCH_COMPLETE"):
+    """Simulate a completed researcher without launching a real child CLI."""
+    curator = pkg["curator"]
+    conn = pkg["db"].get_db()
+    rows = conn.execute(
+        "SELECT summary FROM events WHERE kind=? ORDER BY id",
+        (curator.CURATOR_RESEARCH_AUTHORIZATION_KIND,),
+    ).fetchall()
+    assert rows
+    for row in rows:
+        authorization = json.loads(row["summary"])
+        target = pkg["reports_dir"] / authorization["research_name"]
+        persisted = curator.curator_research_payload(authorization, evidence)
+        target.write_text(persisted, encoding="utf-8")
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "test",
+                curator.CURATOR_RESEARCH_PROVENANCE_KIND,
+                str(target.resolve()),
+                json.dumps(
+                    {
+                        "pass_id": authorization["pass_id"],
+                        "batch_index": authorization["batch_index"],
+                        "batch_total": authorization["batch_total"],
+                        "sha256": curator.curator_report_sha256(persisted),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                int(time.time()),
+            ),
+        )
+    conn.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -375,68 +414,71 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     captured: list[dict] = []
 
     def fake_spawn(**kwargs):
-        snap_raw = os.environ.get("THREADKEEPER_CURATOR_SNAPSHOT_DIR", "")
-        pass_id = os.environ.get("THREADKEEPER_CURATOR_PASS_ID", "")
-        assert pass_id
-        assert snap_raw
-        snap = Path(snap_raw)
-        assert snap.is_dir()
-        assert (snap / "lessons.md").is_file()
-        manifest = json.loads((snap / "manifest.json").read_text())
-        assert manifest["pass_id"] == pass_id
-        assert manifest["lessons"]["count"] == 2
         captured.append(kwargs)
         return "spawn task_id=fake-curator-task pid=0"
 
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
 
-    out = pkg["curator"].run_curator_pass(force=True)
-    assert "fake-curator-task" in out
+    research_out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-task" in research_out
     assert len(captured) == 1
     kw = captured[0]
     assert kw["slim"] is True
     assert kw["visible"] is False
-    assert kw["role"] == "curator"
-    assert kw["write_origin"] == "curator"
-    # Prompt contains the rubric + the inventory
-    assert "KEEP" in kw["prompt"]
-    assert "PATCH" in kw["prompt"]
-    assert "CONSOLIDATE" in kw["prompt"]
-    assert "PRUNE" in kw["prompt"]
-    assert "STALE LESSONS DRY-RUN" in kw["prompt"]
-    assert "do NOT call lesson_remove solely" in kw["prompt"]
-    assert "EVOLVE_CANDIDATE" in kw["prompt"]
-    assert "evolve_format" in kw["prompt"]
+    assert kw["role"] == "curator_researcher"
+    assert kw["write_origin"] == "curator_research"
     assert "lesson-one" in kw["prompt"]
     assert "lesson-two" in kw["prompt"]
-    # Scoped toolset — destructive default (the new default) includes
-    # lesson_append / lesson_patch / lesson_remove / skill_manage, but never
-    # shell or spawn.
+    # Phase one can research but cannot mutate durable memory.
     allowed = kw["extra_allowed_tools"]
     assert "lesson_list" in allowed
     assert "lesson_get" in allowed
-    assert "lesson_append" in allowed
-    assert "lesson_patch" in allowed
-    assert "lesson_remove" in allowed
-    assert "skill_manage" in allowed
-    assert "evolve_format" in allowed
+    assert "curator_research_write" in allowed
+    assert "lesson_append" not in allowed
+    assert "lesson_remove" not in allowed
+    assert "skill_manage" not in allowed
+    assert "concept_manage" not in allowed
+    assert "evolve_format" not in allowed
     assert "Read" in allowed
-    assert "curator_report_write" in allowed
-    assert "curator_merge_verdict" in allowed
+    assert "curator_report_write" not in allowed
     assert "Write" not in allowed
     assert "WebSearch" in allowed
     assert "WebFetch" in allowed
     assert "skill_validate" in allowed
-    assert "curator_restore" in allowed
+    assert "curator_restore" not in allowed
     assert "Bash" not in allowed
-    # REPORTS_DIR was created so the child has a place to write
+    # No snapshot exists until the web-free evaluation phase.
     assert pkg["reports_dir"].is_dir()
+    assert not (pkg["reports_dir"] / "snapshots").exists()
     manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text())["schema_version"] == 1
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+    _complete_research_handoffs(pkg)
+    evaluator_out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-task" in evaluator_out
+    assert len(captured) == 2
+    kw = captured[1]
+    assert kw["role"] == "curator"
+    assert kw["write_origin"] == "curator"
+    snap = pkg["reports_dir"] / "snapshots"
+    assert any(snap.iterdir())
+    manifest = json.loads(next(snap.iterdir()).joinpath("manifest.json").read_text())
+    assert manifest["lessons"]["count"] == 2
+    # Phase two has the destructive toolset, but no web tools.
+    allowed = kw["extra_allowed_tools"]
+    assert "lesson_append" in allowed
+    assert "lesson_remove" in allowed
+    assert "skill_manage" in allowed
+    assert "concept_manage" in allowed
+    assert "curator_report_write" in allowed
+    assert "curator_merge_verdict" in allowed
+    assert "WebSearch" not in allowed
+    assert "WebFetch" not in allowed
+    assert "<curator_research_data>" in kw["prompt"]
 
 
 def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
@@ -470,6 +512,11 @@ def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
     prompt = captured[0]["prompt"]
     assert "LESSON CLUSTER PROMOTION CANDIDATES (n=1)" in prompt
     assert "PROMOTE_TO_SKILL: topic=curator snapshot lesson_count=3" in prompt
+    _complete_research_handoffs(pkg)
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-promotion-curator" in out
+    assert len(captured) == 2
+    prompt = captured[1]["prompt"]
     assert "Create one new, clearly named canonical skill" in prompt
     assert "## Retired lessons" in prompt
     assert "Only after it passes may you call" in prompt
@@ -492,7 +539,7 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
 
     out = pkg["curator"].run_curator_pass(force=True)
 
-    assert out.startswith("spawned batches="), out
+    assert out.startswith("research_spawned batches="), out
     assert len(captured) > 1
     seen: list[str] = []
     for idx, kw in enumerate(captured, start=1):
@@ -507,13 +554,24 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
     assert len(seen) == 1500
     assert len(set(seen)) == 1500
 
+    research_calls = list(captured)
+    _complete_research_handoffs(pkg)
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert out.startswith("spawned batches="), out
+    evaluator_calls = captured[len(research_calls):]
+    assert len(evaluator_calls) == len(research_calls)
+    for kw in evaluator_calls:
+        assert "WebSearch" not in kw["extra_allowed_tools"]
+        assert "WebFetch" not in kw["extra_allowed_tools"]
+        assert "<curator_research_data>" in kw["prompt"]
+
     conn = pkg["db"].get_db()
     row = conn.execute(
         "SELECT summary FROM events WHERE kind='curator_pass' "
         "ORDER BY id DESC LIMIT 1"
     ).fetchone()
     assert "entries=1500" in row["summary"]
-    assert f"batches={len(captured)}" in row["summary"]
+    assert f"batches={len(evaluator_calls)}" in row["summary"]
     assert "batch_entries=" in row["summary"]
 
 
@@ -786,11 +844,14 @@ def test_run_curator_pass_skips_unchanged_inventory(
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
 
     first = pkg["curator"].run_curator_pass(force=True)
+    _complete_research_handoffs(pkg)
     second = pkg["curator"].run_curator_pass(force=True)
+    third = pkg["curator"].run_curator_pass(force=True)
 
     assert "fake-curator-1" in first
-    assert second.startswith("unchanged_inventory")
-    assert len(captured) == 1
+    assert "fake-curator-2" in second
+    assert third.startswith("unchanged_inventory")
+    assert len(captured) == 2
 
     conn = pkg["db"].get_db()
     rows = conn.execute(
@@ -803,9 +864,9 @@ def test_run_curator_pass_skips_unchanged_inventory(
     pkg["lessons"].append_lesson(
         title="lesson three", body="body three", source="shadow"
     )
-    third = pkg["curator"].run_curator_pass(force=True)
-    assert "fake-curator-2" in third
-    assert len(captured) == 2
+    fourth = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-3" in fourth
+    assert len(captured) == 3
 
 
 def test_scheduled_curator_researches_unchanged_inventory_after_interval(
@@ -826,6 +887,7 @@ def test_scheduled_curator_researches_unchanged_inventory_after_interval(
 
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
     first = pkg["curator"].run_curator_pass(force=True)
+    _complete_research_handoffs(pkg)
     first_ts = int(time.time())
     monkeypatch.setattr(pkg["curator"].time, "time", lambda: first_ts + 4000)
 
@@ -936,7 +998,10 @@ def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
     pkg["curator"].run_curator_pass(force=True)
 
-    prompt = captured[0]["prompt"]
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+    assert len(captured) == 2
+    prompt = captured[1]["prompt"]
     assert "origin=background_review AND fg_uses=0" in prompt
     assert "they are not foreground consultation" in prompt
     assert "SKILL patched-background-skill" in prompt
@@ -1113,6 +1178,154 @@ def test_curator_report_write_requires_parent_pass_authorization(
         pass_id="unauthorized-pass",
         content="# forged\n\nCURATOR_PASS_COMPLETE",
     ) == "ERR report_write_not_authorized"
+
+
+def test_curator_research_write_is_scoped_and_requires_completion(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator_research", spawned_child="1",
+    )
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
+
+    curator = pkg["curator"]
+    pass_id = "20260922T120000"
+    batch = curator._InventoryBatch(
+        index=1,
+        total=1,
+        start_entry=1,
+        end_entry=1,
+        total_entries=1,
+        text="CURATOR BATCH 1/1\n- LESSON test\n",
+        entry_count=1,
+        lesson_count=1,
+        skill_count=0,
+        concept_count=0,
+        char_count=32,
+    )
+    conn = pkg["db"].get_db()
+    authorization = curator._authorize_curator_research(
+        conn,
+        pass_id=pass_id,
+        fingerprint="a" * 64,
+        batch=batch,
+        manifest_sha256="b" * 64,
+    )
+    monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    write_research = mcp._tool_manager._tools["curator_research_write"].fn
+
+    assert write_research(
+        pass_id=pass_id,
+        content="incomplete evidence",
+        batch_index=1,
+        batch_total=1,
+    ) == "ERR malformed_research"
+    assert write_research(
+        pass_id="../escape",
+        content="evidence\nCURATOR_RESEARCH_COMPLETE",
+        batch_index=1,
+        batch_total=1,
+    ) == "ERR invalid_pass_id"
+    out = write_research(
+        pass_id=pass_id,
+        content="official source: https://example.test\nCURATOR_RESEARCH_COMPLETE",
+        batch_index=1,
+        batch_total=1,
+    )
+    assert out.startswith("ok path=")
+    target = pkg["reports_dir"] / authorization["research_name"]
+    payload = json.loads(target.read_text())
+    assert payload["pass_id"] == pass_id
+    assert payload["batch_sha256"] == authorization["batch_sha256"]
+    assert payload["evidence"].endswith("CURATOR_RESEARCH_COMPLETE")
+    assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.parametrize("destructive", ["1", "0"])
+@pytest.mark.parametrize("mode", ["missing", "malformed", "mismatched"])
+def test_curator_invalid_research_handoff_fails_closed(
+    tmp_path, monkeypatch, destructive, mode,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", destructive=destructive,
+    )
+    pkg["lessons"].append_lesson(title="one", body="body", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="body", source="shadow")
+    import threadkeeper.tools.spawn as spawn_mod
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
+    )
+    assert pkg["curator"].run_curator_pass(force=True).startswith(
+        "research_spawned",
+    )
+    if mode != "missing":
+        conn = pkg["db"].get_db()
+        authorization = json.loads(conn.execute(
+            "SELECT summary FROM events WHERE kind=? ORDER BY id DESC LIMIT 1",
+            (pkg["curator"].CURATOR_RESEARCH_AUTHORIZATION_KIND,),
+        ).fetchone()["summary"])
+        target = pkg["reports_dir"] / authorization["research_name"]
+        if mode == "malformed":
+            target.write_text("not json", encoding="utf-8")
+        else:
+            payload = json.loads(pkg["curator"].curator_research_payload(
+                authorization, "evidence\nCURATOR_RESEARCH_COMPLETE",
+            ))
+            payload["batch_sha256"] = "0" * 64
+            target.write_text(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert out.startswith("HUMAN_REVIEW research_")
+    assert "no evaluator or memory mutation was dispatched" in out
+    assert len(captured) == 1
+    assert not (pkg["reports_dir"] / "snapshots").exists()
+
+
+@pytest.mark.parametrize("destructive", ["1", "0"])
+def test_curator_web_and_memory_mutation_capabilities_never_cogranted(
+    tmp_path, monkeypatch, destructive,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", destructive=destructive,
+    )
+    pkg["lessons"].append_lesson(title="one", body="body", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="body", source="shadow")
+    import threadkeeper.tools.spawn as spawn_mod
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
+    )
+    pkg["curator"].run_curator_pass(force=True)
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+
+    assert len(captured) == 2
+    mutation_tools = (
+        "lesson_append", "lesson_remove", "skill_manage", "concept_manage",
+    )
+    for call in captured:
+        tools = call["extra_allowed_tools"]
+        has_web = "WebSearch" in tools or "WebFetch" in tools
+        has_memory_mutation = any(tool in tools for tool in mutation_tools)
+        assert not (has_web and has_memory_mutation)
+    research, evaluator = captured
+    assert research["role"] == "curator_researcher"
+    assert "WebSearch" in research["extra_allowed_tools"]
+    assert evaluator["role"] == "curator"
+    assert "WebSearch" not in evaluator["extra_allowed_tools"]
+    if destructive == "1":
+        assert "lesson_remove" in evaluator["extra_allowed_tools"]
+    else:
+        assert "lesson_remove" not in evaluator["extra_allowed_tools"]
 
 
 def test_skill_validator_resolves_namespaced_external_plugin_skill(
@@ -1343,8 +1556,10 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
 
     pkg["curator"].run_curator_pass(force=True)
-    assert len(captured) == 1
-    kw = captured[0]
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+    assert len(captured) == 2
+    kw = captured[1]
     allowed = kw["extra_allowed_tools"]
     # Destructive mode → widened toolset (incl. lesson_remove for prune/consolidate)
     assert "skill_manage" in allowed
@@ -1385,7 +1600,9 @@ def test_advisory_mode_excludes_destructive_tools(
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
 
     pkg["curator"].run_curator_pass(force=True)
-    kw = captured[0]
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+    kw = captured[1]
     allowed = kw["extra_allowed_tools"]
     assert "skill_manage" not in allowed
     assert "lesson_append" not in allowed
@@ -1517,7 +1734,9 @@ def test_destructive_toolset_includes_concept_manage(tmp_path, monkeypatch):
         lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
-    kw = captured[0]
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+    kw = captured[1]
     allowed = kw["extra_allowed_tools"]
     assert "concept_manage" in allowed
     assert "list_concepts" in allowed
@@ -1543,7 +1762,9 @@ def test_advisory_toolset_excludes_concept_manage(tmp_path, monkeypatch):
         lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
-    allowed = captured[0]["extra_allowed_tools"]
+    _complete_research_handoffs(pkg)
+    pkg["curator"].run_curator_pass(force=True)
+    allowed = captured[1]["extra_allowed_tools"]
     assert "concept_manage" not in allowed
 
 

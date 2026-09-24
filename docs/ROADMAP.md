@@ -542,6 +542,13 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   `curator_report_provenance`, and the applier rechecks that path/hash both
   before spawning and before it marks the report applied. Forged, swapped, or
   replayed `REPORT-*.md` files are refused.
+- ✅ DONE (#289). Curator web research and durable-memory mutation now run in
+  separate children. The web-enabled researcher can write only a bounded,
+  parent-authorized pass-and-batch handoff; the web-free evaluator receives it
+  as fenced untrusted data before any advisory report or destructive action.
+  Missing, malformed, swapped, or mismatched handoffs stop at `HUMAN_REVIEW`,
+  while the existing protected-memory, snapshot, restore, and delete-cap
+  controls remain in the evaluator phase.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
   `permission_mode="bypassPermissions"` outside the evolve role/write-origin
