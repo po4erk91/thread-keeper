@@ -1521,50 +1521,51 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
-## MCP tools (121 total)
+## MCP tools
 
-Compact grouping by module. Full signatures are in the code; `_mcp.py`
+Representative grouping by module. The runtime `tools/list` registry is the
+authoritative inventory; full signatures are in the code, and `_mcp.py`
 auto-generates JSON-Schema from annotations. Every tool also carries an
 explicit read/write **`ToolAnnotations`** hint (see the annotation contract
 below).
 
-| Module | N | Tools |
-|---|---|---|
-| threads | 14 | auto_review_trigger, brief, close_thread, compost, context, evolve_decide, evolve_format, evolve_issue_create, evolve_review, idle_thread, mark_skill_materialized, note, open_thread, search |
-| peers | 11 | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
-| spawn | 7 | spawn, tournament, tasks, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
-| skills | 5 | skill_manage, skill_record, skill_list, curator_run, review_thread |
-| dialectic | 6 | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
-| dialectic_feed | 4 | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
-| probes | 5 | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
-| core_memory | 4 | core_set, core_get, core_list, core_remove |
-| extract | 4 | extract_recent, review_candidates, accept_candidate, reject_candidate |
-| distill | 4 | distill, vote_distill, pending_distillates, export_distillates |
-| dialog | 3 | dialog_search, open_dialog_window, ingest |
-| concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
-| graph | 3 | link, unlink, neighbors |
-| pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 7 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
-| shadow_review | 2 | shadow_review_run, shadow_review_status |
-| candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
-| curator | 6 | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
-| evolve_research | 1 | evolve_research_handoff |
-| evolve_applier | 8 | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
-| style | 2 | style_set, verbatim_user |
-| process_health | 2 | mp_health, mp_cleanup |
-| dashboard | 1 | mp_dashboard |
-| agent_status | 2 | agent_status, agent_memory_cleanup |
-| memory_guard | 3 | memory_guard_status, memory_guard_check, memory_guard_reclaim |
-| correlation | 2 | tag_signal, task_thread |
-| consolidate | 1 | consolidate |
-| validate | 1 | validate_threads |
-| forget | 1 | forget |
-| invariants | 1 | find_invariants |
-| missed_spawns | 1 | find_missed_spawns |
-| db_maintenance | 2 | db_compact, db_deduplicate_embeddings |
-| config_watch | 2 | config_watch_status, config_reload |
-| panel | 1 | convene_panel |
-| session | 1 | session_end |
+| Module | Tools |
+|---|---|
+| threads | auto_review_trigger, brief, close_thread, compost, context, evolve_decide, evolve_format, evolve_issue_create, evolve_review, idle_thread, mark_skill_materialized, note, open_thread, search |
+| peers | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
+| spawn | spawn, tournament, tasks, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
+| skills | skill_manage, skill_record, skill_list, curator_run, review_thread |
+| dialectic | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
+| dialectic_feed | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
+| probes | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
+| core_memory | core_set, core_get, core_list, core_remove |
+| extract | extract_recent, review_candidates, accept_candidate, reject_candidate |
+| distill | distill, vote_distill, pending_distillates, export_distillates |
+| dialog | dialog_search, open_dialog_window, ingest |
+| concepts | register_concept, list_concepts, expand_concept, concept_manage |
+| graph | link, unlink, neighbors |
+| pickup | pickup_candidates, claim_pickup, release_pickup |
+| lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
+| shadow_review | shadow_review_run, shadow_review_status |
+| candidate_reviewer | candidate_review_run, candidate_review_status |
+| curator | curator_review, curator_review_status, skill_validate, wikilink_health, curator_report_write, curator_restore |
+| evolve_research | evolve_research_handoff |
+| evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status |
+| style | style_set, verbatim_user |
+| process_health | mp_health, mp_cleanup |
+| dashboard | mp_dashboard |
+| agent_status | agent_status, agent_memory_cleanup |
+| memory_guard | memory_guard_status, memory_guard_check, memory_guard_reclaim |
+| correlation | tag_signal, task_thread |
+| consolidate | consolidate |
+| validate | validate_threads |
+| forget | forget |
+| invariants | find_invariants |
+| missed_spawns | find_missed_spawns |
+| db_maintenance | db_compact, db_deduplicate_embeddings |
+| config_watch | config_watch_status, config_reload |
+| panel | convene_panel |
+| session | session_end |
 
 Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
 automatically from type annotations. One process — one mcp instance
@@ -1580,7 +1581,7 @@ every tool:
   `search`, `dialog_search`, the status tools, `compost`, …).
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
   mutations. `lesson_list` and `lesson_get` are non-destructive writes because
-  they update lesson access counters. The eleven delete/overwrite/kill tools carry
+  they update lesson access counters. Delete/overwrite/kill tools carry
   `destructiveHint=True`:
   `agent_memory_cleanup`, `concept_manage`, `consolidate`, `core_remove`,
   `curator_restore`, `curator_run`, `lesson_remove`, `memory_guard_check`,
@@ -1589,7 +1590,7 @@ every tool:
   (`close_thread`, `mark_skill_materialized`, `core_set`, deletes-by-key, …).
 
 This is the static metadata a confirmation/elicitation host reads to decide
-which calls warrant a prompt (substrate for #26). The five status tools
+which calls warrant a prompt (substrate for #26). The status tools
 (`context`, `spawn_budget_status`, `spawn_status`, `mp_health`,
 `agent_status`) additionally return an `outputSchema` + `structuredContent`
 (typed models in `tool_schemas.py`, built via `structured_result()`), keeping
@@ -1671,9 +1672,9 @@ tests/
 └── …
 ```
 
-Run: `.venv/bin/python -m pytest tests/ -q`. Currently 869 tests (1 skipped),
-all green. Smoke parametrization automatically picks up any new tools without
-having to add tests.
+Run: `.venv/bin/python -m pytest tests/ -q`. The suite is green when the
+documented branch is current. Smoke parametrization automatically picks up any
+new tools without having to add tests.
 
 ## Memory-quality evaluation (issue #71)
 

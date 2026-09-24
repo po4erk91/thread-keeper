@@ -1072,9 +1072,9 @@ verified gaps from the present code and test suite:
 - **Authenticated roadmap claims.** Ignore public Evolve claim-marker comments
   unless their author has a trusted repository association or is an explicitly
   configured automation actor; claim text alone must not suppress work (#277).
-- **Generated documentation inventory.** Remove hand-maintained test/tool
-  counts or check them mechanically so README and architecture totals cannot
-  drift from collection and the MCP registry (#278).
+- ✅ DONE (#278). **Generated documentation inventory.** README and
+  architecture now use non-numeric suite and registry wording, with a focused
+  test that rejects reintroducing hand-maintained inventory totals.
 - **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
   contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 

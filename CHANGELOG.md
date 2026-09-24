@@ -81,6 +81,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Documentation inventories no longer use hand-maintained test or MCP tool
+  totals.** README and architecture documentation now point to the full test
+  suite and live tool registry, and a focused test rejects reintroducing those
+  stale-prone totals.
+
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
   references and reports each source entry with its dead target. The read-only
