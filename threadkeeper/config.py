@@ -399,6 +399,14 @@ class Settings(BaseSettings):
     # one curator pass. 0 disables curator lesson/skill deletes for that pass;
     # foreground deletes are never subject to this limit.
     curator_max_destructive_per_pass: int = 10
+    # Maximum curator child batches that may be live at once. Spawn itself
+    # still makes the atomic global RSS-budget decision; this cap keeps one
+    # pass from racing a burst of asynchronous launches against that budget.
+    curator_max_concurrent_batches: int = Field(default=1, ge=1)
+    # While a pass is incomplete, wake often enough to reconcile child exits
+    # and refill only failed/missing batch slots instead of waiting a full
+    # curator interval. The normal interval applies again once it is endorsed.
+    curator_batch_poll_s: float = Field(default=60.0, ge=1.0)
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -884,6 +892,8 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MAX_DESTRUCTIVE_PER_PASS": (
             s.curator_max_destructive_per_pass
         ),
+        "CURATOR_MAX_CONCURRENT_BATCHES": s.curator_max_concurrent_batches,
+        "CURATOR_BATCH_POLL_S": s.curator_batch_poll_s,
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,

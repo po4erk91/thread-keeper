@@ -63,6 +63,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
+from pathlib import Path
 
 from .config import (
     CURATOR_INTERVAL_S,
@@ -70,6 +71,8 @@ from .config import (
     CURATOR_PROMOTION_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_BATCH_POLL_S,
+    CURATOR_MAX_CONCURRENT_BATCHES,
     CURATOR_MAX_DESTRUCTIVE_PER_PASS,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
     CURATOR_SNAPSHOT_RETENTION,
@@ -125,6 +128,8 @@ CURATOR_PROMPT_PREFIX = "You are an autonomous CURATOR for thread-keeper"
 # report destination before it launches the curator child; the child-side
 # writer records the final content hash as durable provenance.
 CURATOR_REPORT_PROVENANCE_KIND = "curator_report_provenance"
+CURATOR_REPORT_COMPLETE_MARKER = "CURATOR_PASS_COMPLETE"
+_TASK_ID_RE = re.compile(r"\btask(?:_id)?=([A-Za-z0-9_.-]+)")
 
 CURATOR_PROMPT = CURATOR_PROMPT_PREFIX + """'s lessons + skills
 library. This is a deep audit, not a filename or character-count scan. You
@@ -553,6 +558,291 @@ def curator_report_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _report_name_for_batch(pass_id: str, index: int, total: int) -> str:
+    if total == 1:
+        return f"REPORT-{pass_id}.md"
+    return f"REPORT-{pass_id}-batch-{index:03d}-of-{total:03d}.md"
+
+
+def _writer_batch_args(index: int, total: int) -> tuple[int, int]:
+    """Keep the established one-batch report filename stable."""
+    return (0, 0) if total == 1 else (index, total)
+
+
+def _manifest_for_fingerprint(
+    conn: sqlite3.Connection, fingerprint: str,
+) -> sqlite3.Row | None:
+    try:
+        return conn.execute(
+            "SELECT * FROM curator_passes WHERE inventory_fingerprint=? "
+            "AND endorsed_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+
+
+def curator_pass_status(conn: sqlite3.Connection) -> dict[str, object]:
+    """Return durable batch telemetry for the active or most recent pass."""
+    empty: dict[str, object] = {
+        "pass_id": None,
+        "inventory_fingerprint": None,
+        "endorsed": False,
+        "expected": 0,
+        "running": 0,
+        "failed": 0,
+        "complete": 0,
+        "unapplied": 0,
+    }
+    try:
+        row = conn.execute(
+            "SELECT * FROM curator_passes ORDER BY "
+            "CASE WHEN endorsed_at IS NULL THEN 0 ELSE 1 END, "
+            "updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return empty
+        counts = conn.execute(
+            "SELECT "
+            "SUM(state='running') AS running, "
+            "SUM(state='failed') AS failed, "
+            "SUM(state='complete') AS complete, "
+            "SUM(state='complete' AND apply_state='unapplied') AS unapplied "
+            "FROM curator_batches WHERE pass_id=?",
+            (row["pass_id"],),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return empty
+    return {
+        "pass_id": row["pass_id"],
+        "inventory_fingerprint": row["inventory_fingerprint"],
+        "endorsed": bool(row["endorsed_at"]),
+        "expected": int(row["expected_batches"]),
+        "running": int(counts["running"] or 0),
+        "failed": int(counts["failed"] or 0),
+        "complete": int(counts["complete"] or 0),
+        "unapplied": int(counts["unapplied"] or 0),
+    }
+
+
+def _create_pass_manifest(
+    conn: sqlite3.Connection,
+    *,
+    pass_id: str,
+    fingerprint: str,
+    batches: list[_InventoryBatch],
+    audit_manifest_path: str,
+    snapshot_path: str | None,
+    now: int,
+) -> None:
+    """Persist every expected batch before any child may be launched."""
+    total = len(batches)
+    conn.execute(
+        "INSERT INTO curator_passes "
+        "(pass_id, inventory_fingerprint, expected_batches, mode, "
+        "audit_manifest_path, snapshot_path, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            pass_id, fingerprint, total,
+            "destructive" if CURATOR_DESTRUCTIVE else "advisory",
+            audit_manifest_path, snapshot_path, now, now,
+        ),
+    )
+    conn.executemany(
+        "INSERT INTO curator_batches (pass_id, batch_index, report_name) "
+        "VALUES (?, ?, ?)",
+        [
+            (pass_id, batch.index,
+             _report_name_for_batch(pass_id, batch.index, total))
+            for batch in batches
+        ],
+    )
+    conn.commit()
+
+
+def _record_batch_report_provenance(
+    conn: sqlite3.Connection,
+    *,
+    pass_id: str,
+    report_name: str,
+    digest: str,
+    complete: bool,
+    now: int,
+) -> None:
+    """Attach only a final report digest to its durable batch row."""
+    if complete:
+        conn.execute(
+            "UPDATE curator_batches SET provenance_sha256=?, "
+            "report_written_at=? WHERE pass_id=? AND report_name=?",
+            (digest, now, pass_id, report_name),
+        )
+    else:
+        conn.execute(
+            "UPDATE curator_batches SET report_written_at=? "
+            "WHERE pass_id=? AND report_name=?",
+            (now, pass_id, report_name),
+        )
+
+
+def _has_valid_batch_report(
+    conn: sqlite3.Connection, row: sqlite3.Row,
+) -> str | None:
+    path = CURATOR_REPORTS_DIR / row["report_name"]
+    try:
+        report = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if CURATOR_REPORT_COMPLETE_MARKER not in report:
+        return None
+    digest = curator_report_sha256(report)
+    if row["provenance_sha256"] != digest:
+        return None
+    try:
+        events = conn.execute(
+            "SELECT summary FROM events WHERE kind=? AND target=? "
+            "ORDER BY id DESC LIMIT 20",
+            (CURATOR_REPORT_PROVENANCE_KIND, str(path.resolve())),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    required = {f"pass_id={row['pass_id']}", f"sha256={digest}"}
+    if not any(required.issubset(set((event["summary"] or "").split()))
+               for event in events):
+        return None
+    return digest
+
+
+def _failure_reason(row: sqlite3.Row) -> str:
+    retry = row["timeout_respawned_as"]
+    code = row["return_code"]
+    if retry or code == 124:
+        return "child_timeout"
+    if code is None:
+        return "child_ended_without_exit_code"
+    return f"child_exit={code}"
+
+
+def _refresh_pass_completion(
+    conn: sqlite3.Connection, pass_id: str, now: int,
+) -> bool:
+    """Reconcile child task termination and report provenance into the manifest.
+
+    A report written before a process exits is intentionally not completion: a
+    later child crash leaves this batch failed and retryable instead of
+    endorsing an incomplete pass.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT b.*, t.ended_at, t.return_code, t.timeout_respawned_as "
+            "FROM curator_batches b LEFT JOIN tasks t ON t.id=b.task_id "
+            "WHERE b.pass_id=?", (pass_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return False
+
+    for row in rows:
+        if row["state"] != "running":
+            continue
+        if not row["task_id"]:
+            conn.execute(
+                "UPDATE curator_batches SET state='failed', failed_at=?, "
+                "failure_reason='dispatch_missing_task_id' "
+                "WHERE pass_id=? AND batch_index=?",
+                (now, pass_id, row["batch_index"]),
+            )
+            continue
+        if row["ended_at"] is None:
+            continue
+        digest = (
+            _has_valid_batch_report(conn, row)
+            if row["return_code"] == 0 else None
+        )
+        if digest:
+            conn.execute(
+                "UPDATE curator_batches SET state='complete', completed_at=?, "
+                "failure_reason=NULL, provenance_sha256=? "
+                "WHERE pass_id=? AND batch_index=?",
+                (now, digest, pass_id, row["batch_index"]),
+            )
+        else:
+            reason = (
+                _failure_reason(row) if row["return_code"] != 0
+                else "missing_complete_provenanced_report"
+            )
+            conn.execute(
+                "UPDATE curator_batches SET state='failed', failed_at=?, "
+                "failure_reason=? WHERE pass_id=? AND batch_index=?",
+                (now, reason, pass_id, row["batch_index"]),
+            )
+
+    manifest = conn.execute(
+        "SELECT expected_batches, endorsed_at FROM curator_passes WHERE pass_id=?",
+        (pass_id,),
+    ).fetchone()
+    if manifest is None:
+        conn.commit()
+        return False
+    complete = conn.execute(
+        "SELECT COUNT(*) FROM curator_batches WHERE pass_id=? "
+        "AND state='complete' AND provenance_sha256 IS NOT NULL",
+        (pass_id,),
+    ).fetchone()[0]
+    transitioned = not manifest["endorsed_at"] and complete == manifest["expected_batches"]
+    if transitioned:
+        conn.execute(
+            "UPDATE curator_passes SET completed_at=?, endorsed_at=?, "
+            "updated_at=? WHERE pass_id=?",
+            (now, now, now, pass_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE curator_passes SET updated_at=? WHERE pass_id=?",
+            (now, pass_id),
+        )
+    conn.commit()
+    return transitioned
+
+
+def _mark_batch_dispatch_started(
+    conn: sqlite3.Connection, pass_id: str, index: int, now: int,
+) -> None:
+    conn.execute(
+        "UPDATE curator_batches SET state='running', task_id=NULL, "
+        "dispatch_count=dispatch_count+1, dispatched_at=?, failed_at=NULL, "
+        "failure_reason=NULL WHERE pass_id=? AND batch_index=?",
+        (now, pass_id, index),
+    )
+    conn.commit()
+
+
+def _mark_batch_dispatch_result(
+    conn: sqlite3.Connection,
+    *,
+    pass_id: str,
+    index: int,
+    task_id: str | None,
+    failure: str | None,
+    now: int,
+) -> None:
+    if task_id:
+        conn.execute(
+            "UPDATE curator_batches SET task_id=?, state='running' "
+            "WHERE pass_id=? AND batch_index=?",
+            (task_id, pass_id, index),
+        )
+    else:
+        conn.execute(
+            "UPDATE curator_batches SET state='failed', failed_at=?, "
+            "failure_reason=? WHERE pass_id=? AND batch_index=?",
+            (now, (failure or "spawn_untracked")[:300], pass_id, index),
+        )
+    conn.execute(
+        "UPDATE curator_passes SET updated_at=? WHERE pass_id=?",
+        (now, pass_id),
+    )
+    conn.commit()
+
+
 def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
     last = _last_curator_ts(conn)
     return last <= 0 or now_t >= last + int(CURATOR_INTERVAL_S)
@@ -719,27 +1009,22 @@ def _current_inventory_fingerprint(
 def _last_inventory_fingerprint(
     conn: sqlite3.Connection,
 ) -> tuple[str | None, int | None]:
-    """Latest completed/endorsed curator inventory fingerprint.
+    """Latest manifest-backed inventory endorsement.
 
-    Stored in the existing `curator_pass` summary so no schema migration is
-    required. Rows without the key are from older versions or non-inventory
-    outcomes such as below-threshold / spawn-error.
+    Dispatch events are intentionally not a fallback: pre-manifest events
+    cannot prove every batch later completed, so treating one as an endorsement
+    would recreate the unchanged-inventory loss this ledger prevents.
     """
     try:
-        rows = conn.execute(
-            "SELECT target, summary, created_at FROM events "
-            "WHERE kind='curator_pass' ORDER BY id DESC LIMIT 50"
-        ).fetchall()
+        row = conn.execute(
+            "SELECT inventory_fingerprint, endorsed_at FROM curator_passes "
+            "WHERE endorsed_at IS NOT NULL ORDER BY endorsed_at DESC LIMIT 1"
+        ).fetchone()
     except sqlite3.OperationalError:
         return None, None
-    for r in rows:
-        summary = r["summary"] or ""
-        match = _INVENTORY_FINGERPRINT_RE.search(summary)
-        if not match:
-            continue
-        ts = _stable_int(r["target"]) or _stable_int(r["created_at"])
-        return match.group(1), ts
-    return None, None
+    if row is None:
+        return None, None
+    return row["inventory_fingerprint"], _stable_int(row["endorsed_at"])
 
 
 def _format_lesson(
@@ -1399,11 +1684,18 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         return "disabled"
     conn = get_db()
     now = int(time.time())
-    if not force and not _pass_due(conn, now):
+    try:
+        resumable = bool(conn.execute(
+            "SELECT 1 FROM curator_passes WHERE endorsed_at IS NULL LIMIT 1"
+        ).fetchone())
+    except sqlite3.OperationalError:
+        resumable = False
+    if not force and not resumable and not _pass_due(conn, now):
         _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
         return "not_due"
     if not daemon_state.claim_pass(
-        "curator", CURATOR_INTERVAL_S, scheduled=scheduled, conn=conn,
+        "curator", 0 if resumable else CURATOR_INTERVAL_S,
+        scheduled=scheduled, conn=conn,
         now=now,
     ):
         _record_curator_pass(conn, _last_curator_ts(conn), "not_due")
@@ -1416,12 +1708,15 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
     with _curator_spawn_lock() as locked:
         if not locked:
             return "curator_running n=1 (single-flight lock)"
-
-        running = _running_curator_children(conn)
-        if running:
-            out = f"curator_running n={len(running)} (single-flight)"
-            _record_curator_pass(conn, now, out)
-            return out
+        # A pre-manifest child can exist while an upgraded server starts. It
+        # has no batch ownership row, so preserve the old machine-wide guard
+        # rather than reading and launching against that unknown snapshot.
+        if not resumable:
+            running = _running_curator_children(conn)
+            if running:
+                out = f"curator_running n={len(running)} (single-flight)"
+                _record_curator_pass(conn, now, out)
+                return out
 
         try:
             skill_audit = build_skill_audit(conn, include_archived=True)
@@ -1439,13 +1734,25 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             )
             return f"below_threshold lessons={n_lessons}"
 
-        last_fingerprint, last_fingerprint_ts = _last_inventory_fingerprint(
-            conn
-        )
+        active_manifest = _manifest_for_fingerprint(conn, fingerprint)
+        if active_manifest is not None:
+            if _refresh_pass_completion(conn, active_manifest["pass_id"], now):
+                _record_curator_pass(
+                    conn, now,
+                    f"endorsed pass_id={active_manifest['pass_id']} "
+                    f"{INVENTORY_FINGERPRINT_KEY}={fingerprint}",
+                )
+                return (
+                    f"endorsed pass_id={active_manifest['pass_id']} "
+                    f"fingerprint={fingerprint[:12]}"
+                )
+
+        last_fingerprint, last_fingerprint_ts = _last_inventory_fingerprint(conn)
         # Scheduled passes deliberately re-run unchanged content: relevance,
         # CLI behavior, and external alternatives can change even when local
         # bytes do not. Manual duplicate calls still debounce for safety/cost.
-        if last_fingerprint == fingerprint and not scheduled:
+        if (active_manifest is None and last_fingerprint == fingerprint
+                and not scheduled):
             ts_part = (
                 f" endorsed_ts={last_fingerprint_ts}"
                 if last_fingerprint_ts else ""
@@ -1469,26 +1776,52 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _collect_inventory_batches(conn, skill_audit=skill_audit)
         )
 
-        # Ensure reports dir exists before the child tries to Write into it.
+        # Ensure reports dir exists before the child tries to write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        pass_id = time.strftime('%Y%m%dT%H%M%S')
-        manifest_path = write_skill_audit_manifest(
-            skill_audit,
-            CURATOR_REPORTS_DIR / f"AUDIT-{pass_id}.json",
-        )
-        snapshot_dir = None
-
-        if CURATOR_DESTRUCTIVE:
-            try:
-                snapshot_dir = create_curator_snapshot(
-                    pass_id,
-                    conn=conn,
-                    retention=CURATOR_SNAPSHOT_RETENTION,
-                )
-            except Exception as e:
-                out = f"snapshot_error: {e}"
+        if active_manifest is not None:
+            pass_id = active_manifest["pass_id"]
+            if int(active_manifest["expected_batches"]) != len(batches):
+                out = f"manifest_batch_mismatch pass_id={pass_id}"
                 _record_curator_pass(conn, now, out)
                 return out
+            manifest_path = active_manifest["audit_manifest_path"]
+            snapshot_dir = active_manifest["snapshot_path"]
+        else:
+            base_pass_id = time.strftime("%Y%m%dT%H%M%S")
+            pass_id = base_pass_id
+            suffix = 2
+            while conn.execute(
+                "SELECT 1 FROM curator_passes WHERE pass_id=?", (pass_id,)
+            ).fetchone():
+                pass_id = f"{base_pass_id}-{suffix}"
+                suffix += 1
+            manifest_path = write_skill_audit_manifest(
+                skill_audit,
+                CURATOR_REPORTS_DIR / f"AUDIT-{pass_id}.json",
+            )
+            snapshot_dir = None
+            if CURATOR_DESTRUCTIVE:
+                try:
+                    snapshot_dir = create_curator_snapshot(
+                        pass_id,
+                        conn=conn,
+                        retention=CURATOR_SNAPSHOT_RETENTION,
+                    )
+                except Exception as e:
+                    out = f"snapshot_error: {e}"
+                    _record_curator_pass(conn, now, out)
+                    return out
+            _create_pass_manifest(
+                conn, pass_id=pass_id, fingerprint=fingerprint, batches=batches,
+                audit_manifest_path=str(manifest_path),
+                snapshot_path=str(snapshot_dir) if snapshot_dir else None,
+                now=now,
+            )
+            for batch in batches:
+                _authorize_curator_report(
+                    conn, now, pass_id,
+                    _report_name_for_batch(pass_id, batch.index, batch.total),
+                )
 
         # Default: destructive — the curator applies its own recommendations
         # after writing the REPORT. THREADKEEPER_CURATOR_DESTRUCTIVE=0 reverts
@@ -1578,6 +1911,43 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             )
 
         from .tools.spawn import spawn  # type: ignore
+        _refresh_pass_completion(conn, pass_id, now)
+        batch_rows = {
+            row["batch_index"]: row for row in conn.execute(
+                "SELECT * FROM curator_batches WHERE pass_id=?",
+                (pass_id,),
+            ).fetchall()
+        }
+        known_task_ids = {
+            row["task_id"] for row in batch_rows.values() if row["task_id"]
+        }
+        foreign_running = [
+            task_id for task_id in _running_curator_children(conn)
+            if task_id not in known_task_ids
+        ]
+        if foreign_running:
+            out = f"curator_running n={len(foreign_running)} (untracked pass)"
+            _record_curator_pass(conn, now, out)
+            return out
+        limit = max(1, int(CURATOR_MAX_CONCURRENT_BATCHES))
+        running_count = sum(
+            row["state"] == "running" for row in batch_rows.values()
+        )
+        capacity = max(0, limit - running_count)
+        dispatchable = [
+            batch for batch in batches
+            if batch_rows[batch.index]["state"] in {"pending", "failed"}
+        ][:capacity]
+        if not dispatchable:
+            state = curator_pass_status(conn)
+            out = (
+                f"curator_pending pass_id={pass_id} expected={state['expected']} "
+                f"running={state['running']} failed={state['failed']} "
+                f"complete={state['complete']}"
+            )
+            _record_curator_pass(conn, now, out)
+            return out
+
         old_pass = os.environ.get(PASS_ID_ENV)
         old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
         # Every report writer, including advisory-mode children, must carry the
@@ -1587,18 +1957,15 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         if CURATOR_DESTRUCTIVE:
             os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
         results: list[str] = []
+        failures: list[str] = []
         try:
             try:
-                for batch in batches:
-                    if len(batches) == 1:
-                        report_name = f"REPORT-{pass_id}.md"
-                    else:
-                        report_name = (
-                            f"REPORT-{pass_id}-batch-"
-                            f"{batch.index:03d}-of-{batch.total:03d}.md"
-                        )
-                    _authorize_curator_report(
-                        conn, now, pass_id, report_name,
+                for batch in dispatchable:
+                    report_name = _report_name_for_batch(
+                        pass_id, batch.index, batch.total,
+                    )
+                    writer_index, writer_total = _writer_batch_args(
+                        batch.index, batch.total,
                     )
                     full_prompt = (
                         CURATOR_PROMPT.replace(
@@ -1610,31 +1977,53 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                         + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
                         + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
                         + f"PASS_ID = {pass_id}\n"
-                        + f"BATCH_INDEX = {batch.index}\n"
-                        + f"BATCH_TOTAL = {batch.total}\n"
+                        + f"BATCH_INDEX = {writer_index}\n"
+                        + f"BATCH_TOTAL = {writer_total}\n"
                         + "Persist the report through curator_report_write "
                         + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
                         + "REPORT_PATH is "
                         + "informational and must not be written directly."
                     )
-                    result = spawn(
-                        prompt=full_prompt,
-                        visible=False,
-                        capture_output=True,
-                        permission_mode="auto",
-                        role="curator",
-                        write_origin="curator",
-                        slim=True,
-                        extra_allowed_tools=allowed_tools,
-                    )
+                    _mark_batch_dispatch_started(conn, pass_id, batch.index, now)
+                    try:
+                        result = spawn(
+                            prompt=full_prompt,
+                            visible=False,
+                            capture_output=True,
+                            permission_mode="auto",
+                            role="curator",
+                            write_origin="curator",
+                            slim=True,
+                            extra_allowed_tools=allowed_tools,
+                        )
+                    except Exception as exc:
+                        _mark_batch_dispatch_result(
+                            conn, pass_id=pass_id, index=batch.index,
+                            task_id=None, failure=f"spawn_exception={exc}", now=now,
+                        )
+                        failures.append(f"batch={batch.index}/{batch.total}")
+                        break
                     result_s = str(result)
                     if result_s.startswith("ERR "):
-                        out = (
-                            f"spawn_error batch={batch.index}/{batch.total}: "
-                            f"{result_s}"
+                        _mark_batch_dispatch_result(
+                            conn, pass_id=pass_id, index=batch.index,
+                            task_id=None, failure=result_s, now=now,
                         )
-                        _record_curator_pass(conn, now, out)
-                        return out
+                        failures.append(f"batch={batch.index}/{batch.total}")
+                        # A resource admission refusal is durable and retryable;
+                        # stop this launch wave instead of racing the same budget.
+                        break
+                    match = _TASK_ID_RE.search(result_s)
+                    task_id = match.group(1) if match else None
+                    _mark_batch_dispatch_result(
+                        conn, pass_id=pass_id, index=batch.index,
+                        task_id=task_id,
+                        failure=("spawn_result_missing_task_id " + result_s),
+                        now=now,
+                    )
+                    if task_id is None:
+                        failures.append(f"batch={batch.index}/{batch.total}")
+                        break
                     results.append(result_s)
             finally:
                 if old_pass is None:
@@ -1652,16 +2041,24 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         batch_entries = _summarize_batch_entries(batches)
         max_batch_chars = max((b.char_count for b in batches), default=0)
         total_entries = sum(b.entry_count for b in batches)
+        state = curator_pass_status(conn)
         _record_curator_pass(
             conn, now,
-            f"spawned {INVENTORY_FINGERPRINT_KEY}={fingerprint} "
+            f"dispatch pass_id={pass_id} {INVENTORY_FINGERPRINT_KEY}={fingerprint} "
             f"entries={total_entries} batches={len(batches)} "
             f"batch_entries={batch_entries} max_batch_chars={max_batch_chars} "
             f"lessons={n_lessons} skills={n_skills} concepts={n_concepts} "
-            f"manifest={manifest_path.name} "
+            f"expected={state['expected']} running={state['running']} "
+            f"failed={state['failed']} complete={state['complete']} "
+            f"manifest={Path(manifest_path).name} "
             f"snapshot={pass_id if snapshot_dir else '-'} "
             f":: {' | '.join(results)[:140]}",
         )
+        if failures:
+            return (
+                f"partial pass_id={pass_id} dispatched={len(results)} "
+                f"failed={state['failed']} :: {' | '.join(failures)}"
+            )
         if len(results) == 1:
             return results[0]
         return (
@@ -1677,7 +2074,18 @@ def _serve_loop() -> None:
             run_curator_pass(scheduled=True)
         except Exception:
             logger.debug("curator tick failed", exc_info=True)
-        daemon_sleep(CURATOR_INTERVAL_S)
+        try:
+            conn = get_db()
+            incomplete = bool(conn.execute(
+                "SELECT 1 FROM curator_passes WHERE endorsed_at IS NULL LIMIT 1"
+            ).fetchone())
+            conn.close()
+        except Exception:
+            incomplete = False
+        daemon_sleep(
+            min(CURATOR_INTERVAL_S, CURATOR_BATCH_POLL_S)
+            if incomplete else CURATOR_INTERVAL_S
+        )
 
 
 def start_curator_daemon() -> None:

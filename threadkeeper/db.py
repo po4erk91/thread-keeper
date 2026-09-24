@@ -494,6 +494,44 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_respawned_as TEXT
 );
 
+-- Curator passes are durable work manifests. The event log remains useful
+-- human telemetry, but it cannot distinguish dispatch from a child that
+-- later failed or timed out. A fingerprint is endorsed only after every
+-- expected batch has a completed, provenanced report.
+CREATE TABLE IF NOT EXISTS curator_passes (
+    pass_id               TEXT PRIMARY KEY,
+    inventory_fingerprint TEXT NOT NULL,
+    expected_batches      INTEGER NOT NULL CHECK(expected_batches > 0),
+    mode                  TEXT NOT NULL CHECK(mode IN ('advisory','destructive')),
+    audit_manifest_path   TEXT NOT NULL,
+    snapshot_path         TEXT,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    completed_at          INTEGER,
+    endorsed_at           INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS curator_batches (
+    pass_id               TEXT NOT NULL REFERENCES curator_passes(pass_id),
+    batch_index           INTEGER NOT NULL CHECK(batch_index > 0),
+    report_name           TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(state IN ('pending','running','failed','complete')),
+    task_id               TEXT,
+    dispatch_count        INTEGER NOT NULL DEFAULT 0,
+    dispatched_at         INTEGER,
+    completed_at          INTEGER,
+    failed_at             INTEGER,
+    failure_reason        TEXT,
+    provenance_sha256     TEXT,
+    report_written_at     INTEGER,
+    apply_state           TEXT NOT NULL DEFAULT 'unapplied'
+                          CHECK(apply_state IN ('unapplied','applied')),
+    applied_at            INTEGER,
+    PRIMARY KEY (pass_id, batch_index),
+    UNIQUE (pass_id, report_name)
+);
+
 -- Cross-process resource-control requests. The memory guard uses this as a
 -- small mailbox so one MCP server can ask peer servers to unload models/caches
 -- without sharing process memory.
