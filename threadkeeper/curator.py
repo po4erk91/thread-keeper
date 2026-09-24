@@ -328,6 +328,48 @@ class _InventoryBatch:
     char_count: int
 
 
+@dataclass(frozen=True)
+class _InventoryCompleteness:
+    """Whether each required curator inventory source was read in full."""
+
+    lessons: str | None = None
+    skills: str | None = None
+    skill_files: str | None = None
+    concepts: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return not any((
+            self.lessons, self.skills, self.skill_files, self.concepts,
+        ))
+
+    def failure_outcome(self) -> str:
+        for source in ("lessons", "skills", "skill_files", "concepts"):
+            error = getattr(self, source)
+            if error:
+                return f"inventory_error source={source} error={error}"
+        raise ValueError("complete inventory has no failure outcome")
+
+
+@dataclass(frozen=True)
+class _InventoryCollection:
+    snapshot: dict[str, list[dict]]
+    skill_audit: dict | None
+    completeness: _InventoryCompleteness
+
+
+class _InventoryCollectionError(RuntimeError):
+    """A required source failed while rendering the inventory for review."""
+
+    def __init__(self, source: str, exc: Exception):
+        self.source = source
+        self.error = type(exc).__name__
+        super().__init__(f"{source}: {self.error}")
+
+    def outcome(self) -> str:
+        return f"inventory_error source={self.source} error={self.error}"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Pure functions: cursor, inventory collection
 # ──────────────────────────────────────────────────────────────────────
@@ -430,13 +472,14 @@ def _stable_int(value) -> int | None:
 def _curator_inventory_snapshot(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> dict:
+) -> _InventoryCollection:
     """Canonical, time-stable inventory state for debounce fingerprinting.
 
     Human prompt text includes relative ages and decay scores, so hashing the
     rendered dump would change as the wall clock moves. This snapshot hashes
     only stored lesson/skill/concept state that can change the curator's
-    decisions.
+    decisions. Its completeness result distinguishes a successful empty store
+    from a source that could not be read.
     """
     snapshot: dict[str, list[dict]] = {
         "lessons": [],
@@ -445,6 +488,7 @@ def _curator_inventory_snapshot(
         "concepts": [],
     }
 
+    lesson_error = None
     try:
         usage = lessons.lesson_usage_map(conn)
         for item in lessons.iter_lessons():
@@ -466,10 +510,12 @@ def _curator_inventory_snapshot(
                     "tier": u.get("tier") or "hypothesis",
                 },
             })
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: inventory lesson snapshot failed",
                      exc_info=True)
+        lesson_error = type(exc).__name__
 
+    skill_error = None
     try:
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
@@ -493,12 +539,18 @@ def _curator_inventory_snapshot(
                 "pinned": _stable_int(r["pinned"]) or 0,
                 "state": r["state"] or "",
             })
-    except sqlite3.OperationalError:
+    except Exception as exc:
         logger.debug("curator: inventory skill snapshot failed",
                      exc_info=True)
+        skill_error = type(exc).__name__
 
+    audit = None
+    skill_files_error = None
     try:
-        audit = skill_audit or build_skill_audit(conn, include_archived=True)
+        audit = (
+            skill_audit if skill_audit is not None
+            else build_skill_audit(conn, include_archived=True)
+        )
         snapshot["skill_files"] = [
             {
                 "name": record["name"],
@@ -511,9 +563,11 @@ def _curator_inventory_snapshot(
             }
             for record in audit["skills"]
         ]
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: deep skill snapshot failed", exc_info=True)
+        skill_files_error = type(exc).__name__
 
+    concept_error = None
     try:
         rows = conn.execute(
             "SELECT id, description, confidence, registered_at, "
@@ -527,11 +581,22 @@ def _curator_inventory_snapshot(
                 "registered_at": _stable_int(r["registered_at"]),
                 "last_evidence_at": _stable_int(r["last_evidence_at"]),
             })
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        logger.debug("curator: inventory concept snapshot failed",
+                     exc_info=True)
+        concept_error = type(exc).__name__
 
     snapshot["lessons"].sort(key=lambda row: row["slug"])
-    return snapshot
+    return _InventoryCollection(
+        snapshot=snapshot,
+        skill_audit=audit,
+        completeness=_InventoryCompleteness(
+            lessons=lesson_error,
+            skills=skill_error,
+            skill_files=skill_files_error,
+            concepts=concept_error,
+        ),
+    )
 
 
 def _inventory_fingerprint(snapshot: dict) -> str:
@@ -547,10 +612,12 @@ def _inventory_fingerprint(snapshot: dict) -> str:
 def _current_inventory_fingerprint(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> tuple[str, int, int, int]:
-    snapshot = _curator_inventory_snapshot(conn, skill_audit=skill_audit)
+) -> tuple[_InventoryCollection, str | None, int, int, int]:
+    collection = _curator_inventory_snapshot(conn, skill_audit=skill_audit)
+    snapshot = collection.snapshot
     return (
-        _inventory_fingerprint(snapshot),
+        collection,
+        _inventory_fingerprint(snapshot) if collection.completeness.complete else None,
         len(snapshot["lessons"]),
         len(snapshot["skill_files"]) or len(snapshot["skills"]),
         len(snapshot["concepts"]),
@@ -664,9 +731,9 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
     """
     try:
         rows = lessons.rank_stale_lessons(conn)
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: rank_stale_lessons failed", exc_info=True)
-        rows = []
+        raise _InventoryCollectionError("lessons", exc) from exc
     lines = [
         "## STALE LESSONS (dry-run decay ranking)\n",
         "Advisory only; never auto-delete solely from this list.",
@@ -696,15 +763,23 @@ def _collect_inventory_entry_groups(
                     _format_lesson(item, usage.get(slug)),
                 )
             )
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: iter_lessons failed", exc_info=True)
+        raise _InventoryCollectionError("lessons", exc) from exc
 
-    audit = skill_audit or build_skill_audit(conn, include_archived=True)
-    checklist_lines = format_skill_checklist(audit).splitlines()[2:]
-    skill_entries = [
-        _InventoryEntry("skill", record["name"], line)
-        for record, line in zip(audit["skills"], checklist_lines)
-    ]
+    try:
+        audit = (
+            skill_audit if skill_audit is not None
+            else build_skill_audit(conn, include_archived=True)
+        )
+        checklist_lines = format_skill_checklist(audit).splitlines()[2:]
+        skill_entries = [
+            _InventoryEntry("skill", record["name"], line)
+            for record, line in zip(audit["skills"], checklist_lines)
+        ]
+    except Exception as exc:
+        logger.debug("curator: skill inventory render failed", exc_info=True)
+        raise _InventoryCollectionError("skill_files", exc) from exc
 
     stale_text, _n_stale = _collect_stale_lessons(conn)
     return (
@@ -804,8 +879,9 @@ def _collect_concept_entries(conn: sqlite3.Connection) -> tuple[list[_InventoryE
             "last_evidence_at FROM concepts "
             "ORDER BY COALESCE(last_evidence_at, registered_at) ASC"
         ).fetchall()
-    except sqlite3.OperationalError:
-        return [], 0
+    except Exception as exc:
+        logger.debug("curator: concept inventory render failed", exc_info=True)
+        raise _InventoryCollectionError("concepts", exc) from exc
     if not rows:
         return [], 0
     now_t = int(time.time())
@@ -1090,15 +1166,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_curator_pass(conn, now, out)
             return out
 
-        try:
-            skill_audit = build_skill_audit(conn, include_archived=True)
-        except Exception as exc:
-            out = f"skill_audit_error: {exc}"
+        collection, fingerprint, n_lessons, n_skills, n_concepts = (
+            _current_inventory_fingerprint(conn)
+        )
+        if not collection.completeness.complete:
+            out = collection.completeness.failure_outcome()
             _record_curator_pass(conn, now, out)
             return out
-        fingerprint, n_lessons, n_skills, n_concepts = (
-            _current_inventory_fingerprint(conn, skill_audit=skill_audit)
-        )
+        assert fingerprint is not None
+        assert collection.skill_audit is not None
+        skill_audit = collection.skill_audit
         if n_lessons < CURATOR_MIN_LESSONS and n_skills == 0:
             _record_curator_pass(
                 conn, now,
@@ -1132,9 +1209,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # a curator pass is only worth a child spawn when there's a real
         # lesson/skill inventory to audit; concepts ride along in the bounded
         # batches.
-        batches, _n_lessons, _n_skills, _n_concepts = (
-            _collect_inventory_batches(conn, skill_audit=skill_audit)
-        )
+        try:
+            batches, _n_lessons, _n_skills, _n_concepts = (
+                _collect_inventory_batches(conn, skill_audit=skill_audit)
+            )
+        except _InventoryCollectionError as exc:
+            out = exc.outcome()
+            _record_curator_pass(conn, now, out)
+            return out
 
         # Ensure reports dir exists before the child tries to Write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)

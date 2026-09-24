@@ -127,13 +127,19 @@ def curator_review_status() -> str:
     else:
         lines.append("inventory_sha256=(none)")
     try:
-        current_fp, n_lessons, n_skills, n_concepts = (
+        collection, current_fp, n_lessons, n_skills, n_concepts = (
             _current_inventory_fingerprint(conn)
         )
-        lines.append(
-            f"current_inventory_sha256={current_fp} lessons={n_lessons} "
-            f"skills={n_skills} concepts={n_concepts}"
-        )
+        if collection.completeness.complete:
+            lines.append(
+                f"current_inventory_sha256={current_fp} lessons={n_lessons} "
+                f"skills={n_skills} concepts={n_concepts}"
+            )
+        else:
+            lines.append(
+                "current_inventory_sha256=(unavailable) "
+                + collection.completeness.failure_outcome()
+            )
     except Exception:
         lines.append("current_inventory_sha256=(unavailable)")
     lines.extend(["", "recent passes (newest first):"])

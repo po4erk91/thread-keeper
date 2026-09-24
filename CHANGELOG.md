@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-24
+- **Fixed: Curator inventory collection now fails closed.** A lesson read or
+  parse failure, skill-audit failure, or concept-query failure records a
+  source-specific `curator_pass` error and blocks report authorization,
+  snapshot creation, child dispatch, and inventory-fingerprint endorsement.
+  Successfully read empty stores remain valid below-threshold inputs.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

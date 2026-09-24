@@ -439,6 +439,14 @@ dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
 
+✅ DONE (#298): Curator inventory reads now fail closed. Lessons, skill
+telemetry, skill files, and concepts each return an explicit completeness
+result, so a read/parse/audit/query failure records
+`inventory_error source=<source> error=<type>` and stops before fingerprint
+endorsement, report authorization, snapshot creation, or child dispatch.
+Successfully read empty stores still reach the normal threshold decision; the
+previous endorsed fingerprint remains visible through Curator and agent status.
+
 ✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
 high-water before spawning. A recent `curator_pass` or
 `candidate_review_pass` makes fresh MCP-server restarts and non-forced direct
