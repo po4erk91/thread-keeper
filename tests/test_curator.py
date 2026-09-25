@@ -553,6 +553,24 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
 
 
+def test_returned_spawn_error_does_not_advance_curator_cursor(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="1")
+    pkg["lessons"].append_lesson(
+        title="one lesson", body="enough to spawn", source="shadow"
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+    conn = pkg["db"].get_db()
+    before = pkg["curator"]._last_curator_ts(conn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out.startswith("spawn_error batch=1/1: spawn_reservation_failed=busy")
+    assert pkg["curator"]._last_curator_ts(conn) == before
+
+
 def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
     tmp_path, monkeypatch,
 ):

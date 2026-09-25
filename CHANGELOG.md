@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: returned spawn admission failures no longer masquerade as child
+  launches.** Internal callers now share a parsed launch-result contract, so
+  Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
+  pickups, automatic thread review, and tournaments only advance after a real
+  task identifier is returned.
+
 - **Fixed: Curator inventory collection now fails closed.** A lesson read or
   parse failure, skill-audit failure, or concept-query failure records a
   source-specific `curator_pass` error and blocks report authorization,

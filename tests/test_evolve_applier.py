@@ -342,6 +342,20 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     ).fetchone()["applied"] == 0
 
 
+def test_apply_evolve_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    eid = _add_evolve(conn, "retry legacy evolve", status="promoted")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_evolve(eid)
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+
+
 def test_apply_curator_report_builds_evolve_applier_spawn(
     tmp_path, monkeypatch,
 ):
@@ -371,7 +385,6 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert "skill_manage" in tools
     assert "evolve_mark_curator_report_applied" in tools
     assert "Bash" not in tools and "Edit" not in tools
-
     prompt = calls["prompt"]
     assert "Curator REPORT" in prompt
     assert str(report.resolve()) in prompt
@@ -380,6 +393,19 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert "NEVER touch entries marked [PROTECTED]" in prompt
     assert "Do not use Bash" in prompt
     assert "gh pr create" not in prompt
+
+
+def test_apply_curator_report_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    report = _write_report(pkg)
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_curator_report(str(report))
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
 
 
 def test_authorized_curator_report_writer_is_applied_once(
@@ -1091,6 +1117,25 @@ def test_apply_conflicted_pr_builds_repair_spawn(tmp_path, monkeypatch):
     assert "Do NOT call" in prompt
 
 
+def test_apply_conflicted_pr_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_pr(44, "Resolve roadmap branch", head="roadmap/issue-44-fix")],
+            "",
+        ),
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_conflicted_pr()
+
+    assert out == "spawn_error conflicted_pr=#44: spawn_reservation_failed=busy"
+
+
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     tmp_path, monkeypatch,
 ):
@@ -1789,6 +1834,37 @@ def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
     assert out.startswith("spawn_error issue=#6"), out
     assert "spawn rejected" in out
     assert deleted == ["https://x/issues/6#issuecomment-mine"]
+
+
+def test_apply_roadmap_issue_retracts_claim_on_returned_spawn_error(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    comment_url = "https://x/issues/6#issuecomment-mine"
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: (comment_url, ""),
+    )
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda url, repo_root=None: deleted.append(url) or "",
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out == "spawn_error issue=#6: spawn_reservation_failed=busy"
+    assert deleted == [comment_url]
+    assert pkg["ea"]._roadmap_issue_attempt_state(conn, 6)[0] == 0
 
 
 def test_resolve_claim_race_wins_when_oldest_active_claim_is_ours(

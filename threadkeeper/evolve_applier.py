@@ -3086,6 +3086,7 @@ def _start_pr_conflict_repair_child(
 
     prompt = build_pr_conflict_repair_prompt(pr, repo_root)
 
+    from .spawn_result import parse_spawn_result
     from .tools.spawn import spawn  # late import — avoids import cycle
     try:
         result = spawn(
@@ -3104,7 +3105,10 @@ def _start_pr_conflict_repair_child(
         )
     except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
         return False, f"spawn_error conflicted_pr=#{num}: {e}"
-    return True, f"spawned conflicted_pr=#{num} {str(result)[:140]}"
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return False, f"spawn_error conflicted_pr=#{num}: {spawn_result.reason}"
+    return True, f"spawned conflicted_pr=#{num} {spawn_result.text[:140]}"
 
 
 def apply_conflicted_pr(pr_number: int = 0) -> str:
@@ -3212,6 +3216,7 @@ def _start_roadmap_issue_child(
 
     prompt = build_roadmap_issue_apply_prompt(issue, repo_root)
 
+    from .spawn_result import parse_spawn_result
     from .tools.spawn import spawn  # late import — avoids import cycle
     try:
         result = spawn(
@@ -3234,6 +3239,12 @@ def _start_roadmap_issue_child(
         # issue immediately (no 24h-TTL hold on a transient spawn failure).
         _delete_issue_comment(comment_url, repo_root)
         return False, f"spawn_error issue=#{num}: {e}"
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        # A returned admission failure is equivalent to a raised failure: no
+        # child exists, so do not retain the claim or record an attempt.
+        _delete_issue_comment(comment_url, repo_root)
+        return False, f"spawn_error issue=#{num}: {spawn_result.reason}"
     # Record the spawn as an attempt: the failure ledger that drives backoff +
     # dead-letter. A child that completes the PR writes roadmap_issue_applied
     # (checked first everywhere), so this only accrues on issues that fail.
@@ -3242,7 +3253,7 @@ def _start_roadmap_issue_child(
         "spawned branch="
         f"{roadmap_issue_branch_name(num, str(issue.get('title') or ''))}",
     )
-    return True, f"spawned roadmap_issue=#{num} {str(result)[:140]}"
+    return True, f"spawned roadmap_issue=#{num} {spawn_result.text[:140]}"
 
 
 def _roadmap_dispatch_can_try_next(status: str) -> bool:
@@ -3405,6 +3416,7 @@ def apply_curator_report(report_path: str = "") -> str:
         prompt = build_curator_report_apply_prompt(path, report_text,
                                                    repo_root)
 
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # late import — avoids import cycle
         try:
             result = spawn(
@@ -3440,7 +3452,10 @@ def apply_curator_report(report_path: str = "") -> str:
             )
         except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
             return f"spawn_error: {e}"
-        return f"spawned curator_report={path.name} {str(result)[:140]}"
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
+            return f"spawn_error: {spawn_result.reason}"
+        return f"spawned curator_report={path.name} {spawn_result.text[:140]}"
 
 
 def apply_evolve(evolve_id: int) -> str:
@@ -3488,6 +3503,7 @@ def apply_evolve(evolve_id: int) -> str:
             row["id"], row["suggestion"], row["rationale"], repo_root
         )
 
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # late import — avoids import cycle
         try:
             result = spawn(
@@ -3508,7 +3524,10 @@ def apply_evolve(evolve_id: int) -> str:
             )
         except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
             return f"spawn_error: {e}"
-        return f"spawned evolve_id={evolve_id} {str(result)[:140]}"
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
+            return f"spawn_error: {spawn_result.reason}"
+        return f"spawned evolve_id={evolve_id} {spawn_result.text[:140]}"
 
 
 # ── Optional daemon ───────────────────────────────────────────────────────────
