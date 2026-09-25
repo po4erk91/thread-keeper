@@ -362,6 +362,120 @@ def test_run_curator_pass_below_threshold(tmp_path, monkeypatch):
     assert n == 1  # cursor advanced
 
 
+def test_run_curator_pass_empty_inventory_is_below_threshold(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="3")
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out == "below_threshold lessons=0"
+
+
+def _assert_inventory_failure_telemetry(pkg, out, source):
+    assert out.startswith(f"inventory_error source={source} error=")
+    conn = pkg["db"].get_db()
+    summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='curator_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()["summary"]
+    assert summary == out
+    assert "inventory_sha256=" not in summary
+    assert conn.execute(
+        "SELECT 1 FROM events WHERE kind='curator_pass' "
+        "AND summary LIKE 'report_authorized%'"
+    ).fetchone() is None
+    assert not pkg["reports_dir"].exists()
+
+
+def test_run_curator_pass_fails_closed_when_lessons_cannot_be_read(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    previous_fingerprint = "a" * 64
+    pkg["curator"]._record_curator_pass(
+        pkg["db"].get_db(), 1,
+        f"spawned inventory_sha256={previous_fingerprint}",
+    )
+    captured: list[dict] = []
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(
+        pkg["lessons"], "iter_lessons",
+        lambda: (_ for _ in ()).throw(OSError("lesson file unreadable")),
+    )
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+    )
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    _assert_inventory_failure_telemetry(pkg, out, "lessons")
+    assert captured == []
+    assert pkg["curator"]._last_inventory_fingerprint(
+        pkg["db"].get_db()
+    )[0] == previous_fingerprint
+
+
+def test_run_curator_pass_fails_closed_when_skill_audit_fails(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    captured: list[dict] = []
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("skill audit unavailable")
+
+    monkeypatch.setattr(pkg["curator"], "build_skill_audit", fail_audit)
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+    )
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    _assert_inventory_failure_telemetry(pkg, out, "skill_files")
+    assert captured == []
+
+    from threadkeeper._mcp import mcp
+    status = mcp._tool_manager._tools["curator_review_status"].fn()
+    assert "current_inventory_sha256=(unavailable)" in status
+    assert "inventory_error source=skill_files error=RuntimeError" in status
+
+
+def test_run_curator_pass_fails_closed_when_concepts_cannot_be_read(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    conn = pkg["db"].get_db()
+    captured: list[dict] = []
+    import threadkeeper.tools.spawn as spawn_mod
+
+    class ConceptReadFailure:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def execute(self, sql, *args, **kwargs):
+            if "FROM concepts" in sql:
+                raise RuntimeError("concept query unavailable")
+            return self._wrapped.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    monkeypatch.setattr(
+        pkg["curator"], "get_db", lambda: ConceptReadFailure(conn),
+    )
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+    )
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    _assert_inventory_failure_telemetry(pkg, out, "concepts")
+    assert captured == []
+
+
 def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     pkg["lessons"].append_lesson(

@@ -703,9 +703,13 @@ Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. Repeated manual calls over identical bytes
 return `unchanged_inventory`; the scheduled three-day pass still runs because
 CLI behavior, official guidance, and external alternatives can change without
-local file changes. `curator_review_status()` shows the inventory hash plus the
-latest report, deterministic audit manifest, recovery snapshot, last endorsed
-`inventory_sha256`, and the current inventory hash. Spawned pass events record
+local file changes. Every required inventory source (lessons, skill telemetry,
+skill files, and concepts) must read successfully before that hash can endorse
+a pass; a successfully empty source remains valid, while a failed one records
+`inventory_error source=<source> error=<type>` without authorizing a report,
+creating a recovery snapshot, or launching a child. `curator_review_status()`
+shows that incomplete state instead of a current hash, while retaining the last
+endorsed `inventory_sha256`. Spawned pass events record
 `entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
 large reviews visible in the normal `curator_pass` trail.
 

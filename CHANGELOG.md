@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Curator inventory collection now fails closed.** A lesson read or
+  parse failure, skill-audit failure, or concept-query failure records a
+  source-specific `curator_pass` error and blocks report authorization,
+  snapshot creation, child dispatch, and inventory-fingerprint endorsement.
+  Successfully read empty stores remain valid below-threshold inputs.
+
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
   references and reports each source entry with its dead target. The read-only

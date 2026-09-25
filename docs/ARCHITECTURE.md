@@ -1137,6 +1137,17 @@ pure aggregator; `snapshot_path` dumps the same numbers as a markdown table for
 human review. Children whose ephemeral `/tmp` log has aged out (or are skipped
 past the per-call read cap) count as `unknown`, keeping the hit-rate honest.
 
+### Curator inventory completeness
+
+The Curator treats lessons, skill telemetry, skill files, and concepts as one
+complete review boundary. A source that reads successfully with zero entries is
+valid; a read, parse, validation, or query failure is not an empty category.
+Before it can create a recovery snapshot, authorize a report path, or spawn a
+child, the parent records `curator_pass` with
+`inventory_error source=<source> error=<type>`. The error is visible in both
+Curator and agent status, and the previously endorsed `inventory_sha256`
+remains the only fingerprint eligible for `unchanged_inventory`.
+
 ## Skills system
 
 `~/.claude/skills/<name>/SKILL.md` is the primary write target. The same
