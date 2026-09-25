@@ -364,7 +364,8 @@ observability only: the supervisor restarts dead threads, never a live child.
   continuation retry with the original assignment plus the previous
   task/cid/log pointers so the new child can inspect workspace state and resume
   instead of restarting blindly. (When the RSS budget is disabled but the
-  watchdog is on, the daemon still runs.)
+  watchdog is on, the daemon still runs.) Status surfaces observe only; the
+  daemon alone enforces timeouts and retries.
 - **memory_guard** — once per `MEMORY_GUARD_POLL_S` (default 30 s) scans
   all `threadkeeper.server` processes; warns above `MEMORY_GUARD_WARN_MB`
   and sends SIGTERM above `MEMORY_GUARD_KILL_MB` after logging/notifying.
@@ -1145,6 +1146,17 @@ leaves (events / tasks / child logs / skill_usage). `shadow_telemetry()` is the
 pure aggregator; `snapshot_path` dumps the same numbers as a markdown table for
 human review. Children whose ephemeral `/tmp` log has aged out (or are skipped
 past the per-call read cap) count as `unknown`, keeping the hit-rate honest.
+
+### Curator inventory completeness
+
+The Curator treats lessons, skill telemetry, skill files, and concepts as one
+complete review boundary. A source that reads successfully with zero entries is
+valid; a read, parse, validation, or query failure is not an empty category.
+Before it can create a recovery snapshot, authorize a report path, or spawn a
+child, the parent records `curator_pass` with
+`inventory_error source=<source> error=<type>`. The error is visible in both
+Curator and agent status, and the previously endorsed `inventory_sha256`
+remains the only fingerprint eligible for `unchanged_inventory`.
 
 ## Skills system
 

@@ -17,6 +17,13 @@ version bumps follow semver per the policy in
   tampered handoffs are refused or excluded rather than resembling successful
   research.
 
+- **Fixed: reading agent status no longer kills or respawns child agents
+  (#309).** `agent_status`, `tk-agent-status`, and `agent_memory_cleanup` now
+  refresh task liveness and RSS in observation-only mode. Only the
+  spawn-budget daemon stops a child that runs past the runtime cap and
+  launches its continuation retry, so polling status can no longer end work
+  or spend another spawn attempt.
+
 ## v0.17.6 — 2026-09-17
 
 ### Fixed
@@ -79,6 +86,12 @@ version bumps follow semver per the policy in
   Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
   pickups, automatic thread review, and tournaments only advance after a real
   task identifier is returned.
+
+- **Fixed: Curator inventory collection now fails closed.** A lesson read or
+  parse failure, skill-audit failure, or concept-query failure records a
+  source-specific `curator_pass` error and blocks report authorization,
+  snapshot creation, child dispatch, and inventory-fingerprint endorsement.
+  Successfully read empty stores remain valid below-threshold inputs.
 
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
