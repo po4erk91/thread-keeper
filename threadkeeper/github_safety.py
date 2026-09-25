@@ -75,16 +75,22 @@ def _secret_pattern_names(text: str) -> list[str]:
     return [name for name, pat in _SECRET_PATTERNS if pat.search(text)]
 
 
+def sanitize_presentation_text(value: str | None) -> str:
+    """Redact private paths and credential-shaped values for UI summaries."""
+    text = str(value or "")
+    text = _HOME_PATH_RE.sub("[REDACTED_HOME_PATH]", text)
+    for _name, pat in _SECRET_PATTERNS:
+        text = pat.sub("[REDACTED_SECRET]", text)
+    return text
+
+
 def sanitize_public_github_body(body: str) -> str:
     """Redact local home paths and common token shapes from a public body.
 
     The returned text is re-scanned; if any known secret shape survives, the
     caller gets a hard failure instead of an unsafe body.
     """
-    text = str(body or "")
-    text = _HOME_PATH_RE.sub("[REDACTED_HOME_PATH]", text)
-    for _name, pat in _SECRET_PATTERNS:
-        text = pat.sub("[REDACTED_SECRET]", text)
+    text = sanitize_presentation_text(body)
     remaining = _secret_pattern_names(text)
     if remaining:
         raise GithubBodySafetyError(

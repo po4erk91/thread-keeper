@@ -166,6 +166,9 @@ remains a live question.
   `THREADKEEPER_REDACT_DIALOG_SECRETS` knob can be disabled only for rare local
   debugging where raw transcript fidelity intentionally wins over durable
   secret protection.
+- Child-log status redaction: bounded success and failure excerpts are scrubbed
+  before they enter status snapshots or notification payloads; owner-only raw
+  task logs remain available through `task_logs` for local diagnosis.
 - PyPI release authorization gate (#57): merge-to-main release readiness now
   runs with `contents: read` only, validates version/changelog metadata, and
   stops before tag creation or workflow dispatch. Publishing is decoupled from

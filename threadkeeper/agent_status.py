@@ -17,6 +17,7 @@ from .config import TASK_LOG_DIR
 from .task_spool import open_spool_binary_read
 from .db import get_db
 from .github_budget import format_github_budget, github_budget_state
+from .github_safety import sanitize_presentation_text
 from .helpers import alive, fmt_age
 from .agent_metadata import role_metadata
 from .daemon_liveness import daemon_thread_status
@@ -816,7 +817,7 @@ def _read_log_sample(task_id: str, max_head: int = 16_384, max_tail: int = 65_53
 def _clean_result_line(line: str) -> str:
     line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line)
     line = re.sub(r"\s+", " ", line).strip()
-    return line
+    return sanitize_presentation_text(line)
 
 
 # Enumerated / bulleted lines ("d. …", "4) …", "- …") are prompt formatting

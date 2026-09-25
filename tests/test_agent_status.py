@@ -470,6 +470,32 @@ def test_agent_status_recent_results_for_useful_completed_tasks(mp_with_cid):
     )
 
 
+def test_recent_results_sanitize_child_log_excerpts(mp_with_cid):
+    pkg = mp_with_cid(_FAKE_CID)
+    github_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    bearer = "abcdefghijklmnopqrstuvwxyz012345"
+    private_path = "/Users/alice/private/notes.md"
+    _insert_completed_task(
+        pkg,
+        "tk_review_sanitized",
+        "You are a CANDIDATE REVIEWER for thread-keeper's extract queue.",
+        "Processed 2 candidates into durable notes. "
+        f"Authorization: Bearer {bearer} API_KEY=topsecretvalue "
+        f"token={github_token} report={private_path}\n",
+    )
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    summary = agent_status_snapshot(refresh=False)["recent_results"][0]["summary"]
+    assert "Processed 2 candidates into durable notes." in summary
+    assert "[REDACTED_SECRET]" in summary
+    assert "[REDACTED_HOME_PATH]" in summary
+    assert github_token not in summary
+    assert bearer not in summary
+    assert "topsecretvalue" not in summary
+    assert private_path not in summary
+
+
 def test_agent_status_mcp_json_output(mp_with_cid):
     pkg = mp_with_cid(_FAKE_CID)
     _insert_task(pkg, "tk_status", "Build a compact menu-bar status app.", rss_mb=100)
@@ -726,6 +752,37 @@ def test_recent_failures_surfaces_dead_child_with_reason(mp_with_cid, monkeypatc
     assert "credit" in item["summary"].lower()
     # A live failure never leaks into the positive recent_results feed.
     assert all(r["task_id"] != "deadchild" for r in snap["recent_results"])
+
+
+def test_recent_failures_sanitize_child_log_excerpts(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_NOTIFY_POLL_S", "30")
+    pkg = mp_with_cid(_FAKE_CID)
+    github_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    bearer = "abcdefghijklmnopqrstuvwxyz012345"
+    private_path = "/Users/alice/private/error.log"
+    _insert_failed_task(
+        pkg,
+        "deadchild-sanitized",
+        "You are the CURATOR for thread-keeper.\n\nCurate memory.",
+        "starting run\n"
+        f"Connection failed: Authorization: Bearer {bearer} "
+        f"API_KEY=topsecretvalue token={github_token} path={private_path}\n",
+    )
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    failures = {
+        f["task_id"]: f
+        for f in agent_status_snapshot(refresh=False)["recent_failures"]
+    }
+    summary = failures["deadchild-sanitized"]["summary"]
+    assert "Connection failed" in summary
+    assert "[REDACTED_SECRET]" in summary
+    assert "[REDACTED_HOME_PATH]" in summary
+    assert github_token not in summary
+    assert bearer not in summary
+    assert "topsecretvalue" not in summary
+    assert private_path not in summary
 
 
 def test_recent_failures_notify_flag_off_when_toggle_disabled(

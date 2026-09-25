@@ -41,6 +41,7 @@ from .config import (
     NOTIFY_FAILURE_COOLDOWN_S,
 )
 from .db import get_db
+from .github_safety import sanitize_presentation_text
 from . import daemon_state, identity
 from .helpers import daemon_sleep, single_flight_lock
 
@@ -107,14 +108,14 @@ def _reason_from_summary(summary: str) -> str:
 
 
 def _reason_from_task_log(task_id: str) -> str:
-    """Last meaningful line of a dead child's captured log (the failure reason)."""
+    """Sanitized last meaningful line of a dead child's captured log."""
     try:
         from .tools.spawn import task_logs  # lazy: spawn imports identity/config
         txt = task_logs(task_id, tail_lines=12)
     except Exception:
         return "no_log"
     lines = [ln for ln in txt.splitlines() if ln.strip()]
-    return (lines[-1][:180] if lines else "no_log")
+    return (sanitize_presentation_text(lines[-1])[:180] if lines else "no_log")
 
 
 # ── watermark (dual cursor in one notify_pass row) ──────────────────────────

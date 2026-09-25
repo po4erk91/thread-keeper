@@ -6,6 +6,13 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-25
+
+- **Fixed: child-log summaries are sanitized before status and notification
+  delivery.** Credential-shaped values and private home-directory paths are
+  redacted in successful-result and failed-child excerpts, while the owner-only
+  `task_logs` diagnostic view continues to expose the original local log.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

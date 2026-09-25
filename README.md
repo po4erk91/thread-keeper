@@ -1021,7 +1021,10 @@ skills/lessons) and `recent_failures` (the two failure sources above) — each i
 tagged with a `notify` flag computed from the toggles below. The app **lists**
 every item in its menu but only **posts a banner** for flagged ones, so turning a
 category off silences the banner without hiding the history. Enabling a toggle
-never replays backlog.
+never replays backlog. Child-log excerpts in both lists are bounded sanitized
+summaries: credential-shaped values and private home paths are redacted before
+they reach the MCP status response, menu, or notification; raw logs remain
+available only through `task_logs`.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
