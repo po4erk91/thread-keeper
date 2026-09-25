@@ -229,6 +229,15 @@ class Settings(BaseSettings):
             "THREADKEEPER_INGEST_WINDOW_S", "ingest_window_s"
         ),
     )
+    # Comma- or newline-separated project/CWD globs that ingest must skip
+    # before any dialog, FTS, vector, or learning-loop write occurs.
+    ingest_deny_globs: str = ""
+    ingest_denylist_file: Path = Field(
+        default=Path("~/.threadkeeper/ingest_denylist.txt"),
+        validation_alias=AliasChoices(
+            "THREADKEEPER_INGEST_DENYLIST_FILE", "ingest_denylist_file"
+        ),
+    )
     redact_dialog_secrets: bool = True
 
     # ── SQLite retention / compaction ────────────────────────────────────────
@@ -363,6 +372,9 @@ class Settings(BaseSettings):
     # mutation and can be disabled explicitly with interval 0.
     curator_interval_s: float = 259_200.0
     curator_min_lessons: int = 3
+    # A dense lesson subtopic is eligible for promotion once this many lessons
+    # share the same pair of meaningful title terms.
+    curator_promotion_min_lessons: int = 3
     # THREADKEEPER_CURATOR_REPORTS_DIR — default is relative to db dir; computed post-init
     curator_reports_dir: Optional[Path] = None
     # Destructive-by-default: once the curator daemon is enabled
@@ -441,10 +453,14 @@ class Settings(BaseSettings):
     # evolve loops work out of the box; set 0/false to disable — then the loops
     # require an editable install or an explicit EVOLVE_REPO_ROOT.
     evolve_auto_clone: bool = True
-    # Canonical repo the managed checkout is cloned from, and the branch it
-    # tracks. Defaults to the upstream thread-keeper project.
+    # Canonical repo the managed checkout is cloned from. The mutable branch is
+    # used only to retrieve the immutable commit below; managed code always
+    # checks out and executes that exact commit.
     evolve_repo_url: str = "https://github.com/po4erk91/thread-keeper"
     evolve_repo_branch: str = "main"
+    # Immutable commit allowed to execute in an auto-managed checkout. Bump
+    # this with a reviewed release; never follow a moving branch tip here.
+    evolve_repo_commit: str = "3580726833b6a3d7ed872aa2bc5512552ca94532"
     # Fail before a managed clone / its heavyweight semantic+dev venv can
     # consume the last free space on a host. 0 deliberately disables the
     # guard for constrained test or operator-managed environments.
@@ -803,6 +819,8 @@ def _derive_constants(s: "Settings") -> dict:
         "INGEST_CAP_PER_CALL": s.ingest_cap,
         "INGEST_INTERVAL_S": s.ingest_interval_s,
         "INGEST_RECENT_WINDOW_S": s.ingest_window_s,
+        "INGEST_DENY_GLOBS": s.ingest_deny_globs,
+        "INGEST_DENYLIST_FILE": s.ingest_denylist_file,
         "RETENTION_INTERVAL_S": s.retention_interval_s,
         "DIALOG_RETENTION_DAYS": s.dialog_retention_days,
         "TASK_RETENTION_DAYS": s.task_retention_days,
@@ -856,6 +874,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SHADOW_REVIEW_FLUSH_AGE_S": float(s.shadow_review_flush_age_s),
         "CURATOR_INTERVAL_S": s.curator_interval_s,
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
+        "CURATOR_PROMOTION_MIN_LESSONS": s.curator_promotion_min_lessons,
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
         "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
@@ -887,6 +906,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
         "EVOLVE_REPO_URL": s.evolve_repo_url,
         "EVOLVE_REPO_BRANCH": s.evolve_repo_branch,
+        "EVOLVE_REPO_COMMIT": s.evolve_repo_commit,
         "EVOLVE_REPO_MIN_FREE_BYTES": s.evolve_repo_min_free_bytes,
         "EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S": (
             s.evolve_repo_provision_lock_timeout_s
@@ -966,14 +986,23 @@ def _propagate(new_values: dict) -> None:
                 d[cname] = val
 
 
+_RELOAD_PRESERVABLE_FIELDS = {
+    "EVOLVE_REPO_URL": "evolve_repo_url",
+    "EVOLVE_REPO_BRANCH": "evolve_repo_branch",
+    "EVOLVE_REPO_COMMIT": "evolve_repo_commit",
+}
+
+
 def reload_settings(env: Optional[dict] = None,
-                    remove: Optional[list] = None) -> dict:
+                    remove: Optional[list] = None,
+                    preserve: Optional[set[str]] = None) -> dict:
     """Re-read configuration in place (hot-config reload — issue #2).
 
     Steps:
       1. Optionally mutate `os.environ`: drop `remove` keys, set `env` keys.
          (The config_watcher uses this to mirror ~/.claude/settings.json.)
       2. Re-instantiate `Settings()` (re-reads os.environ + the .env file).
+         `preserve` keeps selected restart-only constants at their prior values.
       3. Recompute the UPPER_CASE constants and republish them on this module.
       4. Propagate every CHANGED constant to all loaded `threadkeeper.*`
          modules so daemons/tools that imported a copy observe the new value.
@@ -991,7 +1020,13 @@ def reload_settings(env: Optional[dict] = None,
             os.environ[k] = str(v)
 
     old = _derive_constants(settings)
-    settings = Settings()
+    refreshed = Settings()
+    preserved = {
+        field: getattr(settings, field)
+        for const, field in _RELOAD_PRESERVABLE_FIELDS.items()
+        if const in (preserve or set())
+    }
+    settings = refreshed.model_copy(update=preserved) if preserved else refreshed
     _warn_unknown_threadkeeper_env_keys()
     new = _derive_constants(settings)
 
