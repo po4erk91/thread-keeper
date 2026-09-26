@@ -28,6 +28,8 @@ SPAWN_CUE_SAMPLES = [
     ("ar", "افعل ذلك بالتوازي"),
     ("zh", "同时做这个"),
     ("ja", "並行で進めて"),
+    ("ko", "병렬로 진행해"),
+    ("bn", "সমান্তরালে করো"),
     # Cross-language count + plural noun
     ("en-count", "3 tasks pending"),
     ("es-count", "tres tareas pendientes"),
@@ -49,6 +51,8 @@ WANT_SAMPLES = [
     ("ar", "أريدك أن لا تفعل X"),
     ("zh", "我想要你不要再用 X"),
     ("ja", "X をしてほしい"),
+    ("ko", "X를 절대 다시 사용하지 마"),
+    ("bn", "আমি চাই তুমি আর X ব্যবহার করো না"),
 ]
 
 INSIGHT_SAMPLES = [
@@ -62,6 +66,8 @@ INSIGHT_SAMPLES = [
     ("ar", "الخلاصة X"),
     ("zh", "关键是 X"),
     ("ja", "結論は X"),
+    ("ko", "핵심은 X"),
+    ("bn", "মূল কথা হলো X"),
 ]
 
 EXAMPLE_SAMPLES = [
@@ -76,6 +82,8 @@ EXAMPLE_SAMPLES = [
     ("ar", "على سبيل المثال X"),
     ("zh", "例如 X"),
     ("ja", "例えば X"),
+    ("ko", "예를 들어 X"),
+    ("bn", "যেমন X"),
 ]
 
 FRAME_SAMPLES = [
@@ -89,6 +97,8 @@ FRAME_SAMPLES = [
     ("ar", "عادة يحدث هذا"),
     ("zh", "通常会发生"),
     ("ja", "通常そうなる"),
+    ("ko", "보통 이런 경우 X"),
+    ("bn", "সাধারণত এই ধরনের ক্ষেত্রে X"),
 ]
 
 
@@ -154,5 +164,5 @@ def test_negatives_no_false_positives_on_neutral_english():
 
 def test_supported_locales_listed():
     assert set(i18n.SUPPORTED_LOCALES) == {
-        "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja",
+        "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja", "ko", "bn",
     }
