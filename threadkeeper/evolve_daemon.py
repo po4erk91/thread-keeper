@@ -1170,15 +1170,12 @@ def _spawn_audit(repo_root: Path, pending: list, research_text: str) -> str:
         research=_fence_research(research_text),
         queue=_fence_untrusted_data(EVOLVE_LEGACY_QUEUE_TAG, queue),
     )
-    from .tools.spawn import spawn  # late import — avoids import cycle
-    result = spawn(
+    from .tools.spawn import _spawn_evolve_reviewer  # late import — avoids import cycle
+    result = _spawn_evolve_reviewer(
         prompt=prompt,
         cwd=str(repo_root),
         visible=False,
         capture_output=True,
-        permission_mode="bypassPermissions",
-        role="evolve_reviewer",
-        write_origin="evolve",
         slim=True,
         extra_allowed_tools=(
             "Bash,Edit,Write,Read,Glob,Grep,"

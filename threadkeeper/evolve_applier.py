@@ -2880,16 +2880,13 @@ def _start_pr_conflict_repair_child(
 
     prompt = build_pr_conflict_repair_prompt(pr, repo_root)
 
-    from .tools.spawn import spawn  # late import — avoids import cycle
+    from .tools.spawn import _spawn_evolve_applier  # late import — avoids import cycle
     try:
-        result = spawn(
+        result = _spawn_evolve_applier(
             prompt=prompt,
             cwd=str(repo_root),
             visible=False,
             capture_output=True,
-            permission_mode="bypassPermissions",
-            role="evolve_applier",
-            write_origin="evolve_apply",
             slim=True,
             extra_allowed_tools=(
                 "Bash,Edit,Write,Read,Glob,Grep,"
@@ -3006,16 +3003,13 @@ def _start_roadmap_issue_child(
 
     prompt = build_roadmap_issue_apply_prompt(issue, repo_root)
 
-    from .tools.spawn import spawn  # late import — avoids import cycle
+    from .tools.spawn import _spawn_evolve_applier  # late import — avoids import cycle
     try:
-        result = spawn(
+        result = _spawn_evolve_applier(
             prompt=prompt,
             cwd=str(repo_root),
             visible=False,
             capture_output=True,
-            permission_mode="bypassPermissions",
-            role="evolve_applier",
-            write_origin="evolve_apply",
             slim=True,
             extra_allowed_tools=(
                 "Bash,Edit,Write,Read,Glob,Grep,"
@@ -3199,14 +3193,13 @@ def apply_curator_report(report_path: str = "") -> str:
         prompt = build_curator_report_apply_prompt(path, report_text,
                                                    repo_root)
 
-        from .tools.spawn import spawn  # late import — avoids import cycle
+        from .tools.spawn import _spawn_evolve_applier_maintenance  # late import — avoids import cycle
         try:
-            result = spawn(
+            result = _spawn_evolve_applier_maintenance(
                 prompt=prompt,
                 cwd=str(repo_root),
                 visible=False,
                 capture_output=True,
-                permission_mode="auto",
                 append_system=(
                     "Curator-report apply is a pre-authorized Evolve applier "
                     "maintenance task. Do not open a thread or call "
@@ -3214,8 +3207,6 @@ def apply_curator_report(report_path: str = "") -> str:
                     "the explicit report cross-check and mutation tools named "
                     "in the user prompt."
                 ),
-                role="evolve_applier",
-                write_origin="evolve_apply",
                 slim=True,
                 extra_allowed_tools=(
                     "Read,"
@@ -3282,16 +3273,13 @@ def apply_evolve(evolve_id: int) -> str:
             row["id"], row["suggestion"], row["rationale"], repo_root
         )
 
-        from .tools.spawn import spawn  # late import — avoids import cycle
+        from .tools.spawn import _spawn_evolve_applier  # late import — avoids import cycle
         try:
-            result = spawn(
+            result = _spawn_evolve_applier(
                 prompt=prompt,
                 cwd=str(repo_root),
                 visible=False,
                 capture_output=True,
-                permission_mode="bypassPermissions",
-                role="evolve_applier",
-                write_origin="evolve_apply",
                 slim=True,
                 extra_allowed_tools=(
                     "Bash,Edit,Write,Read,Glob,Grep,"

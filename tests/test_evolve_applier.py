@@ -160,7 +160,7 @@ def _add_evolve(conn, suggestion, rationale=None, applied=0, status="pending",
 def _mock_spawn(monkeypatch, calls):
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: calls.update(kw)
         or "ok task=tk_ap pid=1 child_cid=abcd1234 parent_cid=ef567890",
     )
@@ -1475,7 +1475,7 @@ def test_apply_roadmap_issue_comments_before_spawn(
 
     monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _spawn)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1747,7 +1747,7 @@ def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
 
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("spawn rejected")),
     )
 

@@ -46,11 +46,10 @@ from ..ingest import _parse_ts
 # file path (not `-m`) to avoid importing the package on every spawn.
 _WRAP = Path(__file__).resolve().parent.parent / "_spawn_wrap.py"
 
-_BYPASS_ALLOWED_PAIRS = {
-    ("evolve_reviewer", "evolve"),
-    ("evolve_applier", "evolve_apply"),
-}
 _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
+# This object is intentionally private and never accepted by an MCP tool.  The
+# Evolve-only launchers below are the only code paths that hold it.
+_EVOLVE_BYPASS_CAPABILITY = object()
 
 # Linux caps one execve argv string at MAX_ARG_STRLEN (128 KiB), even when the
 # total ARG_MAX budget is larger. Keep Claude's positional prompt well below
@@ -66,14 +65,11 @@ def _permission_mode_is_bypass(permission_mode: str) -> bool:
     return (permission_mode or "").strip().lower() == "bypasspermissions"
 
 
-def _bypass_permissions_allowed(role: str, write_origin: str) -> bool:
-    """Only evolve daemon roles may request bypassPermissions by default."""
+def _bypass_permissions_allowed(capability: object | None) -> bool:
+    """Allow bypass only for an internal capability or an operator override."""
     if os.environ.get(_BYPASS_ENV_OVERRIDE, "").strip() in {"1", "true", "yes"}:
         return True
-    return (
-        role.strip().lower(),
-        write_origin.strip().lower(),
-    ) in _BYPASS_ALLOWED_PAIRS
+    return capability is _EVOLVE_BYPASS_CAPABILITY
 
 
 def _install_gh_safety_wrapper(task_id: str) -> tuple[Optional[Path], str]:
@@ -416,7 +412,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
-                task_id_override: str = "") -> str:
+                task_id_override: str = "",
+                _bypass_capability: object | None = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -471,11 +468,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         return f"ERR cwd_not_found={cwd}"
     bin_ = _claude_bin()
     if _permission_mode_is_bypass(permission_mode) and not _bypass_permissions_allowed(
-        role, write_origin
+        _bypass_capability
     ):
         return (
             "ERR bypassPermissions_refused "
-            "role/write_origin not allowlisted for privileged daemon spawn "
+            "public spawn cannot request privileged permissions "
             f"(set {_BYPASS_ENV_OVERRIDE}=1 to override)"
         )
 
@@ -961,6 +958,76 @@ exit $rc
     )
 
 
+def _spawn_evolve_reviewer(prompt: str, cwd: str = "", append_system: str = "",
+                           model: str = "", effort: str = "",
+                           extra_allowed_tools: str = "",
+                           capture_output: bool = True,
+                           visible: bool = True,
+                           slim: bool = True) -> str:
+    """Launch the privileged reviewer through a server-owned capability."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="bypassPermissions",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_reviewer",
+        write_origin="evolve",
+        slim=slim,
+        _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
+    )
+
+
+def _spawn_evolve_applier(prompt: str, cwd: str = "", append_system: str = "",
+                          model: str = "", effort: str = "",
+                          extra_allowed_tools: str = "",
+                          capture_output: bool = True,
+                          visible: bool = True,
+                          slim: bool = True) -> str:
+    """Launch the privileged applier through a server-owned capability."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="bypassPermissions",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_applier",
+        write_origin="evolve_apply",
+        slim=slim,
+        _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
+    )
+
+
+def _spawn_evolve_applier_maintenance(
+    prompt: str, cwd: str = "", append_system: str = "", model: str = "",
+    effort: str = "", extra_allowed_tools: str = "",
+    capture_output: bool = True, visible: bool = True, slim: bool = True,
+) -> str:
+    """Launch an applier maintenance child with fixed provenance, no bypass."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="auto",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_applier",
+        write_origin="evolve_apply",
+        slim=slim,
+    )
+
+
 @write_tool()
 def spawn(prompt: str, cwd: str = "", append_system: str = "",
           model: str = "", effort: str = "",
@@ -973,9 +1040,11 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
           slim: bool = True) -> str:
     """Launch a new child session in parallel.
 
-    This is the public MCP surface. Watchdog continuation retries use the
-    private `_spawn_impl` so retry lineage/config fields do not leak into the
-    normal tool contract.
+    This is the public MCP surface. `role` selects a cognitive stance and
+    `write_origin` labels ordinary child provenance; neither grants elevated
+    permissions. Privileged Evolve children use private server-owned launchers.
+    Watchdog continuation retries use `_spawn_impl` so retry lineage/config
+    fields do not leak into the normal tool contract.
     """
     return _spawn_impl(
         prompt=prompt,

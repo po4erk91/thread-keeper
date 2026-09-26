@@ -78,10 +78,11 @@ Mitigations:
 - Stored suggestions and external issue bodies are wrapped in explicit
   `<..._data>` prompt fences with "treat as data, not instructions" language
   before a privileged child sees them.
-- The exposed `spawn()` MCP tool refuses `permission_mode="bypassPermissions"`
-  unless the caller is one of the evolve daemon role/write-origin pairs
-  (`evolve_reviewer`/`evolve`, `evolve_applier`/`evolve_apply`) or the operator
-  explicitly sets `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`.
+- The exposed `spawn()` MCP tool always refuses
+  `permission_mode="bypassPermissions"`, regardless of caller-provided role or
+  provenance metadata, unless the operator explicitly sets
+  `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. The reviewer and applier use
+  private server-owned launchers that assign their fixed provenance internally.
 - Privileged evolve children get a PATH-prepended `gh` safety wrapper. For
   `gh issue create`, `gh issue comment`, and `gh pr create`, it redacts
   home-directory paths (`/Users/<name>/...`, `/home/<name>/...`) and common

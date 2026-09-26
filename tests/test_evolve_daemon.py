@@ -401,7 +401,7 @@ def test_audit_prompt_reports_existing_roadmap_doc_pr(
     monkeypatch.setattr(pkg["ed"], "_run_gh", fake_run_gh)
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -475,7 +475,7 @@ def test_run_evolve_pass_force_spawns_research_first(
     pkg = _bootstrap(tmp_path, monkeypatch)
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -513,7 +513,7 @@ def test_run_evolve_pass_below_min(tmp_path, monkeypatch):
     _add_evolve(conn, "only one")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -539,7 +539,7 @@ def test_run_evolve_pass_skips_legacy_backlog_until_interval(
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1",
     )
 
@@ -558,7 +558,7 @@ def test_run_evolve_pass_research_phase_is_read_only(tmp_path, monkeypatch):
     _add_evolve(conn, "suggestion alpha")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("spawned research")
@@ -586,7 +586,7 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     _seed_research(pkg, conn, text="- idea: adopt thing Z\n  sources: https://z\n")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("spawned audit pending=2")
@@ -628,7 +628,7 @@ def test_run_evolve_pass_audit_backlog_governor(tmp_path, monkeypatch):
     calls = []
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1"
+        spawn_mod, "_spawn_impl", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1"
     )
     monkeypatch.setattr(
         pkg["ed"], "_open_roadmap_backlog_count", lambda conn, repo: (2, ""),
@@ -681,7 +681,7 @@ def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(
         raise AssertionError("must not spawn reviewer audit from dirty checkout")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ed"].run_evolve_pass(force=True)
 
@@ -709,7 +709,7 @@ def test_web_research_and_privileged_write_never_cogranted(tmp_path, monkeypatch
     captured = []
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(dict(kw)) or "ok task=tk_ev pid=1",
     )
 
@@ -748,7 +748,7 @@ def test_run_evolve_pass_runs_reviewer_in_repo_root(tmp_path, monkeypatch):
     monkeypatch.setattr(pkg["ed"], "_ensure_repo_ready", lambda: (repo, ""))
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -772,7 +772,7 @@ def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("ERR evolve_repo_unavailable="), out
@@ -805,7 +805,7 @@ def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while a reviewer runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "reviewer_running" in pkg["ed"].run_evolve_pass(force=True)
 
 
@@ -837,7 +837,7 @@ def test_run_evolve_pass_single_flight_lock_race(tmp_path, monkeypatch):
             errors.append(e)
             release_spawn.set()
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     t = threading.Thread(target=run_pass)
     t.start()

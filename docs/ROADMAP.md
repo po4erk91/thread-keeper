@@ -523,13 +523,18 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   replayed `REPORT-*.md` files are refused.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
-  `permission_mode="bypassPermissions"` outside the evolve role/write-origin
-  pairs unless an explicit env override is set; stored evolve suggestions and
-  external GitHub issue bodies are embedded inside data fences; and privileged
-  evolve children get a PATH-prepended `gh` wrapper that redacts home-directory
-  paths and common token shapes from public issue/comment/PR bodies before the
-  real GitHub CLI sees them, refusing if a known unsafe pattern remains.
-  Parent-authored claim/dead-letter comments use the same scrubber.
+  `permission_mode="bypassPermissions"` outside server-owned launchers or an
+  explicit env override; stored evolve suggestions and external GitHub issue
+  bodies are embedded inside data fences; and privileged evolve children get a
+  PATH-prepended `gh` wrapper that redacts home-directory paths and common token
+  shapes from public issue/comment/PR bodies before the real GitHub CLI sees
+  them, refusing if a known unsafe pattern remains. Parent-authored
+  claim/dead-letter comments use the same scrubber.
+- ✅ DONE (#308). Public `spawn()` no longer treats caller-supplied role or
+  write-origin metadata as an authorization credential for bypassing sandbox
+  permissions. Reviewer and applier launchers now hold the private in-process
+  capability and assign fixed provenance themselves; the explicit operator
+  override remains the only public bypass path.
 - ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
   GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
   user-model artifacts with no injection fence and no provenance trust-tiering —

@@ -6,6 +6,13 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-26
+- **Fixed: public spawning can no longer self-authorize sandbox bypasses.**
+  Caller-provided role and provenance metadata no longer grant
+  `bypassPermissions`; privileged Evolve launches use a private server-owned
+  capability, while the explicit operator override remains available.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
