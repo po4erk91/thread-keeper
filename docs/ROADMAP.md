@@ -622,9 +622,9 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
 
 **Evolve issue-flow reliability (done, #23).** The applier now checks for an
 existing issue-linked PR before claiming, resolves multi-host claim races, and
-retracts its claim when spawning raises. Returned `ERR ...` admission results
-that do not raise are tracked separately by the open spawn-result contract
-work (#276). Scope was S.
+retracts its claim when spawning raises. The shared spawn-result contract now
+also rejects returned `ERR ...` admission results before they can advance issue
+state (#276). Scope was S.
 
 **Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
 get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
@@ -1077,10 +1077,9 @@ verified gaps from the present code and test suite:
 - **Loop-authored skill re-screening.** Re-run the existing injection-marker
   screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
   record a review flag, and surface it without auto-deleting the skill (#268).
-- **Spawn-result contract.** Several callers treat returned `ERR ...` admission
-  failures as successful launches, advancing Evolve phase/cadence, retaining
-  claims, and emitting false panel/probe/candidate telemetry. Introduce one
-  typed/shared success contract and migrate every caller (#276).
+- **Spawn-result contract (done, #276).** Internal callers now use one shared
+  parser and advance Evolve phase/cadence, claims, and panel/probe/candidate
+  telemetry only after a launch result contains a real task identifier.
 - **Authenticated roadmap claims.** Ignore public Evolve claim-marker comments
   unless their author has a trusted repository association or is an explicitly
   configured automation actor; claim text alone must not suppress work (#277).
@@ -1103,9 +1102,9 @@ newly verified Evolve backlog-governor gap:
 - **Database transaction cleanup.** Prevent non-autocommit `get_db()` callers
   from leaking implicit transactions that can retain locks and wedge the
   single-writer path (#293).
-- **Fail-closed Curator inventories.** Treat lesson or skill inventory read
-  failures as a deferred/failed pass instead of silently dispatching an
-  incomplete inventory that can drive unsafe destructive decisions (#298).
+- **Fail-closed Curator inventories (done, #298).** Lesson, skill, and concept
+  inventory failures now stop before report authorization, snapshot creation,
+  child dispatch, or fingerprint endorsement and record the failed source.
 - **Child-log redaction.** Redact captured child-output samples before they are
   stored in agent status and recent-result telemetry (#299).
 - **Scoped Evolve backlog pressure.** Count only eligible roadmap work in the
@@ -1120,9 +1119,9 @@ The current audit found two boundary violations in the spawn and status paths:
   Public MCP callers must not be able to impersonate an Evolve child and obtain
   an unsandboxed process; privileged Evolve launches need a private,
   server-controlled path (#308).
-- **Side-effect-free agent status.** Keep `agent_status` observation separate
-  from watchdog enforcement so a read-only MCP call or menu poll cannot kill an
-  overdue child, mutate its lifecycle state, or spend a retry spawn (#309).
+- **Side-effect-free agent status (done, #309).** Status reads now refresh
+  liveness and RSS without enforcing timeouts; only the spawn-budget daemon can
+  terminate an overdue child or launch its continuation retry.
 
 ---
 
