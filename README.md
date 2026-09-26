@@ -277,6 +277,15 @@ branch/worktree under `THREADKEEPER_TASK_LOG_DIR/worktrees/`. Parallel children
 therefore never share a mutable checkout or Git index. Non-Git directories keep
 their existing behavior; a dirty Git checkout is refused before a child starts.
 
+Learning-loop children that name no `cwd` (Curator, shadow review, candidate
+and dialectic review, probes, panels, the archivist) start in the owner-only
+`<db dir>/workspace` directory instead of the spawning process's working
+directory. The daemon host keeps the directory of whichever session started it,
+so these children used to run inside an unrelated user project, and a dirty Git
+checkout there refused every loop spawn. Foreground spawns keep the caller's
+directory, and callers that pass `cwd` (the Evolve reviewer and applier) are
+unchanged.
+
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
 CLI emits a recognizable usage trailer. Optional daily ceilings

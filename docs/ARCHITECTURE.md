@@ -929,6 +929,24 @@ per-task worktree is deliberately retained after launch so a completed child's
 work remains inspectable and recoverable; it is never deleted while a child may
 still be using it.
 
+### Background workspace
+
+A spawn with no `cwd` defaults to the spawning process's working directory
+only for foreground work. Background spawns — any non-foreground
+`write_origin`, and every spawn made by the daemon host
+(`THREADKEEPER_ROLE=host`) — default to `BACKGROUND_WORKSPACE_DIR`
+(`<db dir>/workspace`, created `0700`). The host inherits the directory of
+whichever session launched it, so without this a Curator child ran
+`codex exec --sandbox workspace-write` inside an unrelated user project and
+loaded that project's agent instructions, and a dirty Git checkout there
+refused every loop spawn with `spawn_dirty_worktree`. The workspace never gets
+worktree isolation, even when a repository (for example a dotfiles repo in
+`$HOME`) encloses the state dir; timeout retries pass the recorded workspace
+back explicitly and are treated the same. The host process itself does not
+`chdir`, so relative configuration paths keep their meaning. Callers that pass
+`cwd` — the Evolve reviewer, researcher, and applier use the managed checkout —
+are unchanged.
+
 ### Internal spawn-result contract
 
 The public `spawn()` tool preserves its human-readable text response for MCP

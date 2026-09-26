@@ -81,6 +81,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: background loop children no longer run in the host's inherited
+  directory.** The daemon host keeps the working directory of whichever session
+  started it, and loop children without a `cwd` ran there — inside an unrelated
+  user project with write access, or, from a dirty Git checkout, every loop
+  spawn failed with `spawn_dirty_worktree`. Background spawns (non-foreground
+  `write_origin`, or any spawn from the daemon host) now start in the owner-only
+  `<db dir>/workspace` directory, which never gets worktree isolation.
+  Foreground spawns and explicit `cwd` callers are unchanged.
+
 - **Fixed: Codex children can call every ThreadKeeper tool their loop grants.**
   `codex exec` runs with approval policy "never", so a write tool missing from
   the static `config.toml` approval list failed with "MCP tool call requires

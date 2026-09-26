@@ -24,6 +24,7 @@ from ..spawn_result import parse_spawn_result
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
+from ..permissions import chmod_private_dir
 from ..task_spool import (
     TASK_SPOOL_EXEC_MODE,
     ensure_task_spool_dir,
@@ -516,6 +517,36 @@ def _git_result(args: list[str], cwd: Path) -> tuple[str, str]:
     return "", detail.replace("\n", " ")[:240]
 
 
+def _is_background_spawn(write_origin: str) -> bool:
+    """Whether a spawn is learning-loop work rather than a foreground helper.
+
+    Loops tag their children with a non-foreground write origin, and every
+    spawn made by the dedicated daemon host is background work."""
+    from .. import config as _cfg
+
+    origin = write_origin.strip().lower()
+    return (origin not in ("", "foreground")) or _cfg.PROCESS_ROLE == "host"
+
+
+def _background_workspace() -> Path:
+    """The neutral working directory for background children, owner-only."""
+    from .. import config as _cfg
+
+    workspace = _cfg.BACKGROUND_WORKSPACE_DIR
+    workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+    chmod_private_dir(workspace)
+    return workspace
+
+
+def _is_background_workspace(cwd: str) -> bool:
+    from .. import config as _cfg
+
+    try:
+        return Path(cwd).resolve() == _cfg.BACKGROUND_WORKSPACE_DIR.resolve()
+    except OSError:
+        return False
+
+
 def _spawn_worktree_plan(
     cwd: str, task_id: str
 ) -> tuple[Optional[_SpawnWorktree], str]:
@@ -655,7 +686,16 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     prompt = prompt.strip()
     if not prompt:
         return "ERR empty_prompt"
-    cwd = cwd.strip() or os.getcwd()
+    # A loop child without an explicit cwd must not inherit this process's cwd:
+    # the daemon host keeps the directory of whichever session started it, so
+    # the child would run (workspace-write, with that project's agent
+    # instructions) inside an unrelated user project, and a dirty git checkout
+    # there would refuse every loop spawn.
+    cwd = cwd.strip() or (
+        str(_background_workspace())
+        if _is_background_spawn(write_origin)
+        else os.getcwd()
+    )
     if not Path(cwd).exists():
         return f"ERR cwd_not_found={cwd}"
     bin_ = _claude_bin()
@@ -715,7 +755,12 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         for c in task_id
     ):
         return "ERR invalid_task_id"
-    worktree, worktree_err = _spawn_worktree_plan(cwd, task_id)
+    # The workspace is never a project checkout, even when a repository (a
+    # dotfiles repo in $HOME) happens to enclose the state dir.
+    worktree, worktree_err = (
+        (None, "") if _is_background_workspace(cwd)
+        else _spawn_worktree_plan(cwd, task_id)
+    )
     if worktree_err:
         return worktree_err
     sys_extra = sys_extra_template.format(
