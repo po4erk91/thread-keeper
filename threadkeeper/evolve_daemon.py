@@ -50,6 +50,7 @@ from .evolve_applier import (
     _ensure_repo_ready,
     _fetch_open_issues,
     _git_worktree_precondition,
+    _is_reviewer_roadmap_backlog_issue,
     _repo_root,
     _roadmap_issue_applied,
 )
@@ -337,12 +338,15 @@ def _record_transient_evolve_pass(conn: sqlite3.Connection,
 def _open_roadmap_backlog_count(
     conn: sqlite3.Connection, repo_root: Path,
 ) -> tuple[int, str]:
-    """Count open GitHub issues without the applier's per-issue claim checks.
+    """Count open roadmap issues without the applier's per-issue claim checks.
 
     The governor needs backlog pressure, not the next issue eligible for
     autonomous pickup. A single paginated REST issue read avoids the expensive
     GraphQL comment checks in ``_open_roadmap_issues`` while the local event
-    ledger filters issues already handed off to an applier PR.
+    ledger filters issues already handed off to an applier PR. The shared
+    roadmap-label predicate deliberately includes skip-labelled and
+    untrusted-author issues: they remain reviewer-created roadmap pressure even
+    when the autonomous applier needs a human to unblock or promote them.
     """
     issues, err = _fetch_open_issues(repo_root)
     if err:
@@ -353,7 +357,10 @@ def _open_roadmap_backlog_count(
             number = int(issue.get("number"))
         except (TypeError, ValueError):
             continue
-        if not _roadmap_issue_applied(conn, number):
+        if (
+            _is_reviewer_roadmap_backlog_issue(issue)
+            and not _roadmap_issue_applied(conn, number)
+        ):
             open_backlog += 1
     return open_backlog, ""
 

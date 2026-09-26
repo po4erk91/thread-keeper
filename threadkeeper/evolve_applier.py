@@ -1507,6 +1507,17 @@ def _issue_labels(issue: dict) -> list[str]:
     return out
 
 
+def _is_reviewer_roadmap_backlog_issue(issue: dict) -> bool:
+    """Whether an open issue carries the deliberate reviewer backlog signal.
+
+    The reviewer governor measures intended roadmap work, not autonomous
+    pickup eligibility. Applied-state checks remain with the local ledger,
+    while skip labels and author trust only affect whether the applier may
+    spawn a child for an issue that is already part of that roadmap work.
+    """
+    return "roadmap" in _issue_labels(issue)
+
+
 def _issue_author_association(issue: dict) -> str:
     """Normalized GitHub author association for an issue (e.g. 'OWNER',
     'MEMBER', 'NONE'). Missing/blank → 'NONE' so the trust gate fails closed."""
@@ -2597,7 +2608,7 @@ def _open_roadmap_issue_candidates(
         out.append(issue)
     out.sort(
         key=lambda issue: (
-            0 if "roadmap" in _issue_labels(issue) else 1,
+            0 if _is_reviewer_roadmap_backlog_issue(issue) else 1,
             int(issue.get("number") or 0),
         )
     )

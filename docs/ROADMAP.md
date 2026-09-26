@@ -85,10 +85,13 @@ remains a live question.
   `state=all` (including closed `not_planned` issues), records filed
   fingerprints in `evolve_issues`, skips matching ledger/GitHub/same-pass
   duplicates, and records duplicate skips as telemetry.
-- Evolve reviewer backlog governor (#115): before the privileged,
-  issue-creating audit phase, the parent counts open, not-yet-applied roadmap
-  issues. At `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables
-  it), the audit is withheld and `evolve_review_pass` records
+- Evolve reviewer backlog governor (#115, #304): before the privileged,
+  issue-creating audit phase, the parent counts only open, not-yet-applied
+  issues carrying the deliberate `roadmap` label. Unlabelled issues do not use
+  the cap; skip-labelled and untrusted-author roadmap issues still count because
+  those gates only stop autonomous pickup. At
+  `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables it), the
+  audit is withheld and `evolve_review_pass` records
   `backlog_saturated open=<n> cap=<max>`; read-only research remains eligible.
 - Evolve roadmap automation git safety (#43): before a privileged reviewer
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP

@@ -6,6 +6,14 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-09-26
+- **Fixed: Evolve reviewer backlog pressure now excludes ordinary open issues
+  without the `roadmap` label (#304).** The governor and applier prioritization
+  share the same roadmap-label predicate, while locally applied roadmap issues
+  remain excluded. Skip-labelled and untrusted-author roadmap issues still
+  count because those gates only restrict autonomous pickup.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

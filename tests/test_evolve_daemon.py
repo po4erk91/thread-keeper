@@ -53,6 +53,7 @@ def _bootstrap(tmp_path, monkeypatch, interval="0", review_min="2",
     from threadkeeper import _mcp, db, evolve_applier, evolve_daemon, identity
     orig = {
         "_git_worktree_precondition": evolve_daemon._git_worktree_precondition,
+        "_open_roadmap_backlog_count": evolve_daemon._open_roadmap_backlog_count,
         "_open_roadmap_doc_prs": evolve_daemon._open_roadmap_doc_prs,
     }
     monkeypatch.setattr(
@@ -647,6 +648,65 @@ def test_run_evolve_pass_audit_backlog_governor(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pkg["ed"], "_open_roadmap_backlog_count", lambda conn, repo: (1, ""),
     )
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out.startswith("spawned audit")
+    assert len(calls) == 1
+
+
+def test_open_roadmap_backlog_count_scopes_mixed_issue_inventory(
+    tmp_path, monkeypatch,
+):
+    """Governor pressure and defer telemetry use the scoped roadmap count."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_backlog_max="2")
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ed"],
+        "_open_roadmap_backlog_count",
+        pkg["orig"]["_open_roadmap_backlog_count"],
+    )
+    _seed_research(pkg, conn)
+    calls = []
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1",
+    )
+    issues = [
+        {"number": 10, "labels": [{"name": "bug"}]},
+        {"number": 11, "labels": [{"name": "roadmap"}]},
+        {
+            "number": 12,
+            "labels": [{"name": "roadmap"}, {"name": "blocked"}],
+            "authorAssociation": "NONE",
+        },
+        {"number": 13, "labels": [{"name": "roadmap"}]},
+    ]
+    monkeypatch.setattr(
+        pkg["ed"], "_fetch_open_issues", lambda repo_root: (issues, ""),
+    )
+    pkg["ea"].mark_roadmap_issue_applied(
+        conn, 13, "https://example.test/pull/13",
+    )
+
+    open_backlog, err = pkg["ed"]._open_roadmap_backlog_count(
+        conn, tmp_path / "evolve-repo",
+    )
+
+    assert err == ""
+    assert open_backlog == 2
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "backlog_saturated open=2 cap=2"
+    assert calls == []
+    summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()["summary"]
+    assert summary == out
+
+    monkeypatch.setattr(pkg["ed"], "EVOLVE_REVIEW_BACKLOG_MAX", 3)
 
     out = pkg["ed"].run_evolve_pass(force=True)
 

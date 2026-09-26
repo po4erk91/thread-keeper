@@ -536,7 +536,10 @@ moving the high-water forward; `force=True` bypasses this due gate.
   skips as telemetry before any `gh issue create` call. Same-pass duplicates
   hit the ledger after the first file, so repeated candidates file once. Before
   an issue-creating audit is dispatched, the parent also counts open,
-  not-yet-applied roadmap work with a paginated REST read; at
+  not-yet-applied issues carrying the deliberate `roadmap` label with a
+  paginated REST read. Unlabelled issues do not apply pressure; roadmap issues
+  with applier skip labels or untrusted authors still do, because those gates
+  only control autonomous pickup. At
   `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables it), it
   records `backlog_saturated open=<n> cap=<max>` and withholds the audit.
   This gate applies only to the privileged audit phase, not read-only research.
