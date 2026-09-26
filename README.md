@@ -64,6 +64,8 @@ Integrity API provenance from the expected GitHub Trusted Publisher. Dirty or
 diverged git checkouts are skipped rather than overwritten. Restarts are gated
 on install/setup success plus a subprocess import smoke check, so a broken or
 unverified update is recorded but the current server keeps running.
+Interpreters without pip (uv-created or pipx venvs) install through
+`uv pip install --python <interpreter>` when `uv` is available.
 Upstream PyPI publishing is intentionally gated: green merge-to-main builds are
 auto-tagged, but every upload pauses for a human approval on the protected
 `pypi` GitHub Environment (a maintainer-signed annotated `v*` tag remains the
@@ -1050,7 +1052,9 @@ Three detection sources per tick:
 
 1. **Admission failures / terminal timeouts** — a `<loop>_pass` event whose
    summary is a spawn/budget failure (e.g. `token_budget_exceeded`,
-   `claude_cli_not_found`), plus `spawn_timeout_retry_failed`.
+   `claude_cli_not_found`), plus `spawn_timeout_retry_failed`. A budget
+   refusal names the local cap that refused the child — the spawn memory
+   budget or the daily token/cost budget — not the CLI subscription.
 2. **Dead children** — a `tasks` row that ended with a non-zero, non-timeout
    return code. This is the important one: `spawn()` returns `ok task=…` at
    *launch*, so a `*_pass` summary is a false success when a child later dies

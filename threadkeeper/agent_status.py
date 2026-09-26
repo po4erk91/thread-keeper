@@ -615,19 +615,28 @@ def _daemon_health(
     }
 
 
+_BUDGET_BLOCK_LABELS = {
+    "memory": "Spawn blocked: memory budget",
+    "tokens": "Spawn blocked: daily token budget",
+    "cost": "Spawn blocked: daily cost budget",
+}
+
+
 def _human_summary(summary: str, fallback: str) -> str:
+    from .notify import budget_refusal_kind
+
     s = (summary or "").strip()
     if not s:
         return fallback
     if s.startswith("spawn_error"):
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"
     if ":: ERR" in s:
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"

@@ -101,7 +101,49 @@ def test_failure_pass_fires_one_notification(tmp_path, monkeypatch, caplog):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
     assert "[notify]" in caplog.text and "curator loop failed" in caplog.text
-    assert "budget exhausted" in caplog.text
+    assert "memory budget" in caplog.text
+    assert "subscription" not in caplog.text
+
+
+_RAM_REFUSAL = (
+    "spawn_error batch=9/12: ERR budget_exceeded: running_subagents=4000MB + "
+    "new_child=500MB = 4500MB > limit=4096MB. Wait for a child to finish, "
+    "raise THREADKEEPER_SPAWN_BUDGET_MB, or use task_kill()."
+)
+
+
+@pytest.mark.parametrize("summary,kind,expected", [
+    (_RAM_REFUSAL, "memory",
+     "spawn memory budget full: running children hold 4000MB of 4096MB"),
+    ("spawned pending=3 :: ERR token_budget_exceeded: tokens_24h=9 >= limit=5",
+     "tokens", "daily spawn token budget reached"),
+    ("ERR cost_budget_exceeded: cost_24h=$2.0000 >= limit=$1.0000",
+     "cost", "daily spawn cost budget reached"),
+])
+def test_budget_refusal_names_the_local_cap_not_the_subscription(
+        tmp_path, monkeypatch, summary, kind, expected):
+    # The RAM cap, token cap, and cost cap are thread-keeper's own admission
+    # limits. Reporting any of them as a lapsed CLI subscription sent the user
+    # chasing a billing problem that did not exist.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify = m["notify"]
+    assert notify.budget_refusal_kind(summary) == kind
+    reason = notify._reason_from_summary(summary)
+    assert expected in reason
+    assert "subscription" not in reason.lower()
+
+
+def test_agent_status_labels_spend_caps_separately_from_memory(tmp_path, monkeypatch):
+    _bootstrap(tmp_path, monkeypatch)
+    from threadkeeper.agent_status import _human_summary
+
+    assert _human_summary(_RAM_REFUSAL, "") == "Spawn blocked: memory budget"
+    assert _human_summary(
+        "spawn_error :: ERR token_budget_exceeded: tokens_24h=9 >= limit=5", ""
+    ) == "Spawn blocked: daily token budget"
+    assert _human_summary(
+        "spawned pending=2 :: ERR cost_budget_exceeded: cost_24h=$2 >= limit=$1", ""
+    ) == "Spawn blocked: daily cost budget"
 
 
 def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, caplog):

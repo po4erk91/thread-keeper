@@ -81,6 +81,36 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Codex children can call every ThreadKeeper tool their loop grants.**
+  `codex exec` runs with approval policy "never", so a write tool missing from
+  the static `config.toml` approval list failed with "MCP tool call requires
+  approval". Curator children on Codex could audit but never persist a report,
+  merge verdict, or format suggestion. Codex spawns now pre-approve, for that
+  invocation only, the same `mcp__thread-keeper__*` allowlist a Claude child
+  receives through `--allowedTools`.
+
+- **Fixed: spawn budget refusals no longer read as a lapsed subscription.**
+  Loop-failure notifications and the menu-bar failure list named every budget
+  refusal "subscription/credit budget exhausted". They now name the local cap
+  that refused the child: the spawn memory budget
+  (`THREADKEEPER_SPAWN_BUDGET_MB`, with the reserved and allowed MB), or the
+  daily token or cost budget. Agent status labels the spend caps separately
+  from the memory cap.
+
+- **Fixed: scheduled Curator passes wait for spawn memory instead of dropping
+  batches.** Batches launch back to back while the memory budget still books
+  the slim estimate for every unmeasured child, so a large pass was refused
+  part-way and its remaining batches were skipped until the next interval. The
+  daemon now retries a memory-budget refusal every 15 seconds for up to one
+  hour per pass; a manual `curator_run` still fails fast, and spend-cap
+  refusals stay final. The pass identity is exported only around each launch,
+  so a waiting pass cannot leak it into other loops' children.
+
+- **Fixed: auto-update installs into uv-created virtualenvs.** Such venvs ship
+  without pip, so a git-mode update ended `install=failed` and suppressed the
+  restart. When pip is missing, the install now runs through
+  `uv pip install --python <interpreter>`.
+
 - **Fixed: returned spawn admission failures no longer masquerade as child
   launches.** Internal callers now share a parsed launch-result contract, so
   Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,

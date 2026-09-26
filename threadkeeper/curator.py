@@ -115,6 +115,15 @@ _CURATABLE_SKILL_ORIGINS = {
 }
 
 
+# A pass launches its batches back to back, and the spawn memory budget books
+# the full slim estimate for every just-launched child until the RSS sweep
+# (SPAWN_BUDGET_POLL_S) measures its real size. A large pass is therefore
+# refused well before memory is actually short. The scheduled daemon waits for
+# admission instead of dropping the remaining batches for a whole interval,
+# bounded so a genuinely full budget cannot pin the curator thread.
+_BATCH_ADMISSION_RETRY_S = 15.0
+_BATCH_ADMISSION_MAX_WAIT_S = 3600.0
+
 # Stable leading substring used to find running curator children in the tasks
 # table for the single-flight guard. The prompt is built from this fragment so
 # edits to the opening line cannot silently drift away from the detector.
@@ -1661,74 +1670,55 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             )
 
         from .spawn_result import parse_spawn_result
-        from .tools.spawn import spawn  # type: ignore
-        old_pass = os.environ.get(PASS_ID_ENV)
-        old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
-        # Every report writer, including advisory-mode children, must carry the
-        # pass identifier the parent authorized.  The writer rejects filenames
-        # that are not one of this pass's explicit report destinations.
-        os.environ[PASS_ID_ENV] = pass_id
-        if CURATOR_DESTRUCTIVE:
-            os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
         results: list[str] = []
+        admission_deadline = time.monotonic() + _BATCH_ADMISSION_MAX_WAIT_S
         try:
-            try:
-                for batch in batches:
-                    if len(batches) == 1:
-                        report_name = f"REPORT-{pass_id}.md"
-                    else:
-                        report_name = (
-                            f"REPORT-{pass_id}-batch-"
-                            f"{batch.index:03d}-of-{batch.total:03d}.md"
-                        )
-                    _authorize_curator_report(
-                        conn, now, pass_id, report_name,
-                    )
-                    full_prompt = (
-                        CURATOR_PROMPT.replace(
-                            "{DESTRUCTIVE_CLAUSE}",
-                            destructive_clause,
-                        )
-                        + batch.text
-                        + "\n\n"
-                        + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
-                        + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
-                        + f"PASS_ID = {pass_id}\n"
-                        + f"BATCH_INDEX = {batch.index}\n"
-                        + f"BATCH_TOTAL = {batch.total}\n"
-                        + "Persist the report through curator_report_write "
-                        + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
-                        + "REPORT_PATH is "
-                        + "informational and must not be written directly."
-                    )
-                    result = spawn(
-                        prompt=full_prompt,
-                        visible=False,
-                        capture_output=True,
-                        permission_mode="auto",
-                        role="curator",
-                        write_origin="curator",
-                        slim=True,
-                        extra_allowed_tools=allowed_tools,
-                    )
-                    spawn_result = parse_spawn_result(result)
-                    if not spawn_result.ok:
-                        out = (
-                            f"spawn_error batch={batch.index}/{batch.total}: "
-                            f"{spawn_result.reason}"
-                        )
-                        _record_curator_pass(conn, _last_curator_ts(conn), out)
-                        return out
-                    results.append(spawn_result.text)
-            finally:
-                if old_pass is None:
-                    os.environ.pop(PASS_ID_ENV, None)
+            for batch in batches:
+                if len(batches) == 1:
+                    report_name = f"REPORT-{pass_id}.md"
                 else:
-                    os.environ[PASS_ID_ENV] = old_pass
-                if old_snap is None:
-                    os.environ.pop(SNAPSHOT_DIR_ENV, None)
-                else:
-                    os.environ[SNAPSHOT_DIR_ENV] = old_snap
+                    report_name = (
+                        f"REPORT-{pass_id}-batch-"
+                        f"{batch.index:03d}-of-{batch.total:03d}.md"
+                    )
+                _authorize_curator_report(
+                    conn, now, pass_id, report_name,
+                )
+                full_prompt = (
+                    CURATOR_PROMPT.replace(
+                        "{DESTRUCTIVE_CLAUSE}",
+                        destructive_clause,
+                    )
+                    + batch.text
+                    + "\n\n"
+                    + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
+                    + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
+                    + f"PASS_ID = {pass_id}\n"
+                    + f"BATCH_INDEX = {batch.index}\n"
+                    + f"BATCH_TOTAL = {batch.total}\n"
+                    + "Persist the report through curator_report_write "
+                    + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
+                    + "REPORT_PATH is "
+                    + "informational and must not be written directly."
+                )
+                while True:
+                    spawn_result = parse_spawn_result(_spawn_batch_child(
+                        pass_id, snapshot_dir, full_prompt, allowed_tools,
+                    ))
+                    if spawn_result.ok or not _await_batch_admission(
+                        spawn_result.reason,
+                        scheduled=scheduled,
+                        deadline=admission_deadline,
+                    ):
+                        break
+                if not spawn_result.ok:
+                    out = (
+                        f"spawn_error batch={batch.index}/{batch.total}: "
+                        f"{spawn_result.reason}"
+                    )
+                    _record_curator_pass(conn, _last_curator_ts(conn), out)
+                    return out
+                results.append(spawn_result.text)
         except Exception as e:
             _record_curator_pass(conn, _last_curator_ts(conn), f"spawn_error: {e}")
             return f"spawn_error: {e}"
@@ -1752,6 +1742,71 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             f"spawned batches={len(results)} batch_entries={batch_entries} "
             f":: {' | '.join(results)[:180]}"
         )
+
+
+def _spawn_batch_child(
+    pass_id: str,
+    snapshot_dir,
+    prompt: str,
+    allowed_tools: str,
+) -> str:
+    """Launch one batch child with this pass's identity in its environment.
+
+    Every report writer, including advisory-mode children, must carry the
+    pass identifier the parent authorized.  The writer rejects filenames that
+    are not one of this pass's explicit report destinations.  The identity is
+    exported only around the launch itself, so a pass waiting for spawn
+    admission never leaks it into children of other loops in this process.
+    """
+    from .tools.spawn import spawn  # type: ignore
+
+    old_pass = os.environ.get(PASS_ID_ENV)
+    old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
+    os.environ[PASS_ID_ENV] = pass_id
+    if snapshot_dir is not None:
+        os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
+    try:
+        return spawn(
+            prompt=prompt,
+            visible=False,
+            capture_output=True,
+            permission_mode="auto",
+            role="curator",
+            write_origin="curator",
+            slim=True,
+            extra_allowed_tools=allowed_tools,
+        )
+    finally:
+        if old_pass is None:
+            os.environ.pop(PASS_ID_ENV, None)
+        else:
+            os.environ[PASS_ID_ENV] = old_pass
+        if old_snap is None:
+            os.environ.pop(SNAPSHOT_DIR_ENV, None)
+        else:
+            os.environ[SNAPSHOT_DIR_ENV] = old_snap
+
+
+def _await_batch_admission(
+    reason: str,
+    *,
+    scheduled: bool,
+    deadline: float,
+) -> bool:
+    """Pause before retrying a batch the spawn memory budget refused.
+
+    Returns False when the refusal is final for this pass: a manual run (it
+    fails fast), a spend-cap or any other spawn error, or an exhausted wait.
+    """
+    from .notify import budget_refusal_kind
+
+    if not scheduled or budget_refusal_kind(reason) != "memory":
+        return False
+    if time.monotonic() + _BATCH_ADMISSION_RETRY_S > deadline:
+        return False
+    logger.debug("curator: batch waits for spawn memory budget: %s", reason)
+    time.sleep(_BATCH_ADMISSION_RETRY_S)
+    return True
 
 
 def _serve_loop() -> None:

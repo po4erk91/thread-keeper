@@ -415,12 +415,39 @@ def test_pip_update_runs_setup_when_version_changes(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(pkg["auto_update"], "_run", fake_run)
     monkeypatch.setattr(pkg["auto_update"], "_run_setup", lambda: " setup=ok")
+    monkeypatch.setattr(pkg["auto_update"], "_pip_available", lambda: True)
 
     out = pkg["auto_update"]._update_installed_package()
 
     assert out == "updated mode=pip old=0.9.2 new=0.9.3 setup=ok"
     assert calls == [
         [sys.executable, "-m", "pip", "install", "--upgrade", "threadkeeper"]
+    ]
+
+
+def test_install_uses_uv_when_the_venv_has_no_pip(tmp_path, monkeypatch):
+    # uv-created virtualenvs ship without pip: `python -m pip` failed with
+    # "No module named pip", so git-mode updates ended install=failed and the
+    # restart that loads the new code was suppressed.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.base as adapters_base
+
+    monkeypatch.setattr(pkg["auto_update"], "_pip_available", lambda: False)
+    monkeypatch.setattr(
+        adapters_base, "find_cli_executable",
+        lambda *names: "/fake/bin/uv" if names == ("uv",) else "",
+    )
+
+    assert pkg["auto_update"]._pip_install_argv("--quiet", "-e", "/repo") == [
+        "/fake/bin/uv", "pip", "install", "--python", sys.executable,
+        "--quiet", "-e", "/repo",
+    ]
+
+    monkeypatch.setattr(
+        adapters_base, "find_cli_executable", lambda *names: "",
+    )
+    assert pkg["auto_update"]._pip_install_argv("--upgrade", "threadkeeper") == [
+        sys.executable, "-m", "pip", "install", "--upgrade", "threadkeeper",
     ]
 
 

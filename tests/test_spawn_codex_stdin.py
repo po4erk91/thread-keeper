@@ -102,3 +102,51 @@ def test_codex_code_evolve_spawn_can_write_git_refs(mp_with_cid, monkeypatch):
         pkg["config"].TASK_LOG_DIR
     )
     assert "ROLE: evolve_applier" in captured["stdin"]
+
+
+def test_codex_child_preapproves_default_and_role_tools(mp_with_cid, monkeypatch):
+    # A Codex child must be able to call every thread-keeper tool its role was
+    # granted — the same allowlist a Claude child receives as --allowedTools.
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.adapters.codex as codex_mod
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(identity, "_active_cli", "codex")
+    monkeypatch.setattr(spawn_config, "resolve_agent", lambda role, active_cli=None: "codex")
+    monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "gpt-test")
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda name: "/fake/bin/codex")
+
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = list(args)
+            self.pid = 4244
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", FakePopen)
+
+    out = spawn_mod.spawn(
+        prompt="curate",
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=False,
+        role="curator",
+        write_origin="curator",
+        slim=True,
+        extra_allowed_tools=(
+            "mcp__thread-keeper__curator_report_write,Read,WebSearch"
+        ),
+    )
+
+    args = captured["args"]
+    assert out.startswith("ok task=")
+    assert "--search" in args
+    for tool in ("broadcast", "search_via_parent", "curator_report_write"):
+        assert (
+            f'mcp_servers.thread-keeper.tools.{tool}.approval_mode="approve"'
+            in args
+        ), tool
+    assert not any("tools.Read." in a or "tools.WebSearch." in a for a in args)

@@ -54,6 +54,65 @@ _BYPASS_ALLOWED_PAIRS = {
 }
 _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
 
+# Default allowlist for every spawned child: thread-keeper tools so the child
+# can actually report back via broadcast/whisper without the auto-mode
+# classifier (Claude) or the "never" approval policy (Codex) blocking it.
+# Callers extend it via extra_allowed_tools or replace it with
+# allowed_tools_override.
+_CHILD_DEFAULT_ALLOWED_TOOLS = (
+    "mcp__thread-keeper__broadcast",
+    "mcp__thread-keeper__whisper",
+    "mcp__thread-keeper__inbox",
+    "mcp__thread-keeper__wait",
+    "mcp__thread-keeper__ask",
+    "mcp__thread-keeper__respond",
+    "mcp__thread-keeper__peers",
+    "mcp__thread-keeper__whoami",
+    "mcp__thread-keeper__note",
+    "mcp__thread-keeper__open_thread",
+    "mcp__thread-keeper__close_thread",
+    "mcp__thread-keeper__search",
+    "mcp__thread-keeper__dialog_search",
+    "mcp__thread-keeper__brief",
+    "mcp__thread-keeper__context",
+    "mcp__thread-keeper__verbatim_user",
+    "mcp__thread-keeper__register_probe",
+    "mcp__thread-keeper__run_probe",
+    "mcp__thread-keeper__record_attempt",
+    "mcp__thread-keeper__reliability_for",
+    "mcp__thread-keeper__weak_spots",
+    "mcp__thread-keeper__pickup_candidates",
+    "mcp__thread-keeper__claim_pickup",
+    "mcp__thread-keeper__release_pickup",
+    "mcp__thread-keeper__register_concept",
+    "mcp__thread-keeper__list_concepts",
+    "mcp__thread-keeper__expand_concept",
+    "mcp__thread-keeper__distill",
+    "mcp__thread-keeper__vote_distill",
+    "mcp__thread-keeper__pending_distillates",
+    "mcp__thread-keeper__export_distillates",
+    "mcp__thread-keeper__find_invariants",
+    "mcp__thread-keeper__core_set",
+    "mcp__thread-keeper__core_remove",
+    "mcp__thread-keeper__core_list",
+    "mcp__thread-keeper__core_get",
+    "mcp__thread-keeper__link",
+    "mcp__thread-keeper__unlink",
+    "mcp__thread-keeper__neighbors",
+    "mcp__thread-keeper__tag_signal",
+    "mcp__thread-keeper__task_thread",
+    "mcp__thread-keeper__extract_recent",
+    "mcp__thread-keeper__review_candidates",
+    "mcp__thread-keeper__accept_candidate",
+    "mcp__thread-keeper__reject_candidate",
+    "mcp__thread-keeper__consolidate",
+    "mcp__thread-keeper__mark_skill_materialized",
+    "mcp__thread-keeper__skill_record",
+    "mcp__thread-keeper__skill_list",
+    "mcp__thread-keeper__curator_run",
+    "mcp__thread-keeper__search_via_parent",
+)
+
 # Linux caps one execve argv string at MAX_ARG_STRLEN (128 KiB), even when the
 # total ARG_MAX budget is larger. Keep Claude's positional prompt well below
 # that and feed larger prompts through the existing owner-only stdin spool.
@@ -759,6 +818,13 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     mcp_env_overrides["THREADKEEPER_EGRESS_CONSUMER"] = chosen_cli
     stdin_text: Optional[str] = None
     stdin_path: Optional[Path] = None
+    # One allowlist for every CLI: Claude receives it as --allowedTools, the
+    # Codex adapter pre-approves its thread-keeper tools for this invocation.
+    child_allowed_tools = (
+        list(allowed_tools_override)
+        if allowed_tools_override is not None
+        else list(_CHILD_DEFAULT_ALLOWED_TOOLS)
+    ) + [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
     if chosen_cli != "claude":
         from ..adapters import get_adapter
         _ad = get_adapter(chosen_cli)
@@ -775,7 +841,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             model=chosen_model,
             effort=chosen_effort,
             permission_mode=permission_mode,
-            extra_allowed_tools=extra_allowed_tools,
+            extra_allowed_tools=",".join(child_allowed_tools),
         )
         if not cmd:
             return f"ERR spawn_failed cli={chosen_cli} reason=binary_not_found"
@@ -799,69 +865,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     else:
         if permission_mode:
             cmd += ["--permission-mode", permission_mode]
-        # Default allowlist: thread-keeper tools so the child can actually
-        # report back via broadcast/whisper without auto-mode classifier
-        # blocking. Users extend via extra_allowed_tools.
-        _claude_default_allow = [
-        "mcp__thread-keeper__broadcast",
-        "mcp__thread-keeper__whisper",
-        "mcp__thread-keeper__inbox",
-        "mcp__thread-keeper__wait",
-        "mcp__thread-keeper__ask",
-        "mcp__thread-keeper__respond",
-        "mcp__thread-keeper__peers",
-        "mcp__thread-keeper__whoami",
-        "mcp__thread-keeper__note",
-        "mcp__thread-keeper__open_thread",
-        "mcp__thread-keeper__close_thread",
-        "mcp__thread-keeper__search",
-        "mcp__thread-keeper__dialog_search",
-        "mcp__thread-keeper__brief",
-        "mcp__thread-keeper__context",
-        "mcp__thread-keeper__verbatim_user",
-        "mcp__thread-keeper__register_probe",
-        "mcp__thread-keeper__run_probe",
-        "mcp__thread-keeper__record_attempt",
-        "mcp__thread-keeper__reliability_for",
-        "mcp__thread-keeper__weak_spots",
-        "mcp__thread-keeper__pickup_candidates",
-        "mcp__thread-keeper__claim_pickup",
-        "mcp__thread-keeper__release_pickup",
-        "mcp__thread-keeper__register_concept",
-        "mcp__thread-keeper__list_concepts",
-        "mcp__thread-keeper__expand_concept",
-        "mcp__thread-keeper__distill",
-        "mcp__thread-keeper__vote_distill",
-        "mcp__thread-keeper__pending_distillates",
-        "mcp__thread-keeper__export_distillates",
-        "mcp__thread-keeper__find_invariants",
-        "mcp__thread-keeper__core_set",
-        "mcp__thread-keeper__core_remove",
-        "mcp__thread-keeper__core_list",
-        "mcp__thread-keeper__core_get",
-        "mcp__thread-keeper__link",
-        "mcp__thread-keeper__unlink",
-        "mcp__thread-keeper__neighbors",
-        "mcp__thread-keeper__tag_signal",
-        "mcp__thread-keeper__task_thread",
-        "mcp__thread-keeper__extract_recent",
-        "mcp__thread-keeper__review_candidates",
-        "mcp__thread-keeper__accept_candidate",
-        "mcp__thread-keeper__reject_candidate",
-        "mcp__thread-keeper__consolidate",
-        "mcp__thread-keeper__mark_skill_materialized",
-        "mcp__thread-keeper__skill_record",
-        "mcp__thread-keeper__skill_list",
-        "mcp__thread-keeper__curator_run",
-            "mcp__thread-keeper__search_via_parent",
-        ]
-        extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-        allow = (
-            list(allowed_tools_override)
-            if allowed_tools_override is not None
-            else _claude_default_allow
-        ) + extra_list
-        cmd += ["--allowedTools"] + allow
+        cmd += ["--allowedTools"] + child_allowed_tools
         if chosen_model:
             cmd += ["--model", chosen_model]
         if chosen_effort:

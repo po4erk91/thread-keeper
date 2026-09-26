@@ -649,6 +649,106 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
     assert "batch_entries=" in row["summary"]
 
 
+_RAM_REFUSAL = (
+    "ERR budget_exceeded: running_subagents=4000MB + new_child=500MB = "
+    "4500MB > limit=4096MB. Wait for a child to finish, raise "
+    "THREADKEEPER_SPAWN_BUDGET_MB, or use task_kill()."
+)
+
+
+def _batch_spawner(monkeypatch, refuse):
+    """Fake spawn() that refuses a batch attempt when refuse(index, attempt)
+    returns an error string; records every attempt and every launch."""
+    import threadkeeper.tools.spawn as spawn_mod
+
+    attempts: list[int] = []
+    launched: list[int] = []
+
+    def fake_spawn(**kwargs):
+        idx = int(re.search(r"BATCH_INDEX = (\d+)", kwargs["prompt"]).group(1))
+        attempts.append(idx)
+        assert os.environ["THREADKEEPER_CURATOR_PASS_ID"]
+        error = refuse(idx, attempts.count(idx))
+        if error:
+            return error
+        launched.append(idx)
+        return f"ok task=tk_batch_{idx} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    return attempts, launched
+
+
+def test_scheduled_pass_waits_for_memory_budget_instead_of_dropping_batches(
+    tmp_path, monkeypatch,
+):
+    # A 12-batch pass was launched back to back while the RAM budget booked
+    # 500MB per unmeasured child, so batch 9 was refused and batches 9-12 were
+    # dropped until the next day. The daemon must wait for admission instead.
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+    monkeypatch.setattr(pkg["curator"], "_BATCH_ADMISSION_RETRY_S", 0.0)
+    attempts, launched = _batch_spawner(
+        monkeypatch,
+        lambda idx, attempt: _RAM_REFUSAL if idx == 2 and attempt <= 2 else "",
+    )
+
+    out = pkg["curator"].run_curator_pass(force=True, scheduled=True)
+
+    assert out.startswith("spawned batches="), out
+    assert len(launched) > 2
+    assert launched == list(range(1, len(launched) + 1))
+    assert attempts.count(2) == 3
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
+
+
+def test_manual_pass_fails_fast_on_memory_budget(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+    monkeypatch.setattr(pkg["curator"], "_BATCH_ADMISSION_RETRY_S", 0.0)
+    attempts, launched = _batch_spawner(
+        monkeypatch, lambda idx, attempt: _RAM_REFUSAL if idx == 2 else "",
+    )
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
+    assert out.startswith("spawn_error batch=2/"), out
+    assert "budget_exceeded" in out
+    assert attempts == [1, 2]
+    assert launched == [1]
+
+
+def test_scheduled_pass_stops_waiting_at_deadline_and_on_spend_caps(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+    curator = pkg["curator"]
+    # The next retry would land past the deadline, so the pass gives up on the
+    # first refusal without sleeping.
+    monkeypatch.setattr(curator, "_BATCH_ADMISSION_RETRY_S", 60.0)
+    monkeypatch.setattr(curator, "_BATCH_ADMISSION_MAX_WAIT_S", 30.0)
+
+    attempts, _ = _batch_spawner(
+        monkeypatch, lambda idx, attempt: _RAM_REFUSAL if idx == 2 else "",
+    )
+    out = curator.run_curator_pass(force=True, scheduled=True)
+    assert out.startswith("spawn_error batch=2/"), out
+    assert attempts.count(2) == 1
+
+    monkeypatch.setattr(curator, "_BATCH_ADMISSION_MAX_WAIT_S", 3600.0)
+    attempts, _ = _batch_spawner(
+        monkeypatch,
+        lambda idx, attempt: (
+            "ERR token_budget_exceeded: tokens_24h=9 >= limit=5."
+            if idx == 1 else ""
+        ),
+    )
+    out = curator.run_curator_pass(force=True, scheduled=True)
+    assert out.startswith("spawn_error batch=1/"), out
+    assert "token_budget_exceeded" in out
+    assert attempts == [1]
+
+
 def test_run_curator_pass_recent_high_water_is_not_due(
     tmp_path, monkeypatch,
 ):

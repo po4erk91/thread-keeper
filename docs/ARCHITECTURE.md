@@ -133,7 +133,9 @@ is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
 `pip install --upgrade` in the current interpreter environment only after the
-latest PyPI release's non-yanked files pass the provenance gate. That gate
+latest PyPI release's non-yanked files pass the provenance gate. When that
+interpreter has no pip (uv-created or pipx venvs), both installs run through
+`uv pip install --python <interpreter>` if `uv` is available. That gate
 queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
 bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
 and checks the attested subject filename/SHA-256 against PyPI metadata before
@@ -518,6 +520,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   endorsed `inventory_sha256` and the current inventory hash. Spawned
   `curator_pass` events record total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
+  Batches launch back to back while the spawn memory budget still books the
+  slim estimate for each unmeasured child. When that budget refuses a batch, a
+  scheduled pass retries every 15 seconds for up to one hour per pass instead
+  of dropping the remaining batches; a manual `curator_run` fails fast, and
+  token/cost budget refusals are final. The pass ID and snapshot directory are
+  exported only around each launch.
   Before dispatching each child, the parent also authorizes that exact
   `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
   path-scoped writer requires that authorization plus its matching pass ID and
@@ -889,7 +897,13 @@ for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
 `bypassPermissions` unless the request comes from the evolve daemon
 role/write-origin pairs (`evolve_reviewer`/`evolve`,
 `evolve_applier`/`evolve_apply`), or the operator explicitly sets
-`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Web tools
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Every child gets one tool
+allowlist: the default ThreadKeeper set (or `allowed_tools_override`) plus the
+caller's `extra_allowed_tools`. Claude receives it as `--allowedTools`; because
+`codex exec` runs with approval policy "never", the Codex adapter pre-approves
+each listed `mcp__thread-keeper__*` tool for that invocation with
+`-c mcp_servers.thread-keeper.tools.<tool>.approval_mode="approve"`, so a
+Codex child is not limited to the static `config.toml` list. Web tools
 (`WebSearch`/`WebFetch`) are never
 granted to a `bypassPermissions` child: the evolve reviewer's web research runs
 in a separate read-only `permission_mode="auto"` child with no shell, so the
