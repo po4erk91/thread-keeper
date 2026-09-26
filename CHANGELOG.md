@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.17.8 — 2026-09-18
+
+### Fixed
+
+- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
+  reads GitHub REST comment author metadata and accepts a visible claim marker
+  only from a trusted repository association or an explicitly configured
+  automation login. Spoofed, malformed, and metadata-free markers remain
+  visible but cannot block issue pickup or affect claim-race tie-breaking.
+
 ## v0.17.7 — 2026-09-17
 
 - **Added: mechanically scoped Evolve research handoffs.** The web

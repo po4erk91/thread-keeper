@@ -73,7 +73,8 @@ remains a live question.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
   creates/updates roadmap issues; Evolve applier drains one open issue at a
-  time behind a visible GitHub issue claim comment and PR, advances past
+  time behind an author-authenticated visible GitHub issue claim comment and
+  PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
 - Auto-update self-restart safety gate (#19): restarts after a daily git/pip

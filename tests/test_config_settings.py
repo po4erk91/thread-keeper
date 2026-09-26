@@ -345,19 +345,22 @@ def test_panel_roles_is_list(monkeypatch):
 
 
 def test_evolve_author_trust_knobs_default_and_override(monkeypatch):
-    """#63: the autonomous-pickup author-trust gate is configurable."""
+    """The autonomous-pickup and claim-comment trust gates are configurable."""
     c = _fresh_config(monkeypatch)
     assert c.EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS == [
         "OWNER", "MEMBER", "COLLABORATOR",
     ]
+    assert c.EVOLVE_CLAIM_AUTOMATION_ACTORS == []
     assert c.EVOLVE_TRUST_LABELS == []
 
     c = _fresh_config(monkeypatch, env={
         "THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS": "owner, collaborator",
+        "THREADKEEPER_EVOLVE_CLAIM_AUTOMATION_ACTORS": "Claim-Bot, Release-Bot",
         "THREADKEEPER_EVOLVE_TRUST_LABELS": "Approved, Roadmap",
     })
     # Associations normalize to upper, labels to lower; CSV is parsed to a list.
     assert c.EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS == ["OWNER", "COLLABORATOR"]
+    assert c.EVOLVE_CLAIM_AUTOMATION_ACTORS == ["claim-bot", "release-bot"]
     assert c.EVOLVE_TRUST_LABELS == ["approved", "roadmap"]
 
 

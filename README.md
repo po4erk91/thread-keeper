@@ -974,7 +974,12 @@ which bypasses the gate as explicit promotion. This removes the untrusted input
 at the boundary and complements the in-prompt data-fencing of #22/#76. The
 public claim comment also carries only an opaque per-host token (a 6-char hash
 of the hostname), never the raw hostname/PID/git-rev; the full host identity is
-recorded in the local event log for multi-host triage.
+recorded in the local event log for multi-host triage. A visible claim marker is
+also not a bearer token: the claim lock accepts it only when the comment's
+GitHub `author_association` is in that trusted association set, or when its
+author login is listed in `THREADKEEPER_EVOLVE_CLAIM_AUTOMATION_ACTORS`. Missing
+author metadata and untrusted marker comments remain visible on GitHub but do
+not block roadmap work or affect claim-race resolution.
 
 **Privilege + public-body guard (#22).** Stored evolve suggestions and external
 GitHub issue bodies are wrapped in explicit data fences before a privileged
@@ -1267,6 +1272,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S` | 5 | maximum seconds to wait for another clone/venv provisioning operation before returning `ERR evolve_repo_provisioning_in_progress retry_later=1`; `0` is immediate |
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
 | `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
+| `THREADKEEPER_EVOLVE_CLAIM_AUTOMATION_ACTORS` | (empty) | comma-separated GitHub logins allowed to own visible Evolve claim comments without a trusted repository association; all other marker comments are advisory text only |
 | `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
 | `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` bypasses the cap, but the default skip-label gate still refuses the `blocked` label until it is removed or reconfigured |
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |

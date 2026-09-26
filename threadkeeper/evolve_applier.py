@@ -75,6 +75,7 @@ from .config import (
     EVOLVE_REPO_PROVISION_LOCK_TIMEOUT_S,
     EVOLVE_REPO_ROOT,
     EVOLVE_REPO_URL,
+    EVOLVE_CLAIM_AUTOMATION_ACTORS,
     EVOLVE_TRUST_LABELS,
     EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS,
     ROADMAP_CLAIM_RACE_WINDOW_S,
@@ -1893,11 +1894,15 @@ def _fetch_issue_comments(
     issue_number: int,
     repo_root: Optional[Path] = None,
 ) -> tuple[list[dict], str]:
-    """Fetch issue comments via gh. Returns (comments, error)."""
+    """Fetch issue comments with the author metadata needed for claim trust."""
     repo = str(repo_root or _repo_root())
     cmd = [
-        "gh", "issue", "view", str(int(issue_number)),
-        "--json", "comments",
+        "gh", "api", "--include", "--paginate",
+        "-H", "Accept: application/vnd.github+json",
+        (
+            f"repos/{{owner}}/{{repo}}/issues/{int(issue_number)}/comments"
+            "?per_page=100"
+        ),
     ]
     try:
         proc = _run_gh(cmd, cwd=repo, timeout=30)
@@ -1911,13 +1916,34 @@ def _fetch_issue_comments(
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
         msg = err[-1] if err else f"exit={proc.returncode}"
         return [], f"gh_issue_comments_failed: {msg[:180]}"
+    _responses, bodies = split_gh_api_output(proc.stdout or "")
+    if not bodies:
+        bodies = [strip_gh_api_headers(proc.stdout or "")]
+    pages: list[object] = []
     try:
-        data = json.loads(proc.stdout or "{}")
+        for body in bodies:
+            if body.strip():
+                pages.append(json.loads(body))
     except json.JSONDecodeError as e:
         return [], f"gh_issue_comments_bad_json: {e}"
-    comments = data.get("comments") if isinstance(data, dict) else None
-    if not isinstance(comments, list):
+    if not pages:
         return [], "gh_issue_comments_bad_shape"
+    comments: list[dict] = []
+    for page in pages:
+        if not isinstance(page, list):
+            return [], "gh_issue_comments_bad_shape"
+        for item in page:
+            if not isinstance(item, dict):
+                continue
+            user = item.get("user")
+            login = user.get("login") if isinstance(user, dict) else ""
+            comments.append({
+                "body": item.get("body") or "",
+                "createdAt": item.get("created_at") or "",
+                "url": item.get("html_url") or item.get("url") or "",
+                "authorAssociation": item.get("author_association") or "",
+                "authorLogin": login or "",
+            })
     return comments, ""
 
 
@@ -1940,10 +1966,37 @@ def _issue_comment_is_active_claim(comment: dict, now_t: float) -> bool:
     body = str(comment.get("body") or "")
     if ROADMAP_ISSUE_CLAIM_MARKER not in body:
         return False
+    if not _claim_comment_author_trusted(comment):
+        return False
     created_at = _parse_gh_timestamp(comment.get("createdAt"))
     if created_at is None:
         return True
     return now_t < created_at + ROADMAP_ISSUE_CLAIM_TTL_S
+
+
+def _claim_comment_author_trusted(comment: dict) -> bool:
+    """Whether a marker comment can own the public cross-host claim lock.
+
+    GitHub issue comments are public text. A copied marker is authoritative
+    only when GitHub metadata identifies a maintainer-level author association
+    or an explicitly configured automation login. Missing metadata fails
+    closed so it cannot suppress roadmap work.
+    """
+    trusted_associations = {
+        str(association).strip().upper()
+        for association in EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS
+        if str(association).strip()
+    }
+    association = str(comment.get("authorAssociation") or "").strip().upper()
+    if association in trusted_associations:
+        return True
+    trusted_actors = {
+        str(actor).strip().lower()
+        for actor in EVOLVE_CLAIM_AUTOMATION_ACTORS
+        if str(actor).strip()
+    }
+    login = str(comment.get("authorLogin") or "").strip().lower()
+    return bool(login) and login in trusted_actors
 
 
 def _issue_has_active_claim(

@@ -630,13 +630,16 @@ moving the high-water forward; `force=True` bypasses this due gate.
   of switching tasks. The skip count/reasons show in `evolve_apply_status()`;
   `mp_dashboard()` counts the skip outcome.
   Before spawning, the parent runs five multi-host conflict guards in order: (1) skip
-  if an active `<!-- thread-keeper:evolve-applier-claim -->` comment already
-  exists; (2) skip if `gh pr list --search "in:body Closes #N"` shows an open
+  if an active `<!-- thread-keeper:evolve-applier-claim -->` comment from a
+  trusted repository association (`OWNER`, `MEMBER`, or `COLLABORATOR` by
+  default) or a login in `EVOLVE_CLAIM_AUTOMATION_ACTORS` already exists;
+  untrusted or metadata-free marker comments are advisory text only; (2) skip if
+  `gh pr list --search "in:body Closes #N"` shows an open
   PR already closing the issue; (3) post the parent's own claim comment (body
   carries only an opaque per-host token — `sha1(hostname)[:6]` — never raw
   hostname/PID/git-rev, which stay in the local `roadmap_issue_claim_host`
   event for triage); (4) wait
-  `ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetch claims, and delete the
+  `ROADMAP_CLAIM_RACE_WINDOW_S` (default 3s), re-fetch authenticated claims, and delete the
   parent's own claim when a competing host got there first (earliest
   `createdAt` wins); (5) on `spawn()` failure, retract the just-posted claim
   so the next pass can retry immediately. Claims expire after 24 hours as a
