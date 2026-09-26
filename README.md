@@ -169,6 +169,14 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Python MCP SDK compatibility
+
+thread-keeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). Fresh
+installs resolve 2.x. A small internal adapter uses the SDK 2.x `MCPServer`
+name and falls back to its SDK 1.x `FastMCP` predecessor, so tools, resources,
+prompts, annotations, structured content, elicitation, and stdio behavior keep
+the same public contract across both supported SDK majors.
+
 ### MCP primitives (tools, resources, prompts, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
@@ -1800,7 +1808,7 @@ process and reporting policy.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
-├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── _mcp.py               # MCPServer singleton + read_tool()/write_tool() annotation wrappers
 ├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults

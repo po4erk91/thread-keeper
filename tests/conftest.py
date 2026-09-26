@@ -150,7 +150,7 @@ def _bootstrap_mp(tmp_path, monkeypatch, force_cid: str = ""):
 def fresh_mp(tmp_path, monkeypatch):
     """Re-import the whole threadkeeper package against a clean DB.
 
-    The package keeps process-wide state (FastMCP singleton, _session_id,
+    The package keeps process-wide state (MCP server singleton, _session_id,
     background ingester thread). For test isolation we wipe sys.modules
     of every threadkeeper submodule and re-import. Each test thus gets
     its own DB, its own session, and a clean tool registry.
@@ -172,7 +172,7 @@ def mp_with_cid(tmp_path, monkeypatch):
 
 
 def all_tool_names_from_mcp(mcp):
-    """List registered tool names from FastMCP. The mcp.list_tools is async,
+    """List registered tool names from the MCP server. The mcp.list_tools is async,
     we use the internal _tool_manager to avoid event-loop boilerplate."""
     tm = mcp._tool_manager
     return sorted(tm._tools.keys())

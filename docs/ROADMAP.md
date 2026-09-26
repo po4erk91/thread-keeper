@@ -265,7 +265,7 @@ machine by design; the SQLite store lives at
 paths. Move to a hosted topology where N users connect their CLIs to
 one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
 
-- **HTTP / SSE transport.** FastMCP already supports
+- **HTTP / SSE transport.** MCPServer already supports
   `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
   Scope: S.
 - **Per-user auth.** Bearer token in `Authorization` header on every
@@ -1087,8 +1087,10 @@ verified gaps from the present code and test suite:
 - **Generated documentation inventory.** Remove hand-maintained test/tool
   counts or check them mechanically so README and architecture totals cannot
   drift from collection and the MCP registry (#278).
-- **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
-  contracts before lifting the temporary `mcp<2` compatibility cap (#279).
+- ✅ DONE (#279). **MCP SDK 2.x migration.** The server/context compatibility
+  adapter now supports both SDK 1.x and 2.x, and the dependency range is
+  `mcp>=1.10.0,<3`; the CI matrix covers both majors and a subprocess stdio
+  smoke test.
 
 **2026-09-10 reviewer additions (issue-backed).**
 The current audit reconciled five late-August/September issues and added one
