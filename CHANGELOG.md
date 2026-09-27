@@ -81,6 +81,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Docs: no more hand-maintained test or MCP tool totals (#278).** README
+  and `docs/ARCHITECTURE.md` point to the suite and the live tool registry
+  instead of exact numbers, a docs test rejects reintroduced totals, and the
+  architecture tool table is checked against the registry (it now lists the
+  sync tools and `evolve_prune_managed_venv`). Tests also start with
+  `THREADKEEPER_ROLE=server`, so a suite run from a host-spawned child stays
+  isolated.
+
 - **Fixed: spawn no longer holds the SQLite writer while a child launches
   (#293).** The budget check and task reservation commit in one short
   transaction; git worktree setup, spool files and `Popen` run with no write

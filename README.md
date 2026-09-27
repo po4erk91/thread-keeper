@@ -1880,8 +1880,8 @@ pip install -e '.[semantic,dev]'
 python -m pytest
 ```
 
-869 tests passing on Python 3.11 / 3.12 / 3.13 (1 skipped). CI runs
-the suite and a resolved-dependency `pip-audit` gate on every push and PR.
+The suite runs on Python 3.11 / 3.12 / 3.13. CI runs it, together with a
+resolved-dependency `pip-audit` gate, on every push and PR.
 CodeQL scans the Python source on those changes and weekly; see
 [SECURITY.md](SECURITY.md#continuous-security-scanning) for the exception
 process and reporting policy.
@@ -1912,7 +1912,7 @@ threadkeeper/
 │   ├── antigravity.py
 │   ├── copilot.py
 │   └── vscode.py
-└── tools/                # @read_tool()/@write_tool() entries — 120 of them
+└── tools/                # registered @read_tool()/@write_tool() entries
     ├── threads.py
     ├── peers.py
     ├── spawn.py
@@ -1924,14 +1924,14 @@ threadkeeper/
 
 **Tool annotation contract (#67).** Every tool registers through
 `@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
-so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
-`readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
+so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for every
+registered tool: `readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
 `dialog_search`, the status tools, …) and `readOnlyHint=False`
 for mutations. `lesson_list` / `lesson_get` are classified as non-destructive
-writes because they bump lesson access counters. The ten delete/overwrite/kill
-tools carry `destructiveHint=True` (`compost` is read-only — it only surfaces
-idle threads). A confirmation/elicitation host reads this to decide which calls
-warrant a prompt. The five status tools (`context`, `spawn_budget_status`,
+writes because they bump lesson access counters. Delete/overwrite/kill tools
+carry `destructiveHint=True` (`compost` is read-only — it only surfaces idle
+threads). A confirmation/elicitation host reads this to decide which calls
+warrant a prompt. The status tools (`context`, `spawn_budget_status`,
 `spawn_status`, `mp_health`, `agent_status`) additionally advertise an
 `outputSchema` and return `structuredContent` alongside the legacy text
 block. The contract is enforced by `tests/test_tool_annotations.py`.
