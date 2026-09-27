@@ -81,6 +81,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: Korean, Bengali, and European Portuguese phrase patterns (#4).**
+  Korean and Bengali cover all five families (contributed in #327). The
+  Portuguese patterns, previously Brazilian-only, now also recognize the
+  European "tu" forms and idioms (`tens de`, `não faças`, `em simultâneo`,
+  `em suma`, `a título de exemplo`, `nestes casos`). The Korean parallel cue
+  `같이` was dropped because it also means "as/like".
+
 - **Changed: CI runs the test suite as three parallel `--forked` shards (#217).**
   `THREADKEEPER_TEST_SHARD=k/n` selects a deterministic share of the tests by
   test id, and CI runs three shard jobs per matrix cell instead of one serial

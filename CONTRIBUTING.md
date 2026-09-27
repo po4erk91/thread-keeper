@@ -146,7 +146,7 @@ To add a language:
 4. Add a row per family to the parametrized samples in
    `tests/test_i18n_multilang.py`.
 
-Currently shipped: en, zh, hi, es, pt, fr, de, ar, ru, ja
+Currently shipped: en, zh, hi, es, pt (Brazilian and European), fr, de, ar, ru, ja, ko, bn
 (~82% of the world's speakers).
 
 ## Style

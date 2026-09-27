@@ -21,6 +21,7 @@ SPAWN_CUE_SAMPLES = [
     ("en", "do these in parallel"),
     ("es", "hazlo en paralelo"),
     ("pt", "faça isso em paralelo"),
+    ("pt-PT", "faz isto em simultâneo"),
     ("fr", "fais-le en parallèle"),
     ("de", "mach das parallel"),
     ("ru", "сделай параллельно"),
@@ -44,6 +45,8 @@ WANT_SAMPLES = [
     ("en", "I want you to never use X"),
     ("es", "quiero que nunca uses X"),
     ("pt", "eu quero que você nunca use X"),
+    ("pt-PT", "tu tens de usar X"),
+    ("pt-PT-neg", "não faças X outra vez"),
     ("fr", "je veux que tu ne fasses jamais X"),
     ("de", "ich möchte, dass du nie X verwendest"),
     ("ru", "я хочу чтобы ты не использовал X"),
@@ -59,6 +62,7 @@ INSIGHT_SAMPLES = [
     ("en", "the key point is X"),
     ("es", "la conclusión es X"),
     ("pt", "a conclusão é X"),
+    ("pt-PT", "em suma, X"),
     ("fr", "la conclusion: X"),
     ("de", "die Schlussfolgerung ist X"),
     ("ru", "вывод: X"),
@@ -74,6 +78,7 @@ EXAMPLE_SAMPLES = [
     ("en", "for example X"),
     ("es", "por ejemplo X"),
     ("pt", "por exemplo X"),
+    ("pt-PT", "a título de exemplo X"),
     ("fr", "par exemple X"),
     ("de", "zum Beispiel X"),
     ("de-short", "z.B. X funktioniert"),
@@ -90,6 +95,7 @@ FRAME_SAMPLES = [
     ("en", "this typically happens"),
     ("es", "típicamente sucede"),
     ("pt", "tipicamente acontece"),
+    ("pt-PT", "nestes casos acontece X"),
     ("fr", "typiquement cela arrive"),
     ("de", "typischerweise passiert das"),
     ("ru", "обычно так"),
@@ -166,3 +172,9 @@ def test_supported_locales_listed():
     assert set(i18n.SUPPORTED_LOCALES) == {
         "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja", "ko", "bn",
     }
+
+
+def test_korean_as_above_is_not_a_parallel_cue():
+    # 같이 also means "like/as": "위와 같이 설정했어" = "configured as above".
+    assert not i18n.SPAWN_CUE_RE.search("위와 같이 설정했어")
+    assert i18n.SPAWN_CUE_RE.search("동시에 진행해")

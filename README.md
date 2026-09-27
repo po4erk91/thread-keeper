@@ -1231,9 +1231,9 @@ claim earned trust. Thresholds:
 
 All multilingual regex and prompt fragments live in
 `threadkeeper/i18n.py` — the rest of the codebase stays English-only.
-Currently ships ten locales: **English, Mandarin Chinese, Hindi,
-Spanish, Portuguese, French, German, Arabic, Russian, Japanese**
-(~82 % of the world's speakers).
+Currently ships twelve locales: **English, Mandarin Chinese, Hindi,
+Spanish, Portuguese (Brazilian and European), French, German, Arabic,
+Russian, Japanese, Korean, Bengali**.
 
 Adding a new language is a two-file PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -1887,7 +1887,7 @@ threadkeeper/
 ├── eval/                 # offline learning-loop decision-quality harness (python -m threadkeeper.eval)
 ├── brief.py              # render_brief / render_context
 ├── shadow_review.py      # autonomous learning observer
-├── i18n.py               # 10 locales of regex + prompt bundles
+├── i18n.py               # 12 locales of regex + prompt bundles
 ├── adapters/             # one file per supported CLI
 │   ├── claude_code.py
 │   ├── claude_desktop.py

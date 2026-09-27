@@ -16,7 +16,8 @@ By keeping all multilingual vocabulary in one named bundle:
 
 Supported locales (in order of speaker count):
   English, Mandarin Chinese, Hindi, Spanish, French, Arabic, Russian,
-  Portuguese, German, Japanese, Korean, Bengali.
+  Portuguese (Brazilian and European "tu" forms), German, Japanese, Korean,
+  Bengali.
 
 Notes on regex boundaries across scripts:
   * Latin and Cyrillic words use ASCII `\\b` cleanly.
@@ -56,9 +57,9 @@ _PARALLEL_WORDS_BOUNDED = (
     # Spanish
     r"|en\s+paralelo|simult[áa]neamente|mientras|al\s+mismo\s+tiempo|"
     r"en\s+segundo\s+plano"
-    # Portuguese
-    r"|em\s+paralelo|simultaneamente|enquanto|ao\s+mesmo\s+tempo|"
-    r"em\s+segundo\s+plano"
+    # Portuguese (pt-PT adds "em simultâneo")
+    r"|em\s+paralelo|simultaneamente|em\s+simult[âa]neo|enquanto|"
+    r"ao\s+mesmo\s+tempo|em\s+segundo\s+plano"
     # French
     r"|en\s+parall[èe]le|simultan[ée]ment|pendant\s+que|"
     r"en\s+m[êe]me\s+temps|en\s+arri[èe]re-plan"
@@ -73,7 +74,7 @@ _PARALLEL_WORDS_BOUNDED = (
     # Arabic
     r"|بالتوازي|في\s+نفس\s+الوقت|بالخلفية|متزامن\w*"
     # Korean (Hangul, bounded works with re.UNICODE)
-    r"|병렬로|동시에|같이|백그라운드에서"
+    r"|병렬로|동시에|백그라운드에서"
 )
 # Bengali: trailing combining vowel signs are not \w, so \b after the
 # last syllable never fires. Match as bare literals instead (false
@@ -111,8 +112,8 @@ _PLURAL_NOUNS = (
     # Spanish
     r"|cosas|tareas|preguntas|pasos|temas|problemas|razones|opciones"
     # Portuguese
-    r"|coisas|tarefas|perguntas|passos|etapas|t[óo]picos|pontos|"
-    r"problemas|raz[õo]es|op[çc][õo]es"
+    r"|coisas|tarefas|perguntas|quest[õo]es|passos|etapas|t[óo]picos|"
+    r"pontos|problemas|raz[õo]es|op[çc][õo]es"
     # French
     r"|choses|t[âa]ches|questions|[ée]tapes|sujets|probl[èe]mes|"
     r"raisons|options"
@@ -163,6 +164,9 @@ _WANT_ES = (
 _WANT_PT = (
     r"\b(?:eu\s+quero\s+que|quero\s+que|eu\s+preciso\s+que|"
     r"voc[êe]\s+(?:deve|n[ãa]o\s+deve|precisa)|"
+    # pt-PT addresses the reader as "tu": deves / tens de / não faças.
+    r"tu\s+(?:deves|n[ãa]o\s+deves|precisas)|tens\s+(?:de|que)\s+|"
+    r"deves\s+|n[ãa]o\s+fa[çc]as|"
     r"nunca\s+|sempre\s+|a\s+partir\s+de\s+agora|de\s+agora\s+em\s+diante)\b"
 )
 _WANT_FR = (
@@ -214,7 +218,8 @@ _INSIGHT_ES = (
 )
 _INSIGHT_PT = (
     r"\b(?:a\s+conclus[ãa]o|o\s+ponto\s+(?:chave|principal)|"
-    r"em\s+resumo|o\s+importante\s+[ée]|no\s+fim\s+das\s+contas)"
+    r"em\s+resumo|em\s+suma|resumindo|o\s+importante\s+[ée]|"
+    r"o\s+essencial\s+[ée]|no\s+fim\s+das\s+contas)"
 )
 _INSIGHT_FR = (
     r"\b(?:la\s+conclusion|le\s+point\s+cl[ée]|en\s+r[ée]sum[ée]|"
@@ -250,7 +255,7 @@ INSIGHT_MARKERS_RE = re.compile(
 
 _EXAMPLE_EN = r"\b(?:for\s+example|e\.?g\.?|such\s+as|like\s+when)\b"
 _EXAMPLE_ES = r"\bpor\s+ejemplo\b"
-_EXAMPLE_PT = r"\bpor\s+exemplo\b"
+_EXAMPLE_PT = r"\b(?:por\s+exemplo|a\s+t[íi]tulo\s+de\s+exemplo)\b"
 _EXAMPLE_FR = r"\bpar\s+exemple\b"
 _EXAMPLE_DE = r"\b(?:zum\s+beispiel|z\.\s?b\.?)\b"
 _EXAMPLE_RU = r"\bнаприме[р]?\b"
@@ -283,8 +288,8 @@ _FRAME_ES = (
     r"en\s+(?:estos|tales)\s+casos|cuando\s+\S+\s+entonces)"
 )
 _FRAME_PT = (
-    r"\b(?:padr[ãa]o|tipicamente|normalmente|geralmente|"
-    r"nesses\s+casos|sempre\s+que)"
+    r"\b(?:padr[ãa]o|tipicamente|normalmente|geralmente|habitualmente|"
+    r"nesses\s+casos|nestes\s+casos|em\s+tais\s+casos|sempre\s+que)"
 )
 _FRAME_FR = (
     r"\b(?:motif|typiquement|normalement|g[ée]n[ée]ralement|"
