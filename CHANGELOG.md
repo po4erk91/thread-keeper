@@ -81,6 +81,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: public spawning can no longer self-authorize sandbox bypasses.**
+  Caller-provided role and provenance metadata no longer grant
+  `bypassPermissions`; privileged Evolve launches use a private server-owned
+  capability, while the explicit operator override remains available.
+
 - **Fixed: Evolve reviewer backlog pressure now excludes ordinary open issues
   without the `roadmap` label (#304).** The governor and applier prioritization
   share the same roadmap-label predicate, while locally applied roadmap issues

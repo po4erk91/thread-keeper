@@ -225,6 +225,9 @@ def test_watchdog_immediately_respawns_with_continuation_prompt(
     assert call["role"] == "evolve_applier"
     assert call["write_origin"] == "evolve_apply"
     assert call["permission_mode"] == "bypassPermissions"
+    # The continuation of an admitted privileged child keeps its authority;
+    # without the private capability the public gate would refuse it.
+    assert call["_bypass_capability"] is spawn_mod._EVOLVE_BYPASS_CAPABILITY
     assert call["extra_allowed_tools"] == "Bash(git *)"
     assert call["capture_output"] is True
     assert call["visible"] is False

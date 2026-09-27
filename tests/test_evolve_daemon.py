@@ -428,7 +428,7 @@ def test_audit_prompt_reports_existing_roadmap_doc_pr(
     monkeypatch.setattr(pkg["ed"], "_run_gh", fake_run_gh)
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -526,8 +526,11 @@ def test_returned_spawn_error_preserves_evolve_audit_cursor_and_phase(
     before = pkg["ed"]._last_evolve_ts(conn)
 
     import threadkeeper.tools.spawn as spawn_mod
+    # The audit launches through the private reviewer launcher, which calls
+    # _spawn_impl; patch that seam rather than the public tool.
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
     )
 
     out = pkg["ed"].run_evolve_pass(force=True)
@@ -750,7 +753,7 @@ def test_run_evolve_pass_audit_phase_no_web_consumes_fenced_research(
     _seed_research(pkg, conn, text="- idea: adopt thing Z\n  sources: https://z\n")
     calls = {}
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: calls.update(kw) or "ok task=tk_ev pid=1")
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("spawned audit pending=2")
@@ -792,7 +795,7 @@ def test_run_evolve_pass_audit_backlog_governor(tmp_path, monkeypatch):
     calls = []
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1"
+        spawn_mod, "_spawn_impl", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1"
     )
     monkeypatch.setattr(
         pkg["ed"], "_open_roadmap_backlog_count", lambda conn, repo: (2, ""),
@@ -833,7 +836,8 @@ def test_open_roadmap_backlog_count_scopes_mixed_issue_inventory(
     calls = []
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: calls.append(kw) or "ok task=tk_ev pid=1",
     )
     issues = [
         {"number": 10, "labels": [{"name": "bug"}]},
@@ -904,7 +908,7 @@ def test_run_evolve_pass_audit_skips_dirty_worktree_and_records_event(
         raise AssertionError("must not spawn reviewer audit from dirty checkout")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ed"].run_evolve_pass(force=True)
 
@@ -935,6 +939,9 @@ def test_web_research_and_privileged_write_never_cogranted(tmp_path, monkeypatch
         captured.append(dict(kw))
         return "ok task=tk_ev pid=1"
 
+    # Both phases now launch through _spawn_impl (the audit via the private
+    # reviewer launcher); patching the public spawn too keeps the invariant
+    # checked if a call site ever regresses to the public tool.
     monkeypatch.setattr(spawn_mod, "spawn", capture)
     monkeypatch.setattr(spawn_mod, "_spawn_impl", capture)
 
@@ -997,7 +1004,7 @@ def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ed"].run_evolve_pass(force=True)
     assert out.startswith("ERR evolve_repo_unavailable="), out
@@ -1030,7 +1037,7 @@ def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while a reviewer runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "reviewer_running" in pkg["ed"].run_evolve_pass(force=True)
 
 

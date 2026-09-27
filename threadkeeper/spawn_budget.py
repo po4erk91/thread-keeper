@@ -513,14 +513,15 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     root_id = _retry_chain_root(conn, row)
     prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
     try:
-        from .tools.spawn import _spawn_impl
+        from .tools.spawn import _retry_bypass_capability, _spawn_impl
+        permission_mode = str(_row_get(row, "permission_mode", "auto") or "auto")
         result = _spawn_impl(
             prompt=prompt,
             cwd=str(row["cwd"] or os.getcwd()),
             append_system=str(_row_get(row, "append_system", "") or ""),
             model=str(_row_get(row, "model", "") or ""),
             effort=str(_row_get(row, "effort", "") or ""),
-            permission_mode=str(_row_get(row, "permission_mode", "auto") or "auto"),
+            permission_mode=permission_mode,
             extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
             capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
             visible=_as_bool(_row_get(row, "visible", 0), False),
@@ -532,6 +533,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             retry_attempt=next_attempt,
             parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
             cli=str(_row_get(row, "chosen_cli", "") or ""),
+            _bypass_capability=_retry_bypass_capability(permission_mode),
         )
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)

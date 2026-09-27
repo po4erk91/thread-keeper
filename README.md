@@ -860,6 +860,12 @@ shell/`bypassPermissions` to the same child:
 
 A full research → audit cycle therefore spans two due passes.
 
+Privileged reviewer and applier launches use private server-owned launchers.
+The public `spawn()` tool refuses `permission_mode="bypassPermissions"` even if
+a caller supplies Evolve-looking role or provenance metadata; only the explicit
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1` operator override opens that
+mode for public calls.
+
 Before a privileged audit can create more issues, the parent counts only open,
 not-yet-applied issues carrying the deliberate `roadmap` label with a paginated
 GitHub REST read. Issues without that label do not consume the reviewer cap.
@@ -996,17 +1002,17 @@ author login is listed in `THREADKEEPER_EVOLVE_CLAIM_AUTOMATION_ACTORS`. Missing
 author metadata and untrusted marker comments remain visible on GitHub but do
 not block roadmap work or affect claim-race resolution.
 
-**Privilege + public-body guard (#22).** Stored evolve suggestions and external
+**Privilege + public-body guard.** Stored evolve suggestions and external
 GitHub issue bodies are wrapped in explicit data fences before a privileged
-child sees them. The exposed `spawn()` tool refuses
-`permission_mode="bypassPermissions"` unless the request comes from the evolve
-daemon role/write-origin pairs (`evolve_reviewer`/`evolve`,
-`evolve_applier`/`evolve_apply`) or the operator explicitly opts in with
-`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Privileged evolve children also
-get a PATH-prepended `gh` wrapper that scrubs `gh issue create`, `gh issue
-comment`, and `gh pr create` bodies before the real GitHub CLI sees them:
-home-directory paths and common token shapes are redacted, and a body is
-refused if a known unsafe pattern remains.
+child sees them. The public `spawn()` tool refuses
+`permission_mode="bypassPermissions"` regardless of caller-supplied role or
+provenance metadata; privileged Evolve launches use private server-owned
+capabilities, and public calls need the explicit
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1` operator override. Privileged
+Evolve children also get a PATH-prepended `gh` wrapper that scrubs `gh issue
+create`, `gh issue comment`, and `gh pr create` bodies before the real GitHub
+CLI sees them: home-directory paths and common token shapes are redacted, and a
+body is refused if a known unsafe pattern remains.
 
 Fallback/manual paths remain:
 
@@ -1241,7 +1247,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
 | `THREADKEEPER_PROBE_COOLDOWN_S` | 604800 | per-category probe cooldown; 86400 = 1d recommended for active reliability tracking |
 | `THREADKEEPER_SPAWN_BUDGET_MB` | 3072 | combined child RSS cap (MB); 0 disables |
-| `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN` | "" (off) | explicit override that lets ordinary `spawn()` calls request `permission_mode="bypassPermissions"`; default off means only evolve daemon role/write-origin pairs can use the dangerous mode |
+| `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN` | "" (off) | explicit operator override that lets public `spawn()` calls request `permission_mode="bypassPermissions"`; otherwise only private server-owned Evolve launchers can use it |
 | `THREADKEEPER_SPAWN_TOKEN_BUDGET` | 0 | recorded 24h spawned-child token ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_COST_BUDGET_USD` | 0 | recorded 24h spawned-child dollar ceiling; 0 disables |
 | `THREADKEEPER_SPAWN_MAX_RUNTIME_S` | 3600 | wall-clock lifetime cap (s) for a spawned child; over-cap live children are SIGTERM→SIGKILL'd and closed with `return_code` 124; 0 disables |

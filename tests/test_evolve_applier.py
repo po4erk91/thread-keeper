@@ -162,7 +162,7 @@ def _add_evolve(conn, suggestion, rationale=None, applied=0, status="pending",
 def _mock_spawn(monkeypatch, calls):
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: calls.update(kw)
         or "ok task=tk_ap pid=1 child_cid=abcd1234 parent_cid=ef567890",
     )
@@ -356,7 +356,8 @@ def test_apply_evolve_reports_returned_spawn_error(tmp_path, monkeypatch):
     eid = _add_evolve(conn, "retry legacy evolve", status="promoted")
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
     )
 
     out = pkg["ea"].apply_evolve(eid)
@@ -408,7 +409,8 @@ def test_apply_curator_report_reports_returned_spawn_error(tmp_path, monkeypatch
     report = _write_report(pkg)
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
     )
 
     out = pkg["ea"].apply_curator_report(str(report))
@@ -928,7 +930,7 @@ def test_apply_roadmap_issue_exact_reports_denylisted_label(
         raise AssertionError("denylisted exact issue must not spawn")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=1)
 
@@ -1136,7 +1138,8 @@ def test_apply_conflicted_pr_reports_returned_spawn_error(tmp_path, monkeypatch)
     )
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
     )
 
     out = pkg["ea"].apply_conflicted_pr()
@@ -1233,7 +1236,7 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
         raise AssertionError("must not spawn with a dirty checkout")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1525,7 +1528,7 @@ def test_apply_roadmap_issue_blocks_during_reviewer_audit_git_writer(
         raise AssertionError("must not spawn while reviewer audit writes git")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1561,7 +1564,7 @@ def test_apply_roadmap_issue_comments_before_spawn(
 
     monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _spawn)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1586,7 +1589,7 @@ def test_apply_roadmap_issue_queue_reports_no_startable_when_claim_fails(
         raise AssertionError("must not spawn without an issue claim")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1646,7 +1649,7 @@ def test_apply_roadmap_issue_exact_issue_does_not_switch_tasks(
         raise AssertionError("exact issue mode must not spawn another issue")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=1)
 
@@ -1671,7 +1674,7 @@ def test_apply_roadmap_issue_aborts_when_issue_already_claimed(
         raise AssertionError("must not spawn for an already claimed issue")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=6)
 
@@ -1812,7 +1815,7 @@ def test_apply_roadmap_issue_exact_mode_returns_open_pr_error(
         raise AssertionError("must not spawn when an open PR already exists")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=6)
 
@@ -1884,7 +1887,7 @@ def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
 
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("spawn rejected")),
     )
 
@@ -1916,7 +1919,8 @@ def test_apply_roadmap_issue_retracts_claim_on_returned_spawn_error(
     )
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
     )
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=6)
@@ -2185,7 +2189,7 @@ def test_apply_evolve_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while an applier runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "applier_running" in pkg["ea"].apply_evolve(eid)
 
 
@@ -2205,7 +2209,7 @@ def test_apply_evolve_single_flight_lock_busy(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while lock is held")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "single-flight lock" in pkg["ea"].apply_evolve(eid)
 
 
@@ -2224,7 +2228,7 @@ def test_apply_curator_report_single_flight_lock_busy(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while lock is held")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "single-flight lock" in pkg["ea"].apply_curator_report(str(report))
 
 
@@ -2492,7 +2496,7 @@ def test_run_apply_pass_blocks_new_work_when_pr_sweep_fails(
         raise AssertionError("must not take new work when PR sweep fails")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].run_evolve_apply_pass(force=True)
 
@@ -3037,7 +3041,7 @@ def test_apply_evolve_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_evolve(eid)
     assert out == "ERR evolve_repo_clone_failed=/x: network down"
@@ -3054,7 +3058,7 @@ def test_apply_roadmap_issue_blocks_when_repo_unavailable(tmp_path, monkeypatch)
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
     assert out.startswith("ERR evolve_repo_unavailable="), out
@@ -3076,7 +3080,7 @@ def test_run_apply_pass_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while an applier runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "applier_running" in pkg["ea"].run_evolve_apply_pass(force=True)
 
 
@@ -3219,7 +3223,7 @@ def test_apply_roadmap_issue_records_attempt_then_backs_off(
     def _boom(**kw):
         raise AssertionError("issue in backoff must not re-spawn a child")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out2 = pkg["ea"].apply_roadmap_issue()
     assert out2 == "no_roadmap_issue", out2
@@ -3250,7 +3254,7 @@ def test_apply_roadmap_issue_dead_letter_blocks_auto_but_exact_overrides(
     def _boom(**kw):
         raise AssertionError("dead-lettered issue must not auto-spawn")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
     assert out == "no_roadmap_issue", out

@@ -899,11 +899,13 @@ For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
 `--dangerously-bypass-approvals-and-sandbox` so the child can write `.git` refs
-for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
-`bypassPermissions` unless the request comes from the evolve daemon
-role/write-origin pairs (`evolve_reviewer`/`evolve`,
-`evolve_applier`/`evolve_apply`), or the operator explicitly sets
-`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Every child gets one tool
+for branch/commit/PR creation. The exposed `spawn()` MCP tool always refuses
+`bypassPermissions`, regardless of caller-supplied role or provenance metadata,
+unless the operator explicitly sets `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`.
+The reviewer and applier instead use private server-owned launchers that attach
+an in-process capability and fixed provenance; neither appears in the MCP tool
+schema. A watchdog continuation of a timed-out privileged child inherits the
+capability from its server-recorded task row. Every child gets one tool
 allowlist: the default ThreadKeeper set (or `allowed_tools_override`) plus the
 caller's `extra_allowed_tools`. Claude receives it as `--allowedTools`; because
 `codex exec` runs with approval policy "never", the Codex adapter pre-approves
