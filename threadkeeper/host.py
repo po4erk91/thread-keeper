@@ -132,6 +132,7 @@ def main() -> int:
             starved_since: float | None = None
             wedge_s = float(getattr(config, "HOST_WEDGE_KILL_AFTER_S", 0.0) or 0.0)
             while not stop.is_set():
+                _check_leaked_writes()
                 if _heartbeat():
                     starved_since = None
                 else:
@@ -149,6 +150,36 @@ def main() -> int:
         finally:
             _clear_host_pidfile(only_pid=os.getpid())
     return 0
+
+
+# A legacy connection seen inside one write transaction for this long is
+# treated as leaked: every run_write in every process is waiting on it.
+_LEAKED_WRITE_WARN_S = 60.0
+
+
+def _check_leaked_writes(now: float | None = None) -> list[dict]:
+    """Log this process's get_db() connections that keep a write transaction
+    open across heartbeats, naming the call site that opened each (#293).
+
+    The heartbeat can only report the wedge; this names who holds it. Returns
+    the holders it logged. Never raises: the heartbeat loop must keep going.
+    """
+    try:
+        from .db import legacy_connection_stats
+        stats = legacy_connection_stats(now)
+    except Exception:
+        logger.debug("host: leaked-write check failed", exc_info=True)
+        return []
+    stale = [
+        h for h in stats["write_holders"] if h["held_s"] >= _LEAKED_WRITE_WARN_S
+    ]
+    for holder in stale:
+        logger.error(
+            "host: %s has held a SQLite write transaction for %.0fs; every "
+            "other writer waits on it (leaked get_db() transaction)",
+            holder["site"], holder["held_s"],
+        )
+    return stale
 
 
 def _wedge_deadline_passed(starved_since: float | None, now: float,

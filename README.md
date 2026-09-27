@@ -277,9 +277,10 @@ task row so dead children stop counting against the cap. Admission control
 refuses a new spawn that would exceed `THREADKEEPER_SPAWN_BUDGET_MB`
 (3 GB default). Slim children that need semantic search delegate to the parent
 via `search_via_parent` — no per-child copy of the embedding model. Admission
-uses a SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the budget and
-inserts the child task row with its RSS estimate before `Popen`, so two
-concurrent spawns cannot both squeeze through the cap.
+uses a short SQLite `BEGIN IMMEDIATE` reservation: `spawn()` re-checks the
+budget and commits the child task row with its RSS estimate before `Popen`, so
+two concurrent spawns cannot both squeeze through the cap, and no write lock is
+held while the child launches.
 
 When `cwd` is inside a Git checkout, `spawn()` also requires the source
 checkout's tracked files to be clean, then starts the child from a unique
@@ -1541,8 +1542,10 @@ hardening, WAL/schema migration, and vec-table setup once per process.
 `PRAGMA query_only=ON`, so retrieval cannot accidentally migrate, heartbeat,
 or write. `run_write()` opens a fresh connection, acquires `BEGIN IMMEDIATE`,
 runs a DB-only callback, and closes it; only `SQLITE_BUSY`/`SQLITE_LOCKED` are
-retried with bounded jitter. `get_db()` remains a compatibility API for older
-low-level call sites.
+retried with bounded jitter, including a lock hit while the connection is being
+set up. `get_db()` remains a compatibility API for older low-level call sites;
+its connections are tracked, and the daemon host logs the call site of any
+that keeps a write transaction open for a minute or more.
 
 Schema migration uses SQLite `PRAGMA user_version`: a current database skips
 legacy `ALTER TABLE` work, while an old or fresh v0 database migrates once

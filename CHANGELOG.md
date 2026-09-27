@@ -81,6 +81,19 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: spawn no longer holds the SQLite writer while a child launches
+  (#293).** The budget check and task reservation commit in one short
+  transaction; git worktree setup, spool files and `Popen` run with no write
+  lock, a failed launch deletes its reservation, and a second short
+  transaction stamps the pid. Task refresh now scans transcripts before it
+  writes. `run_write` also retries a lock hit while its connection is still
+  being set up (the cause of the multi-process stress test flake).
+- **Added: leaked-transaction guard for legacy `get_db()` connections
+  (#293).** Each connection is tracked with the call site that opened it. The
+  daemon host logs any connection that keeps a write transaction open for a
+  minute or more, `run_write` names in-process holders when its deadline runs
+  out, and `mp_health` shows the counts for the answering process.
+
 - **Added: Antigravity CLI conversations reach `dialog_search` (#20).** The
   agy adapter now reads `~/.gemini/antigravity-cli/conversations/*.db`: user
   prompts and final model answers become `dialog_messages` rows with

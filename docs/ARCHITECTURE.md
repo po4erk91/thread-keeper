@@ -218,9 +218,18 @@ Steady-state access is split by intent:
   `PRAGMA query_only=ON`; it never performs startup DDL or session heartbeat.
 - `run_write(op, callback)` uses a fresh connection and `BEGIN IMMEDIATE`.
   Lock contention rolls back, closes, and retries the whole DB-only callback
-  with bounded jitter; non-lock errors propagate immediately.
+  with bounded jitter; non-lock errors propagate immediately. Opening the
+  connection is inside the retry too, because its setup PRAGMAs can hit the
+  same transient lock.
 - `get_db()` is the compatibility connection for legacy low-level paths. New
-  retrieval code does not use it.
+  retrieval code does not use it. Its connections are non-autocommit, so an
+  uncommitted INSERT holds the single writer lock for every process. Each one
+  is registered in a weak, observe-only registry with the call site that
+  opened it; `legacy_connection_stats()` reports open connections and write
+  holders. The daemon host samples it every heartbeat and logs any holder seen
+  in one write transaction for 60s or more, `run_write` names in-process
+  holders when its deadline runs out, and `mp_health` shows the answering
+  process's counts (#293).
 
 1. **threads + notes** — the main state machine of working memory.
    Thread = an open question; note = a move in it (`move`/`failed`/`insight`/`open_q`).
@@ -1073,15 +1082,20 @@ optional 24h spawned-child token and dollar ceilings when
 `THREADKEEPER_SPAWN_COST_BUDGET_USD` is configured; both default to `0`
 (disabled), so unset budgets preserve prior behavior.
 
-- `spawn()` admission control: inside `BEGIN IMMEDIATE`, `check_budget()` sums
-  `rss_kb` of all running tasks (NULL = conservative full-estimate placeholder)
-  and the recorded 24h `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend,
-  then refuses if the new child would push past the RSS cap or if daily
-  token/cost spend has already reached its configured ceiling. If admitted, the
-  same transaction inserts the `tasks` row with the initial estimate
-  (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`) before `Popen`; launch
-  failure rolls the reservation back. ERR carries the exact numbers +
-  how-to-override.
+- `spawn()` admission control: inside one short `run_write` transaction,
+  `check_budget()` sums `rss_kb` of all running tasks (NULL = conservative
+  full-estimate placeholder) and the recorded 24h
+  `tokens_total`/`tokens_in`/`tokens_out`/`cost_usd` spend, then refuses if the
+  new child would push past the RSS cap or if daily token/cost spend has
+  already reached its configured ceiling. If admitted, the same transaction
+  inserts the `tasks` row (pid 0) with the initial estimate
+  (`SPAWN_ESTIMATE_SLIM_MB` / `SPAWN_ESTIMATE_FULL_MB`) and commits. Worktree
+  creation, spool files, and `Popen` run with no write transaction open (#293);
+  a launch that fails deletes the reservation, and a second short transaction
+  stamps the pid and the `spawn` event. If only that stamp fails, the child is
+  already running, so `spawn()` still returns `ok ... pid_recorded=0` and the
+  budget sweep resolves the pid from `spawned_cid`. ERR carries the exact
+  numbers + how-to-override.
 - Headless children run through `_spawn_wrap.py`, which tees the child's
   output, parses final JSON or human-readable usage trailers when present,
   stores `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd`, and always

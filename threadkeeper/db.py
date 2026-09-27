@@ -2,13 +2,17 @@
 Imported by every tool module that needs DB access."""
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import logging
+import os
 import random
 import sqlite3
+import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TypeVar
 
@@ -51,6 +55,105 @@ _BOOTSTRAP_LOCK = threading.RLock()
 _BOOTSTRAPPED = False
 
 _T = TypeVar("_T")
+
+
+class _LegacyConnection(sqlite3.Connection):
+    """A get_db() connection the leak guard can observe (#293).
+
+    The base sqlite3.Connection type cannot be weakly referenced, so legacy
+    connections use this subclass to sit in a WeakKeyDictionary without the
+    registry keeping them alive.
+    """
+
+    def close(self) -> None:
+        with _LEGACY_LOCK:
+            _LEGACY_CONNS.pop(self, None)
+        super().close()
+
+
+# get_db() hands out non-autocommit connections: any INSERT/UPDATE opens a
+# write transaction that holds SQLite's single writer lock for every process
+# until the caller commits, rolls back, or drops the connection. The registry
+# only observes: another thread may read `in_transaction` (it is not
+# thread-checked) but never touches the connection otherwise.
+_LEGACY_LOCK = threading.RLock()
+_LEGACY_CONNS: "weakref.WeakKeyDictionary[_LegacyConnection, list]" = (
+    weakref.WeakKeyDictionary()
+)
+_LEGACY_WARN_AT = [32]
+
+
+def _caller_site(depth: int) -> str:
+    try:
+        frame = sys._getframe(depth)
+    except ValueError:
+        return "?"
+    code = frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{frame.f_lineno} {code.co_name}"
+
+
+def _track_legacy_connection(conn: _LegacyConnection, site: str) -> None:
+    with _LEGACY_LOCK:
+        # [opened_at, call site, first sampled inside a write transaction]
+        _LEGACY_CONNS[conn] = [time.monotonic(), site, None]
+        live = len(_LEGACY_CONNS)
+        warn = live >= _LEGACY_WARN_AT[0]
+        if warn:
+            _LEGACY_WARN_AT[0] *= 2
+            sites = Counter(info[1] for info in _LEGACY_CONNS.values())
+    if warn:
+        logger.warning(
+            "db: %d legacy get_db() connections are open in this process; "
+            "top call sites: %s",
+            live,
+            ", ".join(f"{s} x{n}" for s, n in sites.most_common(5)),
+        )
+
+
+def legacy_connection_stats(now: float | None = None) -> dict:
+    """Sample this process's legacy connections (#293).
+
+    Returns ``open`` (live get_db() connections) and ``write_holders``: those
+    inside a write transaction, each with its call site and how long it has
+    been seen holding one. A holder's age starts at the first sample that
+    finds it in a transaction, so callers sample periodically (the daemon host
+    does, every heartbeat) and a long age means the writer lock is leaked.
+    """
+    now = time.monotonic() if now is None else now
+    holders: list[dict] = []
+    with _LEGACY_LOCK:
+        items = list(_LEGACY_CONNS.items())
+    open_count = 0
+    for conn, info in items:
+        try:
+            in_txn = conn.in_transaction
+        except sqlite3.ProgrammingError:
+            continue  # closed without close() bookkeeping (e.g. by SQLite)
+        open_count += 1
+        if not in_txn:
+            info[2] = None
+            continue
+        if info[2] is None:
+            info[2] = now
+        holders.append({
+            "site": info[1],
+            "held_s": round(now - info[2], 1),
+            "open_s": round(now - info[0], 1),
+        })
+    holders.sort(key=lambda h: h["held_s"], reverse=True)
+    return {"open": open_count, "write_holders": holders}
+
+
+def _describe_write_holders(stats: dict) -> str:
+    holders = stats["write_holders"]
+    if not holders:
+        return f"legacy_open={stats['open']} write_holders=0"
+    shown = ", ".join(
+        f"{h['site']} held={h['held_s']:.0f}s" for h in holders[:3]
+    )
+    return (
+        f"legacy_open={stats['open']} write_holders={len(holders)} ({shown})"
+    )
 
 
 def _try_load_vec(conn: sqlite3.Connection) -> bool:
@@ -1138,20 +1241,32 @@ def _execute_startup_pragma(
 
 
 def _open_connection(*, autocommit: bool = False,
-                     busy_timeout_ms: int = 10_000) -> tuple[sqlite3.Connection, bool]:
-    """Open and configure one connection without schema/DDL side effects."""
+                     busy_timeout_ms: int = 10_000,
+                     factory: type[sqlite3.Connection] = sqlite3.Connection,
+                     ) -> tuple[sqlite3.Connection, bool]:
+    """Open and configure one connection without schema/DDL side effects.
+
+    Setup statements can still hit a lock (SQLite may need the WAL index
+    while another process checkpoints), so a failed setup closes the
+    connection and raises; ``run_write`` retries that like any lock error.
+    """
     global _VEC_AVAILABLE
     kwargs = {
         "timeout": max(0.001, busy_timeout_ms / 1000.0),
+        "factory": factory,
     }
     if autocommit:
         kwargs["isolation_level"] = None
     conn = sqlite3.connect(str(DB_PATH), **kwargs)
-    conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
-    # synchronous is per-connection. Unlike journal_mode, setting it does not
-    # rewrite the database header or compete for the writer slot.
-    conn.execute("PRAGMA synchronous=NORMAL")
-    vec_loaded = _try_load_vec(conn)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+        # synchronous is per-connection. Unlike journal_mode, setting it does
+        # not rewrite the database header or compete for the writer slot.
+        conn.execute("PRAGMA synchronous=NORMAL")
+        vec_loaded = _try_load_vec(conn)
+    except BaseException:
+        conn.close()
+        raise
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
     conn.row_factory = sqlite3.Row
@@ -1306,7 +1421,8 @@ def get_db() -> sqlite3.Connection:
     are migrated, but no longer performs DDL after process bootstrap.
     """
     bootstrap_db()
-    conn, _ = _open_connection()
+    conn, _ = _open_connection(factory=_LegacyConnection)
+    _track_legacy_connection(conn, _caller_site(2))
     return conn
 
 
@@ -1351,33 +1467,42 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
         # Keep each SQLite busy wait short enough that the outer transaction
         # boundary can roll back and retry with jitter instead of one 10s stall.
         busy_ms = max(1, min(250, int(remaining * 1000) or 1))
-        conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+        conn: sqlite3.Connection | None = None
         try:
+            # Opening is inside the retry: connection setup can hit the same
+            # transient lock as BEGIN IMMEDIATE.
+            conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
             conn.execute("BEGIN IMMEDIATE")
             result = fn(conn)
             conn.commit()
             return result
         except sqlite3.OperationalError as exc:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             if not _is_lock_error(exc) or time.monotonic() >= deadline:
                 if _is_lock_error(exc):
+                    # Name any in-process holder: a leaked legacy write
+                    # transaction here is what wedges the host (#293).
                     logger.warning(
-                        "SQLite write deadline exhausted op=%s attempts=%d",
+                        "SQLite write deadline exhausted op=%s attempts=%d %s",
                         op,
                         attempt,
+                        _describe_write_holders(legacy_connection_stats()),
                     )
                 raise
         except Exception:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             # The next attempt is allowed to raise SQLite's original lock error;

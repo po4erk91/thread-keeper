@@ -6,6 +6,7 @@ tools, plus the supporting helpers (`_claude_bin`, `_resolve_spawned_cid`,
 that defines cognitive stances a spawned child can adopt.
 """
 
+import logging
 import os
 import shlex
 import shutil
@@ -22,7 +23,7 @@ from typing import Optional
 
 from ..spawn_result import parse_spawn_result
 from .._mcp import mcp, read_tool, write_tool, structured_result
-from ..db import get_db
+from ..db import get_db, read_db, run_write
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
 from ..permissions import chmod_private_dir
 from ..task_spool import (
@@ -41,8 +42,12 @@ from ..tool_schemas import (
 )
 from ..helpers import fmt_age, q, alive
 from .. import identity  # noqa: F401  (kept for future identity.* attr access)
-from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..identity import (
+    _ensure_session, _detect_self_cid, _emit, ensure_session_started,
+)
 from ..ingest import _parse_ts
+
+logger = logging.getLogger(__name__)
 
 # Path to the exit-code recorder that wraps spawned children so their real
 # return_code reaches the DB regardless of which session reaps them. Run by
@@ -209,10 +214,13 @@ def _claude_bin() -> Optional[str]:
 
 
 def _resolve_spawned_cid(conn: sqlite3.Connection, task_id: str,
-                        cwd: str, started_at: int) -> Optional[str]:
+                        cwd: str, started_at: int,
+                        claimed: frozenset[str] | set[str] = frozenset(),
+                        ) -> Optional[str]:
     """Find the jsonl created by this spawned child, if it has appeared.
     Heuristic: in the project dir for `cwd`, look for jsonl files whose
-    earliest message timestamp is within [started_at-2, started_at+120]."""
+    earliest message timestamp is within [started_at-2, started_at+120].
+    `claimed` holds cids already picked in this pass but not yet written."""
     # cwd starts with '/'; replacing yields '-Users-…' (single leading dash).
     # Prior code added another dash, breaking the lookup.
     slug = cwd.replace("/", "-")
@@ -224,7 +232,7 @@ def _resolve_spawned_cid(conn: sqlite3.Connection, task_id: str,
         r["spawned_cid"] for r in conn.execute(
             "SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ).fetchall()
-    )
+    ) | set(claimed)
     candidates: list[tuple[float, str]] = []
     for p in project_dir.glob("*.jsonl"):
         # subagent jsonl files (spawned by the child via Task tool) have
@@ -354,6 +362,11 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
         "WHERE ended_at IS NULL OR spawned_cid IS NULL "
         "ORDER BY started_at DESC LIMIT 50"
     ).fetchall()
+    # Scan transcripts first and write afterwards: an UPDATE here would open a
+    # write transaction that every other writer waits on through the whole
+    # filesystem scan below (#293).
+    pending: list[tuple[str, list]] = []
+    claimed: set[str] = set()
     for t in rows:
         updates: list[tuple[str, object]] = []
         if t["ended_at"] is None:
@@ -365,14 +378,19 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
                 if status == "idle" and end_guess:
                     updates.append(("ended_at", end_guess))
         if t["spawned_cid"] is None:
-            cid = _resolve_spawned_cid(conn, t["id"], t["cwd"], t["started_at"])
+            cid = _resolve_spawned_cid(
+                conn, t["id"], t["cwd"], t["started_at"], claimed,
+            )
             if cid:
+                claimed.add(cid)
                 updates.append(("spawned_cid", cid))
         if updates:
             sets = ", ".join(f"{k}=?" for k, _ in updates)
             params = [v for _, v in updates] + [t["id"]]
-            conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", params)
-    if rows:
+            pending.append((f"UPDATE tasks SET {sets} WHERE id=?", params))
+    for sql, params in pending:
+        conn.execute(sql, params)
+    if pending:
         conn.commit()
 
 
@@ -955,14 +973,16 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         log_path = task_log_dir / f"{task_id}.log"
     proc_pid = 0
     now_t = int(time.time())
-    conn = get_db()
-    _ensure_session(conn)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        _ok, _reason = check_budget(conn, _new_kb)
-        if not _ok:
-            conn.rollback()
-            return f"ERR {_reason}"
+    ensure_session_started()
+
+    # The budget check and the reservation commit in one short transaction,
+    # so a concurrent spawner sees this child's estimate. Nothing below holds
+    # the writer lock: git, spool files, and Popen run between two short
+    # transactions, and a launch that never happens deletes its reservation.
+    def _reserve(conn: sqlite3.Connection) -> str:
+        ok, reason = check_budget(conn, _new_kb)
+        if not ok:
+            return reason
         conn.execute(
             "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
@@ -979,16 +999,31 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root or None, int(retry_attempt or 0),
             ),
         )
-        if worktree is not None:
-            worktree_create_err = _create_spawn_worktree(worktree)
-            if worktree_create_err:
-                conn.rollback()
-                return worktree_create_err
-            cwd = str(worktree.child_cwd)
-            conn.execute("UPDATE tasks SET cwd=? WHERE id=?", (cwd, task_id))
+        return ""
+
+    def _release(reason: str) -> str:
+        try:
+            run_write(
+                "spawn_release",
+                lambda c: c.execute("DELETE FROM tasks WHERE id=?", (task_id,)),
+            )
+        except sqlite3.Error:
+            # The unlaunched row keeps pid=0, so the budget sweep reaps it
+            # after SPAWN_VISIBLE_TTL_S instead of pinning capacity forever.
+            pass
+        return reason
+
+    try:
+        refusal = run_write("spawn_reserve", _reserve)
     except sqlite3.Error as e:
-        conn.rollback()
         return f"ERR spawn_reservation_failed={e}"
+    if refusal:
+        return f"ERR {refusal}"
+    if worktree is not None:
+        worktree_create_err = _create_spawn_worktree(worktree)
+        if worktree_create_err:
+            return _release(worktree_create_err)
+        cwd = str(worktree.child_cwd)
     try:
         if visible:
             # Build a self-contained .command shell script that Terminal.app
@@ -1105,8 +1140,9 @@ exit $rc
                     env=child_env,
                 )
             except (FileNotFoundError, OSError) as e:
-                conn.rollback()
-                return f"ERR open_terminal_failed={e}"
+                if worktree is not None:
+                    _remove_spawn_worktree(worktree)
+                return _release(f"ERR open_terminal_failed={e}")
             # pid for Terminal-launched claude isn't directly trackable from
             # here; tasks() relies on spawned_cid + jsonl mtime instead.
             proc_pid = 0
@@ -1153,21 +1189,36 @@ exit $rc
     except (FileNotFoundError, OSError) as e:
         if worktree is not None:
             _remove_spawn_worktree(worktree)
-        conn.rollback()
-        return f"ERR spawn_failed={e}"
-    try:
-        conn.execute("UPDATE tasks SET pid=? WHERE id=?", (proc_pid, task_id))
+        return _release(f"ERR spawn_failed={e}")
+    except Exception:
+        if worktree is not None:
+            _remove_spawn_worktree(worktree)
+        _release("")
+        raise
+
+    def _record_launch(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "UPDATE tasks SET pid=?, cwd=? WHERE id=?", (proc_pid, cwd, task_id),
+        )
         _emit(conn, "spawn", target=task_id, summary=prompt[:140])
-        conn.commit()
+
+    pid_note = ""
+    try:
+        run_write("spawn_record", _record_launch)
     except sqlite3.Error as e:
-        conn.rollback()
-        return f"ERR spawn_record_failed={e}"
+        # The child is already running under its committed reservation, so
+        # this is not a failed launch: a caller that retried would start a
+        # duplicate. The budget sweep resolves the pid from spawned_cid, as it
+        # does for visible children, and the wrapper still records the exit.
+        logger.warning("spawn: task %s launched but pid not recorded: %s",
+                       task_id, e)
+        pid_note = " pid_recorded=0"
     mode = "visible" if visible else "headless"
     log_disp = log_path or ("Terminal.app" if visible else "devnull")
     return (
         f"ok task={task_id} pid={proc_pid} child_cid={child_cid[:8]} "
         f"parent_cid={(parent_cid or '-')[:8]} "
-        f"perm={permission_mode or '-'} mode={mode} log={log_disp}"
+        f"perm={permission_mode or '-'} mode={mode} log={log_disp}{pid_note}"
     )
 
 
@@ -1346,18 +1397,19 @@ def tournament(prompt: str,
 
     started_at = int(time.time())
     deadline = started_at + max(15, min(int(timeout_s), 600))
-    conn = get_db()
     collected: dict[str, dict] = {}
     line_re = re.compile(
         rf"^\[{re.escape(tid)}\]\s*\[([^\]]+)\]\s*(.*)$", re.DOTALL
     )
     while len(collected) < len(role_list) and time.time() < deadline:
-        rows = conn.execute(
-            "SELECT id, from_cid, content, created_at FROM signals "
-            "WHERE kind='broadcast' AND created_at >= ? "
-            "AND content LIKE ? ORDER BY created_at",
-            (started_at - 2, f"[{tid}]%"),
-        ).fetchall()
+        # A short read per poll: this loop can run for up to ten minutes.
+        with read_db() as conn:
+            rows = conn.execute(
+                "SELECT id, from_cid, content, created_at FROM signals "
+                "WHERE kind='broadcast' AND created_at >= ? "
+                "AND content LIKE ? ORDER BY created_at",
+                (started_at - 2, f"[{tid}]%"),
+            ).fetchall()
         for r in rows:
             m = line_re.match(r["content"])
             if not m:
@@ -1404,12 +1456,16 @@ def tasks(include_ended: bool = True, k: int = 15) -> str:
     """List spawned tasks: id, pid, status, elapsed, spawned_cid (if linked),
     prompt prefix. Refreshes liveness and resolves spawned_cid lazily."""
     conn = get_db()
-    _ensure_session(conn)
-    _refresh_tasks(conn)
-    where = "" if include_ended else "WHERE ended_at IS NULL"
-    rows = conn.execute(
-        f"SELECT * FROM tasks {where} ORDER BY started_at DESC LIMIT ?", (k,)
-    ).fetchall()
+    try:
+        _ensure_session(conn)
+        _refresh_tasks(conn)
+        where = "" if include_ended else "WHERE ended_at IS NULL"
+        rows = conn.execute(
+            f"SELECT * FROM tasks {where} ORDER BY started_at DESC LIMIT ?",
+            (k,),
+        ).fetchall()
+    finally:
+        conn.close()
     if not rows:
         return "no_tasks"
     now_t = int(time.time())
@@ -1486,21 +1542,24 @@ def spawn_budget_status() -> SpawnBudgetStatus:
         SPAWN_COST_BUDGET_USD,
     )
     from ..spawn_budget import _daily_spawn_usage
-    conn = get_db()
-    _ensure_session(conn)
-    _refresh_tasks(conn)
-    rows = conn.execute(
-        "SELECT id, pid, spawned_cid, prompt, rss_kb, rss_updated_at, "
-        "started_at FROM tasks WHERE ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 20"
-    ).fetchall()
     now_t = int(time.time())
+    conn = get_db()
+    try:
+        _ensure_session(conn)
+        _refresh_tasks(conn)
+        rows = conn.execute(
+            "SELECT id, pid, spawned_cid, prompt, rss_kb, rss_updated_at, "
+            "started_at FROM tasks WHERE ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 20"
+        ).fetchall()
+        tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
+    finally:
+        conn.close()
     used_kb = sum(
         (r["rss_kb"] or 0) for r in rows
     )
     enabled = SPAWN_BUDGET_MB > 0
     free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb) if enabled else None
-    tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
     token_enabled = SPAWN_TOKEN_BUDGET > 0
     cost_enabled = SPAWN_COST_BUDGET_USD > 0
     tokens_free = (
@@ -1654,11 +1713,11 @@ def task_kill(task_id: str, force: bool = False) -> str:
     the child started). Falls back to a single-pid ``kill`` if the group send
     is refused.
     """
-    conn = get_db()
-    _ensure_session(conn)
-    row = conn.execute(
-        "SELECT pid, ended_at FROM tasks WHERE id=?", (task_id,)
-    ).fetchone()
+    ensure_session_started()
+    with read_db() as conn:
+        row = conn.execute(
+            "SELECT pid, ended_at FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
     if not row:
         return f"ERR task_not_found={task_id}"
     if row["ended_at"]:
@@ -1671,11 +1730,13 @@ def task_kill(task_id: str, force: bool = False) -> str:
                 f"(visible/terminal task — close its window)")
 
     def _mark_dead() -> str:
-        conn.execute(
-            "UPDATE tasks SET ended_at=? WHERE id=?",
-            (int(time.time()), task_id),
+        run_write(
+            "task_kill_mark_dead",
+            lambda c: c.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=?",
+                (int(time.time()), task_id),
+            ),
         )
-        conn.commit()
         return f"already_dead task={task_id}"
 
     sig_to_send = _sig.SIGKILL if force else _sig.SIGTERM
