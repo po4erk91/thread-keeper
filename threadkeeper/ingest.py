@@ -585,7 +585,12 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
 
 def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[int, int]:
     """Iterate every installed CLI adapter, incrementally ingest each
-    transcript file. Returns (new_msgs, files_seen) across ALL adapters."""
+    transcript file. Returns (new_msgs, files_seen) across ALL adapters.
+
+    `max_msgs` bounds each adapter separately. A shared budget went to the
+    first adapter with a backlog (Claude Code always has one), so the history
+    of a CLI that gained a parser later was never reached by the startup
+    catch-up, and live ingest only looks at recently modified files."""
     from .adapters import installed_adapters
     total = 0
     skipped = [0]
@@ -598,13 +603,15 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
             key=lambda p: _transcript_mtime(adapter, p),
             reverse=True,
         )
+        adapter_added = 0
         for fp in files:
-            if total >= max_msgs:
+            if adapter_added >= max_msgs:
                 break
             added = _ingest_file(
-                conn, fp, max_msgs - total, adapter=adapter,
+                conn, fp, max_msgs - adapter_added, adapter=adapter,
                 skipped_counter=skipped,
             )
+            adapter_added += added
             total += added
             # Bound lock duration to one transcript file. Embedding for that
             # file already completed before its first DML statement.

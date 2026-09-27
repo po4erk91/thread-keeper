@@ -5,6 +5,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.18.1 — 2026-09-27
+
+- **Fixed: the startup catch-up reaches every CLI.** The full ingest shared
+  one message budget across all adapters, and Claude Code's backlog always
+  used it up, so older Antigravity conversations never reached
+  `dialog_search` (live ingest only looks at recently modified files).
+  `THREADKEEPER_INGEST_CAP` now bounds each adapter separately, and a manual
+  `ingest(max_msgs=...)` applies the bound per CLI.
+
 ## v0.18.0 — 2026-09-27
 
 - **Fixed: Codex children know who they are again.** Codex starts MCP servers

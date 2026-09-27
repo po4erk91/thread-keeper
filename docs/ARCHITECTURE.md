@@ -1935,7 +1935,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills root |
 | `THREADKEEPER_EXTRA_SKILLS_DIRS` | unset | os.pathsep-separated extra skills roots to mirror into |
 | `THREADKEEPER_INGEST_INTERVAL_S` | 3 | daemon ingest tick |
-| `THREADKEEPER_INGEST_CAP` | 50 | max msgs per call |
+| `THREADKEEPER_INGEST_CAP` | 50 | max new msgs per CLI adapter per startup catch-up |
 | `THREADKEEPER_SKILL_WATCH_INTERVAL_S` | 5 | skill_watcher tick |
 | `THREADKEEPER_SKILL_UPDATE_INTERVAL_S` | 302400 | installed-skill update/mirror interval; 0 disables |
 | `THREADKEEPER_SKILL_UPDATE_TIMEOUT_S` | 300 | max seconds for upstream skill source downloads |
