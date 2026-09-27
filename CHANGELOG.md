@@ -5,81 +5,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
-## v0.17.7 — 2026-09-17
-
-- **Added: mechanically scoped Evolve research handoffs.** The web
-  researcher no longer receives generic filesystem `Write`. Before it starts,
-  the parent registers a short-lived digest target bound to that child's CID;
-  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
-  and derives the destination itself. It records final content SHA-256 and
-  pass telemetry, while audit consumes only fresh accepted handoffs whose file
-  still matches that hash. Malformed, oversized, replayed, stale, failed, and
-  tampered handoffs are refused or excluded rather than resembling successful
-  research.
-
-- **Fixed: reading agent status no longer kills or respawns child agents
-  (#309).** `agent_status`, `tk-agent-status`, and `agent_memory_cleanup` now
-  refresh task liveness and RSS in observation-only mode. Only the
-  spawn-budget daemon stops a child that runs past the runtime cap and
-  launches its continuation retry, so polling status can no longer end work
-  or spend another spawn attempt.
-
-## v0.17.6 — 2026-09-17
-
-### Fixed
-
-- **Spawned agents keep the ThreadKeeper MCP server on the configured install.**
-  MCP launch settings now enable Python safe-path mode, and Codex spawns apply
-  the same setting as a per-invocation MCP override. A managed or per-task
-  checkout can no longer shadow the installed package and then trip the live-DB
-  safety guard when an Evolve child records its completed PR handoff.
-
-## v0.17.5 — 2026-09-13
-
-### Fixed
-
-- **Skill telemetry now records real visibility and gives the curator the
-  trusted foreground-use split.** `skill_list` increments each returned
-  skill's view counter, transcripted `Skill` invocations increment both raw
-  and foreground use counters when appropriate, and the curator inventory now
-  shows raw uses, foreground uses, views, and patches without treating its own
-  automated inventory read as a consultation.
-
-## v0.17.4 — 2026-09-11
-
-### Fixed
-
-- **Curator false-positive pruning now follows foreground consultation.**
-  Background-review skills with no foreground use remain eligible for prune
-  review after 14 days even when automatic maintenance has increased their
-  patch count. The curator audit displays foreground uses separately from
-  maintenance patches, and patch activity no longer keeps an unconsulted skill
-  alive.
-
-## v0.17.3 — 2026-09-09
-
-- **Fixed: skill and lesson notifications name the materialized result.**
-  Banners and logs show one readable artifact name instead of paths, event
-  metadata, or generic agent reports. The menu-bar feed uses actual write
-  events and respects the skill and lesson notification toggles separately.
-
-## v0.17.2 — 2026-09-09
-
-- **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**
-  Managed refresh and the pre-spawn gate preserve a dead child’s non-ignored
-  files outside the checkout before validation. Live writers, explicit
-  checkouts, ignored runtime files, and backup failures retain their guards.
-
-## v0.17.1 — 2026-09-09
-
-### Fixed
-
-- **Core event emission now fails loudly without session setup (#165).**
-  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
-  spawn watchdog, format evolution, and passive skill-tier paths initialize
-  their session before emitting telemetry.
-
-## [Unreleased]
+## v0.18.0 — 2026-09-27
 
 - **Docs: no more hand-maintained test or MCP tool totals (#278).** README
   and `docs/ARCHITECTURE.md` point to the suite and the live tool registry
@@ -96,6 +22,7 @@ version bumps follow semver per the policy in
   transaction stamps the pid. Task refresh now scans transcripts before it
   writes. `run_write` also retries a lock hit while its connection is still
   being set up (the cause of the multi-process stress test flake).
+
 - **Added: leaked-transaction guard for legacy `get_db()` connections
   (#293).** Each connection is tracked with the call site that opened it. The
   daemon host logs any connection that keeps a write transaction open for a
@@ -253,6 +180,90 @@ version bumps follow semver per the policy in
   snapshot creation, child dispatch, and inventory-fingerprint endorsement.
   Successfully read empty stores remain valid below-threshold inputs.
 
+## v0.17.7 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs.** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
+- **Fixed: reading agent status no longer kills or respawns child agents
+  (#309).** `agent_status`, `tk-agent-status`, and `agent_memory_cleanup` now
+  refresh task liveness and RSS in observation-only mode. Only the
+  spawn-budget daemon stops a child that runs past the runtime cap and
+  launches its continuation retry, so polling status can no longer end work
+  or spend another spawn attempt.
+
+## v0.17.6 — 2026-09-17
+
+### Fixed
+
+- **Spawned agents keep the ThreadKeeper MCP server on the configured install.**
+  MCP launch settings now enable Python safe-path mode, and Codex spawns apply
+  the same setting as a per-invocation MCP override. A managed or per-task
+  checkout can no longer shadow the installed package and then trip the live-DB
+  safety guard when an Evolve child records its completed PR handoff.
+
+## v0.17.5 — 2026-09-13
+
+### Added
+
+- **Lesson contradiction reconciliation (#167).** A clear new absolute
+  directive or concrete-practice debunk now scans older lessons for permissive
+  guidance on the same topic. Each match emits a `lesson_reconciliation` event
+  and is returned from `lesson_append` for patch, cross-link, or supersession
+  review; conflicting lessons no longer take the normal semantic-dedup route.
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
+## v0.17.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
+
+## v0.17.3 — 2026-09-09
+
+- **Fixed: skill and lesson notifications name the materialized result.**
+  Banners and logs show one readable artifact name instead of paths, event
+  metadata, or generic agent reports. The menu-bar feed uses actual write
+  events and respects the skill and lesson notification toggles separately.
+
+## v0.17.2 — 2026-09-09
+
+- **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**
+  Managed refresh and the pre-spawn gate preserve a dead child’s non-ignored
+  files outside the checkout before validation. Live writers, explicit
+  checkouts, ignored runtime files, and backup failures retain their guards.
+
+## v0.17.1 — 2026-09-09
+
+### Fixed
+
+- **Core event emission now fails loudly without session setup (#165).**
+  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
+  spawn watchdog, format evolution, and passive skill-tier paths initialize
+  their session before emitting telemetry.
+
+## [Unreleased]
+
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
   references and reports each source entry with its dead target. The read-only
@@ -281,16 +292,19 @@ version bumps follow semver per the policy in
   title-term pair, then directs a validated checklist-style skill promotion
   before retiring the unprotected source lessons. Clusters containing protected
   lessons remain an explicit human-review plan.
+
 - **Added: surgical lesson patching (#161).** `lesson_patch(slug,
   old_string, new_string)` now changes one unique substring in an existing
   lesson while preserving its section metadata. Overlong shadow replacements
   may repair an existing same-slug lesson only when they do not increase its
   body size; new overlong shadow lessons remain rejected.
+
 - **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
   `lesson_remove(replacement_slug=...)` and
   `skill_manage(action='delete', replacement_name=...)` redirect inbound
   `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
   skills. Plain removal reports the complete dangling-link source set.
+
 - **Fixed: quota/credit exhaustion in a spawned child now alerts even when its
   exit code was lost.** The notifier's dead-child source only surfaced children
   whose row recorded a non-zero `return_code`. A child reaped after the DB
@@ -300,6 +314,7 @@ version bumps follow semver per the policy in
   `_scan_dead_children` now also inspects NULL-`return_code` children and alerts
   when the captured log carries a fatal degradation signature (monthly-quota /
   credit / auth), while clean completions with a lost code stay silent.
+
 - **Fixed: a solo daemon-host no longer stays wedged indefinitely when a leaked
   write transaction starves the SQLite writer.** The cross-host recovery only
   fired when another host booted, so a machine with no new sessions could sit
