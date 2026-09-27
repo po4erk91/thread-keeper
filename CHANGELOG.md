@@ -81,6 +81,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: Curator research/evaluation capability split (#289).** Each batch
+  of a durable Curator pass first gets a read-only `curator_researcher` child
+  with web tools and a single parent-authorized handoff writer
+  (`curator_research_write`), then a web-free evaluator that receives the
+  handoff as fenced, untrusted data. No Curator child holds both web tools and
+  memory mutation tools. A researcher that keeps failing (three attempts) or
+  leaves an invalid handoff falls back to a non-mutating evaluator that records
+  `HUMAN_REVIEW`; the recovery snapshot is taken only before the first
+  mutating evaluator. `THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips research.
+
 - **Durable Curator multi-batch completion.** Each Curator pass now persists
   its inventory fingerprint, the rendered text of every batch, dispatch/task
   state, final report provenance, and advisory apply state. An inventory is

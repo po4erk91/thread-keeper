@@ -502,7 +502,7 @@ shows agents focused on their primary task rarely do).
 | 2 | shadow_review daemon | every 15 min (env knob) | recent `dialog_messages` window | SKILL.md, lessons.md |
 | 3 | extract daemon | every 10 min (env knob) | recent `dialog_messages` window | `extract_candidates` pending queue |
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
-| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | `REPORT-<date>.md`; Evolve applier applies it after roadmap issues |
+| 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | pass-scoped research handoffs and `REPORT-<date>.md`; Evolve applier applies reports after roadmap issues |
 | 6 | evolve_reviewer daemon | configurable (env knob; 0=off) | code/docs/issues; web research in a separate read-only phase (#79) | roadmap updates + GitHub issues |
 | 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
@@ -676,10 +676,12 @@ flags a dense lesson subtopic when at least
 `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share a pair
 of meaningful title terms. A non-protected candidate must become one validated,
 checklist-style canonical skill before its source lessons are retired; protected
-clusters are left for human review. The child reads every
+clusters are left for human review. A read-only research child reads every
 complete skill and relevant support file, performs current web research against
-official docs and comparable
-public skills, then writes numbered per-skill verdicts to
+official docs and comparable public skills, then writes a bounded
+`RESEARCH-<pass>-batch-NNN-of-MMM.json` handoff through a destination-scoped
+tool. A separate web-free evaluator receives that handoff as fenced, untrusted
+data and writes numbered per-skill verdicts to
 `~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
 `REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
 UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
@@ -740,16 +742,30 @@ row in `agent_status` expose expected, running, failed, complete, and
 unapplied batch counts alongside the inventory hash, reports, audit manifest,
 and recovery snapshot.
 
-Each report path is explicitly authorized in a parent-authored `curator_pass`
-event before its child is launched. `curator_report_write` only accepts that
-exact path from the spawned Curator carrying the matching pass ID, then records
-the persisted report's SHA-256 in `curator_report_provenance`. This makes the
-report directory an untrusted transport: a stray or forged `REPORT-*.md` file
-cannot acquire the provenance needed by the applier.
+Each research handoff path is explicitly authorized for one pass, inventory
+fingerprint, manifest digest, and batch before its web-enabled child is
+launched. `curator_research_write` accepts only that destination from a spawned
+`curator_researcher` child carrying the matching pass ID, and records the final
+SHA-256 as provenance. Research and evaluation are two phases of each batch
+inside the durable pass: the web-free evaluator for a batch starts only after
+that batch's handoff validates. A researcher that fails or leaves a missing,
+malformed, swapped, or mismatched handoff is retried (three attempts); after
+that the batch gets a non-mutating evaluator that records `HUMAN_REVIEW` for
+decisions that depend on current external facts. A destructive pass takes its
+recovery snapshot right before its first mutating evaluator.
+`THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips the research phase entirely (and
+its token cost); the evaluator then judges currency from local evidence only.
+Each report path is then
+authorized in the existing parent-authored `curator_pass` event;
+`curator_report_write` records its SHA-256 in `curator_report_provenance`.
+This makes the report directory an untrusted transport: a stray or forged
+`REPORT-*.md` file cannot acquire the provenance needed by the applier.
 
-Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
-writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it
-can actually prune and consolidate duplicate lessons). Set
+The web-enabled researcher never receives lesson, skill, or concept mutation
+tools. The evaluator never receives web tools. Curator applies its own PATCH /
+PRUNE / CONSOLIDATE directly by default (the evaluator writes the REPORT first,
+then mutates — `lesson_remove` is in its toolset so it can actually prune and
+consolidate duplicate lessons). Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. Pinned and
 untracked skills remain protected. Foreground-authored skills are protected by
 default; set `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` to grant the
@@ -1262,6 +1278,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `1` (on) | run a read-only web research child per batch before the web-free evaluator; `0` skips research (the evaluator uses local evidence only) |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
 | `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 10 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |

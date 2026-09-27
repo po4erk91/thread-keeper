@@ -523,6 +523,14 @@ CREATE TABLE IF NOT EXISTS curator_batches (
     -- review exactly the entries the pass was created for even after the
     -- live inventory (and therefore every batch boundary) has moved on.
     batch_text            TEXT NOT NULL DEFAULT '',
+    -- Phase one (#289): a read-only web research child writes a
+    -- destination-scoped handoff before the web-free evaluator may run.
+    research_state        TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(research_state IN
+                                ('pending','running','failed','complete')),
+    research_task_id      TEXT,
+    research_attempts     INTEGER NOT NULL DEFAULT 0,
+    research_failure      TEXT,
     state                 TEXT NOT NULL DEFAULT 'pending'
                           CHECK(state IN ('pending','running','failed','complete')),
     task_id               TEXT,

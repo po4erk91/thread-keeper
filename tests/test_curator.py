@@ -15,6 +15,7 @@ in unit tests. We exercise the pure scaffolding:
 from __future__ import annotations
 
 import json
+import pytest
 import os
 import re
 import shutil
@@ -58,6 +59,7 @@ def _bootstrap(
     max_concurrent=None,
     write_origin="foreground",
     spawned_child="0",
+    web_research="0",
 ):
     env = {
         "THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
@@ -80,6 +82,9 @@ def _bootstrap(
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
         "THREADKEEPER_WRITE_ORIGIN": write_origin,
         "THREADKEEPER_SPAWNED_CHILD": spawned_child,
+        # Most tests exercise the evaluator path directly; the two-phase
+        # research flow has its own tests below with web_research="1".
+        "THREADKEEPER_CURATOR_WEB_RESEARCH": web_research,
     }
     if destructive is not None:
         env["THREADKEEPER_CURATOR_DESTRUCTIVE"] = destructive
@@ -143,6 +148,54 @@ def _complete_manifest_batch(pkg, *, pass_id: str | None = None) -> str:
     )
     conn.commit()
     return pass_id
+
+
+def _finish_research(pkg, *, evidence: str = "evidence\nCURATOR_RESEARCH_COMPLETE",
+                     write: bool = True) -> None:
+    """Simulate every running researcher finishing (optionally with a valid
+    handoff) without launching a real child CLI."""
+    curator = pkg["curator"]
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    for row in conn.execute(
+        "SELECT b.pass_id, b.batch_index, b.research_task_id, p.expected_batches "
+        "FROM curator_batches b JOIN curator_passes p USING(pass_id) "
+        "WHERE b.research_state='running'"
+    ).fetchall():
+        authorization = curator.curator_research_authorization(
+            conn, row["pass_id"], row["batch_index"], row["expected_batches"],
+        )
+        assert authorization is not None
+        if write:
+            target = pkg["reports_dir"] / authorization["research_name"]
+            persisted = curator.curator_research_payload(authorization, evidence)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(persisted, encoding="utf-8")
+            conn.execute(
+                "INSERT INTO events (session_id, kind, target, summary, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "test", curator.CURATOR_RESEARCH_PROVENANCE_KIND,
+                    str(target.resolve()),
+                    json.dumps(
+                        {
+                            "pass_id": row["pass_id"],
+                            "batch_index": row["batch_index"],
+                            "batch_total": row["expected_batches"],
+                            "sha256": curator.curator_report_sha256(persisted),
+                        },
+                        sort_keys=True, separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO tasks "
+            "(id, pid, cwd, prompt, started_at, ended_at, return_code) "
+            "VALUES (?, 0, '/tmp', 'research', ?, ?, 0)",
+            (row["research_task_id"], now - 1, now),
+        )
+    conn.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -591,8 +644,10 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "curator_report_write" in allowed
     assert "curator_merge_verdict" in allowed
     assert "Write" not in allowed
-    assert "WebSearch" in allowed
-    assert "WebFetch" in allowed
+    # #289: the mutating evaluator never holds web tools; research runs in
+    # a separate read-only child.
+    assert "WebSearch" not in allowed
+    assert "WebFetch" not in allowed
     assert "skill_validate" in allowed
     assert "curator_restore" in allowed
     assert "Bash" not in allowed
@@ -2007,3 +2062,158 @@ def test_concepts_alone_do_not_trigger_pass(tmp_path, monkeypatch):
     out = pkg["curator"].run_curator_pass(force=True)
     assert out.startswith("below_threshold")
     assert called == []
+
+
+def test_curator_research_write_is_scoped_and_requires_completion(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator_research", spawned_child="1",
+    )
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
+
+    curator = pkg["curator"]
+    pass_id = "20260922T120000"
+    batch = curator._InventoryBatch(
+        index=1, total=1, start_entry=1, end_entry=1, total_entries=1,
+        text="CURATOR BATCH 1/1\n- LESSON test\n", entry_count=1,
+        lesson_count=1, skill_count=0, concept_count=0, char_count=32,
+    )
+    conn = pkg["db"].get_db()
+    authorization = curator._authorize_curator_research(
+        conn, pass_id=pass_id, fingerprint="a" * 64, batch=batch,
+        manifest_sha256="b" * 64,
+    )
+    monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    write_research = mcp._tool_manager._tools["curator_research_write"].fn
+
+    assert write_research(
+        pass_id=pass_id, content="incomplete evidence",
+        batch_index=1, batch_total=1,
+    ) == "ERR malformed_research"
+    assert write_research(
+        pass_id="../escape", content="evidence\nCURATOR_RESEARCH_COMPLETE",
+        batch_index=1, batch_total=1,
+    ) == "ERR invalid_pass_id"
+    out = write_research(
+        pass_id=pass_id,
+        content="official source: https://example.test\nCURATOR_RESEARCH_COMPLETE",
+        batch_index=1, batch_total=1,
+    )
+    assert out.startswith("ok path=")
+    target = pkg["reports_dir"] / authorization["research_name"]
+    payload = json.loads(target.read_text())
+    assert payload["pass_id"] == pass_id
+    assert payload["batch_sha256"] == authorization["batch_sha256"]
+    assert payload["evidence"].endswith("CURATOR_RESEARCH_COMPLETE")
+    assert not (tmp_path / "escape").exists()
+
+
+def _two_lesson_research_pass(tmp_path, monkeypatch, destructive="1"):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", destructive=destructive,
+        web_research="1",
+    )
+    pkg["lessons"].append_lesson(title="one", body="body", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="body", source="shadow")
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or f"ok task=tk_c{len(captured)} pid=0",
+    )
+    return pkg, captured
+
+
+@pytest.mark.parametrize("destructive", ["1", "0"])
+def test_research_precedes_a_web_free_evaluator(
+    tmp_path, monkeypatch, destructive,
+):
+    pkg, captured = _two_lesson_research_pass(tmp_path, monkeypatch, destructive)
+    curator = pkg["curator"]
+
+    out = curator.run_curator_pass(force=True)
+    assert out.startswith("dispatch pass_id="), out
+    assert captured[-1]["role"] == "curator_researcher"
+    assert not (pkg["reports_dir"] / "snapshots").exists()
+
+    _finish_research(pkg)
+    curator.run_curator_pass(force=True)
+    evaluator = captured[-1]
+    assert evaluator["role"] == "curator"
+    assert "<curator_research_data>" in evaluator["prompt"]
+    assert "CURATOR_RESEARCH_COMPLETE" in evaluator["prompt"]
+    assert (pkg["reports_dir"] / "snapshots").exists() is (destructive == "1")
+
+
+@pytest.mark.parametrize("mode", ["missing", "malformed", "child_failed"])
+def test_curator_invalid_research_fails_closed_to_non_mutating_review(
+    tmp_path, monkeypatch, mode,
+):
+    pkg, captured = _two_lesson_research_pass(tmp_path, monkeypatch)
+    curator = pkg["curator"]
+    conn = pkg["db"].get_db()
+    for _ in range(curator.CURATOR_BATCH_MAX_ATTEMPTS):
+        curator.run_curator_pass(force=True)
+        assert captured[-1]["role"] == "curator_researcher"
+        if mode == "malformed":
+            _finish_research(pkg, evidence="no completion marker")
+        elif mode == "missing":
+            _finish_research(pkg, write=False)
+        else:
+            task_id = conn.execute(
+                "SELECT research_task_id FROM curator_batches"
+            ).fetchone()[0]
+            now = int(time.time())
+            conn.execute(
+                "INSERT OR REPLACE INTO tasks (id, pid, cwd, prompt, "
+                "started_at, ended_at, return_code) VALUES "
+                "(?, 0, '/tmp', 'research', ?, ?, 1)",
+                (task_id, now - 1, now),
+            )
+            conn.commit()
+
+    curator.run_curator_pass(force=True)
+
+    evaluator = captured[-1]
+    assert evaluator["role"] == "curator"
+    assert "RESEARCH UNAVAILABLE" in evaluator["prompt"]
+    assert "ADVISORY MODE" in evaluator["prompt"]
+    for tool in ("lesson_remove", "lesson_patch", "skill_manage", "concept_manage"):
+        assert f"mcp__thread-keeper__{tool}" not in evaluator["extra_allowed_tools"]
+    assert not (pkg["reports_dir"] / "snapshots").exists()
+
+
+@pytest.mark.parametrize("research", ["1", "0"])
+@pytest.mark.parametrize("destructive", ["1", "0"])
+def test_curator_web_and_memory_mutation_capabilities_never_cogranted(
+    tmp_path, monkeypatch, research, destructive,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", destructive=destructive,
+        web_research=research,
+    )
+    pkg["lessons"].append_lesson(title="one", body="body", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="body", source="shadow")
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kw: captured.append(kw) or f"ok task=tk_w{len(captured)} pid=0",
+    )
+    pkg["curator"].run_curator_pass(force=True)
+    if research == "1":
+        _finish_research(pkg)
+        pkg["curator"].run_curator_pass(force=True)
+
+    mutation_tools = {
+        "lesson_append", "lesson_patch", "lesson_remove", "skill_manage",
+        "concept_manage", "curator_restore",
+    }
+    assert captured
+    for kw in captured:
+        tools = kw["extra_allowed_tools"]
+        has_web = "WebSearch" in tools or "WebFetch" in tools
+        mutates = any(f"mcp__thread-keeper__{t}" in tools for t in mutation_tools)
+        assert not (has_web and mutates), kw["role"]

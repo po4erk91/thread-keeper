@@ -407,6 +407,10 @@ class Settings(BaseSettings):
     # and refill only failed/missing batch slots instead of waiting a full
     # curator interval. The normal interval applies again once it is endorsed.
     curator_batch_poll_s: float = Field(default=60.0, ge=1.0)
+    # Web research runs in a separate read-only child per batch before the
+    # web-free evaluator (#289). Disable to skip it (and its token cost); the
+    # evaluator then judges currency from local evidence only.
+    curator_web_research: bool = True
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -906,6 +910,7 @@ def _derive_constants(s: "Settings") -> dict:
         ),
         "CURATOR_MAX_CONCURRENT_BATCHES": s.curator_max_concurrent_batches,
         "CURATOR_BATCH_POLL_S": s.curator_batch_poll_s,
+        "CURATOR_WEB_RESEARCH": bool(s.curator_web_research),
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
