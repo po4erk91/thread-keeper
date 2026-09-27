@@ -427,6 +427,10 @@ class Settings(BaseSettings):
     # pending for the next pass, so a backlog cannot grow the prompt without
     # bound (#24).
     candidate_review_batch_size: int = Field(default=40, ge=1)
+    # A lesson whose rule is observed broken this many times inside the window
+    # is memory-insufficient: recommend an active guard (hook) instead (#228).
+    lesson_violation_threshold: int = Field(default=3, ge=1)
+    lesson_violation_window_days: int = Field(default=90, ge=1)
     learning_loop_skill_create_limit: int = 2
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
@@ -921,6 +925,8 @@ def _derive_constants(s: "Settings") -> dict:
         "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
         "CANDIDATE_REVIEW_FLUSH_AGE_S": float(s.candidate_review_flush_age_s),
         "CANDIDATE_REVIEW_BATCH_SIZE": int(s.candidate_review_batch_size),
+        "LESSON_VIOLATION_THRESHOLD": int(s.lesson_violation_threshold),
+        "LESSON_VIOLATION_WINDOW_DAYS": int(s.lesson_violation_window_days),
         "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,

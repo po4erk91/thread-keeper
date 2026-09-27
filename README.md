@@ -601,6 +601,15 @@ slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
 that preflight to patch/consolidate an incumbent or add a `[[slug]]` cross-link
 to a related, distinct lesson while its body is still editable.
 
+When the dialog shows a rule being broken again although a lesson already
+covers it, the reviewers call `lesson_violation(slug, evidence)` instead of
+writing a duplicate. One conversation counts once per lesson per day; at
+`THREADKEEPER_LESSON_VIOLATION_THRESHOLD` (3) violations inside
+`THREADKEEPER_LESSON_VIOLATION_WINDOW_DAYS` (90) the lesson is
+memory-insufficient: `mp_dashboard` lists it and the Curator inventory marks it
+`[MEMORY-INSUFFICIENT]` and recommends escalating the rule to a PreToolUse-style
+hook or other hard guard.
+
 #### 3. Extract daemon
 
 Every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds (default off, 600 =
@@ -1282,6 +1291,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | age-flush: an undersized pending queue is still reviewed once its oldest candidate is this old (0 = threshold only) |
+| `THREADKEEPER_LESSON_VIOLATION_THRESHOLD` | 3 | violations of one lesson inside the window that make it memory-insufficient (recommend a hook) |
+| `THREADKEEPER_LESSON_VIOLATION_WINDOW_DAYS` | 90 | window for counting `lesson_violation` records |
 | `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` | 40 | most pending candidates (oldest first) one reviewer child receives; the rest stay pending for the next pass |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |

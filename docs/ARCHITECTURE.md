@@ -1657,7 +1657,7 @@ below).
 | concepts | 4 | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | 3 | link, unlink, neighbors |
 | pickup | 3 | pickup_candidates, claim_pickup, release_pickup |
-| lessons | 7 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore |
+| lessons | 8 | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation |
 | shadow_review | 2 | shadow_review_run, shadow_review_status |
 | candidate_reviewer | 2 | candidate_review_run, candidate_review_status |
 | curator | 8 | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore |

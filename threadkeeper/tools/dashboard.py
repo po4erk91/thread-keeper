@@ -593,6 +593,20 @@ def mp_dashboard(window_days: int = 7) -> str:
     out.append("")
     out.append(f"reliability  weak_categories={weak} untested_categories={untested}")
 
+    # Lessons whose rule keeps being broken despite existing as memory (#228).
+    from ..lesson_violations import memory_insufficient
+    insufficient = memory_insufficient(conn, now)
+    if insufficient:
+        out.append("")
+        out.append(
+            f"memory_insufficient_lessons={len(insufficient)} "
+            "(repeatedly violated; escalate to a hook or hard guard)"
+        )
+        for slug, count in sorted(
+            insufficient.items(), key=lambda kv: (-kv[1], kv[0]),
+        )[:5]:
+            out.append(f"  {slug}  violations={count}")
+
     # Loop-authored skills whose current body carries injection markers
     # (skill_watcher re-screen, #268). Flag only; nothing was auto-edited.
     try:

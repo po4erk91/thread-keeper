@@ -62,7 +62,7 @@ WRITE_TOOLS = {
     "evolve_mark_curator_report_applied",
     "evolve_mark_roadmap_issue_applied", "evolve_research_handoff",
     "export_distillates", "extract_recent",
-    "idle_thread", "inbox", "ingest", "lesson_append", "lesson_restore",
+    "idle_thread", "inbox", "ingest", "lesson_append", "lesson_violation", "lesson_restore",
     "link", "live_status", "lesson_get", "lesson_list", "mark_skill_materialized",
     "memory_guard_reclaim", "note",
     "open_dialog_window", "open_thread", "presence", "record_attempt",

@@ -110,6 +110,11 @@ PROCEDURE
       related, add a `[[suggested-slug]]` cross-link to its body before
       writing it.
    d. Only create new memory if no existing lesson/skill covers the rule.
+   e. If an EXISTING lesson already covers the rule and the dialog shows it
+      was broken again (the user had to correct it anew), call
+      `lesson_violation(slug=<existing>, evidence=<one line>)`. Repeated
+      violations escalate the rule to an active guard; do not write a
+      duplicate lesson for it.
 4. Materialization preference order:
    a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an
       existing auto-triggered skill covers the rule.
@@ -639,6 +644,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     "mcp__thread-keeper__lesson_get,"
                     "mcp__thread-keeper__lesson_neighbors,"
                     "mcp__thread-keeper__lesson_patch,"
+                    "mcp__thread-keeper__lesson_violation,"
                     "mcp__thread-keeper__skill_manage,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__mark_skill_materialized"

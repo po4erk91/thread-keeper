@@ -81,6 +81,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: repeated lesson violations escalate to enforcement (#228).**
+  `lesson_violation(slug, evidence)` records that an existing lesson's rule
+  was broken again; shadow review and the candidate reviewer call it instead
+  of writing a duplicate lesson. At three violations in 90 days (one per
+  conversation per day) the lesson is memory-insufficient: `mp_dashboard`
+  lists it and the Curator inventory marks it `[MEMORY-INSUFFICIENT]` with a
+  HOOK_ESCALATION recommendation for a PreToolUse-style guard.
+
 - **Added: read-side injection re-screening for loop-authored skills (#268).**
   The skill watcher re-screens loop-authored `SKILL.md` bodies with the
   existing injection markers whenever the file or the marker list changes,

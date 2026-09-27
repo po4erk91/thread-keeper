@@ -206,6 +206,14 @@ in this phase. Use the cited URLs and access dates when they support a decision;
 if the handoff says research was unavailable or insufficient, use HUMAN_REVIEW
 rather than claiming a skill is current or mutating it on that basis.
 
+REPEATED VIOLATIONS — `violations=N` counts how often a lesson's rule was
+observed broken again although the lesson existed. A lesson marked
+[MEMORY-INSUFFICIENT] has crossed the threshold: rewording it again will not
+help. Recommend HOOK_ESCALATION in its report row — the exact rule, the
+trigger to guard (tool, command, or file pattern), and a PreToolUse-style
+hook or equivalent hard check — and leave the lesson in place until a human
+installs the guard.
+
 MERGE MEMORY — the inventory's `links=[...]` field is the current undirected
 wikilink adjacency for each lesson. Its `## PRIOR MERGE VERDICTS` section lists
 previously examined lesson pairs that must remain separate. Treat a prior
@@ -1447,6 +1455,7 @@ def _format_lesson(
     item: dict,
     usage: dict | None = None,
     adjacent_slugs: tuple[str, ...] = (),
+    violations: int = 0,
 ) -> str:
     """One inventory line per lesson.
 
@@ -1470,12 +1479,18 @@ def _format_lesson(
     if len(item.get("body") or "") > 200:
         body_preview += "…"
     links = ", ".join(adjacent_slugs) or "-"
+    from .config import LESSON_VIOLATION_THRESHOLD
+    insufficient = (
+        " [MEMORY-INSUFFICIENT]"
+        if violations >= max(1, int(LESSON_VIOLATION_THRESHOLD)) else ""
+    )
     return (
-        f"- LESSON {item['slug']}{protected} "
+        f"- LESSON {item['slug']}{protected}{insufficient} "
         f"(source={src or '?'}, tier={usage.get('tier') or 'hypothesis'}, "
         f"uses={usage.get('use_count', 0)}, views={usage.get('view_count', 0)}, "
         f"pinned={usage.get('pinned', 0)}, age={age_d}d, "
-        f"last_active={last_active_d}d_ago, links=[{links}])\n"
+        f"last_active={last_active_d}d_ago, violations={violations}, "
+        f"links=[{links}])\n"
         f"    body: {body_preview}"
     )
 
@@ -1648,15 +1663,19 @@ def _collect_inventory_entry_groups(
         usage = lessons.lesson_usage_map(conn)
         items = list(lessons.iter_lessons())
         adjacency = _lesson_adjacency(items)
+        from .lesson_violations import violation_counts
+        violations = violation_counts(conn)
         for item in items:
-            lesson_items.append(item)
             lesson_items.append(item)
             slug = item.get("slug") or ""
             lesson_entries.append(
                 _InventoryEntry(
                     "lesson",
                     slug,
-                    _format_lesson(item, usage.get(slug), adjacency.get(slug, ())),
+                    _format_lesson(
+                        item, usage.get(slug), adjacency.get(slug, ()),
+                        violations.get(slug, 0),
+                    ),
                 )
             )
     except Exception as exc:

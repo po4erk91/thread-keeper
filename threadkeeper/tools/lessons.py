@@ -714,6 +714,46 @@ def lesson_neighbors(
 
 
 @write_tool()
+def lesson_violation(slug: str, evidence: str) -> str:
+    """Record that an EXISTING lesson's rule was broken again (#228).
+
+    Call this instead of appending a duplicate lesson when the dialog shows
+    the user correcting behavior that `slug` already covers. `evidence` is a
+    one-line description of the repeat (no secrets or transcript dumps). One
+    conversation counts once per lesson per day. At
+    LESSON_VIOLATION_THRESHOLD violations in the window the lesson is
+    memory-insufficient and should become an active guard (a PreToolUse-style
+    hook) rather than more memory.
+    """
+    from ..lesson_violations import record_violation
+    from ..config import LESSON_VIOLATION_THRESHOLD, WRITE_ORIGIN
+
+    clean_slug = slug.strip()
+    note = " ".join((evidence or "").split())
+    if not clean_slug:
+        return "ERR empty_slug"
+    if not note:
+        return "ERR empty_evidence"
+    if not any(it["slug"] == clean_slug for it in iter_lessons()):
+        return f"ERR unknown_lesson slug={clean_slug}"
+    conn = get_db()
+    session_id = _ensure_session(conn)
+    count, recorded = record_violation(
+        conn, clean_slug, note, session_id=session_id or "",
+        origin=WRITE_ORIGIN or "foreground",
+    )
+    threshold = max(1, int(LESSON_VIOLATION_THRESHOLD))
+    status = (
+        " memory_insufficient=1 recommend=hook_enforcement"
+        if count >= threshold else ""
+    )
+    already = "" if recorded else " already_recorded_today=1"
+    return (
+        f"ok slug={clean_slug} violations={count}/{threshold}{status}{already}"
+    )
+
+
+@write_tool()
 def lesson_list(k: int = 20) -> str:
     """Compact listing of materialized lessons, newest first.
 
