@@ -235,7 +235,15 @@ Steady-state access is split by intent:
    tier-policy (what to evict, how to promote/demote) is not yet implemented.
 
 3. **dialog_messages + dialog_fts (+ dialog_vec)** — full conversation
-   transcripts, pulled live from `~/.claude/projects/**/*.jsonl`.
+   transcripts, pulled live from every adapter that exposes them: Claude Code
+   and Codex JSONL, Copilot's session store, and Antigravity's per-conversation
+   SQLite files. Antigravity has no published schema: the adapter decodes only
+   the protobuf fields for user input (step type 14) and the final model
+   response (type 15), skips steps that are still generating, opens the file
+   immutable when it is at rest and plain read-only only while agy's own
+   `-wal`/`-shm` sidecars exist, and reports the `-wal` size through
+   `transcript_stat()` so a live conversation is picked up before SQLite
+   checkpoints it into the main file.
    Used by `peers()`, `brief()`, `search()`, `dialog_search()` and the
    shadow-review daemon. The retention pass can prune aged dialog rows;
    `dialog_fts` follows automatically (external-content FTS5,
@@ -2004,8 +2012,8 @@ clients do not regress.
 - No federation: one database file, one machine.
 - Some legacy paths are still Claude-Code-specific: ppid walk, jsonl parser,
   settings.json hooks, ~/.claude.json as MCP-config template. Antigravity CLI
-  (`agy`) is wired for MCP/instructions/skills/spawn, but its sqlite/protobuf
-  conversation history and hook schema are not parsed/wired yet.
+  (`agy`) is wired for MCP/instructions/skills/spawn and its conversation
+  history is ingested, but its hook schema is not wired yet.
 - Extraction heuristics are simple regexes; no ML quality classifier.
 - MCP-native `sampling/createMessage` (a native review fork without
   pay-per-use tokens) is not yet implemented in Claude Code

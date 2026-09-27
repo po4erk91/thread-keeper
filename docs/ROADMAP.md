@@ -184,10 +184,9 @@ remains a live question.
   review spans >1 adapter in one window, and the learning loop fires on
   non-Claude sessions — into a `PASS`/`PARTIAL`/`FAIL` verdict
   (`threadkeeper/verify_ingest.py`). Turns the ad-hoc, one-off manual check
-  into a single reproducible command. Antigravity (`agy`) does not yet parse
-  its sqlite/protobuf conversation store (tracked below under "more
-  adapters"), so it is reported as a capability gap instead of a permanently
-  absent required ingest slot.
+  into a single reproducible command. Antigravity (`agy`) transcripts are
+  ingested since #20; agy stays an optional source that counts as non-Claude
+  evidence rather than a required slot.
 - Dialog transcript secret redaction (#37): live ingest now scrubs common
   credential-shaped values before writing transcript content to
   `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The default-on
@@ -742,7 +741,8 @@ mutation count.
 Scope: S–M each.
 
 Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
-(#18), and Antigravity transcript ingest not yet implemented (#20).
+(#18), and Antigravity transcript ingest (#20, ✅ DONE: read-only SQLite/
+protobuf reader for user prompts and final answers).
 
 Follow-up gaps from the 2026-06-17 audit:
 - ✅ DONE (#34). Semantic lesson dedup at write time: loop-authored

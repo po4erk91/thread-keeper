@@ -151,17 +151,19 @@ thread-keeper-setup --dry-run
 | Claude Code | `~/.claude.json` `mcpServers` | `~/.claude/CLAUDE.md` | `~/.claude/settings.json` `hooks` | `~/.claude/projects/**/*.jsonl` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` `mcpServers` (macOS); `%APPDATA%\Claude\…` (Win); `~/.config/Claude/…` (Linux) | none (GUI-only) | not supported by the app | none — chats live in Electron IndexedDB |
 | Codex (CLI + desktop) | `~/.codex/config.toml` `[mcp_servers]` (shared between CLI and `Codex.app`) | `~/.codex/AGENTS.md` | not supported | `~/.codex/sessions/**/rollout-*.jsonl` |
-| Antigravity CLI (`agy`) | `~/.gemini/config/mcp_config.json` `mcpServers` | `~/.gemini/config/AGENTS.md` | not wired yet | not yet parsed — sqlite/protobuf under `~/.gemini/antigravity-cli/conversations/*.db` |
+| Antigravity CLI (`agy`) | `~/.gemini/config/mcp_config.json` `mcpServers` | `~/.gemini/config/AGENTS.md` | not wired yet | `~/.gemini/antigravity-cli/conversations/*.db` (sqlite/protobuf, read-only: user prompts and final answers) |
 | Copilot | `~/.copilot/mcp-config.json` `mcpServers` | `~/.copilot/copilot-instructions.md` | `~/.copilot/hooks.json` | `~/.copilot/session-store.db` (sqlite) |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` `servers` (macOS); `%APPDATA%\Code\User\mcp.json` (Win); `~/.config/Code/User/mcp.json` (Linux) | none (per-workspace only) | not supported | none — extensions own their history |
 
 Every CLI that produces parseable transcripts feeds the same
 `dialog_messages` table with a `source` tag, so `dialog_search()` finds
-matches regardless of where the conversation happened. Claude Desktop,
-Antigravity CLI, and the VS Code adapter are the exceptions — MCP registration
-only; their chats don't reach the table for now (Electron IndexedDB on the
-Claude Desktop side; sqlite/protobuf on the Antigravity side; per-extension
-stores on the VS Code side).
+matches regardless of where the conversation happened. Claude Desktop and
+the VS Code adapter are the exceptions — MCP registration only; their chats
+don't reach the table for now (Electron IndexedDB on the Claude Desktop side;
+per-extension stores on the VS Code side). Antigravity keeps one SQLite file
+per conversation with protobuf step payloads; thread-keeper opens it read-only
+(never creating WAL sidecars next to it) and keeps only user prompts and final
+model answers, skipping tool calls and thinking.
 
 VS Code's user-level `mcp.json` is the central host that **every
 MCP-aware VS Code extension** consumes — GitHub Copilot Chat, the

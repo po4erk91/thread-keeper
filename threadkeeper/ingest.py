@@ -436,6 +436,23 @@ def _extract_text(msg: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _transcript_stat(adapter, fp: Path) -> tuple[float, int]:
+    """Change signature of one transcript file, via the adapter when it has
+    its own (test doubles and legacy adapters fall back to fp.stat())."""
+    probe = getattr(adapter, "transcript_stat", None)
+    if probe is not None:
+        return probe(fp)
+    st = fp.stat()
+    return st.st_mtime, st.st_size
+
+
+def _transcript_mtime(adapter, fp: Path) -> float:
+    try:
+        return _transcript_stat(adapter, fp)[0]
+    except OSError:
+        return 0
+
+
 def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                  adapter=None, skipped_counter: Optional[list[int]] = None) -> int:
     """Incrementally ingest one transcript file from the given adapter.
@@ -453,17 +470,18 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     if adapter is None:
         from .adapters import _CLAUDE_CODE as _claude_default  # type: ignore
         adapter = _claude_default
-    if not fp.exists():
+    try:
+        mtime_f, size = _transcript_stat(adapter, fp)
+    except OSError:
         return 0
-    stat = fp.stat()
-    mtime = int(stat.st_mtime)
+    mtime = int(mtime_f)
     state = conn.execute(
         "SELECT last_size, last_mtime FROM ingest_state WHERE file_path=?",
         (str(fp),)
     ).fetchone()
     last_mtime = state["last_mtime"] if state else 0
     last_size = state["last_size"] if state else 0
-    if mtime <= last_mtime and stat.st_size <= last_size:
+    if mtime <= last_mtime and size <= last_size:
         return 0
     # Phase 1/2: collect, scrub, and embed before the first DML statement. A
     # SELECT does not start Python sqlite3's implicit write transaction; this
@@ -550,7 +568,7 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
         if inserted or not text:
             for skill_name in item["skills"]:
                 _record_skill_use(conn, skill_name, nm.created_at, nm.session_id)
-    next_size = last_size if hit_cap else stat.st_size
+    next_size = last_size if hit_cap else size
     next_mtime = last_mtime if hit_cap else mtime
     conn.execute(
         "INSERT INTO ingest_state (file_path, last_size, last_mtime, ingested_at, msg_count) "
@@ -577,7 +595,7 @@ def _ingest_all(conn: sqlite3.Connection, max_msgs: int = 1_000_000) -> tuple[in
         files_seen += len(files)
         files = sorted(
             files,
-            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            key=lambda p: _transcript_mtime(adapter, p),
             reverse=True,
         )
         for fp in files:
@@ -616,7 +634,7 @@ def _ingest_recent_only(conn: sqlite3.Connection,
     for adapter in installed_adapters():
         for p in adapter.transcript_files():
             try:
-                m = p.stat().st_mtime
+                m = _transcript_stat(adapter, p)[0]
             except OSError:
                 continue
             if m > cutoff:

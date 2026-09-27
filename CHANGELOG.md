@@ -81,6 +81,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: Antigravity CLI conversations reach `dialog_search` (#20).** The
+  agy adapter now reads `~/.gemini/antigravity-cli/conversations/*.db`: user
+  prompts and final model answers become `dialog_messages` rows with
+  `source='antigravity'`, the workspace path feeds the ingest denylist, and a
+  spawned agy child keeps its forced cid. The files are opened read-only
+  without creating WAL sidecars, steps still generating wait for a later
+  pass, and a live `-wal` counts toward the file's change signature.
+
 - **Added: repeated lesson violations escalate to enforcement (#228).**
   `lesson_violation(slug, evidence)` records that an existing lesson's rule
   was broken again; shadow review and the candidate reviewer call it instead

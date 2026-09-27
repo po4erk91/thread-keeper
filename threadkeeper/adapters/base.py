@@ -126,6 +126,13 @@ class CLIAdapter(ABC):
         """Yield NormalizedMessage from one transcript file, in file
         order. Skip malformed lines silently."""
 
+    def transcript_stat(self, fp: Path) -> tuple[float, int]:
+        """(mtime, size) that advances whenever the transcript gains data.
+        Ingest skips a file whose pair did not grow. Override when new data
+        can land in a sidecar first (e.g. a SQLite -wal file)."""
+        st = fp.stat()
+        return st.st_mtime, st.st_size
+
     # ------------------------------------------------------------------
     # Optional hooks (default: no-op)
     # ------------------------------------------------------------------
