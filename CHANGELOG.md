@@ -81,6 +81,23 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Durable Curator multi-batch completion.** Each Curator pass now persists
+  its inventory fingerprint, the rendered text of every batch, dispatch/task
+  state, final report provenance, and advisory apply state. An inventory is
+  endorsed only after every batch succeeds with a matching complete report.
+  A pass keeps reviewing its frozen batches when the live inventory changes,
+  retries failed or timed-out batches (three launched attempts each) without
+  re-running completed ones, and is abandoned when a batch exhausts its
+  attempts or the pass outlives two Curator intervals. A spawn memory or spend
+  budget refusal leaves the batch waiting for the next poll instead of
+  dropping it (spend-cap refusals still alert).
+  `CURATOR_MAX_CONCURRENT_BATCHES` bounds live fan-out (default 1), while
+  spawn admission remains the global resource gate; active passes are polled
+  every 60 seconds by default. Curator status and agent status expose
+  expected, running, failed, complete, and unapplied batch counts. The
+  advisory applier now consumes every complete report from an endorsed pass in
+  batch order.
+
 - **Fixed: child-log summaries are sanitized before status and notification
   delivery.** Credential-shaped values and private home-directory paths are
   redacted in successful-result and failed-child excerpts, while the owner-only
@@ -127,15 +144,6 @@ version bumps follow semver per the policy in
   (`THREADKEEPER_SPAWN_BUDGET_MB`, with the reserved and allowed MB), or the
   daily token or cost budget. Agent status labels the spend caps separately
   from the memory cap.
-
-- **Fixed: scheduled Curator passes wait for spawn memory instead of dropping
-  batches.** Batches launch back to back while the memory budget still books
-  the slim estimate for every unmeasured child, so a large pass was refused
-  part-way and its remaining batches were skipped until the next interval. The
-  daemon now retries a memory-budget refusal every 15 seconds for up to one
-  hour per pass; a manual `curator_run` still fails fast, and spend-cap
-  refusals stay final. The pass identity is exported only around each launch,
-  so a waiting pass cannot leak it into other loops' children.
 
 - **Fixed: auto-update installs into uv-created virtualenvs.** Such venvs ship
   without pip, so a git-mode update ended `install=failed` and suppressed the
@@ -337,16 +345,6 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
-
-## v0.17.0 — 2026-09-12
-
-### Added
-
-- **Lesson contradiction reconciliation (#167).** A clear new absolute
-  directive or concrete-practice debunk now scans older lessons for permissive
-  guidance on the same topic. Each match emits a `lesson_reconciliation` event
-  and is returned from `lesson_append` for patch, cross-link, or supersession
-  review; conflicting lessons no longer take the normal semantic-dedup route.
 
 ## v0.16.3 — 2026-07-19
 

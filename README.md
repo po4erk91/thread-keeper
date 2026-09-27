@@ -711,18 +711,34 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. Repeated manual calls over identical bytes
-return `unchanged_inventory`; the scheduled three-day pass still runs because
-CLI behavior, official guidance, and external alternatives can change without
-local file changes. Every required inventory source (lessons, skill telemetry,
-skill files, and concepts) must read successfully before that hash can endorse
-a pass; a successfully empty source remains valid, while a failed one records
+trees, validators, and mirror state. It then persists a pass manifest with the
+expected reports and the rendered text of every batch before launching any
+child. A dispatch is not completion: every batch must exit successfully and
+have a final, matching provenance record before the inventory is endorsed.
+Repeated manual calls over identical bytes return `unchanged_inventory` only
+after that endorsement; scheduled passes still run because CLI behavior,
+official guidance, and external alternatives can change without local file
+changes. Every required inventory source (lessons, skill telemetry, skill
+files, and concepts) must read successfully before a pass is created; a
+successfully empty source remains valid, while a failed one records
 `inventory_error source=<source> error=<type>` without authorizing a report,
-creating a recovery snapshot, or launching a child. `curator_review_status()`
-shows that incomplete state instead of a current hash, while retaining the last
-endorsed `inventory_sha256`. Spawned pass events record
-`entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
-large reviews visible in the normal `curator_pass` trail.
+creating a recovery snapshot, or launching a child.
+
+A pass keeps reviewing the batches it froze even when the live inventory
+changes, and resuming it never re-reads the inventory. Failed and timed-out
+batches are retried without redispatching completed work, up to three launched
+attempts per batch; a spawn memory or spend-budget refusal leaves the batch
+waiting without using an attempt (a spend-cap refusal also alerts). A pass
+whose batch exhausts its attempts, or that outlives two Curator intervals
+(at least six hours), is abandoned so the next due tick starts fresh.
+`THREADKEEPER_CURATOR_MAX_CONCURRENT_BATCHES` (default `1`) bounds one pass's
+live children while normal spawn admission still enforces the shared RSS
+budget. While a pass is active, the daemon polls it every
+`THREADKEEPER_CURATOR_BATCH_POLL_S` seconds (default `60`) instead of waiting
+for the next full Curator interval. `curator_review_status()` and the Curator
+row in `agent_status` expose expected, running, failed, complete, and
+unapplied batch counts alongside the inventory hash, reports, audit manifest,
+and recovery snapshot.
 
 Each report path is explicitly authorized in a parent-authored `curator_pass`
 event before its child is launched. `curator_report_write` only accepts that
@@ -774,11 +790,13 @@ or `skill_manage(action='restore', name=...)`. Trash retention is bounded by
 `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (30 days by default) and swept on new
 trash writes. Advisory mode does not write snapshots. The existing Evolve
 applier is
-also the Curator apply worker: after the roadmap issue queue is empty, it looks
-for the latest complete Curator report (`CURATOR_PASS_COMPLETE`) whose path and
-current SHA-256 match an unapplied `curator_report_provenance` event, then
-spawns an `evolve_applier` child to apply only safe, still-current memory
-maintenance through `lesson_append` / `lesson_patch` / `lesson_remove` / `skill_manage` /
+also the Curator apply worker: after the roadmap issue queue is empty, it
+enumerates every complete, unapplied report in the oldest endorsed Curator pass
+(`CURATOR_PASS_COMPLETE`) whose path and current SHA-256 match an unapplied
+`curator_report_provenance` event, then spawns an `evolve_applier` child to
+apply only safe, still-current memory
+maintenance through `lesson_append` / `lesson_patch` / `lesson_remove` /
+`skill_manage` /
 `concept_manage`. It never touches `[PROTECTED]`,
 foreground/user, pinned, or validated entries. Only after the child finishes
 does it call `evolve_mark_curator_report_applied(...)` with the verified hash;

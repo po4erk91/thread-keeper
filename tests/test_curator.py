@@ -55,6 +55,7 @@ def _bootstrap(
     destructive=None,
     retention=None,
     max_destructive=None,
+    max_concurrent=None,
     write_origin="foreground",
     spawned_child="0",
 ):
@@ -86,6 +87,8 @@ def _bootstrap(
         env["THREADKEEPER_CURATOR_SNAPSHOT_RETENTION"] = retention
     if max_destructive is not None:
         env["THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS"] = max_destructive
+    if max_concurrent is not None:
+        env["THREADKEEPER_CURATOR_MAX_CONCURRENT_BATCHES"] = max_concurrent
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -102,6 +105,44 @@ def _bootstrap(
         "lessons_path": Path(env["THREADKEEPER_LESSONS"]),
         "skills_dir": Path(env["CLAUDE_SKILLS_DIR"]),
     }
+
+
+def _complete_manifest_batch(pkg, *, pass_id: str | None = None) -> str:
+    """Give one fake spawned Curator task a valid terminal report."""
+    conn = pkg["db"].get_db()
+    if pass_id is None:
+        pass_id = conn.execute(
+            "SELECT pass_id FROM curator_passes ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()["pass_id"]
+    batch = conn.execute(
+        "SELECT * FROM curator_batches WHERE pass_id=? ORDER BY batch_index LIMIT 1",
+        (pass_id,),
+    ).fetchone()
+    report = pkg["reports_dir"] / batch["report_name"]
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("# report\n\nCURATOR_PASS_COMPLETE\n", encoding="utf-8")
+    digest = pkg["curator"].curator_report_sha256(report.read_text())
+    now = int(time.time())
+    conn.execute(
+        "INSERT OR REPLACE INTO tasks "
+        "(id, pid, cwd, prompt, started_at, ended_at, return_code) "
+        "VALUES (?, 0, '/tmp', 'curator', ?, ?, 0)",
+        (batch["task_id"], now - 1, now),
+    )
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            _FAKE_CID, pkg["curator"].CURATOR_REPORT_PROVENANCE_KIND,
+            str(report.resolve()), f"pass_id={pass_id} sha256={digest}", now,
+        ),
+    )
+    pkg["curator"]._record_batch_report_provenance(
+        conn, pass_id=pass_id, report_name=batch["report_name"],
+        digest=digest, complete=True, now=now,
+    )
+    conn.commit()
+    return pass_id
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -319,6 +360,10 @@ def test_curator_reuses_merge_verdicts_and_wikilink_adjacency(
         "decision=keep_both"
     )
 
+    # The running pass keeps its frozen batches; the verdict reaches the next
+    # pass, which starts once this one is endorsed.
+    _complete_manifest_batch(pkg)
+    assert pkg["curator"].run_curator_pass(force=True).startswith("endorsed")
     assert "curator-2" in pkg["curator"].run_curator_pass(force=True)
     prompt = captured[-1]["prompt"]
     assert "general-prevention" in prompt
@@ -393,10 +438,16 @@ def test_run_curator_pass_fails_closed_when_lessons_cannot_be_read(
 ):
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     previous_fingerprint = "a" * 64
-    pkg["curator"]._record_curator_pass(
-        pkg["db"].get_db(), 1,
-        f"spawned inventory_sha256={previous_fingerprint}",
+    # Endorsement is manifest-backed: seed a completed, endorsed prior pass.
+    seed = pkg["db"].get_db()
+    seed.execute(
+        "INSERT INTO curator_passes (pass_id, inventory_fingerprint, "
+        "expected_batches, mode, audit_manifest_path, created_at, updated_at, "
+        "completed_at, endorsed_at) VALUES "
+        "('prior', ?, 1, 'destructive', '/dev/null', 1, 1, 1, 1)",
+        (previous_fingerprint,),
     )
+    seed.commit()
     captured: list[dict] = []
     import threadkeeper.tools.spawn as spawn_mod
 
@@ -477,7 +528,9 @@ def test_run_curator_pass_fails_closed_when_concepts_cannot_be_read(
 
 
 def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", max_concurrent="999",
+    )
     pkg["lessons"].append_lesson(
         title="lesson one", body="body one", source="shadow"
     )
@@ -610,7 +663,9 @@ def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
 def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
     tmp_path, monkeypatch,
 ):
-    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", max_concurrent="999",
+    )
     _write_bulk_lessons(pkg["lessons_path"], 1500)
 
     import threadkeeper.tools.spawn as spawn_mod
@@ -624,7 +679,8 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
 
     out = pkg["curator"].run_curator_pass(force=True)
 
-    assert out.startswith("spawned batches="), out
+    assert out.startswith("dispatch pass_id="), out
+    assert f"launched={len(captured)}" in out
     assert len(captured) > 1
     seen: list[str] = []
     for idx, kw in enumerate(captured, start=1):
@@ -678,75 +734,137 @@ def _batch_spawner(monkeypatch, refuse):
     return attempts, launched
 
 
-def test_scheduled_pass_waits_for_memory_budget_instead_of_dropping_batches(
+def test_memory_refusal_keeps_batch_pending_without_using_an_attempt(
     tmp_path, monkeypatch,
 ):
-    # A 12-batch pass was launched back to back while the RAM budget booked
-    # 500MB per unmeasured child, so batch 9 was refused and batches 9-12 were
-    # dropped until the next day. The daemon must wait for admission instead.
-    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    # A burst of launches is refused while unmeasured children still book the
+    # slim estimate. That is back-pressure, not a failure: the batch waits for
+    # the next poll with its attempts intact instead of being dropped.
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2", max_concurrent="2")
     _write_bulk_lessons(pkg["lessons_path"], 1500)
-    monkeypatch.setattr(pkg["curator"], "_BATCH_ADMISSION_RETRY_S", 0.0)
     attempts, launched = _batch_spawner(
         monkeypatch,
-        lambda idx, attempt: _RAM_REFUSAL if idx == 2 and attempt <= 2 else "",
+        lambda idx, attempt: _RAM_REFUSAL if idx == 2 and attempt == 1 else "",
     )
 
     out = pkg["curator"].run_curator_pass(force=True, scheduled=True)
 
-    assert out.startswith("spawned batches="), out
-    assert len(launched) > 2
-    assert launched == list(range(1, len(launched) + 1))
-    assert attempts.count(2) == 3
+    assert out.startswith("dispatch pass_id="), out
+    assert "waiting_for_memory=1" in out
+    assert "spawn_error" not in out
+    conn = pkg["db"].get_db()
+    second = conn.execute(
+        "SELECT state, dispatch_count FROM curator_batches WHERE batch_index=2"
+    ).fetchone()
+    assert (second["state"], second["dispatch_count"]) == ("pending", 0)
+
+    out = pkg["curator"].run_curator_pass(force=True, scheduled=True)
+    assert out.startswith("dispatch pass_id="), out
+    assert attempts == [1, 2, 2]
+    assert launched == [1, 2]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
 
 
-def test_manual_pass_fails_fast_on_memory_budget(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
-    _write_bulk_lessons(pkg["lessons_path"], 1500)
-    monkeypatch.setattr(pkg["curator"], "_BATCH_ADMISSION_RETRY_S", 0.0)
-    attempts, launched = _batch_spawner(
-        monkeypatch, lambda idx, attempt: _RAM_REFUSAL if idx == 2 else "",
-    )
-
-    out = pkg["curator"].run_curator_pass(force=True)
-
-    assert out.startswith("spawn_error batch=2/"), out
-    assert "budget_exceeded" in out
-    assert attempts == [1, 2]
-    assert launched == [1]
-
-
-def test_scheduled_pass_stops_waiting_at_deadline_and_on_spend_caps(
+def test_spend_cap_refusal_alerts_without_using_an_attempt(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     _write_bulk_lessons(pkg["lessons_path"], 1500)
-    curator = pkg["curator"]
-    # The next retry would land past the deadline, so the pass gives up on the
-    # first refusal without sleeping.
-    monkeypatch.setattr(curator, "_BATCH_ADMISSION_RETRY_S", 60.0)
-    monkeypatch.setattr(curator, "_BATCH_ADMISSION_MAX_WAIT_S", 30.0)
-
-    attempts, _ = _batch_spawner(
-        monkeypatch, lambda idx, attempt: _RAM_REFUSAL if idx == 2 else "",
-    )
-    out = curator.run_curator_pass(force=True, scheduled=True)
-    assert out.startswith("spawn_error batch=2/"), out
-    assert attempts.count(2) == 1
-
-    monkeypatch.setattr(curator, "_BATCH_ADMISSION_MAX_WAIT_S", 3600.0)
-    attempts, _ = _batch_spawner(
+    _batch_spawner(
         monkeypatch,
-        lambda idx, attempt: (
-            "ERR token_budget_exceeded: tokens_24h=9 >= limit=5."
-            if idx == 1 else ""
-        ),
+        lambda idx, attempt: "ERR token_budget_exceeded: tokens_24h=9 >= limit=5.",
     )
-    out = curator.run_curator_pass(force=True, scheduled=True)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+
     assert out.startswith("spawn_error batch=1/"), out
     assert "token_budget_exceeded" in out
-    assert attempts == [1]
+    conn = pkg["db"].get_db()
+    first = conn.execute(
+        "SELECT state, dispatch_count FROM curator_batches WHERE batch_index=1"
+    ).fetchone()
+    assert (first["state"], first["dispatch_count"]) == ("pending", 0)
+
+
+def test_batch_that_keeps_failing_abandons_the_pass(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    attempts, _ = _batch_spawner(
+        monkeypatch,
+        lambda idx, attempt: "ERR spawn_failed cli=codex reason=binary_not_found",
+    )
+    curator = pkg["curator"]
+
+    outs = [curator.run_curator_pass(force=True) for _ in range(4)]
+
+    assert all(o.startswith("spawn_error batch=1/1") for o in outs[:3]), outs
+    assert outs[3].startswith("spawn_failed pass_id="), outs[3]
+    assert len(attempts) == curator.CURATOR_BATCH_MAX_ATTEMPTS
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT abandoned_at, abandon_reason FROM curator_passes"
+    ).fetchone()
+    assert row["abandoned_at"] is not None
+    assert row["abandon_reason"] == "batch_attempts_exhausted"
+    assert curator._active_pass(conn, int(time.time())) is None
+
+
+def test_inventory_change_resumes_the_frozen_pass(tmp_path, monkeypatch):
+    # The live inventory changes several times a day. A pass must keep
+    # reviewing the batches it froze instead of forking a new pass (and a new
+    # snapshot) every time the fingerprint moves, which starved late batches.
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _write_bulk_lessons(pkg["lessons_path"], 1500)
+    attempts, launched = _batch_spawner(monkeypatch, lambda idx, attempt: "")
+    curator = pkg["curator"]
+
+    first = curator.run_curator_pass(force=True, scheduled=True)
+    assert first.startswith("dispatch pass_id="), first
+    conn = pkg["db"].get_db()
+    pass_id = conn.execute("SELECT pass_id FROM curator_passes").fetchone()[0]
+    frozen = conn.execute(
+        "SELECT batch_text FROM curator_batches WHERE batch_index=2"
+    ).fetchone()[0]
+    assert "CURATOR BATCH 2/" in frozen
+
+    pkg["lessons"].append_lesson(title="late arrival", body="b", source="shadow")
+    monkeypatch.setattr(
+        curator, "_current_inventory_fingerprint",
+        lambda conn: (_ for _ in ()).throw(
+            AssertionError("resume must not re-read the inventory")
+        ),
+    )
+    _complete_manifest_batch(pkg, pass_id=pass_id)
+    second = curator.run_curator_pass(force=True, scheduled=True)
+
+    assert second.startswith(f"dispatch pass_id={pass_id}"), second
+    assert conn.execute("SELECT COUNT(*) FROM curator_passes").fetchone()[0] == 1
+    assert launched == [1, 2]
+
+
+def test_expired_pass_is_abandoned_and_a_fresh_pass_starts(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    _batch_spawner(monkeypatch, lambda idx, attempt: "")
+    curator = pkg["curator"]
+    assert curator.run_curator_pass(force=True).startswith("dispatch pass_id=")
+    conn = pkg["db"].get_db()
+    old = int(time.time()) - curator._pass_max_age_s() - 60
+    conn.execute("UPDATE curator_passes SET created_at=?", (old,))
+    conn.execute("UPDATE curator_batches SET state='pending', task_id=NULL")
+    conn.commit()
+
+    out = curator.run_curator_pass(force=True)
+
+    assert out.startswith("dispatch pass_id="), out
+    rows = conn.execute(
+        "SELECT abandon_reason FROM curator_passes ORDER BY created_at"
+    ).fetchall()
+    assert [r["abandon_reason"] for r in rows] == ["expired", None]
 
 
 def test_run_curator_pass_recent_high_water_is_not_due(
@@ -995,11 +1113,10 @@ def test_curator_restore_recovers_pruned_lesson_body(tmp_path, monkeypatch):
     assert "recover this durable body" in get(slug="restore-target-lesson")
 
 
-def test_run_curator_pass_skips_unchanged_inventory(
+def test_run_curator_pass_skips_unchanged_inventory_only_after_completion(
     tmp_path, monkeypatch,
 ):
-    """A second wake-up over the same stable inventory endorses the last
-    pass instead of spawning another full curator child."""
+    """Dispatch alone cannot endorse a stable inventory."""
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     pkg["lessons"].append_lesson(
         title="lesson one", body="body one", source="shadow"
@@ -1021,23 +1138,118 @@ def test_run_curator_pass_skips_unchanged_inventory(
     second = pkg["curator"].run_curator_pass(force=True)
 
     assert "fake-curator-1" in first
-    assert second.startswith("unchanged_inventory")
+    assert second.startswith("curator_pending")
     assert len(captured) == 1
+
+    _complete_manifest_batch(pkg)
+    third = pkg["curator"].run_curator_pass(force=True)
+    fourth = pkg["curator"].run_curator_pass(force=True)
+    assert third.startswith("endorsed pass_id=")
+    assert fourth.startswith("unchanged_inventory")
 
     conn = pkg["db"].get_db()
     rows = conn.execute(
         "SELECT summary FROM events WHERE kind='curator_pass' "
         "ORDER BY id ASC"
     ).fetchall()
-    assert "spawned inventory_sha256=" in rows[-2]["summary"]
+    assert "endorsed pass_id=" in rows[-2]["summary"]
     assert "unchanged_inventory inventory_sha256=" in rows[-1]["summary"]
 
     pkg["lessons"].append_lesson(
         title="lesson three", body="body three", source="shadow"
     )
-    third = pkg["curator"].run_curator_pass(force=True)
-    assert "fake-curator-2" in third
+    fifth = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-curator-2" in fifth
     assert len(captured) == 2
+
+
+def test_curator_child_failure_is_durable_and_retries_that_batch(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+
+    import threadkeeper.tools.spawn as spawn_mod
+    calls: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        return f"ok task=tk_retry_{len(calls)} pid=1"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    assert "tk_retry_1" in pkg["curator"].run_curator_pass(force=True)
+
+    conn = pkg["db"].get_db()
+    batch = conn.execute("SELECT * FROM curator_batches").fetchone()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at, ended_at, return_code) "
+        "VALUES (?, 1, '/tmp', 'curator', ?, ?, 1)",
+        (batch["task_id"], now - 1, now),
+    )
+    conn.commit()
+    assert not pkg["curator"]._refresh_pass_completion(
+        conn, batch["pass_id"], now,
+    )
+    failed = conn.execute("SELECT * FROM curator_batches").fetchone()
+    assert failed["state"] == "failed"
+    assert failed["failure_reason"] == "child_exit=1"
+
+    assert "tk_retry_2" in pkg["curator"].run_curator_pass(force=True)
+    retried = conn.execute("SELECT * FROM curator_batches").fetchone()
+    assert retried["dispatch_count"] == 2
+    assert retried["state"] == "running"
+
+
+def test_curator_budget_refusal_keeps_successful_batch_and_retries_missing_one(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", max_concurrent="2",
+    )
+    _write_bulk_lessons(pkg["lessons_path"], 201)
+    import threadkeeper.tools.spawn as spawn_mod
+    calls: list[dict] = []
+
+    def first_wave(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "ok task=tk_first_batch pid=1"
+        return "ERR spawn_budget_exceeded"
+
+    monkeypatch.setattr(spawn_mod, "spawn", first_wave)
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert out.startswith("dispatch pass_id="), out
+    assert "waiting_for_memory=1" in out
+    conn = pkg["db"].get_db()
+    rows = conn.execute(
+        "SELECT batch_index, state, dispatch_count FROM curator_batches "
+        "ORDER BY batch_index"
+    ).fetchall()
+    assert [(row["state"], row["dispatch_count"]) for row in rows] == [
+        ("running", 1), ("pending", 0),
+    ]
+    _complete_manifest_batch(pkg)
+
+    def retry_only_missing(**kwargs):
+        calls.append(kwargs)
+        return "ok task=tk_second_batch pid=1"
+
+    monkeypatch.setattr(spawn_mod, "spawn", retry_only_missing)
+    assert "tk_second_batch" in pkg["curator"].run_curator_pass(force=True)
+    assert "CURATOR BATCH 2/2" in calls[-1]["prompt"]
+    rows = conn.execute(
+        "SELECT batch_index, state, dispatch_count FROM curator_batches "
+        "ORDER BY batch_index"
+    ).fetchall()
+    assert [(row["state"], row["dispatch_count"]) for row in rows] == [
+        ("complete", 1), ("running", 1),
+    ]
+    from threadkeeper._mcp import mcp
+
+    status = mcp._tool_manager._tools["curator_review_status"].fn()
+    assert "expected=2 running=1 failed=0 complete=1 unapplied=1" in status
 
 
 def test_scheduled_curator_researches_unchanged_inventory_after_interval(
@@ -1058,6 +1270,8 @@ def test_scheduled_curator_researches_unchanged_inventory_after_interval(
 
     monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
     first = pkg["curator"].run_curator_pass(force=True)
+    _complete_manifest_batch(pkg)
+    assert pkg["curator"].run_curator_pass(force=True).startswith("endorsed")
     first_ts = int(time.time())
     monkeypatch.setattr(pkg["curator"].time, "time", lambda: first_ts + 4000)
 
