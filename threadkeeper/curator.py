@@ -115,6 +115,15 @@ _CURATABLE_SKILL_ORIGINS = {
 }
 
 
+# A pass launches its batches back to back, and the spawn memory budget books
+# the full slim estimate for every just-launched child until the RSS sweep
+# (SPAWN_BUDGET_POLL_S) measures its real size. A large pass is therefore
+# refused well before memory is actually short. The scheduled daemon waits for
+# admission instead of dropping the remaining batches for a whole interval,
+# bounded so a genuinely full budget cannot pin the curator thread.
+_BATCH_ADMISSION_RETRY_S = 15.0
+_BATCH_ADMISSION_MAX_WAIT_S = 3600.0
+
 # Stable leading substring used to find running curator children in the tasks
 # table for the single-flight guard. The prompt is built from this fragment so
 # edits to the opening line cannot silently drift away from the detector.
@@ -369,6 +378,48 @@ class _InventoryBatch:
 
 
 @dataclass(frozen=True)
+class _InventoryCompleteness:
+    """Whether each required curator inventory source was read in full."""
+
+    lessons: str | None = None
+    skills: str | None = None
+    skill_files: str | None = None
+    concepts: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return not any((
+            self.lessons, self.skills, self.skill_files, self.concepts,
+        ))
+
+    def failure_outcome(self) -> str:
+        for source in ("lessons", "skills", "skill_files", "concepts"):
+            error = getattr(self, source)
+            if error:
+                return f"inventory_error source={source} error={error}"
+        raise ValueError("complete inventory has no failure outcome")
+
+
+@dataclass(frozen=True)
+class _InventoryCollection:
+    snapshot: dict[str, list[dict]]
+    skill_audit: dict | None
+    completeness: _InventoryCompleteness
+
+
+class _InventoryCollectionError(RuntimeError):
+    """A required source failed while rendering the inventory for review."""
+
+    def __init__(self, source: str, exc: Exception):
+        self.source = source
+        self.error = type(exc).__name__
+        super().__init__(f"{source}: {self.error}")
+
+    def outcome(self) -> str:
+        return f"inventory_error source={self.source} error={self.error}"
+
+
+@dataclass(frozen=True)
 class _LessonPromotionCandidate:
     """A deterministic dense subtopic awaiting one curator decision."""
 
@@ -479,6 +530,7 @@ def _last_curator_ts(conn: sqlite3.Connection) -> int:
     try:
         row = conn.execute(
             "SELECT target FROM events WHERE kind='curator_pass' "
+            "AND summary NOT LIKE 'report_authorized %' "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
@@ -570,13 +622,14 @@ def _stable_int(value) -> int | None:
 def _curator_inventory_snapshot(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> dict:
+) -> _InventoryCollection:
     """Canonical, time-stable inventory state for debounce fingerprinting.
 
     Human prompt text includes relative ages and decay scores, so hashing the
     rendered dump would change as the wall clock moves. This snapshot hashes
     only stored lesson/skill/concept state that can change the curator's
-    decisions.
+    decisions. Its completeness result distinguishes a successful empty store
+    from a source that could not be read.
     """
     snapshot: dict[str, list[dict]] = {
         "lessons": [],
@@ -586,6 +639,7 @@ def _curator_inventory_snapshot(
         "merge_verdicts": [],
     }
 
+    lesson_error = None
     try:
         usage = lessons.lesson_usage_map(conn)
         for item in lessons.iter_lessons():
@@ -607,10 +661,12 @@ def _curator_inventory_snapshot(
                     "tier": u.get("tier") or "hypothesis",
                 },
             })
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: inventory lesson snapshot failed",
                      exc_info=True)
+        lesson_error = type(exc).__name__
 
+    skill_error = None
     try:
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
@@ -634,12 +690,18 @@ def _curator_inventory_snapshot(
                 "pinned": _stable_int(r["pinned"]) or 0,
                 "state": r["state"] or "",
             })
-    except sqlite3.OperationalError:
+    except Exception as exc:
         logger.debug("curator: inventory skill snapshot failed",
                      exc_info=True)
+        skill_error = type(exc).__name__
 
+    audit = None
+    skill_files_error = None
     try:
-        audit = skill_audit or build_skill_audit(conn, include_archived=True)
+        audit = (
+            skill_audit if skill_audit is not None
+            else build_skill_audit(conn, include_archived=True)
+        )
         snapshot["skill_files"] = [
             {
                 "name": record["name"],
@@ -652,9 +714,11 @@ def _curator_inventory_snapshot(
             }
             for record in audit["skills"]
         ]
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: deep skill snapshot failed", exc_info=True)
+        skill_files_error = type(exc).__name__
 
+    concept_error = None
     try:
         rows = conn.execute(
             "SELECT id, description, confidence, registered_at, "
@@ -668,8 +732,10 @@ def _curator_inventory_snapshot(
                 "registered_at": _stable_int(r["registered_at"]),
                 "last_evidence_at": _stable_int(r["last_evidence_at"]),
             })
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        logger.debug("curator: inventory concept snapshot failed",
+                     exc_info=True)
+        concept_error = type(exc).__name__
 
     try:
         rows = conn.execute(
@@ -690,7 +756,16 @@ def _curator_inventory_snapshot(
         pass
 
     snapshot["lessons"].sort(key=lambda row: row["slug"])
-    return snapshot
+    return _InventoryCollection(
+        snapshot=snapshot,
+        skill_audit=audit,
+        completeness=_InventoryCompleteness(
+            lessons=lesson_error,
+            skills=skill_error,
+            skill_files=skill_files_error,
+            concepts=concept_error,
+        ),
+    )
 
 
 def _inventory_fingerprint(snapshot: dict) -> str:
@@ -706,10 +781,12 @@ def _inventory_fingerprint(snapshot: dict) -> str:
 def _current_inventory_fingerprint(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
-) -> tuple[str, int, int, int]:
-    snapshot = _curator_inventory_snapshot(conn, skill_audit=skill_audit)
+) -> tuple[_InventoryCollection, str | None, int, int, int]:
+    collection = _curator_inventory_snapshot(conn, skill_audit=skill_audit)
+    snapshot = collection.snapshot
     return (
-        _inventory_fingerprint(snapshot),
+        collection,
+        _inventory_fingerprint(snapshot) if collection.completeness.complete else None,
         len(snapshot["lessons"]),
         len(snapshot["skill_files"]) or len(snapshot["skills"]),
         len(snapshot["concepts"]),
@@ -917,9 +994,9 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
     """
     try:
         rows = lessons.rank_stale_lessons(conn)
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: rank_stale_lessons failed", exc_info=True)
-        rows = []
+        raise _InventoryCollectionError("lessons", exc) from exc
     lines = [
         "## STALE LESSONS (dry-run decay ranking)\n",
         "Advisory only; never auto-delete solely from this list.",
@@ -958,8 +1035,9 @@ def _collect_inventory_entry_groups(
                     _format_lesson(item, usage.get(slug), adjacency.get(slug, ())),
                 )
             )
-    except Exception:
+    except Exception as exc:
         logger.debug("curator: iter_lessons failed", exc_info=True)
+        raise _InventoryCollectionError("lessons", exc) from exc
 
     promotion_entries = [
         _InventoryEntry(
@@ -972,12 +1050,19 @@ def _collect_inventory_entry_groups(
         )
     ]
 
-    audit = skill_audit or build_skill_audit(conn, include_archived=True)
-    checklist_lines = format_skill_checklist(audit).splitlines()[2:]
-    skill_entries = [
-        _InventoryEntry("skill", record["name"], line)
-        for record, line in zip(audit["skills"], checklist_lines)
-    ]
+    try:
+        audit = (
+            skill_audit if skill_audit is not None
+            else build_skill_audit(conn, include_archived=True)
+        )
+        checklist_lines = format_skill_checklist(audit).splitlines()[2:]
+        skill_entries = [
+            _InventoryEntry("skill", record["name"], line)
+            for record, line in zip(audit["skills"], checklist_lines)
+        ]
+    except Exception as exc:
+        logger.debug("curator: skill inventory render failed", exc_info=True)
+        raise _InventoryCollectionError("skill_files", exc) from exc
 
     stale_text, _n_stale = _collect_stale_lessons(conn)
     merge_verdicts = _collect_merge_verdicts(
@@ -1103,8 +1188,9 @@ def _collect_concept_entries(conn: sqlite3.Connection) -> tuple[list[_InventoryE
             "last_evidence_at FROM concepts "
             "ORDER BY COALESCE(last_evidence_at, registered_at) ASC"
         ).fetchall()
-    except sqlite3.OperationalError:
-        return [], 0
+    except Exception as exc:
+        logger.debug("curator: concept inventory render failed", exc_info=True)
+        raise _InventoryCollectionError("concepts", exc) from exc
     if not rows:
         return [], 0
     now_t = int(time.time())
@@ -1423,15 +1509,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_curator_pass(conn, now, out)
             return out
 
-        try:
-            skill_audit = build_skill_audit(conn, include_archived=True)
-        except Exception as exc:
-            out = f"skill_audit_error: {exc}"
+        collection, fingerprint, n_lessons, n_skills, n_concepts = (
+            _current_inventory_fingerprint(conn)
+        )
+        if not collection.completeness.complete:
+            out = collection.completeness.failure_outcome()
             _record_curator_pass(conn, now, out)
             return out
-        fingerprint, n_lessons, n_skills, n_concepts = (
-            _current_inventory_fingerprint(conn, skill_audit=skill_audit)
-        )
+        assert fingerprint is not None
+        assert collection.skill_audit is not None
+        skill_audit = collection.skill_audit
         if n_lessons < CURATOR_MIN_LESSONS and n_skills == 0:
             _record_curator_pass(
                 conn, now,
@@ -1465,9 +1552,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # a curator pass is only worth a child spawn when there's a real
         # lesson/skill inventory to audit; concepts ride along in the bounded
         # batches.
-        batches, _n_lessons, _n_skills, _n_concepts = (
-            _collect_inventory_batches(conn, skill_audit=skill_audit)
-        )
+        try:
+            batches, _n_lessons, _n_skills, _n_concepts = (
+                _collect_inventory_batches(conn, skill_audit=skill_audit)
+            )
+        except _InventoryCollectionError as exc:
+            out = exc.outcome()
+            _record_curator_pass(conn, now, out)
+            return out
 
         # Ensure reports dir exists before the child tries to Write into it.
         CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1577,76 +1669,58 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 "Read,WebSearch,WebFetch"
             )
 
-        from .tools.spawn import spawn  # type: ignore
-        old_pass = os.environ.get(PASS_ID_ENV)
-        old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
-        # Every report writer, including advisory-mode children, must carry the
-        # pass identifier the parent authorized.  The writer rejects filenames
-        # that are not one of this pass's explicit report destinations.
-        os.environ[PASS_ID_ENV] = pass_id
-        if CURATOR_DESTRUCTIVE:
-            os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
+        from .spawn_result import parse_spawn_result
         results: list[str] = []
+        admission_deadline = time.monotonic() + _BATCH_ADMISSION_MAX_WAIT_S
         try:
-            try:
-                for batch in batches:
-                    if len(batches) == 1:
-                        report_name = f"REPORT-{pass_id}.md"
-                    else:
-                        report_name = (
-                            f"REPORT-{pass_id}-batch-"
-                            f"{batch.index:03d}-of-{batch.total:03d}.md"
-                        )
-                    _authorize_curator_report(
-                        conn, now, pass_id, report_name,
-                    )
-                    full_prompt = (
-                        CURATOR_PROMPT.replace(
-                            "{DESTRUCTIVE_CLAUSE}",
-                            destructive_clause,
-                        )
-                        + batch.text
-                        + "\n\n"
-                        + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
-                        + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
-                        + f"PASS_ID = {pass_id}\n"
-                        + f"BATCH_INDEX = {batch.index}\n"
-                        + f"BATCH_TOTAL = {batch.total}\n"
-                        + "Persist the report through curator_report_write "
-                        + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
-                        + "REPORT_PATH is "
-                        + "informational and must not be written directly."
-                    )
-                    result = spawn(
-                        prompt=full_prompt,
-                        visible=False,
-                        capture_output=True,
-                        permission_mode="auto",
-                        role="curator",
-                        write_origin="curator",
-                        slim=True,
-                        extra_allowed_tools=allowed_tools,
-                    )
-                    result_s = str(result)
-                    if result_s.startswith("ERR "):
-                        out = (
-                            f"spawn_error batch={batch.index}/{batch.total}: "
-                            f"{result_s}"
-                        )
-                        _record_curator_pass(conn, now, out)
-                        return out
-                    results.append(result_s)
-            finally:
-                if old_pass is None:
-                    os.environ.pop(PASS_ID_ENV, None)
+            for batch in batches:
+                if len(batches) == 1:
+                    report_name = f"REPORT-{pass_id}.md"
                 else:
-                    os.environ[PASS_ID_ENV] = old_pass
-                if old_snap is None:
-                    os.environ.pop(SNAPSHOT_DIR_ENV, None)
-                else:
-                    os.environ[SNAPSHOT_DIR_ENV] = old_snap
+                    report_name = (
+                        f"REPORT-{pass_id}-batch-"
+                        f"{batch.index:03d}-of-{batch.total:03d}.md"
+                    )
+                _authorize_curator_report(
+                    conn, now, pass_id, report_name,
+                )
+                full_prompt = (
+                    CURATOR_PROMPT.replace(
+                        "{DESTRUCTIVE_CLAUSE}",
+                        destructive_clause,
+                    )
+                    + batch.text
+                    + "\n\n"
+                    + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{report_name}\n"
+                    + f"AUDIT_MANIFEST_PATH = {manifest_path}\n"
+                    + f"PASS_ID = {pass_id}\n"
+                    + f"BATCH_INDEX = {batch.index}\n"
+                    + f"BATCH_TOTAL = {batch.total}\n"
+                    + "Persist the report through curator_report_write "
+                    + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
+                    + "REPORT_PATH is "
+                    + "informational and must not be written directly."
+                )
+                while True:
+                    spawn_result = parse_spawn_result(_spawn_batch_child(
+                        pass_id, snapshot_dir, full_prompt, allowed_tools,
+                    ))
+                    if spawn_result.ok or not _await_batch_admission(
+                        spawn_result.reason,
+                        scheduled=scheduled,
+                        deadline=admission_deadline,
+                    ):
+                        break
+                if not spawn_result.ok:
+                    out = (
+                        f"spawn_error batch={batch.index}/{batch.total}: "
+                        f"{spawn_result.reason}"
+                    )
+                    _record_curator_pass(conn, _last_curator_ts(conn), out)
+                    return out
+                results.append(spawn_result.text)
         except Exception as e:
-            _record_curator_pass(conn, now, f"spawn_error: {e}")
+            _record_curator_pass(conn, _last_curator_ts(conn), f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
         batch_entries = _summarize_batch_entries(batches)
@@ -1668,6 +1742,71 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             f"spawned batches={len(results)} batch_entries={batch_entries} "
             f":: {' | '.join(results)[:180]}"
         )
+
+
+def _spawn_batch_child(
+    pass_id: str,
+    snapshot_dir,
+    prompt: str,
+    allowed_tools: str,
+) -> str:
+    """Launch one batch child with this pass's identity in its environment.
+
+    Every report writer, including advisory-mode children, must carry the
+    pass identifier the parent authorized.  The writer rejects filenames that
+    are not one of this pass's explicit report destinations.  The identity is
+    exported only around the launch itself, so a pass waiting for spawn
+    admission never leaks it into children of other loops in this process.
+    """
+    from .tools.spawn import spawn  # type: ignore
+
+    old_pass = os.environ.get(PASS_ID_ENV)
+    old_snap = os.environ.get(SNAPSHOT_DIR_ENV)
+    os.environ[PASS_ID_ENV] = pass_id
+    if snapshot_dir is not None:
+        os.environ[SNAPSHOT_DIR_ENV] = str(snapshot_dir)
+    try:
+        return spawn(
+            prompt=prompt,
+            visible=False,
+            capture_output=True,
+            permission_mode="auto",
+            role="curator",
+            write_origin="curator",
+            slim=True,
+            extra_allowed_tools=allowed_tools,
+        )
+    finally:
+        if old_pass is None:
+            os.environ.pop(PASS_ID_ENV, None)
+        else:
+            os.environ[PASS_ID_ENV] = old_pass
+        if old_snap is None:
+            os.environ.pop(SNAPSHOT_DIR_ENV, None)
+        else:
+            os.environ[SNAPSHOT_DIR_ENV] = old_snap
+
+
+def _await_batch_admission(
+    reason: str,
+    *,
+    scheduled: bool,
+    deadline: float,
+) -> bool:
+    """Pause before retrying a batch the spawn memory budget refused.
+
+    Returns False when the refusal is final for this pass: a manual run (it
+    fails fast), a spend-cap or any other spawn error, or an exhausted wait.
+    """
+    from .notify import budget_refusal_kind
+
+    if not scheduled or budget_refusal_kind(reason) != "memory":
+        return False
+    if time.monotonic() + _BATCH_ADMISSION_RETRY_S > deadline:
+        return False
+    logger.debug("curator: batch waits for spawn memory budget: %s", reason)
+    time.sleep(_BATCH_ADMISSION_RETRY_S)
+    return True
 
 
 def _serve_loop() -> None:

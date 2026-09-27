@@ -64,6 +64,8 @@ Integrity API provenance from the expected GitHub Trusted Publisher. Dirty or
 diverged git checkouts are skipped rather than overwritten. Restarts are gated
 on install/setup success plus a subprocess import smoke check, so a broken or
 unverified update is recorded but the current server keeps running.
+Interpreters without pip (uv-created or pipx venvs) install through
+`uv pip install --python <interpreter>` when `uv` is available.
 Upstream PyPI publishing is intentionally gated: green merge-to-main builds are
 auto-tagged, but every upload pauses for a human approval on the protected
 `pypi` GitHub Environment (a maintainer-signed annotated `v*` tag remains the
@@ -275,6 +277,15 @@ branch/worktree under `THREADKEEPER_TASK_LOG_DIR/worktrees/`. Parallel children
 therefore never share a mutable checkout or Git index. Non-Git directories keep
 their existing behavior; a dirty Git checkout is refused before a child starts.
 
+Learning-loop children that name no `cwd` (Curator, shadow review, candidate
+and dialectic review, probes, panels, the archivist) start in the owner-only
+`<db dir>/workspace` directory instead of the spawning process's working
+directory. The daemon host keeps the directory of whichever session started it,
+so these children used to run inside an unrelated user project, and a dirty Git
+checkout there refused every loop spawn. Foreground spawns keep the caller's
+directory, and callers that pass `cwd` (the Evolve reviewer and applier) are
+unchanged.
+
 The spawn wrapper also records each completed child's `duration_s`,
 `tokens_in`, `tokens_out`, `tokens_total`, and `cost_usd` when the underlying
 CLI emits a recognizable usage trailer. Optional daily ceilings
@@ -310,7 +321,10 @@ repair partial work, and continue rather than restart blindly.
 `THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT` (default 3; 0 disables) bounds the
 retry chain, with `THREADKEEPER_SPAWN_TIMEOUT_RETRY_DELAY_S` available for a
 non-zero delay. Timed-out children are surfaced as `tasks_timed_out` in
-`mp_dashboard` and `timed_out` in `agent_status`.
+`mp_dashboard` and `timed_out` in `agent_status`. `agent_status` and
+`tk-agent-status` are observation-only and never terminate or respawn a
+child; timeout enforcement and the continuation retry live solely in the
+spawn-budget daemon.
 
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
 or compact text for external monitors:
@@ -700,9 +714,13 @@ Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
 trees, validators, and mirror state. Repeated manual calls over identical bytes
 return `unchanged_inventory`; the scheduled three-day pass still runs because
 CLI behavior, official guidance, and external alternatives can change without
-local file changes. `curator_review_status()` shows the inventory hash plus the
-latest report, deterministic audit manifest, recovery snapshot, last endorsed
-`inventory_sha256`, and the current inventory hash. Spawned pass events record
+local file changes. Every required inventory source (lessons, skill telemetry,
+skill files, and concepts) must read successfully before that hash can endorse
+a pass; a successfully empty source remains valid, while a failed one records
+`inventory_error source=<source> error=<type>` without authorizing a report,
+creating a recovery snapshot, or launching a child. `curator_review_status()`
+shows that incomplete state instead of a current hash, while retaining the last
+endorsed `inventory_sha256`. Spawned pass events record
 `entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
 large reviews visible in the normal `curator_pass` trail.
 
@@ -1043,7 +1061,9 @@ Three detection sources per tick:
 
 1. **Admission failures / terminal timeouts** — a `<loop>_pass` event whose
    summary is a spawn/budget failure (e.g. `token_budget_exceeded`,
-   `claude_cli_not_found`), plus `spawn_timeout_retry_failed`.
+   `claude_cli_not_found`), plus `spawn_timeout_retry_failed`. A budget
+   refusal names the local cap that refused the child — the spawn memory
+   budget or the daily token/cost budget — not the CLI subscription.
 2. **Dead children** — a `tasks` row that ended with a non-zero, non-timeout
    return code. This is the important one: `spawn()` returns `ok task=…` at
    *launch*, so a `*_pass` summary is a false success when a child later dies

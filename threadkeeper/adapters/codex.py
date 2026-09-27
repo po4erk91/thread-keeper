@@ -123,6 +123,26 @@ def _thread_keeper_tools_config() -> dict:
     }
 
 
+_THREAD_KEEPER_TOOL_PREFIX = "mcp__thread-keeper__"
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _granted_thread_keeper_tools(allowed_tools: str) -> list[str]:
+    """Bare thread-keeper tool names from a Claude-style allowlist, in order.
+
+    Names are spliced into `-c` TOML keys, so anything that is not a plain
+    identifier is dropped rather than passed through."""
+    tools: list[str] = []
+    for item in allowed_tools.split(","):
+        item = item.strip()
+        if not item.startswith(_THREAD_KEEPER_TOOL_PREFIX):
+            continue
+        tool = item[len(_THREAD_KEEPER_TOOL_PREFIX):]
+        if _TOOL_NAME_RE.fullmatch(tool) and tool not in tools:
+            tools.append(tool)
+    return tools
+
+
 def _approval_blocks(name: str) -> str:
     if name != "thread-keeper":
         return ""
@@ -319,6 +339,14 @@ class CodexAdapter(CLIAdapter):
         sandbox can write ordinary workspace files but blocks `.git` refs, so
         map Claude's `bypassPermissions` request to Codex's explicit
         no-sandbox flag.
+
+        `extra_allowed_tools` is the child's full Claude-style allowlist.
+        `codex exec` runs with approval policy "never", so a thread-keeper
+        write tool that is not pre-approved fails with "MCP tool call requires
+        approval". Every granted `mcp__thread-keeper__*` tool is therefore
+        approved for this invocation only, which keeps Codex children in step
+        with the loop's declared tool contract instead of the static
+        config.toml list.
         """
         bin_path = find_cli_executable("codex")
         if not bin_path:
@@ -345,6 +373,11 @@ class CodexAdapter(CLIAdapter):
             "-c",
             'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
         ]
+        for tool in _granted_thread_keeper_tools(extra_allowed_tools):
+            argv += [
+                "-c",
+                f'mcp_servers.thread-keeper.tools.{tool}.approval_mode="approve"',
+            ]
         if model:
             argv += ["-m", model]
         if effort:

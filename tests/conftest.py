@@ -73,6 +73,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
     return {
         "THREADKEEPER_DB": str(tmp_root / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_root / "fake_claude_projects"),
+        "THREADKEEPER_ROLE": "server",
         # Hard kill-switch (BACKGROUND_DAEMONS_ALLOWED=False) so a tool call's
         # _ensure_session never starts a real daemon thread — not even when a
         # test monkeypatches a single daemon's POLL_S back to >0 (e.g. the

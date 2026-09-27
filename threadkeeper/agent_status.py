@@ -330,15 +330,15 @@ def _status_for(pid: int | None, ended_at: int | None) -> str:
 
 
 def _refresh_rss(conn) -> None:
-    """Refresh task liveness/RSS using the existing spawn-budget sweeper.
+    """Refresh task liveness/RSS in observation-only mode.
 
-    This intentionally reuses the production measurement path, so the widget
-    and spawn-budget tool agree on memory numbers.
+    Status reads measure only and never kill or respawn; lifecycle
+    enforcement stays daemon-owned.
     """
     try:
         from .spawn_budget import _refresh_all_running
 
-        _refresh_all_running(conn)
+        _refresh_all_running(conn, enforce=False)
     except Exception:
         # A status widget should degrade to the last cached RSS instead of
         # failing when ps is briefly unavailable or the DB is locked.
@@ -615,19 +615,28 @@ def _daemon_health(
     }
 
 
+_BUDGET_BLOCK_LABELS = {
+    "memory": "Spawn blocked: memory budget",
+    "tokens": "Spawn blocked: daily token budget",
+    "cost": "Spawn blocked: daily cost budget",
+}
+
+
 def _human_summary(summary: str, fallback: str) -> str:
+    from .notify import budget_refusal_kind
+
     s = (summary or "").strip()
     if not s:
         return fallback
     if s.startswith("spawn_error"):
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"
     if ":: ERR" in s:
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"

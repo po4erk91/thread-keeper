@@ -564,14 +564,15 @@ def _respawn_timed_out(conn, row, age: int) -> None:
         pass
 
 
-def _refresh_all_running(conn) -> int:
+def _refresh_all_running(conn, *, enforce: bool = True) -> int:
     """Sweep running tasks, update rss_kb with real measurement.
 
     pid>0 (headless) children are measured directly from their pid. Visible
     (pid<=0, Terminal-launched) children are resolved to a live pid via their
     forced session-id and measured too — and reaped past a TTL when no live
     process carries the cid (#64). Returns the number of rows whose rss_kb was
-    refreshed."""
+    refreshed. With enforce=False this is observation-only mode used by status
+    surfaces; lifecycle enforcement stays daemon-owned."""
     rows = conn.execute(
         "SELECT * FROM tasks "
         "WHERE ended_at IS NULL ORDER BY started_at DESC"
@@ -597,7 +598,7 @@ def _refresh_all_running(conn) -> int:
             )
             changed = True
             continue
-        if _over_runtime_cap(r, now):
+        if enforce and _over_runtime_cap(r, now):
             # Alive but hung past the wall-clock cap — kill it and close the
             # row so the loop's single-flight releases (#80).
             if _reap_timed_out(conn, r, now):
@@ -618,8 +619,9 @@ def _refresh_all_running(conn) -> int:
             conn.commit()
         except Exception:
             pass
-    for row, age in timed_out:
-        _respawn_timed_out(conn, row, age)
+    if enforce:
+        for row, age in timed_out:
+            _respawn_timed_out(conn, row, age)
     return updated
 
 
