@@ -21,7 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from .base import (
+    CHILD_MCP_ENV_KEYS, CLIAdapter, NormalizedMessage, find_cli_executable,
+)
 from ..config_io import mutate_text_file
 
 _FORCED_CID_RE = re.compile(
@@ -340,6 +342,10 @@ class CodexAdapter(CLIAdapter):
         map Claude's `bypassPermissions` request to Codex's explicit
         no-sandbox flag.
 
+        Codex gives MCP servers only a small default environment, so the
+        thread-keeper identity variables in ``CHILD_MCP_ENV_KEYS`` are
+        forwarded by name through ``env_vars``.
+
         `extra_allowed_tools` is the child's full Claude-style allowlist.
         `codex exec` runs with approval policy "never", so a thread-keeper
         write tool that is not pre-approved fails with "MCP tool call requires
@@ -372,6 +378,16 @@ class CodexAdapter(CLIAdapter):
         argv += [
             "-c",
             'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
+        ]
+        # Codex also starts MCP servers with a scrubbed environment, so the
+        # child's thread-keeper server would not know it is this child: no
+        # forced cid, write origin, or Curator pass, and every report write
+        # was refused as unauthorized. Forward those names from the child's
+        # own environment; the values never land on argv.
+        argv += [
+            "-c",
+            "mcp_servers.thread-keeper.env_vars="
+            + json.dumps(list(CHILD_MCP_ENV_KEYS)),
         ]
         for tool in _granted_thread_keeper_tools(extra_allowed_tools):
             argv += [

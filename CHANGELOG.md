@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## v0.18.0 — 2026-09-27
 
+- **Fixed: Codex children know who they are again.** Codex starts MCP servers
+  with a scrubbed environment, so a Codex child's thread-keeper server never
+  saw its forced cid, write origin, or Curator pass and acted as an ordinary
+  session: every Curator report write was refused as unauthorized, and other
+  Codex-routed loops wrote under the wrong identity. The Codex adapter now
+  forwards the child identity variables by name through
+  `mcp_servers.thread-keeper.env_vars`; the values stay off the command line.
 - **Docs: no more hand-maintained test or MCP tool totals (#278).** README
   and `docs/ARCHITECTURE.md` point to the suite and the live tool registry
   instead of exact numbers, a docs test rejects reintroduced totals, and the

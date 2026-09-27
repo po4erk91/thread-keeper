@@ -849,22 +849,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # the env explicitly already (allow opt-out by setting =0 explicitly).
     if slim and "THREADKEEPER_NO_EMBEDDINGS" not in child_env:
         child_env["THREADKEEPER_NO_EMBEDDINGS"] = "1"
+    from ..adapters.base import CHILD_MCP_ENV_KEYS
     mcp_env_overrides = {
-        k: child_env[k]
-        for k in (
-            "THREADKEEPER_FORCE_CID",
-            "THREADKEEPER_SPAWNED_CHILD",
-            "THREADKEEPER_DB",
-            "THREADKEEPER_ENV_FILE",
-            "THREADKEEPER_TASK_LOG_DIR",
-            "CLAUDE_PROJECTS_DIR",
-            "THREADKEEPER_TZ",
-            "THREADKEEPER_WRITE_ORIGIN",
-            "THREADKEEPER_NO_EMBEDDINGS",
-            "THREADKEEPER_CURATOR_PASS_ID",
-            "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
-        )
-        if k in child_env
+        k: child_env[k] for k in CHILD_MCP_ENV_KEYS if k in child_env
     }
     # Resolve which CLI agent should run this child. Claude is the
     # historical default and the only path with full MCP-config

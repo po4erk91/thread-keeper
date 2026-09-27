@@ -971,7 +971,13 @@ in a separate read-only `permission_mode="auto"` child with no shell, so the
 untrusted web content and the exfiltration-capable context are never the same
 child (#79). All spawned children receive the parent's `THREADKEEPER_DB`, task
 log dir, project dir, forced cid, and write-origin env so their direct
-Python/MCP calls hit the same store as the parent.
+Python/MCP calls hit the same store as the parent. The list of those variables
+is `CHILD_MCP_ENV_KEYS` (`adapters/base.py`). Claude children get the values in
+their slim MCP config. Codex starts MCP servers with a scrubbed environment, so
+the Codex adapter forwards the same names with
+`-c mcp_servers.thread-keeper.env_vars=[...]`; without it a Codex child's
+thread-keeper server ran as an ordinary session and every Curator report write
+was refused as unauthorized.
 
 ### Git worktree isolation (#164)
 

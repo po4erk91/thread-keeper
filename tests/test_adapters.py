@@ -448,6 +448,37 @@ def test_codex_spawn_argv_preapproves_granted_thread_keeper_tools(
     assert argv[-1] == "-"
 
 
+def test_codex_spawn_argv_forwards_child_identity_to_its_mcp_server(
+    tmp_path, monkeypatch,
+):
+    # Codex starts MCP servers with a scrubbed environment. Without this the
+    # child's thread-keeper server ran as an ordinary session, so every
+    # Curator report write was refused as unauthorized.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv("audit")
+
+    forwarded = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c"
+        and argv[i + 1].startswith("mcp_servers.thread-keeper.env_vars=")
+    ]
+    assert len(forwarded) == 1
+    names = json.loads(forwarded[0].split("=", 1)[1])
+    for key in (
+        "THREADKEEPER_FORCE_CID", "THREADKEEPER_SPAWNED_CHILD",
+        "THREADKEEPER_WRITE_ORIGIN", "THREADKEEPER_CURATOR_PASS_ID",
+        "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    ):
+        assert key in names
+    assert "THREADKEEPER_ROLE" not in names  # the host's role must not leak
+    assert all("=" not in name for name in names)  # names only, no values
+
+
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"

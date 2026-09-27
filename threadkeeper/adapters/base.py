@@ -19,6 +19,27 @@ import re
 import shutil
 
 
+# What a spawned child's thread-keeper MCP server must see to act as that
+# child: its forced cid, write origin, Curator pass scope, and the parent's
+# stores. Claude children get these values in their slim MCP config; a CLI
+# that starts MCP servers with a scrubbed environment (Codex) is told to
+# forward these names from the child process.
+CHILD_MCP_ENV_KEYS: tuple[str, ...] = (
+    "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_SPAWNED_CHILD",
+    "THREADKEEPER_DB",
+    "THREADKEEPER_ENV_FILE",
+    "THREADKEEPER_TASK_LOG_DIR",
+    "CLAUDE_PROJECTS_DIR",
+    "THREADKEEPER_TZ",
+    "THREADKEEPER_WRITE_ORIGIN",
+    "THREADKEEPER_NO_EMBEDDINGS",
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_EGRESS_CONSUMER",
+)
+
+
 def find_cli_executable(*names: str) -> str:
     """Find a CLI even when a sandboxed macOS app has a minimal PATH."""
     for name in names:
