@@ -17,6 +17,13 @@ version bumps follow semver per the policy in
   tampered handoffs are refused or excluded rather than resembling successful
   research.
 
+- **Fixed: reading agent status no longer kills or respawns child agents
+  (#309).** `agent_status`, `tk-agent-status`, and `agent_memory_cleanup` now
+  refresh task liveness and RSS in observation-only mode. Only the
+  spawn-budget daemon stops a child that runs past the runtime cap and
+  launches its continuation retry, so polling status can no longer end work
+  or spend another spawn attempt.
+
 ## v0.17.6 — 2026-09-17
 
 ### Fixed
@@ -79,6 +86,57 @@ version bumps follow semver per the policy in
   Web-free Curator evaluators consume those handoffs as fenced untrusted data;
   missing, malformed, swapped, or mismatched evidence stops at `HUMAN_REVIEW`
   before any advisory report, snapshot, or memory mutation.
+
+- **Fixed: background loop children no longer run in the host's inherited
+  directory.** The daemon host keeps the working directory of whichever session
+  started it, and loop children without a `cwd` ran there — inside an unrelated
+  user project with write access, or, from a dirty Git checkout, every loop
+  spawn failed with `spawn_dirty_worktree`. Background spawns (non-foreground
+  `write_origin`, or any spawn from the daemon host) now start in the owner-only
+  `<db dir>/workspace` directory, which never gets worktree isolation.
+  Foreground spawns and explicit `cwd` callers are unchanged.
+
+- **Fixed: Codex children can call every ThreadKeeper tool their loop grants.**
+  `codex exec` runs with approval policy "never", so a write tool missing from
+  the static `config.toml` approval list failed with "MCP tool call requires
+  approval". Curator children on Codex could audit but never persist a report,
+  merge verdict, or format suggestion. Codex spawns now pre-approve, for that
+  invocation only, the same `mcp__thread-keeper__*` allowlist a Claude child
+  receives through `--allowedTools`.
+
+- **Fixed: spawn budget refusals no longer read as a lapsed subscription.**
+  Loop-failure notifications and the menu-bar failure list named every budget
+  refusal "subscription/credit budget exhausted". They now name the local cap
+  that refused the child: the spawn memory budget
+  (`THREADKEEPER_SPAWN_BUDGET_MB`, with the reserved and allowed MB), or the
+  daily token or cost budget. Agent status labels the spend caps separately
+  from the memory cap.
+
+- **Fixed: scheduled Curator passes wait for spawn memory instead of dropping
+  batches.** Batches launch back to back while the memory budget still books
+  the slim estimate for every unmeasured child, so a large pass was refused
+  part-way and its remaining batches were skipped until the next interval. The
+  daemon now retries a memory-budget refusal every 15 seconds for up to one
+  hour per pass; a manual `curator_run` still fails fast, and spend-cap
+  refusals stay final. The pass identity is exported only around each launch,
+  so a waiting pass cannot leak it into other loops' children.
+
+- **Fixed: auto-update installs into uv-created virtualenvs.** Such venvs ship
+  without pip, so a git-mode update ended `install=failed` and suppressed the
+  restart. When pip is missing, the install now runs through
+  `uv pip install --python <interpreter>`.
+
+- **Fixed: returned spawn admission failures no longer masquerade as child
+  launches.** Internal callers now share a parsed launch-result contract, so
+  Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
+  pickups, automatic thread review, and tournaments only advance after a real
+  task identifier is returned.
+
+- **Fixed: Curator inventory collection now fails closed.** A lesson read or
+  parse failure, skill-audit failure, or concept-query failure records a
+  source-specific `curator_pass` error and blocks report authorization,
+  snapshot creation, child dispatch, and inventory-fingerprint endorsement.
+  Successfully read empty stores remain valid below-threshold inputs.
 
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`

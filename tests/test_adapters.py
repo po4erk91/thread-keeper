@@ -415,6 +415,39 @@ def test_codex_spawn_argv_enables_native_search_for_curator(
     ]
 
 
+def test_codex_spawn_argv_preapproves_granted_thread_keeper_tools(
+    tmp_path, monkeypatch,
+):
+    # `codex exec` runs with approval policy "never": a thread-keeper write
+    # tool missing from config.toml failed with "MCP tool call requires
+    # approval", so Curator children could never persist their reports.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv(
+        "audit",
+        extra_allowed_tools=(
+            "Read,mcp__thread-keeper__curator_report_write,"
+            "mcp__thread-keeper__note,mcp__other__tool,"
+            'mcp__thread-keeper__bad.name="x",mcp__thread-keeper__note'
+        ),
+    )
+
+    assert argv is not None
+    approvals = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c" and ".approval_mode=" in argv[i + 1]
+    ]
+    assert approvals == [
+        'mcp_servers.thread-keeper.tools.curator_report_write.approval_mode="approve"',
+        'mcp_servers.thread-keeper.tools.note.approval_mode="approve"',
+    ]
+    assert argv[-1] == "-"
+
+
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     fp = tmp_path / "rollout-2026-05-14T10-00-00.jsonl"

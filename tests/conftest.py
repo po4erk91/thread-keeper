@@ -99,6 +99,7 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         "THREADKEEPER_LESSONS": str(tmp_root / "lessons.md"),  # tempdir lessons
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_root / "tasks"),
         "THREADKEEPER_CLIENT": "pytest",
+        "THREADKEEPER_ROLE": "server",
         # The ONNX embedding backend (fastembed) pulls tokenizers + onnxruntime,
         # which each spawn native thread pools (tokenizers via rayon). The
         # per-test sys.modules wipe + re-import (see _bootstrap_mp) orphans those

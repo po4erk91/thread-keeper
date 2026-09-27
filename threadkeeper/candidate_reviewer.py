@@ -390,6 +390,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             + fence_observed(inventory, "pending candidate snippets")
         )
 
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # type: ignore
         try:
             result = spawn(
@@ -414,14 +415,22 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 ),
             )
         except Exception as e:
-            _record_review_pass(conn, now, f"spawn_error: {e}")
+            _record_review_pass(
+                conn, _last_review_ts(conn), f"spawn_error: {e}"
+            )
             return f"spawn_error: {e}"
+
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
+            out = f"spawn_error: {spawn_result.reason}"
+            _record_review_pass(conn, _last_review_ts(conn), out)
+            return out
 
         _record_review_pass(
             conn, now,
-            f"spawned pending={n_pending} :: {str(result)[:140]}",
+            f"spawned pending={n_pending} :: {spawn_result.text[:140]}",
         )
-        return str(result)
+        return spawn_result.text
 
 
 def _serve_loop() -> None:

@@ -133,7 +133,9 @@ is single-flight across live servers, records `events.kind='auto_update_pass'`,
 and applies the install-appropriate update path: clean git checkouts fetch and
 fast-forward their tracked branch, then reinstall editable; package installs run
 `pip install --upgrade` in the current interpreter environment only after the
-latest PyPI release's non-yanked files pass the provenance gate. That gate
+latest PyPI release's non-yanked files pass the provenance gate. When that
+interpreter has no pip (uv-created or pipx venvs), both installs run through
+`uv pip install --python <interpreter>` if `uv` is available. That gate
 queries PyPI JSON metadata plus the Integrity API, requires a Trusted Publisher
 bundle for `po4erk91/thread-keeper` from `publish.yml` in environment `pypi`,
 and checks the attested subject filename/SHA-256 against PyPI metadata before
@@ -518,6 +520,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   endorsed `inventory_sha256` and the current inventory hash. Spawned
   `curator_pass` events record total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
+  Batches launch back to back while the spawn memory budget still books the
+  slim estimate for each unmeasured child. When that budget refuses a batch, a
+  scheduled pass retries every 15 seconds for up to one hour per pass instead
+  of dropping the remaining batches; a manual `curator_run` fails fast, and
+  token/cost budget refusals are final. The pass ID and snapshot directory are
+  exported only around each launch.
   Before dispatching each child, the parent also authorizes that exact
   `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
   path-scoped writer requires that authorization plus its matching pass ID and
@@ -889,7 +897,13 @@ for branch/commit/PR creation. The exposed `spawn()` MCP tool refuses
 `bypassPermissions` unless the request comes from the evolve daemon
 role/write-origin pairs (`evolve_reviewer`/`evolve`,
 `evolve_applier`/`evolve_apply`), or the operator explicitly sets
-`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Web tools
+`THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. Every child gets one tool
+allowlist: the default ThreadKeeper set (or `allowed_tools_override`) plus the
+caller's `extra_allowed_tools`. Claude receives it as `--allowedTools`; because
+`codex exec` runs with approval policy "never", the Codex adapter pre-approves
+each listed `mcp__thread-keeper__*` tool for that invocation with
+`-c mcp_servers.thread-keeper.tools.<tool>.approval_mode="approve"`, so a
+Codex child is not limited to the static `config.toml` list. Web tools
 (`WebSearch`/`WebFetch`) are never
 granted to a `bypassPermissions` child: the evolve reviewer's web research runs
 in a separate read-only `permission_mode="auto"` child with no shell, so the
@@ -914,6 +928,34 @@ Directories outside a Git repository retain the normal spawn behavior. The
 per-task worktree is deliberately retained after launch so a completed child's
 work remains inspectable and recoverable; it is never deleted while a child may
 still be using it.
+
+### Background workspace
+
+A spawn with no `cwd` defaults to the spawning process's working directory
+only for foreground work. Background spawns — any non-foreground
+`write_origin`, and every spawn made by the daemon host
+(`THREADKEEPER_ROLE=host`) — default to `BACKGROUND_WORKSPACE_DIR`
+(`<db dir>/workspace`, created `0700`). The host inherits the directory of
+whichever session launched it, so without this a Curator child ran
+`codex exec --sandbox workspace-write` inside an unrelated user project and
+loaded that project's agent instructions, and a dirty Git checkout there
+refused every loop spawn with `spawn_dirty_worktree`. The workspace never gets
+worktree isolation, even when a repository (for example a dotfiles repo in
+`$HOME`) encloses the state dir; timeout retries pass the recorded workspace
+back explicitly and are treated the same. The host process itself does not
+`chdir`, so relative configuration paths keep their meaning. Callers that pass
+`cwd` — the Evolve reviewer, researcher, and applier use the managed checkout —
+are unchanged.
+
+### Internal spawn-result contract
+
+The public `spawn()` tool preserves its human-readable text response for MCP
+compatibility. Internal Python callers pass that text through
+`spawn_result.parse_spawn_result()`: only a response containing `task=` (or the
+legacy `task_id=` spelling) is a launched child. `ERR ...` responses and
+unrecognized text are failed launches with an explicit reason. This prevents an
+admission rejection from advancing a loop cursor, recording spawned/use
+telemetry, retaining a child-only claim, or counting a panel member.
 
 ### Slim vs full child
 
@@ -1136,6 +1178,17 @@ leaves (events / tasks / child logs / skill_usage). `shadow_telemetry()` is the
 pure aggregator; `snapshot_path` dumps the same numbers as a markdown table for
 human review. Children whose ephemeral `/tmp` log has aged out (or are skipped
 past the per-call read cap) count as `unknown`, keeping the hit-rate honest.
+
+### Curator inventory completeness
+
+The Curator treats lessons, skill telemetry, skill files, and concepts as one
+complete review boundary. A source that reads successfully with zero entries is
+valid; a read, parse, validation, or query failure is not an empty category.
+Before it can create a recovery snapshot, authorize a report path, or spawn a
+child, the parent records `curator_pass` with
+`inventory_error source=<source> error=<type>`. The error is visible in both
+Curator and agent status, and the previously endorsed `inventory_sha256`
+remains the only fingerprint eligible for `unchanged_inventory`.
 
 ## Skills system
 

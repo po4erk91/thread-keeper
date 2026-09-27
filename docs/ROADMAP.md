@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Spawn launch-result contract: internal callers parse the public text response
+  and treat a child as launched only when it has a task identifier, so returned
+  admission failures cannot advance loop state, inflate telemetry, or retain
+  child-only claims.
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
   RSS instead of ~1.3GB.
 - Search proxy in parent process — slim child performs semantic search
@@ -459,6 +463,14 @@ instead of asking another curator child to re-grade the same snapshot. The same
 dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
+
+✅ DONE (#298): Curator inventory reads now fail closed. Lessons, skill
+telemetry, skill files, and concepts each return an explicit completeness
+result, so a read/parse/audit/query failure records
+`inventory_error source=<source> error=<type>` and stops before fingerprint
+endorsement, report authorization, snapshot creation, or child dispatch.
+Successfully read empty stores still reach the normal threshold decision; the
+previous endorsed fingerprint remains visible through Curator and agent status.
 
 ✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
 high-water before spawning. A recent `curator_pass` or

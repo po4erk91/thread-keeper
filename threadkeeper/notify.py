@@ -109,12 +109,39 @@ def classify_summary(summary: str | None) -> str:
     return "neutral"
 
 
+def budget_refusal_kind(summary: str | None) -> str:
+    """Which local spawn cap refused a child: 'memory' | 'tokens' | 'cost' | ''.
+
+    All three are thread-keeper's own admission caps (spawn_budget.check_budget),
+    not the CLI subscription: `budget_exceeded` is the RAM cap on concurrently
+    running children, `token_budget_exceeded` / `cost_budget_exceeded` are the
+    rolling 24h spend caps. The spend markers contain the RAM marker as a
+    substring, so they are tested first.
+    """
+    low = (summary or "").lower()
+    if "token_budget" in low:
+        return "tokens"
+    if "cost_budget" in low:
+        return "cost"
+    if "budget_exceeded" in low:
+        return "memory"
+    return ""
+
+
 def _reason_from_summary(summary: str) -> str:
     """Human, actionable reason from a failure summary."""
     s = summary or ""
     low = s.lower()
-    if "budget_exceeded" in low or "token_budget" in low or "cost_budget" in low:
-        return "subscription/credit budget exhausted"
+    budget = budget_refusal_kind(s)
+    if budget == "memory":
+        m = re.search(r"running_subagents=(\d+)MB.*?limit=(\d+)MB", s)
+        held = (f": running children hold {m.group(1)}MB of {m.group(2)}MB"
+                if m else "")
+        return f"spawn memory budget full{held} (THREADKEEPER_SPAWN_BUDGET_MB)"
+    if budget == "tokens":
+        return "daily spawn token budget reached (THREADKEEPER_SPAWN_TOKEN_BUDGET)"
+    if budget == "cost":
+        return "daily spawn cost budget reached (THREADKEEPER_SPAWN_COST_BUDGET_USD)"
     if "binary_not_found" in low or "cli_not_found" in low:
         return "CLI binary missing / not installed"
     if "argument list too long" in low:

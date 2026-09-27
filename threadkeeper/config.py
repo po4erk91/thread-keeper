@@ -950,6 +950,10 @@ HOST_SOCK_PATH: Path = (
     else DB_PATH.parent / "host.sock"
 )
 HOST_LOCK_PATH: Path = DB_PATH.parent / "host.lock"
+# Neutral working directory for background loop children. A child that a
+# learning loop spawns without an explicit cwd must not inherit the project
+# directory of whichever session started this process (tools/spawn.py).
+BACKGROUND_WORKSPACE_DIR: Path = DB_PATH.parent / "workspace"
 
 
 def _harden_current_storage() -> None:
