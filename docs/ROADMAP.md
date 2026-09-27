@@ -317,11 +317,9 @@ sentence-transformers similarity scorer plus a classifier, bootstrap from
 the current ledger. But: review_candidates is not actively used yet,
 first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 
-**Rule-enforcement escalation.** Repeatedly re-broken class-level rules
-should stop living only as passive memory. When the same lesson keeps
-getting violated despite an existing entry, mark it `memory-insufficient`
-and surface a recommendation to escalate the rule into an active hard
-guard such as a `PreToolUse` hook. Scope: M. Tracked in issue #228.
+**Rule-enforcement escalation.** ✅ DONE (#228). Repeatedly re-broken
+class-level rules are tracked as `memory-insufficient`, and the learning loop
+can recommend escalation from passive guidance to an active hook guard.
 
 **ACL (former Phase 4).** Folded into the "Multi-user / remote
 deployment" item above — see the ACL sub-bullet there.
@@ -434,10 +432,10 @@ foreground/unknown provenance, and non-foreground children cannot escalate with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Completed follow-up: the recovery/UX path outside snapshots now has a
-recoverable lesson-removal trash flow (#52). Remaining open follow-up:
-bound the candidate_reviewer prompt payload so its full queue dump cannot hit
-`E2BIG` (#24) — the Curator inventory side is done in #105.
+Completed follow-ups: the recovery/UX path outside snapshots has a recoverable
+lesson-removal trash flow (#52), and candidate-reviewer dispatch now uses a
+bounded payload so a full queue cannot hit `E2BIG` (#24). The Curator inventory
+side was completed in #105.
 Scope: S–M.
 
 ✅ DONE: Curator multi-batch completion is now durable. A SQLite pass manifest
@@ -1097,25 +1095,24 @@ path:
 The current audit reconciled three post-July open issues and added four newly
 verified gaps from the present code and test suite:
 
-- **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
-  state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
-  cut repeated managed-checkout setup in Evolve tests (#217).
+- ✅ DONE (#217). **Parallel-test readiness and Evolve test cost.** Fixtures
+  and scratch state are safe under `pytest-xdist`; CI uses forked shards and
+  Evolve tests reuse managed-checkout setup where isolation permits.
 - **Research-phase write confinement (done, #263).** The Evolve researcher has
   no generic `Write`; the parent registers a child-bound pass and the sole
   `evolve_research_handoff` route writes its bounded digest to the derived
   target. Audit consumes only a fresh handoff whose final SHA-256 still matches
   the accepted pass record; rejected, failed, stale, and tampered handoffs stay
   visible in telemetry.
-- **Loop-authored skill re-screening.** Re-run the existing injection-marker
-  screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
-  record a review flag, and surface it without auto-deleting the skill (#268).
-- **Spawn-result contract.** Several callers treat returned `ERR ...` admission
-  failures as successful launches, advancing Evolve phase/cadence, retaining
-  claims, and emitting false panel/probe/candidate telemetry. Introduce one
-  typed/shared success contract and migrate every caller (#276).
-- **Authenticated roadmap claims.** Ignore public Evolve claim-marker comments
-  unless their author has a trusted repository association or is an explicitly
-  configured automation actor; claim text alone must not suppress work (#277).
+- ✅ DONE (#268). **Loop-authored skill re-screening.** Changed loop-authored
+  skills are re-screened after writes and detector upgrades, with review state
+  recorded and surfaced without automatic deletion.
+- ✅ DONE (#276). **Spawn-result contract.** Spawn callers use one typed result
+  parser, so returned admission errors cannot advance cadence, retain claims,
+  or emit false success telemetry.
+- ✅ DONE (#277). **Authenticated roadmap claims.** Public claim markers count
+  only when their author has a trusted repository association or is an
+  explicitly configured automation actor.
 - ✅ DONE (#278). **Generated documentation inventory.** README and
   architecture no longer carry hand-maintained test or tool totals; a docs
   test rejects them and checks the architecture tool table against the live
@@ -1129,35 +1126,33 @@ verified gaps from the present code and test suite:
 The current audit reconciled five late-August/September issues and added one
 newly verified Evolve backlog-governor gap:
 
-- **Curator capability separation.** Split external research from privileged
-  lesson/skill mutation so no spawned Curator child holds web access and
-  destructive memory tools at the same time (#289).
-- **Durable multi-batch completion.** Track every Curator batch to a terminal
-  result and endow the pass only after all expected reports complete, with
-  explicit partial, timeout, and retry outcomes (#290).
-- **Database transaction cleanup.** Prevent non-autocommit `get_db()` callers
-  from leaking implicit transactions that can retain locks and wedge the
-  single-writer path (#293).
-- **Fail-closed Curator inventories.** Treat lesson or skill inventory read
-  failures as a deferred/failed pass instead of silently dispatching an
-  incomplete inventory that can drive unsafe destructive decisions (#298).
-- **Child-log redaction.** Redact captured child-output samples before they are
-  stored in agent status and recent-result telemetry (#299).
-- **Scoped Evolve backlog pressure.** Count only eligible roadmap work in the
-  reviewer backlog governor so unrelated open issues cannot suppress future
-  audits (#304).
+- ✅ DONE (#289). **Curator capability separation.** External research and
+  privileged lesson/skill mutation run in separate children, so no Curator
+  child holds web access and destructive memory tools together.
+- ✅ DONE (#290). **Durable multi-batch completion.** Every Curator batch has a
+  terminal result, and a pass is endorsed only after all expected reports
+  complete; partial, timeout, and retry outcomes remain explicit.
+- ✅ DONE (#293). **Database transaction cleanup.** Non-autocommit `get_db()`
+  callers cannot leak implicit transactions that retain locks and wedge the
+  single-writer path.
+- ✅ DONE (#298). **Fail-closed Curator inventories.** Lesson or skill
+  inventory read failures defer or fail the pass instead of dispatching an
+  incomplete inventory that could drive unsafe destructive decisions.
+- ✅ DONE (#299). **Child-log redaction.** Captured child-output samples are
+  redacted before storage in agent status and recent-result telemetry.
+- ✅ DONE (#304). **Scoped Evolve backlog pressure.** The reviewer backlog
+  governor counts only eligible roadmap work, so unrelated open issues cannot
+  suppress future audits.
 
 **2026-09-13 reviewer additions (issue-backed).**
 The current audit found two boundary violations in the spawn and status paths:
 
-- **Server-controlled privileged spawning.** Remove caller-controlled role and
-  origin strings from the authorization decision for `bypassPermissions`.
-  Public MCP callers must not be able to impersonate an Evolve child and obtain
-  an unsandboxed process; privileged Evolve launches need a private,
-  server-controlled path (#308).
-- **Side-effect-free agent status.** Keep `agent_status` observation separate
-  from watchdog enforcement so a read-only MCP call or menu poll cannot kill an
-  overdue child, mutate its lifecycle state, or spend a retry spawn (#309).
+- ✅ DONE (#308). **Server-controlled privileged spawning.** Public MCP callers
+  cannot use caller-controlled role or origin strings to obtain an unsandboxed
+  process; privileged Evolve launches use a private server-controlled path.
+- ✅ DONE (#309). **Side-effect-free agent status.** Status observation is
+  separate from watchdog enforcement, so a read-only MCP call or menu poll
+  cannot kill a child, mutate lifecycle state, or spend a retry spawn.
 
 ---
 
