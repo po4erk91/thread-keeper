@@ -524,7 +524,10 @@ moving the high-water forward; `force=True` bypasses this due gate.
   cost) leave it pending without using one. A pass whose batch exhausts its
   attempts, or that is older than `max(6h, 2 × CURATOR_INTERVAL_S)`, is
   abandoned (`abandoned_at`, `abandon_reason`) rather than kept in fast-poll
-  mode forever. At most
+  mode forever. When the spawn watchdog continues a timed-out batch child, the
+  continuation inherits the pass ID and snapshot directory
+  (`curator.curator_retry_env`) and the batch row follows the new task instead
+  of failing and launching a duplicate. At most
   `CURATOR_MAX_CONCURRENT_BATCHES` (default 1) may be running from one pass;
   the normal spawn admission remains the atomic global RSS-budget gate. While
   unfinished work exists, the daemon reconciles and refills it every

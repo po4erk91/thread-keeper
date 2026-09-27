@@ -1086,6 +1086,15 @@ def _refresh_pass_completion(
             continue
         if row["ended_at"] is None:
             continue
+        if row["timeout_respawned_as"]:
+            # The watchdog continued this child under a new task; the batch
+            # follows it rather than failing and launching a duplicate.
+            conn.execute(
+                "UPDATE curator_batches SET task_id=? "
+                "WHERE pass_id=? AND batch_index=?",
+                (row["timeout_respawned_as"], pass_id, row["batch_index"]),
+            )
+            continue
         digest = (
             _has_valid_batch_report(conn, row)
             if row["return_code"] == 0 else None
@@ -2384,6 +2393,13 @@ def _refresh_research_phase(
             reason = "dispatch_missing_task_id"
         elif row["ended_at"] is None:
             continue
+        elif row["timeout_respawned_as"]:
+            conn.execute(
+                "UPDATE curator_batches SET research_task_id=? "
+                "WHERE pass_id=? AND batch_index=?",
+                (row["timeout_respawned_as"], pass_id, row["batch_index"]),
+            )
+            continue
         elif row["return_code"] == 0:
             payload, reason = _research_for_row(conn, pass_id, row, total)
             if payload is not None:
@@ -2647,6 +2663,33 @@ def _advance_pass(
         )
     _record_curator_pass(conn, now, out)
     return out
+
+
+def curator_retry_env(conn: sqlite3.Connection, task_id: str) -> dict[str, str]:
+    """Pass identity for the watchdog continuation of a Curator batch child.
+
+    The report and research writers authorize by the pass ID in the child's
+    environment, which the parent exports only around the original launch. A
+    continuation launched later by the watchdog would otherwise start without
+    it and could never persist its work. Empty when the task is not a batch
+    child of a live pass.
+    """
+    try:
+        row = conn.execute(
+            "SELECT b.pass_id, b.task_id, p.snapshot_path "
+            "FROM curator_batches b JOIN curator_passes p USING(pass_id) "
+            "WHERE (b.task_id=? OR b.research_task_id=?) "
+            "AND p.endorsed_at IS NULL AND p.abandoned_at IS NULL LIMIT 1",
+            (task_id, task_id),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {}
+    if row is None:
+        return {}
+    env = {PASS_ID_ENV: row["pass_id"]}
+    if row["task_id"] == task_id and row["snapshot_path"]:
+        env[SNAPSHOT_DIR_ENV] = str(row["snapshot_path"])
+    return env
 
 
 def _spawn_batch_child(

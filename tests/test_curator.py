@@ -2217,3 +2217,44 @@ def test_curator_web_and_memory_mutation_capabilities_never_cogranted(
         has_web = "WebSearch" in tools or "WebFetch" in tools
         mutates = any(f"mcp__thread-keeper__{t}" in tools for t in mutation_tools)
         assert not (has_web and mutates), kw["role"]
+
+
+def test_timed_out_batch_follows_the_watchdog_continuation(tmp_path, monkeypatch):
+    # 13% of Curator children hit the one-hour watchdog. The watchdog
+    # continues the child under a new task; the batch must follow it instead
+    # of failing and launching a second child for the same batch.
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons"].append_lesson(title="one", body="b1", source="shadow")
+    pkg["lessons"].append_lesson(title="two", body="b2", source="shadow")
+    attempts, launched = _batch_spawner(monkeypatch, lambda idx, attempt: "")
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    first = conn.execute("SELECT task_id, pass_id FROM curator_batches").fetchone()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at, ended_at, "
+        "return_code, timeout_respawned_as) VALUES "
+        "(?, 1, '/tmp', 'curator', ?, ?, 124, 'tk_continued')",
+        (first["task_id"], now - 3700, now),
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at) "
+        "VALUES ('tk_continued', 0, '/tmp', 'curator', ?)", (now,),
+    )
+    conn.commit()
+
+    assert curator.curator_retry_env(conn, first["task_id"]) == {
+        "THREADKEEPER_CURATOR_PASS_ID": first["pass_id"],
+        "THREADKEEPER_CURATOR_SNAPSHOT_DIR": conn.execute(
+            "SELECT snapshot_path FROM curator_passes"
+        ).fetchone()[0],
+    }
+    out = curator.run_curator_pass(force=True)
+
+    assert out.startswith("curator_pending"), out
+    row = conn.execute("SELECT task_id, state, dispatch_count FROM curator_batches").fetchone()
+    assert (row["task_id"], row["state"], row["dispatch_count"]) == (
+        "tk_continued", "running", 1,
+    )
+    assert len(launched) == 1  # no duplicate child for the same batch

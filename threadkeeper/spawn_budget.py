@@ -468,6 +468,16 @@ def _parse_spawned_task_id(result: str) -> Optional[str]:
     return None
 
 
+def _curator_retry_env(conn, task_id: str) -> dict[str, str]:
+    """Curator pass identity a continuation must inherit ({} otherwise)."""
+    try:
+        from .curator import curator_retry_env
+        return curator_retry_env(conn, task_id)
+    except Exception:
+        logger.debug("curator retry env lookup failed", exc_info=True)
+        return {}
+
+
 def _respawn_timed_out(conn, row, age: int) -> None:
     """Immediately re-launch a watchdog-killed task with continuation context.
 
@@ -515,26 +525,36 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     try:
         from .tools.spawn import _retry_bypass_capability, _spawn_impl
         permission_mode = str(_row_get(row, "permission_mode", "auto") or "auto")
-        result = _spawn_impl(
-            prompt=prompt,
-            cwd=str(row["cwd"] or os.getcwd()),
-            append_system=str(_row_get(row, "append_system", "") or ""),
-            model=str(_row_get(row, "model", "") or ""),
-            effort=str(_row_get(row, "effort", "") or ""),
-            permission_mode=permission_mode,
-            extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
-            capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
-            visible=_as_bool(_row_get(row, "visible", 0), False),
-            role=str(_row_get(row, "role", "") or ""),
-            write_origin=str(_row_get(row, "write_origin", "") or ""),
-            slim=_as_bool(_row_get(row, "slim", 1), True),
-            retry_of=str(row["id"]),
-            retry_root=root_id,
-            retry_attempt=next_attempt,
-            parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
-            cli=str(_row_get(row, "chosen_cli", "") or ""),
-            _bypass_capability=_retry_bypass_capability(permission_mode),
-        )
+        exported = _curator_retry_env(conn, str(row["id"]))
+        saved = {key: os.environ.get(key) for key in exported}
+        os.environ.update(exported)
+        try:
+            result = _spawn_impl(
+                prompt=prompt,
+                cwd=str(row["cwd"] or os.getcwd()),
+                append_system=str(_row_get(row, "append_system", "") or ""),
+                model=str(_row_get(row, "model", "") or ""),
+                effort=str(_row_get(row, "effort", "") or ""),
+                permission_mode=permission_mode,
+                extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
+                capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
+                visible=_as_bool(_row_get(row, "visible", 0), False),
+                role=str(_row_get(row, "role", "") or ""),
+                write_origin=str(_row_get(row, "write_origin", "") or ""),
+                slim=_as_bool(_row_get(row, "slim", 1), True),
+                retry_of=str(row["id"]),
+                retry_root=root_id,
+                retry_attempt=next_attempt,
+                parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
+                cli=str(_row_get(row, "chosen_cli", "") or ""),
+                _bypass_capability=_retry_bypass_capability(permission_mode),
+            )
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)
         result = f"ERR exception={type(e).__name__}: {e}"

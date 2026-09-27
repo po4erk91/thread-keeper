@@ -441,3 +441,41 @@ def test_refresh_all_running_enforce_false_skips_kill_and_respawn(
     sb._refresh_all_running(conn)
 
     assert len(reap_calls) == 1
+
+
+def test_watchdog_continuation_inherits_curator_pass_identity(
+    mp_with_cid, monkeypatch,
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "2")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(sb, "_terminate_tree", lambda pid, grace: None)
+    monkeypatch.setattr(
+        sb, "_curator_retry_env",
+        lambda conn, task_id: (
+            {"THREADKEEPER_CURATOR_PASS_ID": "20260927T101010"}
+            if task_id == "tk_curator_batch" else {}
+        ),
+    )
+    seen: list[str | None] = []
+
+    def fake_spawn(**kwargs):
+        seen.append(os.environ.get("THREADKEEPER_CURATOR_PASS_ID"))
+        return "ok task=tk_curator_cont pid=321 child_cid=abcd perm=auto"
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
+    monkeypatch.delenv("THREADKEEPER_CURATOR_PASS_ID", raising=False)
+    conn = _insert_running(
+        pkg, "tk_curator_batch", os.getpid(), int(time.time()) - 200,
+        prompt="You are an autonomous CURATOR for thread-keeper",
+    )
+    pkg["identity"]._ensure_session(conn)
+
+    sb._refresh_all_running(conn)
+
+    assert seen == ["20260927T101010"]
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ

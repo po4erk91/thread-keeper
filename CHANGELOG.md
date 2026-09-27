@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: timed-out Curator children keep working for their batch.** When
+  the one-hour watchdog continues a Curator child under a new task, the
+  continuation now inherits the pass ID (and snapshot directory) its report
+  and research writers require, and the pass manifest follows the new task
+  instead of failing the batch and launching a duplicate child.
+
 - **Added: Curator research/evaluation capability split (#289).** Each batch
   of a durable Curator pass first gets a read-only `curator_researcher` child
   with web tools and a single parent-authorized handoff writer
