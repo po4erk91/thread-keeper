@@ -14,6 +14,11 @@ version bumps follow semver per the policy in
   Codex-routed loops wrote under the wrong identity. The Codex adapter now
   forwards the child identity variables by name through
   `mcp_servers.thread-keeper.env_vars`; the values stay off the command line.
+- **Fixed: a quiet thread janitor no longer shows as stale.** Consecutive
+  no-op passes still keep one `janitor_pass` row, but each quiet tick now
+  refreshes its time, so agent status stops reporting an hourly janitor as
+  stale three hours after its last close.
+
 - **Docs: no more hand-maintained test or MCP tool totals (#278).** README
   and `docs/ARCHITECTURE.md` point to the suite and the live tool registry
   instead of exact numbers, a docs test rejects reintroduced totals, and the
