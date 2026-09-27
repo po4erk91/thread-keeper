@@ -593,4 +593,21 @@ def mp_dashboard(window_days: int = 7) -> str:
     out.append("")
     out.append(f"reliability  weak_categories={weak} untested_categories={untested}")
 
+    # Loop-authored skills whose current body carries injection markers
+    # (skill_watcher re-screen, #268). Flag only; nothing was auto-edited.
+    try:
+        flags = conn.execute(
+            "SELECT target, summary FROM events WHERE kind='skill_injection_flag' "
+            "AND created_at >= ? ORDER BY id DESC LIMIT 5",
+            (now - 30 * 86400,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        flags = []
+    if flags:
+        out.append("")
+        out.append(f"skill_injection_flags_30d={len(flags)} (review these skills)")
+        for flag in flags:
+            markers = (flag["summary"] or "").split(" ", 1)[0]
+            out.append(f"  {flag['target']}  {markers}")
+
     return "\n".join(out)

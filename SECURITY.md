@@ -174,6 +174,13 @@ principle to the always-on, auto-loaded-output loops):
   (`ignore previous instructions`, `you must always run`, `curl … | sh`, …)
   and refused — the inbound analogue of the secret scrubber. Foreground
   (human) writes are never screened.
+- **Read-side re-screening (#268).** The write-time gate runs once, so the
+  skill watcher also re-screens every loop-authored `SKILL.md` in the primary
+  skill root whenever its content or the marker list changes. A hit (for
+  example a body patched on disk after creation, or content assembled from
+  pieces that evaded the gate) records a `skill_injection_flag` event shown in
+  `mp_dashboard`; the file is never auto-edited or deleted. Foreground skills
+  stay exempt, like the write-time gate.
 
 ### Transcript ingest (observed dialog → durable local search)
 

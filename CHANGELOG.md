@@ -81,6 +81,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: read-side injection re-screening for loop-authored skills (#268).**
+  The skill watcher re-screens loop-authored `SKILL.md` bodies with the
+  existing injection markers whenever the file or the marker list changes,
+  records a `skill_injection_flag` event (shown in `mp_dashboard`) instead of
+  editing the file, and exempts foreground skills. It also always ends the
+  write transaction its per-tick upsert opens.
+
 - **Fixed: the candidate reviewer prompt is bounded (#24).** One reviewer
   child now receives at most `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` (40)
   pending candidates, oldest first; the rest stay pending for the next pass.
