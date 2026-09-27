@@ -6,9 +6,42 @@ import importlib
 import os
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 import pytest
+
+
+def shard_of(nodeid: str, total: int) -> int:
+    """1-based shard for a test id; stable across runs, machines, and Pythons."""
+    return zlib.crc32(nodeid.encode("utf-8")) % total + 1
+
+
+def pytest_collection_modifyitems(config, items):
+    """Keep only this CI shard's tests when THREADKEEPER_TEST_SHARD=k/n.
+
+    CI splits the suite across parallel jobs instead of xdist workers: every
+    shard still runs `--forked`, so each test keeps its own process (the
+    per-test package re-import leaks native thread pools in a long-lived
+    worker interpreter).
+    """
+    spec = os.environ.get("THREADKEEPER_TEST_SHARD", "").strip()
+    if not spec:
+        return
+    try:
+        index, total = (int(part) for part in spec.split("/", 1))
+    except ValueError:
+        raise pytest.UsageError(
+            f"THREADKEEPER_TEST_SHARD must look like k/n, got {spec!r}"
+        )
+    if not 1 <= index <= total:
+        raise pytest.UsageError(f"THREADKEEPER_TEST_SHARD out of range: {spec!r}")
+    keep, drop = [], []
+    for item in items:
+        (keep if shard_of(item.nodeid, total) == index else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
 
 
 @pytest.fixture(autouse=True)

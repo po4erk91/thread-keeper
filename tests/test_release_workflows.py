@@ -116,9 +116,12 @@ def test_mcp_requirement_supports_both_sdk_majors_through_one_adapter():
 
 
 def test_ci_matrix_covers_both_supported_mcp_sdk_majors():
-    text = _workflow_text("test.yml")
-    assert 'mcp: [">=1.10.0,<2", ">=2.0.0,<3"]' in text
-    assert '"mcp${{ matrix.mcp }}"' in text
+    matrix = _workflow("test.yml")["jobs"]["pytest-shard"]["strategy"]["matrix"]
+    majors = set(matrix["mcp"]) | {
+        extra["mcp"] for extra in matrix.get("include", [])
+    }
+    assert majors == {">=1.10.0,<2", ">=2.0.0,<3"}
+    assert '"mcp${{ matrix.mcp }}"' in _workflow_text("test.yml")
 
 def test_ci_security_scanning_covers_code_and_resolved_dependencies():
     codeql = _workflow("codeql.yml")

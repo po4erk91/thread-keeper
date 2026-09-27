@@ -54,7 +54,16 @@ python -m pytest -m "not slow"   # fast inner loop — skips the embedding-warmu
 
 CI runs the full suite under `--forked` (each test in its own process; the
 per-test package re-import otherwise piles up native ONNX/tokenizer thread
-pools that can deadlock sqlite finalize in one long-lived interpreter).
+pools that can deadlock sqlite finalize in one long-lived interpreter). To run
+in parallel without giving that up, CI splits the suite into three shard jobs:
+`THREADKEEPER_TEST_SHARD=k/3` keeps only the tests whose id hashes to shard
+`k` (see `tests/conftest.py`). A per-Python `pytest (py3.x)` job passes only
+when every shard passed, so the branch-protection check names stay stable.
+Reproduce one CI shard locally with:
+
+```bash
+THREADKEEPER_TEST_SHARD=2/3 python -m pytest -q --forked
+```
 
 CI also runs a blocking `pip-audit` job against the fully resolved
 `.[semantic,dev]` environment. It fails for known dependency vulnerabilities;

@@ -81,6 +81,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Changed: CI runs the test suite as three parallel `--forked` shards (#217).**
+  `THREADKEEPER_TEST_SHARD=k/n` selects a deterministic share of the tests by
+  test id, and CI runs three shard jobs per matrix cell instead of one serial
+  job. Each test keeps its own process: an unforked `pytest-xdist` run
+  (one long-lived interpreter per worker) took over two hours on CI and failed
+  timing-sensitive tests. MCP SDK 2.x runs on every supported Python and 1.x
+  on the current one, and per-Python `pytest (py3.x)` gate jobs keep the
+  existing required status checks.
+
 - **Added: MCP SDK 2.x support (#279).** ThreadKeeper now supports both MCP
   SDK 1.x and 2.x through a narrow internal `MCPServer`/`FastMCP` compatibility
   adapter. Fresh installs resolve the supported 2.x line; the documented range
