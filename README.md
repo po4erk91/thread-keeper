@@ -1282,6 +1282,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | age-flush: an undersized pending queue is still reviewed once its oldest candidate is this old (0 = threshold only) |
+| `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` | 40 | most pending candidates (oldest first) one reviewer child receives; the rest stay pending for the next pass |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |

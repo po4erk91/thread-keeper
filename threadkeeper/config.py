@@ -423,6 +423,10 @@ class Settings(BaseSettings):
     # reviewed once its oldest candidate is this old, so a trickle of signal
     # is not starved by the min-count gate. 0 = threshold only.
     candidate_review_flush_age_s: float = 259200.0
+    # Most pending candidates one reviewer child receives. The rest stay
+    # pending for the next pass, so a backlog cannot grow the prompt without
+    # bound (#24).
+    candidate_review_batch_size: int = Field(default=40, ge=1)
     learning_loop_skill_create_limit: int = 2
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
@@ -916,6 +920,7 @@ def _derive_constants(s: "Settings") -> dict:
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
         "CANDIDATE_REVIEW_MIN": s.candidate_review_min,
         "CANDIDATE_REVIEW_FLUSH_AGE_S": float(s.candidate_review_flush_age_s),
+        "CANDIDATE_REVIEW_BATCH_SIZE": int(s.candidate_review_batch_size),
         "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,

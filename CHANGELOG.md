@@ -81,6 +81,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: the candidate reviewer prompt is bounded (#24).** One reviewer
+  child now receives at most `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` (40)
+  pending candidates, oldest first; the rest stay pending for the next pass.
+  A reviewer that was off for a while no longer receives the whole 30-day
+  backlog in one prompt. (Curator single-flight and bounded batches, and the
+  stdin prompt spool that removed the argv limit, shipped earlier.)
+
 - **Added: Korean, Bengali, and European Portuguese phrase patterns (#4).**
   Korean and Bengali cover all five families (contributed in #327). The
   Portuguese patterns, previously Brazilian-only, now also recognize the

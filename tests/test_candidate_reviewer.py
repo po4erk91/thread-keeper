@@ -502,3 +502,24 @@ def test_below_threshold_fresh_queue_stays_pending(tmp_path, monkeypatch):
     out = pkg["candidate_reviewer"].run_review_pass(force=True)
 
     assert out == "below_threshold n=1"
+
+
+def test_collect_pending_bounds_the_prompt_and_keeps_fifo_order(
+    tmp_path, monkeypatch,
+):
+    # A reviewer that is off for a while must not receive the whole 30-day
+    # backlog in one prompt (#24); the oldest candidates go first so they are
+    # reviewed before the stale window drops them.
+    monkeypatch.setenv("THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE", "3")
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    for i in range(7):
+        _seed_pending(conn, "verbatim", f"candidate number {i}", age_s=1000 - i * 10)
+    conn.commit()
+
+    dump, n = pkg["candidate_reviewer"]._collect_pending(conn)
+
+    assert n == 7
+    assert "PENDING CANDIDATES (n=3 of 7;" in dump
+    assert "candidate number 0" in dump and "candidate number 2" in dump
+    assert "candidate number 3" not in dump

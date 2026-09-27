@@ -44,6 +44,7 @@ from .config import (
     CANDIDATE_REVIEW_FLUSH_AGE_S,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
+    CANDIDATE_REVIEW_BATCH_SIZE,
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
@@ -239,28 +240,41 @@ def _active_skills_dump(conn: sqlite3.Connection, limit: int = 15,
 def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     """Build the inventory the reviewer child will read.
 
-    Returns (dump_text, n_pending). Only candidates within last 30
-    days are surfaced — older = stale, likely already overtaken by
-    fresh dialog.
+    Returns (dump_text, n_pending) where n_pending counts every surfaced
+    candidate. Only candidates within last 30 days are surfaced — older =
+    stale, likely already overtaken by fresh dialog. At most
+    CANDIDATE_REVIEW_BATCH_SIZE of them, oldest first, go into one prompt;
+    the rest stay pending for the next pass instead of growing the prompt
+    without bound (#24).
     """
     now = int(time.time())
     stale_cutoff = now - 30 * 86400
+    limit = max(1, int(CANDIDATE_REVIEW_BATCH_SIZE))
     try:
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM extract_candidates "
+            "WHERE status='pending' AND created_at > ?",
+            (stale_cutoff,),
+        ).fetchone()[0])
         rows = conn.execute(
             "SELECT id, kind, source_uuid, source_cid, content, "
             "       rationale, created_at "
             "FROM extract_candidates "
             "WHERE status='pending' AND created_at > ? "
-            "ORDER BY created_at DESC",
-            (stale_cutoff,),
+            "ORDER BY created_at ASC, id ASC LIMIT ?",
+            (stale_cutoff, limit),
         ).fetchall()
     except sqlite3.OperationalError:
         return ("", 0)
     if not rows:
         return ("", 0)
-    parts: list[str] = [f"PENDING CANDIDATES (n={len(rows)})\n"]
+    shown = (
+        f"n={len(rows)}" if len(rows) == total
+        else f"n={len(rows)} of {total}; the rest stay pending for the next pass"
+    )
+    parts: list[str] = [f"PENDING CANDIDATES ({shown})\n"]
     parts.extend(_format_candidate(dict(r)) for r in rows)
-    return ("\n".join(parts), len(rows))
+    return ("\n".join(parts), total)
 
 
 def _oldest_pending_ts(conn: sqlite3.Connection) -> int:
