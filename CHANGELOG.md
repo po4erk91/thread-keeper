@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Evolve reviewer backlog pressure now excludes ordinary open issues
+  without the `roadmap` label (#304).** The governor and applier prioritization
+  share the same roadmap-label predicate, while locally applied roadmap issues
+  remain excluded. Skip-labelled and untrusted-author roadmap issues still
+  count because those gates only restrict autonomous pickup.
+
 - **Authenticated Evolve claim comments.** The cross-host roadmap lock now
   reads GitHub REST comment author metadata and accepts a visible claim marker
   only from a trusted repository association or an explicitly configured
