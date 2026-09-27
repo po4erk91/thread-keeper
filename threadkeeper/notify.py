@@ -43,6 +43,7 @@ from .config import (
     NOTIFY_FAILURE_COOLDOWN_S,
 )
 from .db import get_db
+from .github_safety import sanitize_presentation_text
 from . import daemon_state, identity
 from .helpers import daemon_sleep, single_flight_lock
 
@@ -148,7 +149,9 @@ def _reason_from_summary(summary: str) -> str:
         return "prompt too large"
     idx = s.find("ERR")
     tail = (s[idx:] if idx >= 0 else s).strip()
-    return (tail[:120] or "spawn failed")
+    # Spawn errors can quote cwd paths or CLI output; they reach the same
+    # status list and banners as child-log excerpts.
+    return (sanitize_presentation_text(tail)[:120] or "spawn failed")
 
 
 def _child_log_tail(task_id: str) -> str:
@@ -161,10 +164,10 @@ def _child_log_tail(task_id: str) -> str:
 
 
 def _reason_from_task_log(task_id: str, tail: str | None = None) -> str:
-    """Last meaningful line of a dead child's captured log (the failure reason)."""
+    """Sanitized last meaningful line of a dead child's captured log."""
     txt = _child_log_tail(task_id) if tail is None else tail
     lines = [ln for ln in txt.splitlines() if ln.strip()]
-    return (lines[-1][:180] if lines else "no_log")
+    return (sanitize_presentation_text(lines[-1])[:180] if lines else "no_log")
 
 
 # ── watermark (dual cursor in one notify_pass row) ──────────────────────────

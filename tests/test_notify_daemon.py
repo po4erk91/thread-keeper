@@ -151,14 +151,26 @@ def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, ca
     notify, db = m["notify"], m["db"]
     conn = db.get_db()
     assert notify.run_notify_pass(force=True) == "seed"
+    github_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    bearer = "abcdefghijklmnopqrstuvwxyz012345"
+    private_path = "/Users/alice/private/error.log"
     (tmp_path / "tasks" / "child-1.log").write_text(
-        "starting…\nerror: credit balance too low\n")
+        "starting…\n"
+        f"error: credit balance too low; Authorization: Bearer {bearer}; "
+        f"API_KEY=topsecretvalue; token={github_token}; path={private_path}\n"
+    )
     _task(conn, "child-1", rc=1, role="curator", ended_at=int(time.time()))
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
     assert "curator child died (rc=1)" in caplog.text
     assert "credit balance too low" in caplog.text
+    assert "[REDACTED_SECRET]" in caplog.text
+    assert "[REDACTED_HOME_PATH]" in caplog.text
+    assert github_token not in caplog.text
+    assert bearer not in caplog.text
+    assert "topsecretvalue" not in caplog.text
+    assert private_path not in caplog.text
 
 
 def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
@@ -319,3 +331,15 @@ def test_pathless_skill_mark_does_not_claim_a_materialization(tmp_path, monkeypa
 def test_disabled_when_poll_zero(tmp_path, monkeypatch):
     m = _bootstrap(tmp_path, monkeypatch, poll="0")
     assert m["notify"].run_notify_pass(scheduled=True) == "disabled"
+
+
+def test_spawn_error_reason_is_sanitized_before_banner(tmp_path, monkeypatch):
+    # Loop-pass failure summaries can quote a cwd or CLI output; they feed the
+    # same status list and banners as child-log excerpts.
+    m = _bootstrap(tmp_path, monkeypatch)
+    reason = m["notify"]._reason_from_summary(
+        "spawn_error batch=1/2: ERR cwd_not_found=/Users/alice/work/secret-proj"
+    )
+    assert "/Users/alice" not in reason
+    assert "cwd_not_found=" in reason
+    assert "[REDACTED_HOME_PATH]" in reason

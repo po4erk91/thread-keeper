@@ -81,6 +81,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: child-log summaries are sanitized before status and notification
+  delivery.** Credential-shaped values and private home-directory paths are
+  redacted in successful-result and failed-child excerpts, while the owner-only
+  `task_logs` diagnostic view continues to expose the original local log.
+
 - **Fixed: public spawning can no longer self-authorize sandbox bypasses.**
   Caller-provided role and provenance metadata no longer grant
   `bypassPermissions`; privileged Evolve launches use a private server-owned

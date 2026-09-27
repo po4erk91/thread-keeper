@@ -1128,7 +1128,11 @@ category off silences the banner without hiding the history. Each materializatio
 uses its own skill or lesson toggle; generic task reports are history-only.
 Foreground writes appear too, without waiting for a background child to finish.
 A pathless skill mark only silences its reminder and has no materialization
-banner. Enabling a toggle never replays backlog.
+banner. Enabling a toggle never replays backlog. Child-log excerpts and spawn
+error reasons in both lists are bounded sanitized summaries: credential-shaped
+values and private home paths are redacted before they reach the MCP status
+response, menu, or notification; raw logs remain available only through
+`task_logs`.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the

@@ -94,8 +94,12 @@ backlog as due objective probes only, updates the idle chip / running gears
 directly on the status button, keeps loop counts in the popover/tooltip, and
 posts macOS notifications for named materialization events in `recent_results`.
 The shared notifier formatters resolve a skill heading or readable artifact
-name; completed-task log summaries remain history-only. Skill and lesson
-notification toggles apply independently to their respective write events. The
+name; completed-task log summaries remain history-only. Child-log excerpts and
+spawn error reasons in `recent_results` and `recent_failures` are sanitized
+before the snapshot is returned: credential-shaped values and private home
+paths become redaction markers, while owner-only raw logs remain available
+through `task_logs`. Skill and lesson notification toggles apply independently
+to their respective write events. The
 popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
 a one-click pause/resume path for autonomous loops. The
