@@ -483,6 +483,10 @@ class Settings(BaseSettings):
     evolve_trusted_author_associations: Annotated[list[str], NoDecode] = [
         "OWNER", "MEMBER", "COLLABORATOR",
     ]
+    # Optional GitHub logins for automation that may post roadmap claim
+    # comments without a maintainer-level repository association. Empty by
+    # default: a public marker is never sufficient proof of ownership.
+    evolve_claim_automation_actors: Annotated[list[str], NoDecode] = []
     # Optional escape hatch for the author gate: issues carrying any of these
     # labels are eligible for auto-pickup regardless of author association. On
     # a public repo only collaborators can apply labels, so a trust label is
@@ -620,6 +624,14 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             v = [a for a in v.split(",")]
         return [str(a).strip().upper() for a in (v or []) if str(a).strip()]
+
+    @field_validator("evolve_claim_automation_actors", mode="before")
+    @classmethod
+    def _parse_claim_automation_actors(cls, v):
+        """Accept CSV string or list; normalize GitHub logins to lower."""
+        if isinstance(v, str):
+            v = [a for a in v.split(",")]
+        return [str(a).strip().lower() for a in (v or []) if str(a).strip()]
 
     @field_validator("evolve_trust_labels", mode="before")
     @classmethod
@@ -915,6 +927,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS": (
             s.evolve_trusted_author_associations
         ),
+        "EVOLVE_CLAIM_AUTOMATION_ACTORS": s.evolve_claim_automation_actors,
         "EVOLVE_TRUST_LABELS": s.evolve_trust_labels,
         "EVOLVE_APPLY_SKIP_LABELS": s.evolve_apply_skip_labels,
         "ROADMAP_ISSUE_MAX_ATTEMPTS": s.roadmap_issue_max_attempts,

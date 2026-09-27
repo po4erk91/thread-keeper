@@ -81,6 +81,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
+  reads GitHub REST comment author metadata and accepts a visible claim marker
+  only from a trusted repository association or an explicitly configured
+  automation login. Spoofed, malformed, and metadata-free markers remain
+  visible but cannot block issue pickup or affect claim-race tie-breaking.
+
 - **Fixed: background loop children no longer run in the host's inherited
   directory.** The daemon host keeps the working directory of whichever session
   started it, and loop children without a `cwd` ran there — inside an unrelated
