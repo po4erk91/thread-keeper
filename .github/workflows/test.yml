@@ -8,7 +8,7 @@ on:
 
 jobs:
   pytest:
-    name: pytest (py${{ matrix.python }})
+    name: pytest (py${{ matrix.python }}, mcp${{ matrix.mcp }})
     runs-on: ubuntu-latest
     env:
       # This remains stable while tests intentionally isolate HOME per case.
@@ -19,6 +19,9 @@ jobs:
         # 3.11 is the floor (config.py uses tomllib + dict[str,...]).
         # 3.13 is current. 3.12 sits in between.
         python: ["3.11", "3.12", "3.13"]
+        # Keep the compatibility adapter honest on both supported MCP SDK
+        # majors. Fresh installations resolve the 2.x line.
+        mcp: [">=1.10.0,<2", ">=2.0.0,<3"]
 
     steps:
       - uses: actions/checkout@v7
@@ -38,7 +41,7 @@ jobs:
           # don't have a skip-when-missing guard. semantic now uses
           # fastembed/ONNX Runtime (no PyTorch) + numpy + sqlite-vec; the
           # model snapshot is pinned and pre-fetched below.
-          pip install -e '.[semantic,dev]'
+          pip install -e '.[semantic,dev]' "mcp${{ matrix.mcp }}"
 
       - name: Cache pinned embedding snapshot
         uses: actions/cache@v6
