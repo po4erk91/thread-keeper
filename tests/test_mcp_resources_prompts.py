@@ -158,7 +158,10 @@ def test_audit_threadkeeper_prompt_renders(fresh_mp):
 # ──────────────────────────────────────────────────────────────────────
 
 def test_server_advertises_resources_and_prompts_capabilities(fresh_mp):
-    caps = fresh_mp["mcp"]._mcp_server.get_capabilities(NotificationOptions(), {})
+    mcp = fresh_mp["mcp"]
+    # MCP SDK 2.x renamed the high-level wrapper's low-level server handle.
+    lowlevel = getattr(mcp, "_lowlevel_server", None) or mcp._mcp_server
+    caps = lowlevel.get_capabilities(NotificationOptions(), {})
     assert caps.resources is not None
     assert caps.prompts is not None
     assert caps.tools is not None  # tools unaffected
