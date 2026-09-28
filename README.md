@@ -269,6 +269,11 @@ servers. ~500 MB RSS versus ~1.3 GB for a full child. Heuristic for the
 parent: N≥2 modular independent units of ≥5 min each = spawn signal.
 Spawn also marks children with `THREADKEEPER_SPAWNED_CHILD=1`, so
 autonomous learning daemons cannot recursively start inside review forks.
+Codex children get the same isolation: `codex exec --ignore-user-config`
+with only the user's provider settings and thread-keeper entry carried over,
+and `enabled_tools` limited to the child's granted thread-keeper tools. Other
+MCP servers, plugins and hooks from `~/.codex/config.toml` never start inside
+a background child.
 
 A daemon in the foreground parent measures combined child RSS every 10 s;
 spawned children do not start their own `ps` polling loop, failed `ps` RSS
