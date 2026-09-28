@@ -601,6 +601,19 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         out.append("")
         out.append(sk_nudge)
 
+    # ── lesson_patch ──────────────────────────────────────────────────────
+    # Lesson bodies often need a narrow correction (for example, a stale
+    # cross-link). Surface the atomic operation in the startup brief so an
+    # agent does not reserialize a long, otherwise-correct lesson with
+    # lesson_append just to change one line.
+    if not eff_lean:
+        out.append("")
+        out.append("lesson_patch")
+        out.append(
+            "  lesson_patch(slug, old_string, new_string): replace one "
+            "unique lesson-body substring without rewriting the full lesson"
+        )
+
     # ── consulted_lessons (this session) ──────────────────────────────────
     # Lessons keep their access telemetry in lesson_usage rather than events:
     # lesson_list records a view and lesson_get records a full recall. Surface
