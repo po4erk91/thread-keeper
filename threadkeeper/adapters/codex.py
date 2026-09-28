@@ -21,7 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import CLIAdapter, NormalizedMessage, find_cli_executable
+from .base import (
+    CHILD_MCP_ENV_KEYS, CLIAdapter, NormalizedMessage, find_cli_executable,
+)
 from ..config_io import mutate_text_file
 
 _FORCED_CID_RE = re.compile(
@@ -91,6 +93,7 @@ _THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
     "lesson_list",
     "lesson_get",
     "lesson_append",
+    "lesson_patch",
     "lesson_remove",
     "lesson_restore",
     "skill_list",
@@ -120,6 +123,26 @@ def _thread_keeper_tools_config() -> dict:
             for tool in _THREAD_KEEPER_AUTO_APPROVED_TOOLS
         }
     }
+
+
+_THREAD_KEEPER_TOOL_PREFIX = "mcp__thread-keeper__"
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _granted_thread_keeper_tools(allowed_tools: str) -> list[str]:
+    """Bare thread-keeper tool names from a Claude-style allowlist, in order.
+
+    Names are spliced into `-c` TOML keys, so anything that is not a plain
+    identifier is dropped rather than passed through."""
+    tools: list[str] = []
+    for item in allowed_tools.split(","):
+        item = item.strip()
+        if not item.startswith(_THREAD_KEEPER_TOOL_PREFIX):
+            continue
+        tool = item[len(_THREAD_KEEPER_TOOL_PREFIX):]
+        if _TOOL_NAME_RE.fullmatch(tool) and tool not in tools:
+            tools.append(tool)
+    return tools
 
 
 def _approval_blocks(name: str) -> str:
@@ -318,6 +341,18 @@ class CodexAdapter(CLIAdapter):
         sandbox can write ordinary workspace files but blocks `.git` refs, so
         map Claude's `bypassPermissions` request to Codex's explicit
         no-sandbox flag.
+
+        Codex gives MCP servers only a small default environment, so the
+        thread-keeper identity variables in ``CHILD_MCP_ENV_KEYS`` are
+        forwarded by name through ``env_vars``.
+
+        `extra_allowed_tools` is the child's full Claude-style allowlist.
+        `codex exec` runs with approval policy "never", so a thread-keeper
+        write tool that is not pre-approved fails with "MCP tool call requires
+        approval". Every granted `mcp__thread-keeper__*` tool is therefore
+        approved for this invocation only, which keeps Codex children in step
+        with the loop's declared tool contract instead of the static
+        config.toml list.
         """
         bin_path = find_cli_executable("codex")
         if not bin_path:
@@ -336,6 +371,29 @@ class CodexAdapter(CLIAdapter):
         if {"websearch", "webfetch"} & requested_tools:
             argv.append("--search")
         argv += ["exec", "--skip-git-repo-check"]
+        # Codex launches configured stdio MCP servers from the agent cwd.  A
+        # repository checkout can therefore shadow the installed package used
+        # by thread-keeper's MCP entry.  Scope safe-path mode to the MCP server
+        # only; shell/test Python processes in the child keep normal semantics.
+        argv += [
+            "-c",
+            'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
+        ]
+        # Codex also starts MCP servers with a scrubbed environment, so the
+        # child's thread-keeper server would not know it is this child: no
+        # forced cid, write origin, or Curator pass, and every report write
+        # was refused as unauthorized. Forward those names from the child's
+        # own environment; the values never land on argv.
+        argv += [
+            "-c",
+            "mcp_servers.thread-keeper.env_vars="
+            + json.dumps(list(CHILD_MCP_ENV_KEYS)),
+        ]
+        for tool in _granted_thread_keeper_tools(extra_allowed_tools):
+            argv += [
+                "-c",
+                f'mcp_servers.thread-keeper.tools.{tool}.approval_mode="approve"',
+            ]
         if model:
             argv += ["-m", model]
         if effort:
@@ -427,6 +485,7 @@ class CodexAdapter(CLIAdapter):
     def iter_messages(self, fp: Path) -> Iterator[NormalizedMessage]:
         sess_id = ""
         forced_session_id = ""
+        cwd = ""
         pending: list[NormalizedMessage] = []
         try:
             with fp.open("r", encoding="utf-8", errors="replace") as f:
@@ -442,9 +501,12 @@ class CodexAdapter(CLIAdapter):
                     payload = env.get("payload") or {}
                     if typ == "session_meta" and isinstance(payload, dict):
                         sess_id = payload.get("id") or sess_id
-                        if sess_id and not forced_session_id:
-                            for msg in pending:
+                        cwd = payload.get("cwd") or cwd
+                        for msg in pending:
+                            if sess_id and not forced_session_id:
                                 msg.session_id = sess_id
+                            if cwd:
+                                msg.origin_path = cwd
                         continue
                     if typ != "response_item":
                         continue
@@ -465,8 +527,10 @@ class CodexAdapter(CLIAdapter):
                         forced_session_id = cid
                         for msg in pending:
                             msg.session_id = forced_session_id
-                            yield msg
-                        pending.clear()
+                        if cwd:
+                            for msg in pending:
+                                yield msg
+                            pending.clear()
                     # Stable per-line id: use payload.id when present,
                     # else fall back to timestamp plus line index.
                     uuid = (
@@ -481,8 +545,9 @@ class CodexAdapter(CLIAdapter):
                         model=payload.get("model") or "",
                         created_at=_ts(env.get("timestamp", "")),
                         raw=payload,
+                        origin_path=cwd,
                     )
-                    if forced_session_id:
+                    if forced_session_id and cwd:
                         yield msg
                     else:
                         pending.append(msg)

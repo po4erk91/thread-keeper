@@ -383,6 +383,7 @@ def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
     assert argv[:3] == ["/usr/local/bin/codex", "exec", "--skip-git-repo-check"]
     assert argv[-1] == "-"
     assert "-m" in argv and "gpt-5.5" in argv
+    assert 'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"' in argv
     # Default (non-bypass) path still sandboxes.
     assert "--sandbox" in argv and "workspace-write" in argv
 
@@ -412,6 +413,70 @@ def test_codex_spawn_argv_enables_native_search_for_curator(
     assert argv[:4] == [
         "/usr/local/bin/codex", "--search", "exec", "--skip-git-repo-check",
     ]
+
+
+def test_codex_spawn_argv_preapproves_granted_thread_keeper_tools(
+    tmp_path, monkeypatch,
+):
+    # `codex exec` runs with approval policy "never": a thread-keeper write
+    # tool missing from config.toml failed with "MCP tool call requires
+    # approval", so Curator children could never persist their reports.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv(
+        "audit",
+        extra_allowed_tools=(
+            "Read,mcp__thread-keeper__curator_report_write,"
+            "mcp__thread-keeper__note,mcp__other__tool,"
+            'mcp__thread-keeper__bad.name="x",mcp__thread-keeper__note'
+        ),
+    )
+
+    assert argv is not None
+    approvals = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c" and ".approval_mode=" in argv[i + 1]
+    ]
+    assert approvals == [
+        'mcp_servers.thread-keeper.tools.curator_report_write.approval_mode="approve"',
+        'mcp_servers.thread-keeper.tools.note.approval_mode="approve"',
+    ]
+    assert argv[-1] == "-"
+
+
+def test_codex_spawn_argv_forwards_child_identity_to_its_mcp_server(
+    tmp_path, monkeypatch,
+):
+    # Codex starts MCP servers with a scrubbed environment. Without this the
+    # child's thread-keeper server ran as an ordinary session, so every
+    # Curator report write was refused as unauthorized.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv("audit")
+
+    forwarded = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c"
+        and argv[i + 1].startswith("mcp_servers.thread-keeper.env_vars=")
+    ]
+    assert len(forwarded) == 1
+    names = json.loads(forwarded[0].split("=", 1)[1])
+    for key in (
+        "THREADKEEPER_FORCE_CID", "THREADKEEPER_SPAWNED_CHILD",
+        "THREADKEEPER_WRITE_ORIGIN", "THREADKEEPER_CURATOR_PASS_ID",
+        "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    ):
+        assert key in names
+    assert "THREADKEEPER_ROLE" not in names  # the host's role must not leak
+    assert all("=" not in name for name in names)  # names only, no values
 
 
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):

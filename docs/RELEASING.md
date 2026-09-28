@@ -151,9 +151,10 @@ Semantic versioning, conservative bumps:
   ones, no breaking config changes.
 - **MINOR** (`0.4.0` → `0.5.0`) — new MCP tools, new env knobs, new
   daemons, new adapters, new prompt variants. Backwards compatible.
-- **MAJOR** (`0.4.0` → `1.0.0`) — breaking changes to MCP tool
-  signatures, removed tools, schema migrations that require manual
-  intervention, removed env knobs. Bump only when truly necessary.
+- **MAJOR** (`0.4.0` → `1.0.0`) — a ground-up replacement or breaking
+  new implementation: incompatible MCP tool signatures, removed tools,
+  schema migrations that require manual intervention, or removed env knobs.
+  Major means the next major even while the project is in 0.x.
 
 ## Yank / re-release
 

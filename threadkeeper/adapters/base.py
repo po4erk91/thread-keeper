@@ -19,6 +19,27 @@ import re
 import shutil
 
 
+# What a spawned child's thread-keeper MCP server must see to act as that
+# child: its forced cid, write origin, Curator pass scope, and the parent's
+# stores. Claude children get these values in their slim MCP config; a CLI
+# that starts MCP servers with a scrubbed environment (Codex) is told to
+# forward these names from the child process.
+CHILD_MCP_ENV_KEYS: tuple[str, ...] = (
+    "THREADKEEPER_FORCE_CID",
+    "THREADKEEPER_SPAWNED_CHILD",
+    "THREADKEEPER_DB",
+    "THREADKEEPER_ENV_FILE",
+    "THREADKEEPER_TASK_LOG_DIR",
+    "CLAUDE_PROJECTS_DIR",
+    "THREADKEEPER_TZ",
+    "THREADKEEPER_WRITE_ORIGIN",
+    "THREADKEEPER_NO_EMBEDDINGS",
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_EGRESS_CONSUMER",
+)
+
+
 def find_cli_executable(*names: str) -> str:
     """Find a CLI even when a sandboxed macOS app has a minimal PATH."""
     for name in names:
@@ -62,6 +83,8 @@ class NormalizedMessage:
       raw         — the original parsed dict, in case downstream code
                     needs to peek into adapter-specific fields (e.g.
                     Skill tool_use detection in ingest).
+      origin_path — originating project/CWD when the transcript provides it.
+                    It is used only for pre-persistence ingest policy.
     """
     uuid: str
     session_id: str
@@ -70,6 +93,7 @@ class NormalizedMessage:
     model: str
     created_at: int
     raw: dict
+    origin_path: str = ""
 
 
 class CLIAdapter(ABC):
@@ -122,6 +146,13 @@ class CLIAdapter(ABC):
     def iter_messages(self, fp: Path) -> Iterator[NormalizedMessage]:
         """Yield NormalizedMessage from one transcript file, in file
         order. Skip malformed lines silently."""
+
+    def transcript_stat(self, fp: Path) -> tuple[float, int]:
+        """(mtime, size) that advances whenever the transcript gains data.
+        Ingest skips a file whose pair did not grow. Override when new data
+        can land in a sidecar first (e.g. a SQLite -wal file)."""
+        st = fp.stat()
+        return st.st_mtime, st.st_size
 
     # ------------------------------------------------------------------
     # Optional hooks (default: no-op)
