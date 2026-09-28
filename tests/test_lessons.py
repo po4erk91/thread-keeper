@@ -205,6 +205,107 @@ def test_mcp_lesson_append_validates_inputs(tmp_path, monkeypatch):
     assert out.startswith("ok slug=ok-one")
 
 
+def test_lesson_neighbors_previews_ranked_slugs_without_writing(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    ln = _tool(pkg, "lesson_neighbors")
+    la(title="reset ios network", body="Reset iOS simulator network settings.")
+    la(title="serialize device boot", body="Serialize device boot locks.")
+    la(title="unrelated release notes", body="Document release notes.")
+
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "encode_many",
+        lambda texts: [[1.0, 0.0], [0.96, 0.0], [0.83, 0.0], [0.40, 0.0]],
+    )
+
+    out = ln(
+        title="recover simulator connectivity",
+        summary="Restore device networking before a test run.",
+        body="Reset simulator network settings before retrying device tests.",
+        k=2,
+    )
+
+    assert out.splitlines() == [
+        "lesson_neighbors total=2 mode=semantic prospective_slug=recover-simulator-connectivity",
+        "  1. reset-ios-network score=0.96",
+        "  2. serialize-device-boot score=0.83",
+    ]
+    assert pkg["lessons"].count_lessons() == 3
+
+
+def test_lesson_neighbors_leaves_existing_lesson_write_semantics_unchanged(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ln = _tool(pkg, "lesson_neighbors")
+    la = _tool(pkg, "lesson_append")
+
+    assert ln(title="new lesson", body="new body") == (
+        "lesson_neighbors total=0 mode=semantic"
+    )
+    assert la(title="new lesson", body="new body") == (
+        f"ok slug=new-lesson path={pkg['path']}"
+    )
+
+
+def test_lesson_neighbors_falls_back_to_lexical_ranking(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    ln = _tool(pkg, "lesson_neighbors")
+    la(
+        title="reset simulator network",
+        body="Reset simulator network settings before device tests.",
+    )
+    import threadkeeper.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "encode_many", lambda texts: None)
+    out = ln(
+        title="repair simulator connectivity",
+        body="Reset simulator network before retrying device tests.",
+    )
+    assert "mode=lexical" in out
+    assert "reset-simulator-network" in out
+
+
+def test_mcp_lesson_patch_replaces_one_unique_substring(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    la = _tool(pkg, "lesson_append")
+    lp = _tool(pkg, "lesson_patch")
+    la(
+        title="retry strategy",
+        summary="Retry only transient failures.",
+        body=(
+            "Use equal jitter for transient errors; do not retry errors "
+            "indefinitely."
+        ),
+        source="shadow",
+    )
+
+    out = lp(
+        slug="retry-strategy",
+        old_string="equal jitter",
+        new_string="decorrelated jitter",
+    )
+
+    assert out.startswith("ok slug=retry-strategy")
+    section = pkg["path"].read_text()
+    assert "decorrelated jitter" in section
+    assert "equal jitter" not in section
+    assert "source=shadow" in section
+    assert "Retry only transient failures." in section
+    assert lp(
+        slug="retry-strategy", old_string="missing", new_string="x",
+    ) == "ERR old_string_not_found"
+    assert lp(
+        slug="retry-strategy", old_string="errors", new_string="x",
+    ).startswith("ERR old_string_ambiguous")
+
+
 def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     la = _tool(pkg, "lesson_append")
@@ -212,6 +313,28 @@ def test_shadow_lesson_append_rejects_overlong_body(tmp_path, monkeypatch):
     out = la(title="compact rules only", body=body, source="shadow")
     assert out.startswith("ERR shadow_lesson_too_long")
     assert "max=450" in out
+
+
+def test_shadow_lesson_append_allows_non_growing_same_slug_repair(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    original = "word " * 451
+    repaired = "rule " + "word " * 450
+    pkg["lessons"].append_lesson(
+        title="long shadow lesson", body=original, source="shadow",
+    )
+
+    out = la(title="long shadow lesson", body=repaired, source="shadow")
+
+    assert out.startswith("ok slug=long-shadow-lesson")
+    assert "rule" in pkg["path"].read_text()
+    assert la(
+        title="long shadow lesson",
+        body="longer " + "word " * 450,
+        source="shadow",
+    ).startswith("ERR shadow_lesson_too_long")
 
 
 def test_shadow_lesson_append_rejects_near_duplicate_slug(
@@ -298,6 +421,74 @@ def test_shadow_lesson_append_semantic_duplicate_patches_incumbent(
     assert "ci-device-startup-coordination" not in body
     assert "Additional evidence:" in body
     assert "serialize AVD boot lock acquisition" in body
+
+
+def test_new_directive_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    first = la(
+        title="module globals for test configuration",
+        body=(
+            "You can use module globals to pass test configuration between "
+            "runner steps when setup is simple."
+        ),
+        source="shadow",
+    )
+    assert first.startswith("ok")
+
+    out = la(
+        title="inject test configuration explicitly",
+        body=(
+            "Never use module globals to pass test configuration between "
+            "runner steps; inject dependencies explicitly instead."
+        ),
+        source="shadow",
+    )
+
+    assert out.startswith("ok slug=inject-test-configuration-explicitly")
+    assert "reconciliation=module-globals-for-test-configuration" in out
+    assert "review=patch_or_cross_link" in out
+    assert pkg["lessons"].count_lessons() == 2
+    row = pkg["db"].get_db().execute(
+        "SELECT target, summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert row["target"] == "module-globals-for-test-configuration"
+    assert "new=inject-test-configuration-explicitly" in row["summary"]
+    assert "reason=absolute_directive" in row["summary"]
+
+
+def test_new_debunk_flags_older_permissive_lesson_for_reconciliation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+
+    la(
+        title="shared runner environment state",
+        body=(
+            "It is safe to keep shared runner environment state throughout "
+            "a test workflow."
+        ),
+        source="shadow",
+    )
+
+    out = la(
+        title="shared runner environment state is unreliable",
+        body=(
+            "Keeping shared runner environment state is unreliable; pass the "
+            "environment to each command instead."
+        ),
+        source="shadow",
+    )
+
+    assert "reconciliation=shared-runner-environment-state" in out
+    row = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='lesson_reconciliation'"
+    ).fetchone()
+    assert "reason=debunk" in row["summary"]
 
 
 def test_shadow_lesson_append_semantic_borderline_surfaces_duplicate(
@@ -475,6 +666,41 @@ def test_mcp_lesson_remove_deletes_nonprotected_section(tmp_path, monkeypatch):
     assert (artifacts[0] / "section.md").read_text().startswith(
         "<!-- LESSON:BEGIN slug=stale-duplicate "
     )
+
+
+def test_lesson_consolidation_rewrites_inbound_wikilinks(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    la(title="umbrella rule", body="new canonical rule", source="shadow")
+    la(title="retired rule", body="old duplicate rule", source="shadow")
+    la(
+        title="consumer rule",
+        body="See [[retired-rule]], [[retired-rule|this rule]], and "
+        "[[retired-rule#details]].",
+        source="shadow",
+    )
+
+    out = lr(slug="retired-rule", replacement_slug="umbrella rule")
+
+    assert out == "ok removed=retired-rule inbound_rewritten=lesson:consumer-rule"
+    consumer = _tool(pkg, "lesson_get")(slug="consumer-rule")
+    assert "[[umbrella-rule]]" in consumer
+    assert "[[umbrella-rule|this rule]]" in consumer
+    assert "[[umbrella-rule#details]]" in consumer
+    assert "[[retired-rule" not in consumer
+
+
+def test_lesson_remove_reports_dangling_wikilink_sources(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    la = _tool(pkg, "lesson_append")
+    lr = _tool(pkg, "lesson_remove")
+    la(title="retired rule", body="old duplicate rule", source="shadow")
+    la(title="consumer rule", body="See [[retired-rule]].", source="shadow")
+
+    out = lr(slug="retired-rule")
+
+    assert out == "ok removed=retired-rule dangling_wikilinks=lesson:consumer-rule"
 
 
 def test_mcp_lesson_restore_recreates_original_bytes(tmp_path, monkeypatch):

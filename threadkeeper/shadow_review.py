@@ -98,18 +98,32 @@ PROCEDURE
    a. Call `mcp__thread-keeper__lesson_list(k=80)` and
       `mcp__thread-keeper__skill_list()`.
    b. If a close slug/skill already exists, read it with `lesson_get` when
-      needed and PATCH the existing skill, or reuse the exact existing
-      lesson title so lesson_append replaces in-place. `lesson_append`
+      needed and PATCH the existing skill, use `lesson_patch` for a narrow
+      lesson correction, or reuse the exact existing lesson title so
+      lesson_append replaces in-place. `lesson_append`
       also enforces slug and semantic body duplicate gates for shadow
       writes; do not append a second overlapping lesson.
-   c. Only create new memory if no existing lesson/skill covers the rule.
+   c. Before a genuinely new `lesson_append`, call
+      `lesson_neighbors(title=<prospective>, summary=<prospective>,
+      body=<prospective>, k=3)`. Read any relevant suggested slug. Patch or
+      consolidate when it covers the rule; when the new rule is distinct but
+      related, add a `[[suggested-slug]]` cross-link to its body before
+      writing it.
+   d. Only create new memory if no existing lesson/skill covers the rule.
+   e. If an EXISTING lesson already covers the rule and the dialog shows it
+      was broken again (the user had to correct it anew), call
+      `lesson_violation(slug=<existing>, evidence=<one line>)`. Repeated
+      violations escalate the rule to an active guard; do not write a
+      duplicate lesson for it.
 4. Materialization preference order:
    a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an
       existing auto-triggered skill covers the rule.
    b. NEXT: `skill_manage(action='create')` for a new broad umbrella skill.
    c. FALLBACK: `lesson_append(title, body, summary, source='shadow')`.
       The lesson body must be compact: target <220 words, hard cap 450.
-      For larger detail, write a skill reference file instead.
+      A same-slug replacement may repair an older long shadow lesson only
+      when it does not increase the body size. For larger detail, write a
+      skill reference file instead.
    d. Output `MATERIALIZED: <slug-or-skill>` on success.
 
 CONSTRAINTS
@@ -609,6 +623,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
 
         # Late import — spawn module imports identity / config; importing it
         # at module load time would create cycles.
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # type: ignore
         try:
             result = spawn(
@@ -627,6 +642,9 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     "mcp__thread-keeper__lesson_append,"
                     "mcp__thread-keeper__lesson_list,"
                     "mcp__thread-keeper__lesson_get,"
+                    "mcp__thread-keeper__lesson_neighbors,"
+                    "mcp__thread-keeper__lesson_patch,"
+                    "mcp__thread-keeper__lesson_violation,"
                     "mcp__thread-keeper__skill_manage,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__mark_skill_materialized"
@@ -638,14 +656,14 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
             _record_shadow_pass(conn, floor, f"spawn_error: {e}")
             return f"spawn_error: {e}"
 
-        result_s = str(result)
-        if result_s.startswith("ERR"):
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
             # spawn() returns ERR strings for admission/budget rejections.
             # Treat those like a running child: no child processed the window.
-            _record_shadow_pass(conn, floor, result_s[:200])
+            _record_shadow_pass(conn, floor, spawn_result.text[:200])
         else:
-            _record_shadow_pass(conn, high_water, result_s[:200])
-        return result_s
+            _record_shadow_pass(conn, high_water, spawn_result.text[:200])
+        return spawn_result.text
 
 
 def _serve_loop() -> None:

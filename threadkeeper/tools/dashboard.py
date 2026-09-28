@@ -224,7 +224,7 @@ _LOOP_TASK_PREFIXES: dict[str, str] = {
 # skill/tier/reject set, this now counts knowledge-store MUTATIONS — the most
 # consequential autonomous behavior — so a daemon adding to or deleting from
 # the lessons/claims store produces a visible number (issue #61):
-#   lesson_append / lesson_remove   — curator + shadow lesson writes/prunes
+#   lesson_append / lesson_remove   — curator + shadow lesson writes/patches/prunes
 #   curator_report_applied          — evolve_applier applied a curator report
 #   roadmap_issue_applied           — evolve_applier opened a roadmap-issue PR
 #   roadmap_issue_requeued          — closed-unmerged PR made an issue retryable
@@ -371,6 +371,12 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"dialog_vec={emb_health['dialog_vec']} "
         f"generation={emb_health['generation']}"
     )
+    from .. import ingest
+    deny_globs, denied_messages = ingest.ingest_denylist_status(conn)
+    out.append("  ingest_privacy: " + (
+        "denylist=" + ", ".join(deny_globs) if deny_globs else "denylist=(none)"
+    ))
+    out.append(f"  ingest_denied_messages={denied_messages}")
 
     # ── loops ─────────────────────────────────────────────────────────
     # Per loop: fires in window, fires in 30d, age of last fire. A loop
@@ -586,5 +592,36 @@ def mp_dashboard(window_days: int = 7) -> str:
     )
     out.append("")
     out.append(f"reliability  weak_categories={weak} untested_categories={untested}")
+
+    # Lessons whose rule keeps being broken despite existing as memory (#228).
+    from ..lesson_violations import memory_insufficient
+    insufficient = memory_insufficient(conn, now)
+    if insufficient:
+        out.append("")
+        out.append(
+            f"memory_insufficient_lessons={len(insufficient)} "
+            "(repeatedly violated; escalate to a hook or hard guard)"
+        )
+        for slug, count in sorted(
+            insufficient.items(), key=lambda kv: (-kv[1], kv[0]),
+        )[:5]:
+            out.append(f"  {slug}  violations={count}")
+
+    # Loop-authored skills whose current body carries injection markers
+    # (skill_watcher re-screen, #268). Flag only; nothing was auto-edited.
+    try:
+        flags = conn.execute(
+            "SELECT target, summary FROM events WHERE kind='skill_injection_flag' "
+            "AND created_at >= ? ORDER BY id DESC LIMIT 5",
+            (now - 30 * 86400,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        flags = []
+    if flags:
+        out.append("")
+        out.append(f"skill_injection_flags_30d={len(flags)} (review these skills)")
+        for flag in flags:
+            markers = (flag["summary"] or "").split(" ", 1)[0]
+            out.append(f"  {flag['target']}  {markers}")
 
     return "\n".join(out)
