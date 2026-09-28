@@ -438,10 +438,10 @@ ROLE_PROMPTS: dict[str, str] = {
 # MCP entry — is dropped so it never lands in the slim config (#68). The
 # transient run values the child actually needs arrive via env_overrides;
 # these cover package/runtime discovery plus thread-keeper's own knobs.
-_SLIM_MCP_ENV_ALLOW = frozenset({
-    "PYTHONPATH", "PYTHONSAFEPATH", "VIRTUAL_ENV", "PYTHONHOME",
-})
-_SLIM_MCP_ENV_ALLOW_PREFIXES = ("THREADKEEPER_",)
+from ..adapters.base import (
+    CHILD_MCP_ENTRY_ENV_ALLOW as _SLIM_MCP_ENV_ALLOW,
+    CHILD_MCP_ENTRY_ENV_PREFIXES as _SLIM_MCP_ENV_ALLOW_PREFIXES,
+)
 
 
 def _build_slim_mcp_config(
@@ -760,7 +760,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         "broadcast/whisper a summary at the end.\n\n"
         "When replying to the user: paraphrase in plain language. Do NOT "
         "quote internal IDs (cids, signal #ids, thread T-codes, qids, "
-        "task tk_codes) — those are tool-call internals only."
+        "task tk_codes) — those are tool-call internals only.\n\n"
+        "This is a background task, not a user session: skip the session "
+        "protocol from your global instructions (brief/context at start, "
+        "open_thread/close_thread, session_end). Read and write what the "
+        "task below asks for, and report through the channels above."
     )
     # Generate the child's conversation_id up front. Pass it via --session-id
     # so claude uses it as the jsonl stem, AND via env so the child's MCP
@@ -806,7 +810,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if append_system:
         sys_extra += "\n\n" + append_system
     child_env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if k != "THREADKEEPER_ROLE"},
         "THREADKEEPER_DB": str(DB_PATH),
         "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
         "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
@@ -863,6 +867,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if cli.strip() and cli_clean not in _sc.SUPPORTED_CLIS:
         return f"ERR spawn_unsupported cli={cli}"
     chosen_cli = cli_clean or _sc.resolve_agent(role or "", _id.active_cli())
+    home_cli = _sc.model_home_cli(model) if model else ""
+    if home_cli and chosen_cli in ("claude", "codex") and home_cli != chosen_cli:
+        if cli_clean:
+            return f"ERR model_cli_mismatch model={model} cli={chosen_cli}"
+        chosen_cli = home_cli
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
     chosen_effort = effort or _sc.resolve_effort(chosen_cli, role or "")
     if chosen_cli == "claude" and not bin_:

@@ -37,7 +37,34 @@ CHILD_MCP_ENV_KEYS: tuple[str, ...] = (
     "THREADKEEPER_CURATOR_PASS_ID",
     "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
     "THREADKEEPER_EGRESS_CONSUMER",
+    # A privileged child's PATH starts with the gh safety wrapper; its MCP
+    # server needs these to reach the real gh instead of looping on itself.
+    "THREADKEEPER_GH_WRAPPER_DIR",
+    "THREADKEEPER_REAL_GH",
 )
+
+# Environment a user's thread-keeper MCP entry may carry into a spawned
+# child's own MCP config: package discovery plus thread-keeper knobs. Anything
+# else in that entry (credentials for other tools) stays out of the child.
+CHILD_MCP_ENTRY_ENV_ALLOW = frozenset({
+    "PYTHONPATH", "PYTHONSAFEPATH", "VIRTUAL_ENV", "PYTHONHOME",
+})
+CHILD_MCP_ENTRY_ENV_PREFIXES = ("THREADKEEPER_",)
+
+
+def child_mcp_entry_env(env: dict | None) -> dict[str, str]:
+    """Filter a thread-keeper MCP entry's env for a spawned child's config.
+
+    Per-run identity keys are dropped: the child's live values must win.
+    """
+    return {
+        str(k): str(v) for k, v in (env or {}).items()
+        if (
+            k in CHILD_MCP_ENTRY_ENV_ALLOW
+            or any(str(k).startswith(p) for p in CHILD_MCP_ENTRY_ENV_PREFIXES)
+        )
+        and k not in CHILD_MCP_ENV_KEYS
+    }
 
 
 def find_cli_executable(*names: str) -> str:
