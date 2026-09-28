@@ -5,6 +5,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.18.3 — 2026-09-28
+
+- **Fixed: a slim child no longer falls back to the full MCP config.** When
+  its slim MCP file could not be written, a Claude child quietly ran with
+  every MCP server the user configured. `spawn()` now refuses with
+  `ERR slim_mcp_config_failed`. The test for this path had been a permanent
+  skip placeholder and is now a real check.
+
 ## v0.18.2 — 2026-09-28
 
 - **Fixed: Codex children no longer load the user's whole Codex setup.**

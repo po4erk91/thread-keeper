@@ -456,8 +456,8 @@ def _build_slim_mcp_config(
     (matches their actual install). Fall back to a synthesized config
     based on the running Python interpreter and package location.
 
-    Returns the path to the slim config file, or None if neither path
-    can produce a valid entry (caller should fall back to full config).
+    Returns the path to the slim config file, or None if it cannot be
+    written; the caller then refuses the spawn rather than widen the child.
     """
     try:
         slim_dir = ensure_task_spool_dir(TASK_LOG_DIR)
@@ -946,9 +946,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         # API integrations).
         if slim:
             slim_cfg = _build_slim_mcp_config(task_id, mcp_env_overrides)
-            if slim_cfg is not None:
-                cmd += ["--mcp-config", str(slim_cfg),
-                        "--strict-mcp-config"]
+            if slim_cfg is None:
+                # Without the slim file the child would start every MCP server
+                # the user configured; refuse instead of widening it.
+                return "ERR slim_mcp_config_failed"
+            cmd += ["--mcp-config", str(slim_cfg), "--strict-mcp-config"]
     log_path: Optional[Path] = None
     try:
         task_log_dir = ensure_task_spool_dir(TASK_LOG_DIR)
