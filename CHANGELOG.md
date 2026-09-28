@@ -5,6 +5,46 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.18.3 — 2026-09-28
+
+- **Fixed: a slim child no longer falls back to the full MCP config.** When
+  its slim MCP file could not be written, a Claude child quietly ran with
+  every MCP server the user configured. `spawn()` now refuses with
+  `ERR slim_mcp_config_failed`. The test for this path had been a permanent
+  skip placeholder and is now a real check.
+
+## v0.18.2 — 2026-09-28
+
+- **Fixed: Codex children no longer load the user's whole Codex setup.**
+  Every autonomous Codex child started all MCP servers, plugins and hooks from
+  `~/.codex/config.toml`: computer use, browser, Drive, Trello, Sentry, Meta
+  Ads and more. The Evolve web researcher, which reads untrusted pages, used a
+  computer-use JS REPL. Children now run with `codex exec --ignore-user-config`.
+  Only the provider/account and default-model keys and the thread-keeper
+  entry are carried over; an older codex build disables the other servers
+  instead.
+- **Fixed: Codex children only see their granted tools.** Per-run
+  pre-approvals did not remove the tools the user had approved for
+  interactive Codex use, so the web researcher could call `dialog_search` and
+  `search` over private memory. `mcp_servers.thread-keeper.enabled_tools` now
+  exposes exactly the allowlist, as `--allowedTools` does for Claude.
+- **Fixed: the Evolve reviewer can file issues from Codex again.** A
+  privileged child's MCP server saw the gh safety wrapper first on PATH but
+  not the wrapper's variables, so `gh` resolved to the wrapper, which re-ran
+  itself until the dedup check timed out and the reviewer aborted. The
+  variables are forwarded now, and the wrapper never resolves a thread-keeper
+  wrapper as the real `gh`.
+- **Fixed: an explicit model picks its CLI.** `spawn(model="opus")` in a
+  Codex-routed setup launched Codex with a Claude model, which the provider
+  rejects at once. A Claude model now runs on Claude and a GPT model on
+  Codex; an explicit `cli` that does not match returns
+  `ERR model_cli_mismatch`.
+- **Fixed: children no longer inherit the host role or the user session
+  protocol.** `THREADKEEPER_ROLE=host` is dropped from child environments.
+  The child preamble tells background children to skip brief, context,
+  thread open/close and session_end, and the brief, thread-nudge and
+  session-end hooks exit early when `THREADKEEPER_SPAWNED_CHILD=1`.
+
 ## v0.18.1 — 2026-09-27
 
 - **Fixed: the startup catch-up reaches every CLI.** The full ingest shared

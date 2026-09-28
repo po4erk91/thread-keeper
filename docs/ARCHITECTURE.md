@@ -977,7 +977,35 @@ their slim MCP config. Codex starts MCP servers with a scrubbed environment, so
 the Codex adapter forwards the same names with
 `-c mcp_servers.thread-keeper.env_vars=[...]`; without it a Codex child's
 thread-keeper server ran as an ordinary session and every Curator report write
-was refused as unauthorized.
+was refused as unauthorized. The list also carries the gh safety wrapper's
+variables: a privileged child's PATH starts with the wrapper, and a server
+that saw that PATH without them resolved `gh` to the wrapper itself, which
+re-ran itself until the reviewer's issue dedup check timed out. The wrapper
+now also skips any `gh` on PATH that is a thread-keeper wrapper.
+
+A Codex child mirrors Claude's `--strict-mcp-config` isolation. It runs with
+`codex exec --ignore-user-config`, and only two things from the user's
+`~/.codex/config.toml` are passed back with `-c`: the provider/account and
+default model keys, and the user's `thread-keeper` MCP entry (command, args,
+timeouts, and env filtered to package paths and `THREADKEEPER_*`). Other MCP
+servers, plugins (computer use, browser, Drive), hooks and the `notify`
+program never start inside an autonomous child. Before this, the Evolve web
+researcher, which reads untrusted pages, could call a computer-use JS REPL.
+`mcp_servers.thread-keeper.enabled_tools` then exposes exactly the granted
+thread-keeper tools. Pre-approvals alone left every tool the user had approved
+for interactive Codex use callable, so the researcher could run
+`dialog_search` over private transcripts. A codex build without
+`--ignore-user-config` falls back to `enabled=false` for every other
+configured server.
+
+Children do not inherit the host's `THREADKEEPER_ROLE=host`. An explicit
+Claude model (`opus`, `sonnet`, `claude-*`) runs on Claude and an explicit
+OpenAI model (`gpt-*`, `o<N>`) runs on Codex. With an explicit `cli` that does
+not match the model, `spawn()` returns `ERR model_cli_mismatch` instead of
+launching a child the provider would reject. The child preamble and the
+`tk-brief`, `tk-thread-nudge` and `tk-session-end` hooks
+(`THREADKEEPER_SPAWNED_CHILD=1`) keep background children out of the user
+session protocol, so no brief, thread or session summary is written per child.
 
 ### Git worktree isolation (#164)
 

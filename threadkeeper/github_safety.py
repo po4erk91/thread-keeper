@@ -170,17 +170,34 @@ def sanitize_gh_body_args(args: Sequence[str]) -> tuple[list[str], list[Path]]:
     return out, cleanup
 
 
+def _is_safety_wrapper(path: str) -> bool:
+    """Whether `path` is one of spawn()'s gh wrapper scripts, not gh itself."""
+    try:
+        with open(path, "rb") as fh:
+            return b"threadkeeper.github_safety" in fh.read(512)
+    except OSError:
+        return False
+
+
 def _resolve_real_gh() -> str:
+    """The real gh binary, never a safety wrapper.
+
+    A child's MCP server can inherit the wrapper-first PATH without
+    THREADKEEPER_REAL_GH (Codex scrubs MCP server environments). Taking the
+    first `gh` on PATH then found the wrapper itself, which re-ran itself
+    until the caller's timeout, so every issue dedup check failed.
+    """
     env = os.environ.get("THREADKEEPER_REAL_GH", "").strip()
-    if env:
+    if env and not _is_safety_wrapper(env):
         return env
     wrapper_dir = os.environ.get("THREADKEEPER_GH_WRAPPER_DIR", "").strip()
-    path_parts = [
-        p for p in os.environ.get("PATH", "").split(os.pathsep)
-        if p and Path(p) != Path(wrapper_dir)
-    ]
-    found = shutil.which("gh", path=os.pathsep.join(path_parts))
-    return found or ""
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part or (wrapper_dir and Path(part) == Path(wrapper_dir)):
+            continue
+        found = shutil.which("gh", path=part)
+        if found and not _is_safety_wrapper(found):
+            return found
+    return ""
 
 
 def run_wrapped_gh(args: Sequence[str], real_gh: str | None = None) -> int:

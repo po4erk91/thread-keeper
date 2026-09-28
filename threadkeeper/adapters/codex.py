@@ -17,12 +17,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 from .base import (
-    CHILD_MCP_ENV_KEYS, CLIAdapter, NormalizedMessage, find_cli_executable,
+    CHILD_MCP_ENV_KEYS, CLIAdapter, NormalizedMessage, child_mcp_entry_env,
+    find_cli_executable,
 )
 from ..config_io import mutate_text_file
 
@@ -154,6 +156,92 @@ def _approval_blocks(name: str) -> str:
         lines.append(f"[mcp_servers.{name}.tools.{tool}]")
         lines.append('approval_mode = "approve"')
     return "\n".join(lines) + "\n"
+
+
+# A spawned child runs without the rest of ~/.codex/config.toml (see
+# spawn_argv), but it still needs the user's provider and account settings,
+# and their default model/effort for roles that do not pin their own.
+_CHILD_CARRIED_CONFIG_KEYS = (
+    "model", "model_reasoning_effort", "model_provider", "model_providers",
+    "openai_base_url", "forced_login_method", "forced_chatgpt_workspace_id",
+    "cli_auth_credentials_store",
+)
+_THREAD_KEEPER_ENTRY_KEYS = (
+    "command", "args", "cwd", "startup_timeout_sec", "startup_timeout_ms",
+    "tool_timeout_sec",
+)
+_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_IGNORE_USER_CONFIG_SUPPORT: dict[str, bool] = {}
+
+
+def _toml_key(key: str) -> str:
+    return key if _BARE_KEY_RE.fullmatch(key) else json.dumps(key)
+
+
+def _toml_literal(value) -> str | None:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        items = [_toml_literal(item) for item in value]
+        if any(item is None for item in items):
+            return None
+        return "[" + ", ".join(items) + "]"
+    return None  # dates and other exotic values are not carried
+
+
+def _config_overrides(prefix: str, value) -> list[str]:
+    """`-c` strings that recreate one config value; tables are flattened."""
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key, item in value.items():
+            out += _config_overrides(f"{prefix}.{_toml_key(str(key))}", item)
+        return out
+    literal = _toml_literal(value)
+    return [] if literal is None else [f"{prefix}={literal}"]
+
+
+def _thread_keeper_entry_overrides(entry: dict) -> list[str]:
+    """The user's thread-keeper MCP entry, minus env the child should not get.
+
+    Without an entry the child runs the same interpreter and package as the
+    spawning server, like the synthesized slim config for Claude children.
+    """
+    command = entry.get("command")
+    if not isinstance(command, str) or not command.strip():
+        entry = {
+            "command": sys.executable,
+            "args": ["-m", "threadkeeper.server"],
+            "env": {"PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+        }
+    prefix = "mcp_servers.thread-keeper"
+    out: list[str] = []
+    for key in _THREAD_KEEPER_ENTRY_KEYS:
+        if key in entry:
+            out += _config_overrides(f"{prefix}.{key}", entry[key])
+    for key, value in child_mcp_entry_env(entry.get("env")).items():
+        out.append(f"{prefix}.env.{_toml_key(key)}={json.dumps(value)}")
+    return out
+
+
+def _supports_ignore_user_config(bin_path: str) -> bool:
+    """Whether this codex build has `exec --ignore-user-config` (cached)."""
+    cached = _IGNORE_USER_CONFIG_SUPPORT.get(bin_path)
+    if cached is not None:
+        return cached
+    try:
+        probe = subprocess.run(
+            [bin_path, "exec", "--help"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+    except Exception:
+        return False  # not cached: a later spawn probes again
+    supported = "--ignore-user-config" in (probe.stdout or "") + (probe.stderr or "")
+    _IGNORE_USER_CONFIG_SUPPORT[bin_path] = supported
+    return supported
 
 
 def _parse_toml(body: str) -> dict:
@@ -346,6 +434,12 @@ class CodexAdapter(CLIAdapter):
         thread-keeper identity variables in ``CHILD_MCP_ENV_KEYS`` are
         forwarded by name through ``env_vars``.
 
+        The child runs with ``--ignore-user-config`` when the codex build has
+        it: only the user's provider/account keys and their thread-keeper
+        entry are carried over, so no other MCP server, plugin, or hook starts
+        inside an autonomous child. ``enabled_tools`` then exposes exactly the
+        granted thread-keeper tools.
+
         `extra_allowed_tools` is the child's full Claude-style allowlist.
         `codex exec` runs with approval policy "never", so a thread-keeper
         write tool that is not pre-approved fails with "MCP tool call requires
@@ -371,29 +465,54 @@ class CodexAdapter(CLIAdapter):
         if {"websearch", "webfetch"} & requested_tools:
             argv.append("--search")
         argv += ["exec", "--skip-git-repo-check"]
+        user_config = _read_toml(self.config_path)
+        overrides: list[str] = []
+        # Like Claude's --strict-mcp-config: the child gets thread-keeper and
+        # nothing else from the user's setup. With the user config loaded,
+        # every configured MCP server, plugin (computer use, browser, Drive)
+        # and hook started inside autonomous children, including the web
+        # researcher that reads untrusted pages.
+        if _supports_ignore_user_config(bin_path):
+            argv.append("--ignore-user-config")
+            for key in _CHILD_CARRIED_CONFIG_KEYS:
+                if key in user_config:
+                    overrides += _config_overrides(_toml_key(key), user_config[key])
+            entry = (user_config.get("mcp_servers") or {}).get("thread-keeper")
+            overrides += _thread_keeper_entry_overrides(
+                entry if isinstance(entry, dict) else {}
+            )
+        else:
+            for name in (user_config.get("mcp_servers") or {}):
+                if name != "thread-keeper":
+                    overrides.append(f"mcp_servers.{_toml_key(name)}.enabled=false")
         # Codex launches configured stdio MCP servers from the agent cwd.  A
         # repository checkout can therefore shadow the installed package used
         # by thread-keeper's MCP entry.  Scope safe-path mode to the MCP server
         # only; shell/test Python processes in the child keep normal semantics.
-        argv += [
-            "-c",
-            'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
-        ]
+        safepath = 'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"'
+        if safepath not in overrides:
+            overrides.append(safepath)
         # Codex also starts MCP servers with a scrubbed environment, so the
         # child's thread-keeper server would not know it is this child: no
         # forced cid, write origin, or Curator pass, and every report write
         # was refused as unauthorized. Forward those names from the child's
         # own environment; the values never land on argv.
-        argv += [
-            "-c",
+        overrides.append(
             "mcp_servers.thread-keeper.env_vars="
-            + json.dumps(list(CHILD_MCP_ENV_KEYS)),
+            + json.dumps(list(CHILD_MCP_ENV_KEYS))
+        )
+        # Expose exactly the granted tools, as --allowedTools does for Claude;
+        # approvals alone left every tool the user pre-approved callable.
+        granted = _granted_thread_keeper_tools(extra_allowed_tools)
+        overrides.append(
+            "mcp_servers.thread-keeper.enabled_tools=" + json.dumps(granted)
+        )
+        overrides += [
+            f'mcp_servers.thread-keeper.tools.{tool}.approval_mode="approve"'
+            for tool in granted
         ]
-        for tool in _granted_thread_keeper_tools(extra_allowed_tools):
-            argv += [
-                "-c",
-                f'mcp_servers.thread-keeper.tools.{tool}.approval_mode="approve"',
-            ]
+        for override in overrides:
+            argv += ["-c", override]
         if model:
             argv += ["-m", model]
         if effort:
