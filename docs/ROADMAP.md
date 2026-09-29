@@ -1154,6 +1154,34 @@ The current audit found two boundary violations in the spawn and status paths:
   separate from watchdog enforcement, so a read-only MCP call or menu poll
   cannot kill a child, mutate lifecycle state, or spend a retry spawn.
 
+**2026-09-29 reviewer additions (issue-backed).**
+The current audit reconciled the completed September work and added six
+transport, migration, memory-safety, and learning-quality gaps:
+
+- **MCP Skills transport (#336).** Serve the canonical skill library through
+  the stable MCP Skills extension with paginated discovery, complete manifests,
+  origin-qualified `skill://` resources, and file digests. Keep filesystem
+  mirroring as the compatibility path for hosts without the extension.
+- **Model-upgrade migration gate (#337).** Stage a target embedding generation
+  while the prior generation remains active, validate complete coverage, then
+  switch atomically. Record writer-model provenance for derived memories and
+  replay a fixed corpus in both upgrade directions before activation.
+- **Non-malleable memory authority (#338).** Bind authority to the original
+  principal/channel, propagate the lowest authority through derived artifacts,
+  prevent repetition from manufacturing corroboration, and add end-to-end
+  Write–Execute–Forget security tests with descendant invalidation.
+- **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
+  and multi-timescale replay before changing supersession policy, so a one-off
+  task exception cannot silently replace a validated durable preference.
+- **Lesson-promotion precision (#340).** Expand stop-word and document-frequency
+  filtering, require topic cohesion beyond one shared title pair, and record
+  emitted/rejected candidate telemetry. This is the durable issue for legacy
+  evolve suggestion 85.
+- **MCP standards watchlist (#341).** Track the draft audit, approval, trust,
+  authorization-denial, citation, and AI-invocation proposals against current
+  internal concepts. Do not implement their public wire shapes until the
+  relevant proposal reaches accepted/final status.
+
 ---
 
 ## Principle
