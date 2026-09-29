@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-09-29
+- **Added: canonical skills over the stable MCP Skills extension (#336).**
+  MCP 2026-07-28 discovery now declares `io.modelcontextprotocol/skills` and
+  serves deterministic `skills/list` / `skills/get` manifests with
+  origin-qualified `skill://thread-keeper/...` file resources, raw-byte sizes,
+  and SHA-256 digests. Reads reject traversal, undeclared files, and oversized
+  content; they remain delivery only, never activation or approval. Existing
+  per-CLI skill mirrors remain the fallback for non-supporting hosts.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

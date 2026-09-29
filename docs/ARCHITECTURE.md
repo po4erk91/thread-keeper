@@ -13,7 +13,8 @@ use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── mcp_skills.py      stable Skills extension + canonical skill manifests (#336)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
@@ -1488,7 +1489,7 @@ below).
 | panel | 1 | convene_panel |
 | session | 1 | session_end |
 
-Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+Each tool is a synchronous Python function; MCPServer wraps it in JSON-Schema
 automatically from type annotations. One process — one mcp instance
 (`threadkeeper._mcp.mcp`).
 
@@ -1541,13 +1542,38 @@ the other two for the read/act split they fit naturally:
   one instruction message that drives the existing read/act tools (it does not act
   on its own).
 
-Both are **additive**: FastMCP advertises the `resources` / `prompts`
+Both are **additive**: MCPServer advertises the `resources` / `prompts`
 capabilities, which only changes what a capability-aware host *sees* — never the
 tool surface. A host that uses neither falls back to the hook-injected brief and
 the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on
 their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
+
+### Stable MCP Skills extension (#336)
+
+`mcp_skills.py` publishes the canonical `CLAUDE_SKILLS_DIR` through the stable
+`io.modelcontextprotocol/skills` extension on the MCP 2026-07-28 surface.
+`skills/list` sorts origin-qualified `skill://thread-keeper/<name>/...` URIs
+and pages them in fixed batches of 50; `skills/get` returns the same full
+entry for one `SKILL.md` URI. The authority is deliberately part of each URI so
+a host can preserve this server's origin when names collide with another server
+or a local skill.
+
+An entry includes verbatim YAML frontmatter and a complete manifest of the
+allowed files: `SKILL.md` plus regular files below `references/`, `templates/`,
+`scripts/`, and `assets/`. Each file records raw-byte size and SHA-256 digest.
+The publisher excludes malformed, symlinked, oversized (over 1 MiB), or
+over-limit (more than 512 files or 16 MiB total) trees. Dynamic resource listing
+is rebuilt from the canonical tree on each request, while `resources/read`
+re-resolves the exact URI and rejects traversal, alternate authorities,
+undeclared files, and oversized reads. The read path returns raw bytes only; it
+does not call `skill_record`, activate a skill, or grant approval. Hosts verify
+the manifest and perform their own approval/activation flow.
+
+Existing filesystem mirrors are intentionally unchanged. They remain the
+distribution fallback for CLIs without this extension and are never enumerated
+as duplicate MCP origins.
 
 ### MCP elicitation (#26)
 

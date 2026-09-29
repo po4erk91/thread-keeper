@@ -27,6 +27,12 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Stable MCP Skills distribution (#336): MCP 2026-07-28 discovery advertises
+  `io.modelcontextprotocol/skills`; deterministic `skills/list` / `skills/get`
+  manifests and origin-qualified `skill://thread-keeper/...` resources expose
+  canonical skill files with byte-size and SHA-256 integrity data. Filesystem
+  mirrors remain the fallback for hosts without the extension; discovery/read
+  remains delivery, never activation or approval.
 - Learning-loop skill-create cap (#98): `skill_manage(action='create')`
   enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
   `candidate_review`, `shadow_review`, and `background_review` origins, so a
@@ -241,7 +247,7 @@ machine by design; the SQLite store lives at
 paths. Move to a hosted topology where N users connect their CLIs to
 one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
 
-- **HTTP / SSE transport.** FastMCP already supports
+- **HTTP / SSE transport.** MCPServer already supports
   `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
   Scope: S.
 - **Per-user auth.** Bearer token in `Authorization` header on every
@@ -1029,8 +1035,6 @@ verified gaps from the present code and test suite:
 - **Generated documentation inventory.** Remove hand-maintained test/tool
   counts or check them mechanically so README and architecture totals cannot
   drift from collection and the MCP registry (#278).
-- **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
-  contracts before lifting the temporary `mcp<2` compatibility cap (#279).
 
 ---
 

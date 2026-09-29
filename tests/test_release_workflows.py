@@ -96,20 +96,18 @@ def test_glama_dockerfile_pin_matches_the_project_release():
     assert f"threadkeeper=={version}" in DOCKERFILE.read_text()
 
 
-def test_mcp_requirement_is_capped_while_the_1x_import_path_is_used():
-    # mcp 2.0.0 renamed `mcp.server.fastmcp` -> `mcp.server.mcpserver`
-    # (FastMCP -> MCPServer) with no shim, so an unbounded `mcp>=1.10.0`
-    # made every fresh resolve die at import. Keep the cap and the import
-    # path in lockstep: whoever migrates to the 2.x API drops both.
+def test_mcp_requirement_uses_the_2x_extension_surface():
+    # The stable Skills extension is defined for MCP 2026-07-28.  The server
+    # therefore uses the 2.x MCPServer import and must not regress to the
+    # removed FastMCP path.
     importers = [
         ROOT / "threadkeeper" / "_mcp.py",
         ROOT / "threadkeeper" / "elicitation.py",
         ROOT / "threadkeeper" / "tools" / "dialectic.py",
     ]
-    if not any("mcp.server.fastmcp" in p.read_text() for p in importers):
-        return  # migrated to the 2.x API — the cap is free to go.
+    assert not any("mcp.server.fastmcp" in p.read_text() for p in importers)
 
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     mcp_req = next(d for d in deps if d.split(">")[0].split("<")[0].strip() == "mcp")
 
-    assert "<2" in mcp_req, f"mcp requirement must exclude 2.x, got {mcp_req!r}"
+    assert ">=2.2.0" in mcp_req and "<3" in mcp_req

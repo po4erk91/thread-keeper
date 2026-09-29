@@ -204,6 +204,29 @@ Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
 
+### MCP Skills extension
+
+On MCP 2026-07-28 hosts, thread-keeper also advertises the stable
+`io.modelcontextprotocol/skills` extension. `skills/list` pages the canonical
+library deterministically, and `skills/get` returns the full manifest for one
+skill. Each resource URI is origin-qualified, for example
+`skill://thread-keeper/release-check/SKILL.md`, so hosts retain the server
+identity alongside a possibly colliding skill name.
+
+The manifest covers `SKILL.md` and every permitted file below `references/`,
+`templates/`, `scripts/`, or `assets/`, with its byte length and a
+`sha256:<hex>` digest. Files are individually available through ordinary
+`resources/read`; traversal, undeclared files, and reads over 1 MiB are
+rejected. Hosts should compare both size and digest before using a retrieved
+file. The canonical directory is published once; the existing per-CLI
+filesystem mirrors remain the fallback for clients that do not implement the
+extension.
+
+Discovery and `resources/read` are delivery only. Reading `SKILL.md` does not
+activate it, approve its tools, record use telemetry, or approve supporting
+files. Activation and any user approval remain responsibilities of the host's
+skill-loading path.
+
 ### Memory egress (cross-provider privacy)
 
 thread-keeper is "one user model … shared across CLIs," and that sharing is by
@@ -1715,7 +1738,7 @@ the suite on every push and PR.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
-├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── _mcp.py               # MCPServer singleton + read_tool()/write_tool() annotation wrappers
 ├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults
