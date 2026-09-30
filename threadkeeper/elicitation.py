@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp.server.mcpserver import Context
 from pydantic import BaseModel, Field
-
-from ._mcp import Context
 
 
 CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"

@@ -173,13 +173,12 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Python MCP SDK compatibility
+### Python MCP SDK surface
 
-thread-keeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). Fresh
-installs resolve 2.x. A small internal adapter uses the SDK 2.x `MCPServer`
-name and falls back to its SDK 1.x `FastMCP` predecessor, so tools, resources,
-prompts, annotations, structured content, elicitation, and stdio behavior keep
-the same public contract across both supported SDK majors.
+thread-keeper requires MCP Python SDK 2.2 or later (`mcp>=2.2.0,<3`). Its
+stable Skills extension uses the MCP 2026-07-28 extension surface, while tools,
+resources, prompts, annotations, structured content, elicitation, and stdio
+continue to use the same `MCPServer` instance.
 
 ### MCP primitives (tools, resources, prompts, elicitation)
 
@@ -218,6 +217,29 @@ Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 / `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
+
+### MCP Skills extension
+
+On MCP 2026-07-28 hosts, thread-keeper also advertises the stable
+`io.modelcontextprotocol/skills` extension. `skills/list` pages the canonical
+library deterministically, and `skills/get` returns the full manifest for one
+skill. Each resource URI is origin-qualified, for example
+`skill://thread-keeper/release-check/SKILL.md`, so hosts retain the server
+identity alongside a possibly colliding skill name.
+
+The manifest covers `SKILL.md` and every permitted file below `references/`,
+`templates/`, `scripts/`, or `assets/`, with its byte length and a
+`sha256:<hex>` digest. Files are individually available through ordinary
+`resources/read`; traversal, undeclared files, and reads over 1 MiB are
+rejected. Hosts should compare both size and digest before using a retrieved
+file. The canonical directory is published once; the existing per-CLI
+filesystem mirrors remain the fallback for clients that do not implement the
+extension.
+
+Discovery and `resources/read` are delivery only. Reading `SKILL.md` does not
+activate it, approve its tools, record use telemetry, or approve supporting
+files. Activation and any user approval remain responsibilities of the host's
+skill-loading path.
 
 ### Memory egress (cross-provider privacy)
 

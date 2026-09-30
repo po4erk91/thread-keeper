@@ -1,4 +1,4 @@
-"""Singleton MCP server instance shared by every tool module. All
+"""Singleton MCPServer instance shared by every tool module. All
 @mcp.tool() definitions across the package register on this same instance,
 so server.py can simply import every tool module and call mcp.run().
 
@@ -14,19 +14,50 @@ writes without calling them:
 This static metadata layer is what a confirmation/elicitation client reads
 to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 """
-# MCP SDK 2.x renamed the decorator server and its module. Keep this adapter
-# deliberately small while we support both maintained major lines: every
-# package module imports the server/context types from here rather than a
-# vendor-specific path.
-try:  # MCP SDK 2.x
-    from mcp.server.mcpserver import Context, MCPServer
-except ModuleNotFoundError:  # MCP SDK 1.x
-    from mcp.server.fastmcp import Context, FastMCP as MCPServer
-
+from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import AnyUrl
 from pydantic import BaseModel
 
-mcp = MCPServer("thread-keeper")
+from .mcp_skills import (
+    MAX_SKILL_RESOURCE_BYTES,
+    SKILL_URI_ORIGIN,
+    SkillsExtension,
+    read_skill_resource,
+    resource_catalog,
+)
+
+
+class ThreadKeeperMCPServer(MCPServer):
+    """MCPServer with a live, read-only view of canonical skill files.
+
+    The SDK resource manager owns the static memory resources.  Skills change
+    while this server is running, so their resource metadata is rebuilt for
+    each list/read request instead of registering stale copies at startup.
+    """
+
+    async def list_resources(self):
+        static_resources = await super().list_resources()
+        return [*static_resources, *resource_catalog()]
+
+    async def read_resource(self, uri: AnyUrl | str, context=None):
+        value = str(uri)
+        if value.startswith(f"skill://{SKILL_URI_ORIGIN}/"):
+            item = read_skill_resource(value)
+            try:
+                data = item.path.read_bytes()
+            except OSError as exc:
+                raise ResourceNotFoundError(f"Unknown resource: {value}") from exc
+            if len(data) > MAX_SKILL_RESOURCE_BYTES:
+                raise ResourceNotFoundError(f"Unknown resource: {value}")
+            # The client checks the catalog digest.  This read is delivery only;
+            # it does not activate the skill or record any usage telemetry.
+            return [ReadResourceContents(content=data, mime_type=item.mime_type)]
+        return await super().read_resource(uri, context)
+
+mcp = ThreadKeeperMCPServer("thread-keeper", extensions=[SkillsExtension()])
 
 
 def read_tool(**kwargs):
@@ -36,7 +67,7 @@ def read_tool(**kwargs):
     searches, status snapshots, listings. Extra kwargs pass through to
     ``mcp.tool`` (e.g. ``name=``)."""
     return mcp.tool(
-        annotations=ToolAnnotations(readOnlyHint=True),
+        annotations=ToolAnnotations(read_only_hint=True),
         **kwargs,
     )
 
@@ -50,9 +81,9 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
     is a no-op (closing an already-closed thread, deleting a missing key)."""
     return mcp.tool(
         annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=destructive,
-            idempotentHint=idempotent,
+            read_only_hint=False,
+            destructive_hint=destructive,
+            idempotent_hint=idempotent,
         ),
         **kwargs,
     )
@@ -66,15 +97,7 @@ def structured_result(text: str, model: BaseModel) -> CallToolResult:
     ``outputSchema`` in ``tools/list``; this helper keeps the serialized text
     block for backward compatibility, as the MCP 2025-06-18 spec recommends
     for tools that emit structured content."""
-    content = model.model_dump(mode="json", by_alias=True)
-    # SDK 2.x makes the Python field snake_case while retaining the MCP
-    # wire-key ``structuredContent``. SDK 1.x exposes the wire-key directly.
-    field = (
-        "structured_content"
-        if "structured_content" in getattr(CallToolResult, "model_fields", {})
-        else "structuredContent"
-    )
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
-        **{field: content},
+        structured_content=model.model_dump(mode="json", by_alias=True),
     )

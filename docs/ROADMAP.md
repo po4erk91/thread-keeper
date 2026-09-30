@@ -31,6 +31,12 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Stable MCP Skills distribution (#336): MCP 2026-07-28 discovery advertises
+  `io.modelcontextprotocol/skills`; deterministic `skills/list` / `skills/get`
+  manifests and origin-qualified `skill://thread-keeper/...` resources expose
+  canonical skill files with byte-size and SHA-256 integrity data. Filesystem
+  mirrors remain the fallback for hosts without the extension; discovery/read
+  remains delivery, never activation or approval.
 - Learning-loop skill-create cap (#98): `skill_manage(action='create')`
   enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
   `candidate_review`, `shadow_review`, and `background_review` origins, so a
@@ -1117,10 +1123,10 @@ verified gaps from the present code and test suite:
   architecture no longer carry hand-maintained test or tool totals; a docs
   test rejects them and checks the architecture tool table against the live
   MCP registry.
-- ✅ DONE (#279). **MCP SDK 2.x migration.** The server/context compatibility
-  adapter now supports both SDK 1.x and 2.x, and the dependency range is
-  `mcp>=1.10.0,<3`; the CI matrix covers both majors and a subprocess stdio
-  smoke test.
+- ✅ DONE (#279, #336). **MCP SDK 2.x migration and Skills distribution.**
+  The server requires `mcp>=2.2.0,<3` for the stable MCP 2026-07-28 Skills
+  extension; CI covers that supported surface and a subprocess stdio smoke
+  test.
 
 **2026-09-10 reviewer additions (issue-backed).**
 The current audit reconciled five late-August/September issues and added one
