@@ -1,0 +1,10 @@
+# Reviewed pip-audit suppressions
+#
+# Keep this file empty unless an advisory is demonstrably inapplicable or has
+# no safe upgrade path. Each active, non-comment line must use exactly:
+#
+#   ADVISORY-ID | tracking issue or PR | rationale | next review date (YYYY-MM-DD)
+#
+# The CI workflow rejects malformed entries and passes each advisory ID to
+# pip-audit's --ignore-vuln option. Remove the entry as soon as an upgrade or
+# other remediation is available. There are no active suppressions at present.

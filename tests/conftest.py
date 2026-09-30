@@ -6,9 +6,42 @@ import importlib
 import os
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 import pytest
+
+
+def shard_of(nodeid: str, total: int) -> int:
+    """1-based shard for a test id; stable across runs, machines, and Pythons."""
+    return zlib.crc32(nodeid.encode("utf-8")) % total + 1
+
+
+def pytest_collection_modifyitems(config, items):
+    """Keep only this CI shard's tests when THREADKEEPER_TEST_SHARD=k/n.
+
+    CI splits the suite across parallel jobs instead of xdist workers: every
+    shard still runs `--forked`, so each test keeps its own process (the
+    per-test package re-import leaks native thread pools in a long-lived
+    worker interpreter).
+    """
+    spec = os.environ.get("THREADKEEPER_TEST_SHARD", "").strip()
+    if not spec:
+        return
+    try:
+        index, total = (int(part) for part in spec.split("/", 1))
+    except ValueError:
+        raise pytest.UsageError(
+            f"THREADKEEPER_TEST_SHARD must look like k/n, got {spec!r}"
+        )
+    if not 1 <= index <= total:
+        raise pytest.UsageError(f"THREADKEEPER_TEST_SHARD out of range: {spec!r}")
+    keep, drop = [], []
+    for item in items:
+        (keep if shard_of(item.nodeid, total) == index else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +106,9 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
     return {
         "THREADKEEPER_DB": str(tmp_root / "db.sqlite"),
         "CLAUDE_PROJECTS_DIR": str(tmp_root / "fake_claude_projects"),
+        # A suite run from a host-spawned child inherits THREADKEEPER_ROLE=host;
+        # tests must start as an ordinary server unless they opt in.
+        "THREADKEEPER_ROLE": "server",
         # Hard kill-switch (BACKGROUND_DAEMONS_ALLOWED=False) so a tool call's
         # _ensure_session never starts a real daemon thread — not even when a
         # test monkeypatches a single daemon's POLL_S back to >0 (e.g. the
@@ -150,7 +186,7 @@ def _bootstrap_mp(tmp_path, monkeypatch, force_cid: str = ""):
 def fresh_mp(tmp_path, monkeypatch):
     """Re-import the whole threadkeeper package against a clean DB.
 
-    The package keeps process-wide state (FastMCP singleton, _session_id,
+    The package keeps process-wide state (MCP server singleton, _session_id,
     background ingester thread). For test isolation we wipe sys.modules
     of every threadkeeper submodule and re-import. Each test thus gets
     its own DB, its own session, and a clean tool registry.
@@ -172,7 +208,7 @@ def mp_with_cid(tmp_path, monkeypatch):
 
 
 def all_tool_names_from_mcp(mcp):
-    """List registered tool names from FastMCP. The mcp.list_tools is async,
+    """List registered tool names from the MCP server. The mcp.list_tools is async,
     we use the internal _tool_manager to avoid event-loop boilerplate."""
     tm = mcp._tool_manager
     return sorted(tm._tools.keys())

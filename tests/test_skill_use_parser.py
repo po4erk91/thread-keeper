@@ -182,11 +182,12 @@ def test_ingest_file_bumps_skill_usage(tmp_path, monkeypatch):
     conn.commit()
     assert added == 1
     row = conn.execute(
-        "SELECT use_count, last_used_at, created_by_origin "
+        "SELECT use_count, foreground_use_count, last_used_at, created_by_origin "
         "FROM skill_usage WHERE name='swift-ios'"
     ).fetchone()
     assert row is not None
     assert row["use_count"] == 1
+    assert row["foreground_use_count"] == 1
     assert row["last_used_at"] is not None
     assert row["created_by_origin"] == "foreground"
 

@@ -5,8 +5,432 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.18.4 — 2026-09-30
+
+- **Added: canonical skills over the stable MCP Skills extension (#336).**
+  MCP 2026-07-28 discovery now declares `io.modelcontextprotocol/skills` and
+  serves deterministic `skills/list` / `skills/get` manifests with
+  origin-qualified `skill://thread-keeper/...` file resources, raw-byte sizes,
+  and SHA-256 digests. Reads reject traversal, undeclared files, and oversized
+  content; they remain delivery only, never activation or approval. Existing
+  per-CLI skill mirrors remain the fallback for non-supporting hosts.
+
+## v0.18.3 — 2026-09-28
+
+- **Fixed: a slim child no longer falls back to the full MCP config.** When
+  its slim MCP file could not be written, a Claude child quietly ran with
+  every MCP server the user configured. `spawn()` now refuses with
+  `ERR slim_mcp_config_failed`. The test for this path had been a permanent
+  skip placeholder and is now a real check.
+
+## v0.18.2 — 2026-09-28
+
+- **Fixed: Codex children no longer load the user's whole Codex setup.**
+  Every autonomous Codex child started all MCP servers, plugins and hooks from
+  `~/.codex/config.toml`: computer use, browser, Drive, Trello, Sentry, Meta
+  Ads and more. The Evolve web researcher, which reads untrusted pages, used a
+  computer-use JS REPL. Children now run with `codex exec --ignore-user-config`.
+  Only the provider/account and default-model keys and the thread-keeper
+  entry are carried over; an older codex build disables the other servers
+  instead.
+- **Fixed: Codex children only see their granted tools.** Per-run
+  pre-approvals did not remove the tools the user had approved for
+  interactive Codex use, so the web researcher could call `dialog_search` and
+  `search` over private memory. `mcp_servers.thread-keeper.enabled_tools` now
+  exposes exactly the allowlist, as `--allowedTools` does for Claude.
+- **Fixed: the Evolve reviewer can file issues from Codex again.** A
+  privileged child's MCP server saw the gh safety wrapper first on PATH but
+  not the wrapper's variables, so `gh` resolved to the wrapper, which re-ran
+  itself until the dedup check timed out and the reviewer aborted. The
+  variables are forwarded now, and the wrapper never resolves a thread-keeper
+  wrapper as the real `gh`.
+- **Fixed: an explicit model picks its CLI.** `spawn(model="opus")` in a
+  Codex-routed setup launched Codex with a Claude model, which the provider
+  rejects at once. A Claude model now runs on Claude and a GPT model on
+  Codex; an explicit `cli` that does not match returns
+  `ERR model_cli_mismatch`.
+- **Fixed: children no longer inherit the host role or the user session
+  protocol.** `THREADKEEPER_ROLE=host` is dropped from child environments.
+  The child preamble tells background children to skip brief, context,
+  thread open/close and session_end, and the brief, thread-nudge and
+  session-end hooks exit early when `THREADKEEPER_SPAWNED_CHILD=1`.
+
+## v0.18.1 — 2026-09-27
+
+- **Fixed: the startup catch-up reaches every CLI.** The full ingest shared
+  one message budget across all adapters, and Claude Code's backlog always
+  used it up, so older Antigravity conversations never reached
+  `dialog_search` (live ingest only looks at recently modified files).
+  `THREADKEEPER_INGEST_CAP` now bounds each adapter separately, and a manual
+  `ingest(max_msgs=...)` applies the bound per CLI.
+
+## v0.18.0 — 2026-09-27
+
+- **Fixed: Codex children know who they are again.** Codex starts MCP servers
+  with a scrubbed environment, so a Codex child's thread-keeper server never
+  saw its forced cid, write origin, or Curator pass and acted as an ordinary
+  session: every Curator report write was refused as unauthorized, and other
+  Codex-routed loops wrote under the wrong identity. The Codex adapter now
+  forwards the child identity variables by name through
+  `mcp_servers.thread-keeper.env_vars`; the values stay off the command line.
+- **Fixed: a quiet thread janitor no longer shows as stale.** Consecutive
+  no-op passes still keep one `janitor_pass` row, but each quiet tick now
+  refreshes its time, so agent status stops reporting an hourly janitor as
+  stale three hours after its last close.
+
+- **Docs: no more hand-maintained test or MCP tool totals (#278).** README
+  and `docs/ARCHITECTURE.md` point to the suite and the live tool registry
+  instead of exact numbers, a docs test rejects reintroduced totals, and the
+  architecture tool table is checked against the registry (it now lists the
+  sync tools and `evolve_prune_managed_venv`). Tests also start with
+  `THREADKEEPER_ROLE=server`, so a suite run from a host-spawned child stays
+  isolated.
+
+- **Fixed: spawn no longer holds the SQLite writer while a child launches
+  (#293).** The budget check and task reservation commit in one short
+  transaction; git worktree setup, spool files and `Popen` run with no write
+  lock, a failed launch deletes its reservation, and a second short
+  transaction stamps the pid. Task refresh now scans transcripts before it
+  writes. `run_write` also retries a lock hit while its connection is still
+  being set up (the cause of the multi-process stress test flake).
+
+- **Added: leaked-transaction guard for legacy `get_db()` connections
+  (#293).** Each connection is tracked with the call site that opened it. The
+  daemon host logs any connection that keeps a write transaction open for a
+  minute or more, `run_write` names in-process holders when its deadline runs
+  out, and `mp_health` shows the counts for the answering process.
+
+- **Added: Antigravity CLI conversations reach `dialog_search` (#20).** The
+  agy adapter now reads `~/.gemini/antigravity-cli/conversations/*.db`: user
+  prompts and final model answers become `dialog_messages` rows with
+  `source='antigravity'`, the workspace path feeds the ingest denylist, and a
+  spawned agy child keeps its forced cid. The files are opened read-only
+  without creating WAL sidecars, steps still generating wait for a later
+  pass, and a live `-wal` counts toward the file's change signature.
+
+- **Added: repeated lesson violations escalate to enforcement (#228).**
+  `lesson_violation(slug, evidence)` records that an existing lesson's rule
+  was broken again; shadow review and the candidate reviewer call it instead
+  of writing a duplicate lesson. At three violations in 90 days (one per
+  conversation per day) the lesson is memory-insufficient: `mp_dashboard`
+  lists it and the Curator inventory marks it `[MEMORY-INSUFFICIENT]` with a
+  HOOK_ESCALATION recommendation for a PreToolUse-style guard.
+
+- **Added: read-side injection re-screening for loop-authored skills (#268).**
+  The skill watcher re-screens loop-authored `SKILL.md` bodies with the
+  existing injection markers whenever the file or the marker list changes,
+  records a `skill_injection_flag` event (shown in `mp_dashboard`) instead of
+  editing the file, and exempts foreground skills. It also always ends the
+  write transaction its per-tick upsert opens.
+
+- **Fixed: the candidate reviewer prompt is bounded (#24).** One reviewer
+  child now receives at most `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` (40)
+  pending candidates, oldest first; the rest stay pending for the next pass.
+  A reviewer that was off for a while no longer receives the whole 30-day
+  backlog in one prompt. (Curator single-flight and bounded batches, and the
+  stdin prompt spool that removed the argv limit, shipped earlier.)
+
+- **Added: Korean, Bengali, and European Portuguese phrase patterns (#4).**
+  Korean and Bengali cover all five families (contributed in #327). The
+  Portuguese patterns, previously Brazilian-only, now also recognize the
+  European "tu" forms and idioms (`tens de`, `não faças`, `em simultâneo`,
+  `em suma`, `a título de exemplo`, `nestes casos`). The Korean parallel cue
+  `같이` was dropped because it also means "as/like".
+
+- **Changed: CI runs the test suite as three parallel `--forked` shards (#217).**
+  `THREADKEEPER_TEST_SHARD=k/n` selects a deterministic share of the tests by
+  test id, and CI runs three shard jobs per matrix cell instead of one serial
+  job. Each test keeps its own process: an unforked `pytest-xdist` run
+  (one long-lived interpreter per worker) took over two hours on CI and failed
+  timing-sensitive tests. MCP SDK 2.x runs on every supported Python and 1.x
+  on the current one, and per-Python `pytest (py3.x)` gate jobs keep the
+  existing required status checks.
+
+- **Added: MCP SDK 2.x support (#279).** ThreadKeeper now supports both MCP
+  SDK 1.x and 2.x through a narrow internal `MCPServer`/`FastMCP` compatibility
+  adapter. Fresh installs resolve the supported 2.x line; the documented range
+  is `mcp>=1.10.0,<3`, so the temporary `<2` cap is gone. Tool/resource/prompt
+  registration, annotations, output schemas, structured content, elicitation,
+  and stdio transport retain their existing contracts. CI now runs the full
+  suite against both SDK majors and includes a subprocess stdio smoke test.
+
+- **Fixed: timed-out Curator children keep working for their batch.** When
+  the one-hour watchdog continues a Curator child under a new task, the
+  continuation now inherits the pass ID (and snapshot directory) its report
+  and research writers require, and the pass manifest follows the new task
+  instead of failing the batch and launching a duplicate child.
+
+- **Added: Curator research/evaluation capability split (#289).** Each batch
+  of a durable Curator pass first gets a read-only `curator_researcher` child
+  with web tools and a single parent-authorized handoff writer
+  (`curator_research_write`), then a web-free evaluator that receives the
+  handoff as fenced, untrusted data. No Curator child holds both web tools and
+  memory mutation tools. A researcher that keeps failing (three attempts) or
+  leaves an invalid handoff falls back to a non-mutating evaluator that records
+  `HUMAN_REVIEW`; the recovery snapshot is taken only before the first
+  mutating evaluator. `THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips research.
+
+- **Durable Curator multi-batch completion.** Each Curator pass now persists
+  its inventory fingerprint, the rendered text of every batch, dispatch/task
+  state, final report provenance, and advisory apply state. An inventory is
+  endorsed only after every batch succeeds with a matching complete report.
+  A pass keeps reviewing its frozen batches when the live inventory changes,
+  retries failed or timed-out batches (three launched attempts each) without
+  re-running completed ones, and is abandoned when a batch exhausts its
+  attempts or the pass outlives two Curator intervals. A spawn memory or spend
+  budget refusal leaves the batch waiting for the next poll instead of
+  dropping it (spend-cap refusals still alert).
+  `CURATOR_MAX_CONCURRENT_BATCHES` bounds live fan-out (default 1), while
+  spawn admission remains the global resource gate; active passes are polled
+  every 60 seconds by default. Curator status and agent status expose
+  expected, running, failed, complete, and unapplied batch counts. The
+  advisory applier now consumes every complete report from an endorsed pass in
+  batch order.
+
+- **Fixed: child-log summaries are sanitized before status and notification
+  delivery.** Credential-shaped values and private home-directory paths are
+  redacted in successful-result and failed-child excerpts, while the owner-only
+  `task_logs` diagnostic view continues to expose the original local log.
+
+- **Fixed: public spawning can no longer self-authorize sandbox bypasses.**
+  Caller-provided role and provenance metadata no longer grant
+  `bypassPermissions`; privileged Evolve launches use a private server-owned
+  capability, while the explicit operator override remains available.
+
+- **Fixed: Evolve reviewer backlog pressure now excludes ordinary open issues
+  without the `roadmap` label (#304).** The governor and applier prioritization
+  share the same roadmap-label predicate, while locally applied roadmap issues
+  remain excluded. Skip-labelled and untrusted-author roadmap issues still
+  count because those gates only restrict autonomous pickup.
+
+- **Authenticated Evolve claim comments.** The cross-host roadmap lock now
+  reads GitHub REST comment author metadata and accepts a visible claim marker
+  only from a trusted repository association or an explicitly configured
+  automation login. Spoofed, malformed, and metadata-free markers remain
+  visible but cannot block issue pickup or affect claim-race tie-breaking.
+
+- **Fixed: background loop children no longer run in the host's inherited
+  directory.** The daemon host keeps the working directory of whichever session
+  started it, and loop children without a `cwd` ran there — inside an unrelated
+  user project with write access, or, from a dirty Git checkout, every loop
+  spawn failed with `spawn_dirty_worktree`. Background spawns (non-foreground
+  `write_origin`, or any spawn from the daemon host) now start in the owner-only
+  `<db dir>/workspace` directory, which never gets worktree isolation.
+  Foreground spawns and explicit `cwd` callers are unchanged.
+
+- **Fixed: Codex children can call every ThreadKeeper tool their loop grants.**
+  `codex exec` runs with approval policy "never", so a write tool missing from
+  the static `config.toml` approval list failed with "MCP tool call requires
+  approval". Curator children on Codex could audit but never persist a report,
+  merge verdict, or format suggestion. Codex spawns now pre-approve, for that
+  invocation only, the same `mcp__thread-keeper__*` allowlist a Claude child
+  receives through `--allowedTools`.
+
+- **Fixed: spawn budget refusals no longer read as a lapsed subscription.**
+  Loop-failure notifications and the menu-bar failure list named every budget
+  refusal "subscription/credit budget exhausted". They now name the local cap
+  that refused the child: the spawn memory budget
+  (`THREADKEEPER_SPAWN_BUDGET_MB`, with the reserved and allowed MB), or the
+  daily token or cost budget. Agent status labels the spend caps separately
+  from the memory cap.
+
+- **Fixed: auto-update installs into uv-created virtualenvs.** Such venvs ship
+  without pip, so a git-mode update ended `install=failed` and suppressed the
+  restart. When pip is missing, the install now runs through
+  `uv pip install --python <interpreter>`.
+
+- **Fixed: returned spawn admission failures no longer masquerade as child
+  launches.** Internal callers now share a parsed launch-result contract, so
+  Evolve retry state, roadmap claims, reviewer/probe telemetry, panels,
+  pickups, automatic thread review, and tournaments only advance after a real
+  task identifier is returned.
+
+- **Fixed: Curator inventory collection now fails closed.** A lesson read or
+  parse failure, skill-audit failure, or concept-query failure records a
+  source-specific `curator_pass` error and blocks report authorization,
+  snapshot creation, child dispatch, and inventory-fingerprint endorsement.
+  Successfully read empty stores remain valid below-threshold inputs.
+
+## v0.17.7 — 2026-09-17
+
+- **Added: mechanically scoped Evolve research handoffs.** The web
+  researcher no longer receives generic filesystem `Write`. Before it starts,
+  the parent registers a short-lived digest target bound to that child's CID;
+  the sole `evolve_research_handoff(...)` tool accepts one bounded submission
+  and derives the destination itself. It records final content SHA-256 and
+  pass telemetry, while audit consumes only fresh accepted handoffs whose file
+  still matches that hash. Malformed, oversized, replayed, stale, failed, and
+  tampered handoffs are refused or excluded rather than resembling successful
+  research.
+
+- **Fixed: reading agent status no longer kills or respawns child agents
+  (#309).** `agent_status`, `tk-agent-status`, and `agent_memory_cleanup` now
+  refresh task liveness and RSS in observation-only mode. Only the
+  spawn-budget daemon stops a child that runs past the runtime cap and
+  launches its continuation retry, so polling status can no longer end work
+  or spend another spawn attempt.
+
+## v0.17.6 — 2026-09-17
+
+### Fixed
+
+- **Spawned agents keep the ThreadKeeper MCP server on the configured install.**
+  MCP launch settings now enable Python safe-path mode, and Codex spawns apply
+  the same setting as a per-invocation MCP override. A managed or per-task
+  checkout can no longer shadow the installed package and then trip the live-DB
+  safety guard when an Evolve child records its completed PR handoff.
+
+## v0.17.5 — 2026-09-13
+
+### Added
+
+- **Lesson contradiction reconciliation (#167).** A clear new absolute
+  directive or concrete-practice debunk now scans older lessons for permissive
+  guidance on the same topic. Each match emits a `lesson_reconciliation` event
+  and is returned from `lesson_append` for patch, cross-link, or supersession
+  review; conflicting lessons no longer take the normal semantic-dedup route.
+
+### Fixed
+
+- **Skill telemetry now records real visibility and gives the curator the
+  trusted foreground-use split.** `skill_list` increments each returned
+  skill's view counter, transcripted `Skill` invocations increment both raw
+  and foreground use counters when appropriate, and the curator inventory now
+  shows raw uses, foreground uses, views, and patches without treating its own
+  automated inventory read as a consultation.
+
+## v0.17.4 — 2026-09-11
+
+### Fixed
+
+- **Curator false-positive pruning now follows foreground consultation.**
+  Background-review skills with no foreground use remain eligible for prune
+  review after 14 days even when automatic maintenance has increased their
+  patch count. The curator audit displays foreground uses separately from
+  maintenance patches, and patch activity no longer keeps an unconsulted skill
+  alive.
+
+## v0.17.3 — 2026-09-09
+
+- **Fixed: skill and lesson notifications name the materialized result.**
+  Banners and logs show one readable artifact name instead of paths, event
+  metadata, or generic agent reports. The menu-bar feed uses actual write
+  events and respects the skill and lesson notification toggles separately.
+
+## v0.17.2 — 2026-09-09
+
+- **Fixed: orphaned untracked tests no longer stall every Evolve PR repair.**
+  Managed refresh and the pre-spawn gate preserve a dead child’s non-ignored
+  files outside the checkout before validation. Live writers, explicit
+  checkouts, ignored runtime files, and backup failures retain their guards.
+
+## v0.17.1 — 2026-09-09
+
+### Fixed
+
+- **Core event emission now fails loudly without session setup (#165).**
+  `_emit()` raises when a mutating path skips `_ensure_session()`, and the
+  spawn watchdog, format evolution, and passive skill-tier paths initialize
+  their session before emitting telemetry.
+
 ## [Unreleased]
 
+- **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
+  scans all materialized lesson and skill bodies for unresolved `[[slug]]`
+  references and reports each source entry with its dead target. The read-only
+  detector complements, rather than changes, consolidation-time link repair.
+
+- **Lesson neighbor preflight (#190).** `lesson_neighbors(...)` ranks up to
+  three semantic neighbors (with a lexical fallback) for a prospective lesson
+  before it is written. Shadow-review and candidate-reviewer authors use the preview to
+  patch/consolidate an incumbent or add a `[[slug]]` cross-link while creating
+  a related, distinct lesson. Existing `lesson_append` write semantics are
+  unchanged.
+
+- **Added: Curator merge-verdict memory (#189).** Rejected lesson merge
+  candidates now persist as structured `keep_both` rows with a normalized slug
+  pair and short reason. Later Curator inventories surface those verdicts and
+  each lesson's current bidirectional wikilink adjacency, preventing repeated
+  full-body reviews of deliberately layered pairs.
+
+- **Added: per-spawn Git worktree isolation (#164).** A child whose `cwd` is
+  inside a clean Git checkout now receives its own task branch and worktree;
+  dirty source checkouts are refused before launch, so parallel children cannot
+  share a mutable working tree or Git index.
+
+- **Added: dense lesson clusters now promote to canonical skills (#163).**
+  Curator deterministically flags three-or-more lessons sharing a meaningful
+  title-term pair, then directs a validated checklist-style skill promotion
+  before retiring the unprotected source lessons. Clusters containing protected
+  lessons remain an explicit human-review plan.
+
+- **Added: surgical lesson patching (#161).** `lesson_patch(slug,
+  old_string, new_string)` now changes one unique substring in an existing
+  lesson while preserving its section metadata. Overlong shadow replacements
+  may repair an existing same-slug lesson only when they do not increase its
+  body size; new overlong shadow lessons remain rejected.
+
+- **Fixed: lesson and skill consolidation preserves inbound wikilinks (#162).**
+  `lesson_remove(replacement_slug=...)` and
+  `skill_manage(action='delete', replacement_name=...)` redirect inbound
+  `[[wikilinks]]` to the surviving umbrella across lessons and mirrored
+  skills. Plain removal reports the complete dangling-link source set.
+
+- **Fixed: quota/credit exhaustion in a spawned child now alerts even when its
+  exit code was lost.** The notifier's dead-child source only surfaced children
+  whose row recorded a non-zero `return_code`. A child reaped after the DB
+  writer wedged — or reaped cross-session — closes with `return_code` NULL, so
+  the very failure the notifier exists to catch (a subscription running out
+  mid-run, which can itself stall the writer) produced no notification.
+  `_scan_dead_children` now also inspects NULL-`return_code` children and alerts
+  when the captured log carries a fatal degradation signature (monthly-quota /
+  credit / auth), while clean completions with a lost code stay silent.
+
+- **Fixed: a solo daemon-host no longer stays wedged indefinitely when a leaked
+  write transaction starves the SQLite writer.** The cross-host recovery only
+  fired when another host booted, so a machine with no new sessions could sit
+  wedged for as long as it was left alone. The host now tracks how long its own
+  heartbeat has been starved and self-terminates after
+  `HOST_WEDGE_KILL_AFTER_S`, letting the supervisor respawn a clean host (whose
+  teardown drops the leaked connection and releases the lock).
+
+## v0.17.0 — 2026-08-24
+
+- **Added: pre-ingest transcript privacy denylist (#145).**
+  `THREADKEEPER_INGEST_DENY_GLOBS` and the line-based local denylist file skip
+  matching adapter project/CWD messages before text, FTS, vector embeddings, or
+  learning-loop inputs are written. File watermarks advance normally, and
+  `mp_dashboard()` reports active patterns with the cumulative skipped count.
+- **Fixed: Evolve implementation PRs now include release metadata.** The
+  applier prompt requires the SemVer bump, matching `server.json` fields,
+  Docker release pin, and versioned changelog heading in the same PR; the PR
+  checklist mirrors that requirement for human-authored changes. The dependency
+  audit now removes only the unreleased editable project after resolving its
+  dependency set, then audits the remaining full environment, so a required
+  version bump no longer makes `pip-audit --strict` fail merely because that
+  version is not on PyPI yet.
+- **Added: CI security scanning (#144).** CodeQL analyzes the default Python
+  query suite on pull requests and pushes to `main`, plus weekly, and uploads
+  results to the Security tab. A blocking `pip-audit` job scans the fully
+  resolved runtime, semantic, and development dependency set; suppressions are
+  advisory-specific, reviewed entries in `.github/pip-audit-ignores.txt`.
+  Dependabot now tracks the Docker base image as well.
+- **Fixed: managed Evolve clones now execute only a verified pinned commit
+  (#132).** Auto-provisioning accepts only HTTPS `github.com` URLs, detaches at
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, and verifies `HEAD` before reusing or
+  creating the `[semantic,dev]` virtualenv. URL, branch, and commit changes are
+  restart-only and hot-config reload logs then ignores them, closing runtime
+  source redirection through a host settings file. The managed clone's remote
+  code-execution trust boundary and shared-host opt-out are documented.
+- **Fixed: interrupted conflict repair no longer deadlocks Evolve apply.** If a
+  conflict-repair child exited after `git merge` while its PR remained open,
+  managed refresh treated the unresolved merge as permanently dirty and every
+  scheduled pass stopped before the conflicted-PR sweep. With no live git
+  writer, the parent now verifies the exact open applier PR, archives the merge
+  diff as an owner-only recovery patch, aborts the orphaned merge, refreshes the
+  disposable checkout, and retries that same PR through the normal protected
+  conflict-repair flow. Closed-unmerged/unreadable PRs and explicit operator
+  checkouts remain fail-closed.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

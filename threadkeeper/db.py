@@ -2,13 +2,17 @@
 Imported by every tool module that needs DB access."""
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import logging
+import os
 import random
 import sqlite3
+import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TypeVar
 
@@ -51,6 +55,105 @@ _BOOTSTRAP_LOCK = threading.RLock()
 _BOOTSTRAPPED = False
 
 _T = TypeVar("_T")
+
+
+class _LegacyConnection(sqlite3.Connection):
+    """A get_db() connection the leak guard can observe (#293).
+
+    The base sqlite3.Connection type cannot be weakly referenced, so legacy
+    connections use this subclass to sit in a WeakKeyDictionary without the
+    registry keeping them alive.
+    """
+
+    def close(self) -> None:
+        with _LEGACY_LOCK:
+            _LEGACY_CONNS.pop(self, None)
+        super().close()
+
+
+# get_db() hands out non-autocommit connections: any INSERT/UPDATE opens a
+# write transaction that holds SQLite's single writer lock for every process
+# until the caller commits, rolls back, or drops the connection. The registry
+# only observes: another thread may read `in_transaction` (it is not
+# thread-checked) but never touches the connection otherwise.
+_LEGACY_LOCK = threading.RLock()
+_LEGACY_CONNS: "weakref.WeakKeyDictionary[_LegacyConnection, list]" = (
+    weakref.WeakKeyDictionary()
+)
+_LEGACY_WARN_AT = [32]
+
+
+def _caller_site(depth: int) -> str:
+    try:
+        frame = sys._getframe(depth)
+    except ValueError:
+        return "?"
+    code = frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{frame.f_lineno} {code.co_name}"
+
+
+def _track_legacy_connection(conn: _LegacyConnection, site: str) -> None:
+    with _LEGACY_LOCK:
+        # [opened_at, call site, first sampled inside a write transaction]
+        _LEGACY_CONNS[conn] = [time.monotonic(), site, None]
+        live = len(_LEGACY_CONNS)
+        warn = live >= _LEGACY_WARN_AT[0]
+        if warn:
+            _LEGACY_WARN_AT[0] *= 2
+            sites = Counter(info[1] for info in _LEGACY_CONNS.values())
+    if warn:
+        logger.warning(
+            "db: %d legacy get_db() connections are open in this process; "
+            "top call sites: %s",
+            live,
+            ", ".join(f"{s} x{n}" for s, n in sites.most_common(5)),
+        )
+
+
+def legacy_connection_stats(now: float | None = None) -> dict:
+    """Sample this process's legacy connections (#293).
+
+    Returns ``open`` (live get_db() connections) and ``write_holders``: those
+    inside a write transaction, each with its call site and how long it has
+    been seen holding one. A holder's age starts at the first sample that
+    finds it in a transaction, so callers sample periodically (the daemon host
+    does, every heartbeat) and a long age means the writer lock is leaked.
+    """
+    now = time.monotonic() if now is None else now
+    holders: list[dict] = []
+    with _LEGACY_LOCK:
+        items = list(_LEGACY_CONNS.items())
+    open_count = 0
+    for conn, info in items:
+        try:
+            in_txn = conn.in_transaction
+        except sqlite3.ProgrammingError:
+            continue  # closed without close() bookkeeping (e.g. by SQLite)
+        open_count += 1
+        if not in_txn:
+            info[2] = None
+            continue
+        if info[2] is None:
+            info[2] = now
+        holders.append({
+            "site": info[1],
+            "held_s": round(now - info[2], 1),
+            "open_s": round(now - info[0], 1),
+        })
+    holders.sort(key=lambda h: h["held_s"], reverse=True)
+    return {"open": open_count, "write_holders": holders}
+
+
+def _describe_write_holders(stats: dict) -> str:
+    holders = stats["write_holders"]
+    if not holders:
+        return f"legacy_open={stats['open']} write_holders=0"
+    shown = ", ".join(
+        f"{h['site']} held={h['held_s']:.0f}s" for h in holders[:3]
+    )
+    return (
+        f"legacy_open={stats['open']} write_holders={len(holders)} ({shown})"
+    )
 
 
 def _try_load_vec(conn: sqlite3.Connection) -> bool:
@@ -379,6 +482,20 @@ CREATE TABLE IF NOT EXISTS lesson_usage (
                    CHECK(tier IN ('hypothesis','observed','validated'))
 );
 
+-- Curator decisions to retain deliberately adjacent lesson pairs.  The pair
+-- is normalized alphabetically by the writer so it has one durable identity
+-- regardless of which lesson the curator considered first.
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+
 -- Auto-extraction queue: heuristic candidates for note/concept/distill that
 -- a session can review in batch and accept/reject — saves manual scanning.
 CREATE TABLE IF NOT EXISTS extract_candidates (
@@ -480,6 +597,60 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_respawned_as TEXT
 );
 
+-- Curator passes are durable work manifests. The event log remains useful
+-- human telemetry, but it cannot distinguish dispatch from a child that
+-- later failed or timed out. A fingerprint is endorsed only after every
+-- expected batch has a completed, provenanced report.
+CREATE TABLE IF NOT EXISTS curator_passes (
+    pass_id               TEXT PRIMARY KEY,
+    inventory_fingerprint TEXT NOT NULL,
+    expected_batches      INTEGER NOT NULL CHECK(expected_batches > 0),
+    mode                  TEXT NOT NULL CHECK(mode IN ('advisory','destructive')),
+    audit_manifest_path   TEXT NOT NULL,
+    snapshot_path         TEXT,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    completed_at          INTEGER,
+    endorsed_at           INTEGER,
+    -- A pass that outlived its window or exhausted a batch's attempts is
+    -- abandoned rather than resumed forever; the next due tick starts fresh.
+    abandoned_at          INTEGER,
+    abandon_reason        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS curator_batches (
+    pass_id               TEXT NOT NULL REFERENCES curator_passes(pass_id),
+    batch_index           INTEGER NOT NULL CHECK(batch_index > 0),
+    report_name           TEXT NOT NULL,
+    -- The rendered batch is frozen with the pass, so retries and later ticks
+    -- review exactly the entries the pass was created for even after the
+    -- live inventory (and therefore every batch boundary) has moved on.
+    batch_text            TEXT NOT NULL DEFAULT '',
+    -- Phase one (#289): a read-only web research child writes a
+    -- destination-scoped handoff before the web-free evaluator may run.
+    research_state        TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(research_state IN
+                                ('pending','running','failed','complete')),
+    research_task_id      TEXT,
+    research_attempts     INTEGER NOT NULL DEFAULT 0,
+    research_failure      TEXT,
+    state                 TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(state IN ('pending','running','failed','complete')),
+    task_id               TEXT,
+    dispatch_count        INTEGER NOT NULL DEFAULT 0,
+    dispatched_at         INTEGER,
+    completed_at          INTEGER,
+    failed_at             INTEGER,
+    failure_reason        TEXT,
+    provenance_sha256     TEXT,
+    report_written_at     INTEGER,
+    apply_state           TEXT NOT NULL DEFAULT 'unapplied'
+                          CHECK(apply_state IN ('unapplied','applied')),
+    applied_at            INTEGER,
+    PRIMARY KEY (pass_id, batch_index),
+    UNIQUE (pass_id, report_name)
+);
+
 -- Cross-process resource-control requests. The memory guard uses this as a
 -- small mailbox so one MCP server can ask peer servers to unload models/caches
 -- without sharing process memory.
@@ -542,6 +713,25 @@ CREATE TABLE IF NOT EXISTS evolve_issues (
     created_at    INTEGER NOT NULL
 );
 
+-- Parent-authorized handoffs from an unprivileged Evolve web-research child.
+-- The child never chooses a path: it can only submit content for the exact
+-- pass row created before it was spawned.  The audit phase accepts only a
+-- completed row whose final on-disk SHA-256 still matches this record.
+CREATE TABLE IF NOT EXISTS evolve_research_handoffs (
+    pass_id        TEXT PRIMARY KEY,
+    target_path    TEXT NOT NULL UNIQUE,
+    owner_cid      TEXT NOT NULL,
+    authorized_at  INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    status         TEXT NOT NULL CHECK(status IN (
+        'pending', 'writing', 'accepted', 'failed', 'tampered', 'expired'
+    )),
+    content_sha256 TEXT,
+    content_chars  INTEGER,
+    completed_at   INTEGER,
+    failure        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -568,6 +758,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_evolve_issues_fingerprint
     ON evolve_issues(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_hash
     ON evolve_issues(content_hash);
+CREATE INDEX IF NOT EXISTS idx_evolve_research_handoffs_ready
+    ON evolve_research_handoffs(status, completed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_number
     ON evolve_issues(issue_number);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
@@ -594,6 +786,8 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
 
 -- A vector-space switch is a data migration, not a configuration flip.  The
 -- singleton keeps the one generation readers may query while a second one is
@@ -719,6 +913,18 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
 """
 
 # Historical column migrations layered on top of the baseline SCHEMA.
@@ -1095,20 +1301,32 @@ def _execute_startup_pragma(
 
 
 def _open_connection(*, autocommit: bool = False,
-                     busy_timeout_ms: int = 10_000) -> tuple[sqlite3.Connection, bool]:
-    """Open and configure one connection without schema/DDL side effects."""
+                     busy_timeout_ms: int = 10_000,
+                     factory: type[sqlite3.Connection] = sqlite3.Connection,
+                     ) -> tuple[sqlite3.Connection, bool]:
+    """Open and configure one connection without schema/DDL side effects.
+
+    Setup statements can still hit a lock (SQLite may need the WAL index
+    while another process checkpoints), so a failed setup closes the
+    connection and raises; ``run_write`` retries that like any lock error.
+    """
     global _VEC_AVAILABLE
     kwargs = {
         "timeout": max(0.001, busy_timeout_ms / 1000.0),
+        "factory": factory,
     }
     if autocommit:
         kwargs["isolation_level"] = None
     conn = sqlite3.connect(str(DB_PATH), **kwargs)
-    conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
-    # synchronous is per-connection. Unlike journal_mode, setting it does not
-    # rewrite the database header or compete for the writer slot.
-    conn.execute("PRAGMA synchronous=NORMAL")
-    vec_loaded = _try_load_vec(conn)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+        # synchronous is per-connection. Unlike journal_mode, setting it does
+        # not rewrite the database header or compete for the writer slot.
+        conn.execute("PRAGMA synchronous=NORMAL")
+        vec_loaded = _try_load_vec(conn)
+    except BaseException:
+        conn.close()
+        raise
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
     conn.row_factory = sqlite3.Row
@@ -1270,7 +1488,8 @@ def get_db() -> sqlite3.Connection:
     are migrated, but no longer performs DDL after process bootstrap.
     """
     bootstrap_db()
-    conn, _ = _open_connection()
+    conn, _ = _open_connection(factory=_LegacyConnection)
+    _track_legacy_connection(conn, _caller_site(2))
     return conn
 
 
@@ -1315,33 +1534,42 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
         # Keep each SQLite busy wait short enough that the outer transaction
         # boundary can roll back and retry with jitter instead of one 10s stall.
         busy_ms = max(1, min(250, int(remaining * 1000) or 1))
-        conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+        conn: sqlite3.Connection | None = None
         try:
+            # Opening is inside the retry: connection setup can hit the same
+            # transient lock as BEGIN IMMEDIATE.
+            conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
             conn.execute("BEGIN IMMEDIATE")
             result = fn(conn)
             conn.commit()
             return result
         except sqlite3.OperationalError as exc:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             if not _is_lock_error(exc) or time.monotonic() >= deadline:
                 if _is_lock_error(exc):
+                    # Name any in-process holder: a leaked legacy write
+                    # transaction here is what wedges the host (#293).
                     logger.warning(
-                        "SQLite write deadline exhausted op=%s attempts=%d",
+                        "SQLite write deadline exhausted op=%s attempts=%d %s",
                         op,
                         attempt,
+                        _describe_write_holders(legacy_connection_stats()),
                     )
                 raise
         except Exception:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             # The next attempt is allowed to raise SQLite's original lock error;
