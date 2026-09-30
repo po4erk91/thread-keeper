@@ -1,9 +1,8 @@
-"""MCP SDK compatibility and stdio-server smoke coverage.
+"""MCP SDK 2.x stdio-server smoke coverage.
 
-The server keeps one narrow import adapter for MCP SDK 1.x and 2.x. This test
-starts the real ``python -m threadkeeper.server`` process and uses the legacy
-stdio handshake shared by both majors, then verifies the public tools registry
-is available. CI runs it once per supported SDK-major/Python combination.
+The stable Skills extension requires MCP SDK 2.2 or later. This test starts
+the real ``python -m threadkeeper.server`` process and verifies that the public
+tools registry remains available over stdio on the supported SDK surface.
 """
 from __future__ import annotations
 

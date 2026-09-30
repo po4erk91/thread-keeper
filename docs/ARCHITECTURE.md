@@ -9,22 +9,20 @@ One process per session, one SQLite store in WAL mode. Multiple windows can
 read concurrently; SQLite still admits only one writer at a time, so writers
 use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
-## MCP SDK compatibility
+## MCP SDK surface
 
-ThreadKeeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). The
-single adapter in `_mcp.py` imports the SDK 2.x `MCPServer` and `Context` names,
-then falls back to SDK 1.x's `FastMCP` and `Context` only when needed. Tool
-modules import `Context` through that adapter, keeping server construction,
-tool/resource/prompt registration, annotations, output schemas, structured
-content, elicitation, and stdio transport behavior identical across supported
-majors. Fresh installs resolve SDK 2.x; CI runs the full suite and a real stdio
-subprocess smoke test against both majors.
+ThreadKeeper requires MCP Python SDK 2.2 or later (`mcp>=2.2.0,<3`). The
+stable Skills extension uses the MCP 2026-07-28 extension surface, while the
+same `MCPServer` instance continues to provide tool/resource/prompt
+registration, annotations, output schemas, structured content, elicitation,
+and stdio transport.
 
 ## Package map
 
 ```
 threadkeeper/
 ├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── mcp_skills.py       stable Skills extension + canonical skill manifests (#336)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader

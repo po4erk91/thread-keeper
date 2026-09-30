@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.18.4 — 2026-09-30
+
+- **Added: canonical skills over the stable MCP Skills extension (#336).**
+  MCP 2026-07-28 discovery now declares `io.modelcontextprotocol/skills` and
+  serves deterministic `skills/list` / `skills/get` manifests with
+  origin-qualified `skill://thread-keeper/...` file resources, raw-byte sizes,
+  and SHA-256 digests. Reads reject traversal, undeclared files, and oversized
+  content; they remain delivery only, never activation or approval. Existing
+  per-CLI skill mirrors remain the fallback for non-supporting hosts.
+
 ## v0.18.3 — 2026-09-28
 
 - **Fixed: a slim child no longer falls back to the full MCP config.** When
