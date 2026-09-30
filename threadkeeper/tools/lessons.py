@@ -38,6 +38,7 @@ from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
 from ..config import WRITE_ORIGIN
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
     admit_curator_destructive_action,
     record_curator_action,
@@ -350,6 +351,10 @@ def lesson_append(
                         break
                 try:
                     op = "dedup_patch" if changed else "dedup_existing"
+                    memory_provenance(
+                        conn, "lesson", slug, source_event_kind="lesson_append",
+                        source_event_id=source, source_thread_id=source,
+                    )
                     _record_lesson_append_event(
                         conn, slug, op=op, source=source,
                         extra=f"score={semantic_score:.2f}",
@@ -396,6 +401,10 @@ def lesson_append(
     # the lesson the caller just materialized.
     op = "replace" if existed else "create"
     try:
+        memory_provenance(
+            conn, "lesson", slug, source_event_kind="lesson_append",
+            source_event_id=source, source_thread_id=source,
+        )
         extra = ""
         if WRITE_ORIGIN == "curator":
             tombstone = record_curator_action(

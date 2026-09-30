@@ -1166,6 +1166,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
 | `THREADKEEPER_EMBED_REVISION` | backend-specific immutable commit | Hugging Face snapshot pin; set an intentional replacement commit only together with a re-embedding plan |
+| `THREADKEEPER_WRITER_PROVIDER` | active client | optional provider identity recorded for newly derived lessons, skills, notes, and claims |
+| `THREADKEEPER_WRITER_MODEL` | resolved model / `unknown` | optional writer-model identity recorded with derived-memory provenance |
+| `THREADKEEPER_WRITER_REVISION` | `unknown` | optional immutable writer-model revision recorded with derived-memory provenance |
 | `THREADKEEPER_EMBED_CACHE_DIR` | `~/.cache/huggingface/hub` | durable Hugging Face snapshot cache |
 | `THREADKEEPER_EMBED_LOCAL_FILES_ONLY` | false | require the pinned snapshot in the local Hugging Face cache (offline / air-gapped mode) |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
@@ -1497,26 +1500,37 @@ export THREADKEEPER_EMBED_BACKEND=sentence-transformers
 
 # After any backend switch, homogenize the stored corpus so queries and
 # stored vectors live in the same space:
-tk-migrate-embeddings --all          # or --notes-only / --dialog-only
-tk-migrate-embeddings --dry-run      # report stale counts only
+tk-migrate-embeddings --all          # stage both stores, validate, atomically activate
+tk-migrate-embeddings --notes-only   # build part of a target; activation stays pending
+tk-migrate-embeddings --status       # active/staging/coverage/validation report
+tk-migrate-embeddings --rollback     # atomically return to the prior generation
 ```
 
-The migration is batched, resumable, and idempotent (a second run finds
-nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
-unchanged.
+The migration is batched, resumable, and idempotent. It stores target vectors
+under a separate generation while the durable active-generation pointer keeps
+the prior space queryable. An interrupted command resumes the staged target;
+readers never see it until `--all` validates full note/dialog coverage and
+switches the one pointer in a SQLite transaction. `--rollback` is the inverse
+transaction and leaves the failed target available for inspection or a later
+retry. Both backends emit 384-dim vectors, so the `vec0` schema is unchanged.
 
 **Intentional model revision upgrade.** Set `THREADKEEPER_EMBED_REVISION` to
 the immutable commit for the selected backend's Hugging Face artifact, restart
 the host, then run `tk-migrate-embeddings --all`. A changed revision is a new
-embedding generation; until migration, old vectors remain available through
-FTS rather than being compared against the new vector space.
+embedding generation. During staging, queries are encoded against the durable
+old generation and keep their semantic recall; the new configuration is not
+exposed until activation. The migration output and `mp_dashboard()` show
+active, staging, coverage, validation, and activation state.
 
 Stored rows carry an embedding-generation fingerprint, not just the backend:
 backend, model ID, vector dimension, pooling contract, and compatible runtime
-version. Search never compares a current query vector with a stale generation;
-those rows remain retrievable through FTS until `tk-migrate-embeddings` refreshes
-them. `mp_dashboard()` shows total/current-generation/vec coverage for notes and
-dialog rows.
+version. Newly derived lessons, skills, notes, and dialectic claims additionally
+record writer provider/model/revision plus source event or thread references;
+those records contain pointers and hashes, not another copy of transcript text.
+The fixed anonymized upgrade corpus runs both old→new and new→old paths before
+activation, with explicit recall, abstention, knowledge-update, and
+derived-memory decision thresholds. Run `python -m threadkeeper.eval` to print
+that release-gate report.
 
 Retrieval is hybrid by default. FTS candidate generation always runs, even
 when embeddings are installed or only part of the corpus has vectors. Dense

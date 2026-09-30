@@ -8,6 +8,7 @@ from .._mcp import write_tool
 from ..db import run_write
 from ..helpers import fmt_age
 from ..embeddings import _embed, _vec_upsert_note, embed_tag
+from ..memory_compat import memory_provenance
 from .. import identity
 
 
@@ -31,6 +32,10 @@ def session_end(summary: str = "") -> str:
                 (summary, "session_summary", now, sid, emb, embed_tag(emb)),
             )
             _vec_upsert_note(conn, cur.lastrowid, emb)
+            memory_provenance(
+                conn, "note", cur.lastrowid, source_event_kind="session_end",
+                source_event_id=sid,
+            )
 
     run_write("session-end", _write)
     identity._session_id = None

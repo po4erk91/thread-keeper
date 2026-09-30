@@ -9,7 +9,7 @@ def _loop(snapshot, loop_id: str):
     return {row["id"]: row for row in snapshot["loops"]}[loop_id]
 
 
-def test_daemon_health_is_additive_without_schema_version_bump(mp_with_cid):
+def test_daemon_health_is_recreated_during_schema_migration(mp_with_cid):
     pkg = mp_with_cid("33334444-5555-6666-7777-888899990000")
     db = pkg["db"]
     conn = db.get_db()
@@ -23,7 +23,7 @@ def test_daemon_health_is_additive_without_schema_version_bump(mp_with_cid):
 
     conn = db.get_db()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.CURRENT_SCHEMA_VERSION
         assert conn.execute(
             "SELECT 1 FROM sqlite_master "
             "WHERE type='table' AND name='daemon_health'"
