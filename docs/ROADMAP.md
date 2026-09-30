@@ -1161,10 +1161,11 @@ The current audit found two boundary violations in the spawn and status paths:
   cannot kill a child, mutate lifecycle state, or spend a retry spawn.
 
 **2026-09-29 reviewer additions (issue-backed).**
-The current audit reconciled the completed September work and added six
+The current audit reconciled the completed September work and added five
 transport, migration, memory-safety, and learning-quality gaps:
 
-- **MCP Skills transport (#336).** Serve the canonical skill library through
+- ✅ DONE (#336). **MCP Skills transport.** The canonical skill library is
+  served through
   the stable MCP Skills extension with paginated discovery, complete manifests,
   origin-qualified `skill://` resources, and file digests. Keep filesystem
   mirroring as the compatibility path for hosts without the extension.
@@ -1183,10 +1184,37 @@ transport, migration, memory-safety, and learning-quality gaps:
   filtering, require topic cohesion beyond one shared title pair, and record
   emitted/rejected candidate telemetry. This is the durable issue for legacy
   evolve suggestion 85.
-- **MCP standards watchlist (#341).** Track the draft audit, approval, trust,
-  authorization-denial, citation, and AI-invocation proposals against current
-  internal concepts. Do not implement their public wire shapes until the
-  relevant proposal reaches accepted/final status.
+- **MCP standards watchlist (#341).** Track the draft Tasks, audit, approval,
+  trust, authorization-denial, citation, and AI-invocation proposals against
+  current internal concepts. Do not implement their public wire shapes until
+  the relevant proposal reaches accepted/final status. The existing durable
+  task spool is the compatibility substrate if the Tasks extension stabilizes;
+  an MCP App for human memory review remains a product decision, not an implied
+  protocol commitment.
+
+**2026-09-30 reviewer additions (issue-backed).**
+The current audit added six gaps around protocol compatibility, resource
+freshness, observability, evaluation quality, read purity, and workflow-data
+retention:
+
+- **Dual-era MCP conformance (#344).** Test legacy and 2026 request flows over
+  real stdio, normalize them into one internal request context, and make
+  replayed multi-round mutations idempotent or explicitly reject them.
+- **Live private memory resources (#345).** Add capability-gated subscriptions,
+  commit-aware/coalesced invalidation, and honest private-cache metadata for
+  the four `memory://` resources while retaining the pull-only fallback.
+- **Privacy-safe workflow tracing (#346).** Offer an opt-in OTLP exporter that
+  correlates parent, child, MCP/tool, retry, and terminal events without
+  exporting prompts, payloads, memory bodies, credentials, or private paths.
+- **Outcome-based memory evaluation (#347).** Score evidence recall separately
+  from final-answer quality and run a stable matrix across retrieval backends,
+  retention/curation state, and personal-memory egress policy.
+- **Observationally pure read surfaces (#348).** Stop tools and resources marked
+  read-only from bootstrapping sessions/daemons or reconciling task/RSS state;
+  move persistence to daemon-owned or explicitly write-annotated paths.
+- **Autonomous-workflow retention (#349).** Bound terminal Curator manifests,
+  frozen batch bodies, reports, Evolve research handoffs, and owned files while
+  preserving active, retryable, unapplied, and recoverable work.
 
 ---
 
