@@ -29,9 +29,9 @@ threadkeeper/
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
 ├── verify_ingest.py   cross-CLI production verification — slot coverage + PASS/PARTIAL/FAIL verdict (issue #1)
-├── eval/              offline learning-loop decision-quality harness — precision/recall/F1 + judge↔human agreement (issue #72)
+├── eval/              offline learning-loop and model-upgrade replay harness
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
-├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
+├── migrate_embeddings.py  CLI: stage, validate, and atomically activate vectors
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
@@ -1675,10 +1675,20 @@ legacy). FastEmbed resolves its ONNX artifact to a pinned local Hub snapshot
 before loading; sentence-transformers receives its configured revision directly.
 `THREADKEEPER_EMBED_CACHE_DIR` holds the durable snapshot cache, and
 `THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` makes a cache miss fail without a Hub
-request. Dense retrieval filters to the current fingerprint; stale rows remain
-visible to the always-on FTS channel. After a backend/model/revision/runtime
-generation switch, run `tk-migrate-embeddings --all`
-(`migrate_embeddings.py`) to recompute stale rows into one consistent space.
+request. The singleton `embedding_generation_state` is the durable reader
+pointer. A backend/model/revision/runtime upgrade writes target blobs to
+`embedding_generation_vectors`, keyed by generation plus source identity/hash,
+while readers continue to encode and retrieve in the prior active space. The
+batched command `tk-migrate-embeddings --all` resumes incomplete staging, locks
+briefly to validate note/dialog coverage, and atomically moves that pointer.
+`--rollback` atomically restores `previous_generation`; no derived vector is
+rewritten in place. The dashboard and CLI expose active/staging/coverage/state.
+
+`memory_provenance` records writer provider, model, revision, and source event
+or thread references when a derived note, lesson, skill, or dialectic claim is
+created. It stores no duplicate transcript/artifact text. Writer identity is
+resolved from the active client/model unless the optional `THREADKEEPER_WRITER_*`
+knobs provide an explicit provider/model/revision.
 
 `retrieval.py` normalizes notes and dialog hits into one `Candidate` model.
 Lexical and dense generators over-fetch independently; reciprocal-rank fusion
@@ -1902,7 +1912,8 @@ The harness (`python -m threadkeeper.eval`, pure verdict logic in
   fully-synthetic sets: `shadow.json` (dialog windows + expected
   materialize/skip), `candidates.json` (candidate snippets + expected
   accept/reject), and `skill_quality.json` (skill bodies + a human high/low
-  label). `test_eval_harness.py` asserts they carry no secrets/private paths.
+  label), plus `upgrade_replay.json` for old→new and new→old model paths.
+  `test_eval_harness.py` asserts they carry no secrets/private paths.
 - **Two judges** (mirroring the `verify_ingest` / memory-recall split between an
   offline CI-safe path and an LLM path):
   - `rubric` (default, deterministic, offline) — a *signal-vote* classifier
@@ -1928,12 +1939,13 @@ The harness (`python -m threadkeeper.eval`, pure verdict logic in
   agreement against a fixed human-labeled set is what makes a drifting judge
   (offline heuristic or LLM) visible before its scores are trusted.
 
-The CLI exits non-zero only when the harness itself is broken (no fixtures /
-nothing computable), never on model quality — quality is a number to track and
-optimize against (e.g. the ROADMAP's extract-precision and "do we need tiers"
-open questions), not a gate. `--fixtures-dir` scores a custom labeled set.
-Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
-rubric-sensitivity + a subprocess end-to-end run).
+The historical decision-quality metrics remain an optimization signal. The
+fixed upgrade replay is a release gate: both directions must meet explicit
+thresholds for recall, abstention, knowledge update, and derived-memory
+decisions or the CLI exits non-zero and staged activation is refused.
+`--fixtures-dir` scores a custom labeled set. Smoke-tested in
+`tests/test_eval_harness.py` (pure-function units + rubric sensitivity + a
+subprocess end-to-end run).
 ## Env knobs (config.py)
 
 `Settings` keeps pydantic's permissive `extra="ignore"` behavior, but startup

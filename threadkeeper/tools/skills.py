@@ -42,6 +42,7 @@ from ..config import (
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
     WRITE_ORIGIN,
 )
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
@@ -542,6 +543,10 @@ def _record_event(name: str, kind: str) -> None:
             "VALUES (?,?,?,?, 'active', 'hypothesis', ?) "
             "ON CONFLICT(name) DO NOTHING",
             (name, now, cid, WRITE_ORIGIN, now),
+        )
+        memory_provenance(
+            conn, "skill", name, source_event_kind="skill_create",
+            source_event_id=name,
         )
         conn.commit()
         return

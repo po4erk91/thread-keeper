@@ -523,6 +523,19 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-09-30
+
+### Added
+
+- **Staged model-compatibility gate (#337).** Embedding upgrades now build a
+  resumable target generation beside one durable active pointer, validate full
+  note/dialog coverage, run fixed old→new and new→old replay thresholds, and
+  atomically activate only after all gates pass. `tk-migrate-embeddings` and
+  `mp_dashboard()` show active/staging/coverage/validation state; `--rollback`
+  atomically restores the previous generation. Newly derived lessons, skills,
+  notes, and dialectic claims retain writer provider/model/revision and source
+  pointers without copying private transcript text.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

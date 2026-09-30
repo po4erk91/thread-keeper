@@ -73,6 +73,7 @@ from ..db import get_db
 from ..elicitation import elicit_confirm_reject
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..memory_compat import memory_provenance
 
 
 VALID_KINDS = ("support", "contradict")
@@ -404,6 +405,10 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     if seed_quote:
         _insert_evidence(conn, pid, evidence_kind, seed_quote,
                          "manual", 1.0, cid_short, now_t)
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_claim",
+        source_event_id="manual" if not seed_quote else "evidence:manual",
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     _emit(conn, "dialectic_claim", target=pid, summary=claim[:140])
@@ -720,6 +725,10 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
     if seed_quote:
         _insert_evidence(conn, pid, "support", seed_quote,
                          f"supersede:{old_id}", 1.0, cid, now_t)
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_supersede",
+        source_event_id=old_id,
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     conn.execute(

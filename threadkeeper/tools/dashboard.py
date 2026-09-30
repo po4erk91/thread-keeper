@@ -366,10 +366,14 @@ def mp_dashboard(window_days: int = 7) -> str:
     out.append(
         "  embedding_health: "
         f"notes={emb_health['notes_current']}/{emb_health['notes_total']} "
+        f"notes_staged={emb_health['notes_staged']} "
         f"notes_vec={emb_health['notes_vec']} "
         f"dialog={emb_health['dialog_current']}/{emb_health['dialog_total']} "
+        f"dialog_staged={emb_health['dialog_staged']} "
         f"dialog_vec={emb_health['dialog_vec']} "
-        f"generation={emb_health['generation']}"
+        f"active={emb_health['generation']} "
+        f"staging={emb_health['staging_generation'] or '-'} "
+        f"state={emb_health['migration_state']}"
     )
     from .. import ingest
     deny_globs, denied_messages = ingest.ingest_denylist_status(conn)

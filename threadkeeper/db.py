@@ -789,6 +789,66 @@ CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at,
 CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
     ON curator_merge_verdicts(updated_at DESC);
 
+-- A vector-space switch is a data migration, not a configuration flip.  The
+-- singleton keeps the one generation readers may query while a second one is
+-- built in the side table below.  It deliberately has no foreign keys: note
+-- ids can become TEXT during the optional sync migration and dialog ids are
+-- already TEXT.
+CREATE TABLE IF NOT EXISTS embedding_generation_state (
+    id                 INTEGER PRIMARY KEY CHECK(id = 1),
+    active_generation  TEXT,
+    staging_generation TEXT,
+    previous_generation TEXT,
+    state              TEXT NOT NULL DEFAULT 'ready'
+                       CHECK(state IN ('ready','staging','validated')),
+    started_at         INTEGER,
+    validated_at       INTEGER,
+    activated_at       INTEGER
+);
+
+-- Staged vectors are keyed by generation and source identity, never by a
+-- mutable base-table embedding slot. source_hash lets a resumed migration
+-- detect a source edit without retaining another copy of private text.
+CREATE TABLE IF NOT EXISTS embedding_generation_vectors (
+    generation   TEXT NOT NULL,
+    memory_kind  TEXT NOT NULL CHECK(memory_kind IN ('note','dialog')),
+    memory_id    TEXT NOT NULL,
+    source_hash  TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY(generation, memory_kind, memory_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_generation_vectors_lookup
+    ON embedding_generation_vectors(generation, memory_kind, memory_id);
+
+-- Provenance is a pointer-only audit record. It records the writer identity
+-- and source event/thread references without duplicating transcript text.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    memory_kind         TEXT NOT NULL,
+    memory_id           TEXT NOT NULL,
+    writer_provider     TEXT NOT NULL,
+    writer_model        TEXT NOT NULL,
+    writer_revision     TEXT NOT NULL,
+    source_event_kind   TEXT,
+    source_event_id     TEXT,
+    source_thread_id    TEXT,
+    recorded_at         INTEGER NOT NULL,
+    PRIMARY KEY(memory_kind, memory_id)
+);
+
+-- Durable operator audit of the fixed-corpus upgrade gate. Details are
+-- metrics only; fixtures remain bundled and anonymized rather than copied
+-- into the user's memory store.
+CREATE TABLE IF NOT EXISTS memory_upgrade_replays (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction           TEXT NOT NULL,
+    writer_generation   TEXT NOT NULL,
+    embedding_generation TEXT NOT NULL,
+    passed              INTEGER NOT NULL CHECK(passed IN (0,1)),
+    report_json         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL
+);
+
 -- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
 -- Node identity + Hybrid Logical Clock singleton.
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -1399,6 +1459,13 @@ def bootstrap_db(force: bool = False) -> None:
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
             _ensure_additive_runtime_schema(conn)
+            # Seed the single durable embedding-generation pointer while this
+            # bootstrap connection already owns the writer slot. Read-only
+            # retrieval/dashboard connections must never need to initialize it
+            # themselves (and therefore never contend with a staged migration).
+            from .embeddings import embedding_fingerprint
+            from .memory_compat import generation_state
+            generation_state(conn, embedding_fingerprint())
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
             _ensure_sync_capture(conn)
             conn.commit()
