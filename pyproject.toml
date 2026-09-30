@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.17.0"
+version = "0.18.4"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Antigravity CLI, Copilot, and VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -26,8 +26,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    # MCP 2.x provides the 2026-07-28 extension surface used for the stable
-    # Skills distribution protocol.  It renamed FastMCP to MCPServer.
+    # MCP 2.2 provides the 2026-07-28 extension surface used for the stable
+    # Skills distribution protocol. <3 keeps a future unreviewed major from
+    # changing the server at install time.
     "mcp>=2.2.0,<3",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",

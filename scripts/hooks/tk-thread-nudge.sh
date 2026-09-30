@@ -17,6 +17,10 @@
 
 set -u
 
+# Spawned background children (spawn() sets THREADKEEPER_SPAWNED_CHILD=1) are
+# not user sessions: the session protocol this hook backs is not theirs.
+[ "${THREADKEEPER_SPAWNED_CHILD:-}" = "1" ] && exit 0
+
 STATE_DIR="${THREADKEEPER_STATE_DIR:-$HOME/.threadkeeper/state}"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 # Best-effort prune of stale session markers (>7 days) so the dir can't grow without bound.

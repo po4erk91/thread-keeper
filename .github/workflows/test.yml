@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  pytest:
-    name: pytest (py${{ matrix.python }})
+  pytest-shard:
+    name: pytest shard ${{ matrix.shard }}/3 (py${{ matrix.python }}, mcp${{ matrix.mcp }})
     runs-on: ubuntu-latest
     env:
       # This remains stable while tests intentionally isolate HOME per case.
@@ -19,7 +19,11 @@ jobs:
         # 3.11 is the floor (config.py uses tomllib + dict[str,...]).
         # 3.13 is current. 3.12 sits in between.
         python: ["3.11", "3.12", "3.13"]
-
+        # The stable Skills extension requires MCP 2.2's 2026-07-28 surface.
+        mcp: [">=2.2.0,<3"]
+        # The suite is split into three deterministic shards (by test id)
+        # that run as parallel jobs; see tests/conftest.py.
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
 
@@ -38,10 +42,10 @@ jobs:
           # don't have a skip-when-missing guard. semantic now uses
           # fastembed/ONNX Runtime (no PyTorch) + numpy + sqlite-vec; the
           # model snapshot is pinned and pre-fetched below.
-          pip install -e '.[semantic,dev]'
+          pip install -e '.[semantic,dev]' "mcp${{ matrix.mcp }}"
 
       - name: Cache pinned embedding snapshot
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.cache/huggingface
           key: huggingface-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('threadkeeper/config.py') }}
@@ -61,14 +65,78 @@ jobs:
           # Semantic tests prove the cached pin is usable without a Hub request.
           THREADKEEPER_EMBED_LOCAL_FILES_ONLY: "1"
           HF_HUB_OFFLINE: "1"
+          THREADKEEPER_TEST_SHARD: ${{ matrix.shard }}/3
         run: |
           # --forked isolates each test in its own process. The suite's
           # per-test package re-import (tests/conftest.py) otherwise piles up
           # native ONNX/tokenizer thread pools that can deadlock sqlite
-          # connection finalize in a single long-lived interpreter.
-          # NB: kept serial on purpose. `-n auto` (pytest-xdist) does not
-          # compose here — with --forked it collides on the xdist worker tmp
-          # dir, and without --forked a few tests race on shared state. Fixing
-          # the suite for parallel runs is tracked separately; xdist is shipped
-          # as an opt-in local accelerator (see CONTRIBUTING).
+          # connection finalize in a single long-lived interpreter. That is
+          # also why parallelism comes from shard jobs, not xdist workers: an
+          # xdist worker is one long-lived interpreter, and an unforked -n auto
+          # run took over two hours on CI.
           python -m pytest -q --forked --tb=short
+
+  # Branch protection requires one `pytest (py3.x)` check per Python. Each of
+  # these succeeds only when every shard job above succeeded.
+  pytest:
+    name: pytest (py${{ matrix.python }})
+    needs: pytest-shard
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Require every shard to pass
+        env:
+          SHARDS: ${{ needs.pytest-shard.result }}
+        run: |
+          echo "pytest shards: $SHARDS"
+          test "$SHARDS" = "success"
+
+  pip-audit:
+    name: pip-audit (resolved dependencies)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Resolve project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Audit the same runtime, semantic, and test dependency set that CI
+          # resolves, rather than only direct requirements from pyproject.toml.
+          python -m pip install -e '.[semantic,dev]'
+          # Keep the resolved dependencies but remove the editable project:
+          # its bumped version intentionally does not exist on PyPI before the
+          # release, and --strict treats even an explicit editable skip as an
+          # incomplete audit.
+          python -m pip uninstall -y threadkeeper
+          python -m pip install pip-audit
+
+      - name: Fail on known dependency vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          ignore_args=()
+          while IFS='|' read -r vulnerability_id tracking rationale review_by; do
+            if [[ "$vulnerability_id" =~ ^[[:space:]]*(#|$) ]]; then
+              continue
+            fi
+            if [[ -z "$tracking" || -z "$rationale" || -z "$review_by" ]]; then
+              echo "::error::Malformed .github/pip-audit-ignores.txt entry for $vulnerability_id"
+              exit 1
+            fi
+            vulnerability_id="${vulnerability_id//[[:space:]]/}"
+            ignore_args+=(--ignore-vuln "$vulnerability_id")
+          done < .github/pip-audit-ignores.txt
+          # With no input arguments, pip-audit audits this fully resolved
+          # dependency environment. --strict makes incomplete dependency
+          # collection fail.
+          pip-audit --local --strict "${ignore_args[@]}"
