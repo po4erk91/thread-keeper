@@ -272,6 +272,18 @@ Steady-state access is split by intent:
    `requeue_count`; rows that hit the requeue cap are terminally skipped as
    poison rather than re-leased forever.
 
+9. **memory_authority + memory_authority_roots + memory_derivations** — the
+   write-time security provenance layer. Every new stamped artifact has an
+   immutable authority class (`trusted` only for direct foreground/user input;
+   otherwise `observed`), source principal, and source channel. A derived
+   artifact copies every root and takes the minimum authority; records cannot
+   be restamped by a later, more trusted writer. The roots table makes repeated
+   messages from one principal one corroboration source, not many. The
+   `memory_authorize_action` gate permits observed memory only after an
+   independent trusted principal or explicit confirmation. `forget` traverses
+   `memory_derivations`, marks all descendants invalid, and retrieval paths
+   omit those artifacts while retaining the audit trail.
+
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
 `started_at`/`ended_at`/`duration_s`, `return_code`, RSS, and optional
@@ -1237,13 +1249,30 @@ is:
 | `background_review`   | 0.5      |
 | `candidate_review`    | 0.5      |
 | `curator`             | 0.5      |
-| (anything else)       | 1.0      |
+| (anything else)       | rejected before persistence |
 
 Defends against the self-confirmation loop where a claim surfaced by
 `brief()` gets "re-observed" by a shadow-review fork reading the same
 dialog window. Internal observations still count, but earn half as much
 confidence per row — twice as many internal supports are needed to
 promote a claim into a load-bearing state.
+
+### Immutable authority and derivation
+
+Evidence `weight`, claim confidence, and tier are relevance signals; none can
+raise source authority. A new durable artifact is either a direct, known-origin
+root or declares an input reference (`dialog:<uuid>`, `evidence:<id>`,
+`claim:<id>`, `lesson:<slug>`, `skill:<name>`, `note:<id>`, or
+`verbatim:<id>`). Derived records preserve the least-authoritative root,
+principal, and channel, and retain every root for corroboration checks.
+Unknown write origins and missing/invalid source references fail closed.
+
+`memory_authorize_action(kind, id, confirmed=False)` is the explicit boundary
+for consequential behavior. Observed memory is denied unless a trusted root
+from a different principal corroborates it or the caller supplies explicit
+confirmation. `forget` follows derivation edges and invalidates descendants;
+stamped invalidated claims, lessons, and skills are excluded from normal
+retrieval.
 
 The `support_count` / `contradict_count` columns on `user_dialectic`
 remain as observability counters (incremented by 1 per row regardless of

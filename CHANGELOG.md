@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-01
+- **Added: immutable memory authority and Write–Execute–Forget lifecycle
+  controls (#338).** Durable dialog, dialectic, lesson, and skill artifacts
+  now retain write-time authority plus principal/channel provenance; declared
+  derivations preserve their lowest root. The observable consequential-action
+  gate requires independent trusted corroboration or explicit confirmation for
+  observed memory. Selective forget traverses the derivation graph and
+  invalidates descendants so they no longer retrieve or authorize actions.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

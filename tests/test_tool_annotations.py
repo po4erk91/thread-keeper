@@ -30,7 +30,7 @@ READ_TOOLS = {
     "dialectic_synthesis", "dialectic_validate_status", "dialog_search",
     "evolve_apply_status", "evolve_review", "expand_concept", "find_invariants",
     "find_missed_spawns", "list_concepts",
-    "memory_guard_status", "mp_dashboard", "mp_health", "neighbors", "peers",
+    "memory_authorize_action", "memory_guard_status", "mp_dashboard", "mp_health", "neighbors", "peers",
     "pending_distillates", "pickup_candidates", "reliability_for",
     "review_candidates", "run_probe", "search", "shadow_review_status",
     "skill_list", "skill_validate", "spawn_budget_status", "spawn_status",

@@ -150,6 +150,12 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Memory authority lifecycle (#338): new durable dialog, dialectic, lesson,
+  and skill artifacts receive immutable write-time authority plus
+  principal/channel provenance. Explicit derivations keep the least-authority
+  root, repeated observations from one principal cannot satisfy the
+  consequential-action gate, and `forget` recursively invalidates descendants
+  so they disappear from retrieval and cannot authorize later actions.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-

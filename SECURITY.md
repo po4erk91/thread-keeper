@@ -139,6 +139,27 @@ principle to the always-on, auto-loaded-output loops):
   and refused — the inbound analogue of the secret scrubber. Foreground
   (human) writes are never screened.
 
+### Memory authority and selective repair
+
+Authority is bound when memory is written, not recalculated from the agent
+that later summarizes it. Every stamped dialog, dialectic evidence/claim,
+lesson, and skill stores an immutable authority class and original
+principal/channel. Direct foreground/user input is `trusted`; known autonomous
+writers and ingested transcript content are `observed`; unknown writer origins
+and missing declared sources are rejected.
+
+Derived artifacts must name a source reference such as `dialog:<uuid>` or
+`claim:<id>`. They inherit the lowest-authority input and retain all original
+roots, so a trusted tool echo cannot launder observed content and repeated
+observations from one principal do not become independent corroboration.
+Before consequential behavior, `memory_authorize_action` requires a distinct
+trusted root or an explicit confirmation for observed memory.
+
+`forget` follows immutable derivation edges from the selected source and marks
+every descendant invalid. Invalidated claims, lessons, and skills are omitted
+from normal retrieval and fail the action gate; the provenance rows remain as
+an audit record of the repair.
+
 ### Transcript ingest (observed dialog → durable local search)
 
 Live ingest and manual/backfill ingest read local CLI transcripts and persist
