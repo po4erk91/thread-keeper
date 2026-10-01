@@ -54,16 +54,32 @@ def _record_janitor_pass(conn: sqlite3.Connection, outcome: str) -> None:
         logger.debug("thread_janitor: failed to record pass", exc_info=True)
 
 
-def _last_janitor_outcome(conn: sqlite3.Connection) -> str | None:
-    """Summary of the most recent recorded janitor_pass, or None."""
+def _last_janitor_pass(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The most recent recorded janitor_pass row (id, summary), or None."""
     try:
-        row = conn.execute(
-            "SELECT summary FROM events WHERE kind='janitor_pass' "
+        return conn.execute(
+            "SELECT id, summary FROM events WHERE kind='janitor_pass' "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
         return None
-    return row["summary"] if row else None
+
+
+def _touch_janitor_pass(conn: sqlite3.Connection, event_id: int) -> None:
+    """Move the standing no_stale row to now instead of adding another.
+
+    agent_status measures loop health by the newest successful pass event; a
+    quiet janitor that recorded nothing looked stale after three hours even
+    though it ran every hour.
+    """
+    try:
+        conn.execute(
+            "UPDATE events SET created_at=? WHERE id=?",
+            (int(time.time()), event_id),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.debug("thread_janitor: failed to refresh pass", exc_info=True)
 
 
 def _stale_threads(conn: sqlite3.Connection, cutoff: int) -> list[sqlite3.Row]:
@@ -102,12 +118,15 @@ def run_janitor_pass(force: bool = False, *, scheduled: bool = False) -> str:
     cutoff = now - int(max(0.0, THREAD_IDLE_CLOSE_DAYS) * 86400)
     stale = _stale_threads(conn, cutoff)
     if not stale:
-        # Collapse consecutive no-op ticks: record `no_stale` only on the
+        # Collapse consecutive no-op ticks: insert `no_stale` only on the
         # transition into quiet, not on every tick. Otherwise the `events`
         # table grows one zero-signal row per interval forever — rows that
-        # brief()/nudge queries then have to scan (#86). The first no_stale
-        # after any activity still lands, so the dashboard keeps a heartbeat.
-        if _last_janitor_outcome(conn) != "no_stale":
+        # brief()/nudge queries then have to scan (#86). Later quiet ticks
+        # refresh that one row, so the success clock keeps moving.
+        last = _last_janitor_pass(conn)
+        if last is not None and last["summary"] == "no_stale":
+            _touch_janitor_pass(conn, int(last["id"]))
+        else:
             _record_janitor_pass(conn, "no_stale")
         return "no_stale"
 

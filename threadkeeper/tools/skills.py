@@ -42,7 +42,15 @@ from ..config import (
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
     WRITE_ORIGIN,
 )
-from ..authority import authority_for_origin, can_derive, derive, record_origin_root, source_is_live, source_parent
+from ..authority import (
+    authority_for_origin,
+    can_derive,
+    derive,
+    record_origin_root,
+    source_is_live,
+    source_parent,
+)
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
@@ -63,6 +71,8 @@ from ..trash import (
     latest_skill_artifact,
     read_skill_artifact,
 )
+from ..lessons import get_path
+from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -393,6 +403,7 @@ def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
             "UPDATE skill_usage SET tier=?, tier_changed_at=? WHERE name=?",
             (new_tier, now_t, name),
         )
+        _ensure_session(conn)
         order = {"hypothesis": 0, "observed": 1, "validated": 2}
         direction = (
             "skill_tier_promoted"
@@ -541,6 +552,10 @@ def _record_event(name: str, kind: str) -> None:
             "ON CONFLICT(name) DO NOTHING",
             (name, now, cid, WRITE_ORIGIN, now),
         )
+        memory_provenance(
+            conn, "skill", name, source_event_kind="skill_create",
+            source_event_id=name,
+        )
         conn.commit()
         return
     # ensure row exists for upserts that aren't 'create'
@@ -654,7 +669,8 @@ def skill_manage(action: str,
                  sub_path: str = "",
                  description: str = "",
                  source: str = "",
-                 force: bool = False) -> str:
+                 force: bool = False,
+                 replacement_name: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -677,7 +693,9 @@ def skill_manage(action: str,
                     Requires `name`, `sub_path`.
       delete      — remove a skill entirely. Pinned skills (in skill_usage)
                     are refused. Foreground/unknown-origin skills require
-                    force from a foreground writer.
+                    force from a foreground writer. Pass replacement_name
+                    during consolidation to repoint inbound [[wikilinks]];
+                    otherwise the result lists dangling references.
       restore     — restore the latest trashed copy for `name`.
     """
     action = action.strip()
@@ -697,7 +715,11 @@ def skill_manage(action: str,
     if action == "delete":
         if err := _validate_name(name):
             return f"ERR {err}"
-        return _action_delete(name, force=force)
+        return _action_delete(
+            name,
+            force=force,
+            replacement_name=replacement_name,
+        )
     if action == "restore":
         return _action_restore(name)
     return (
@@ -920,7 +942,12 @@ def _action_remove_file(name: str, sub_path: str) -> str:
     return "ok"
 
 
-def _action_delete(name: str, *, force: bool = False) -> str:
+def _action_delete(
+    name: str,
+    *,
+    force: bool = False,
+    replacement_name: str = "",
+) -> str:
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
@@ -929,6 +956,14 @@ def _action_delete(name: str, *, force: bool = False) -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
+    replacement_name = replacement_name.strip()
+    if replacement_name:
+        if err := _validate_name(replacement_name):
+            return f"ERR {err}"
+        if replacement_name == name:
+            return f"ERR replacement_same_as_removed name={name}"
+        if not _skill_md_path(replacement_name).is_file():
+            return f"ERR replacement_not_found name={replacement_name}"
     if row and row["pinned"]:
         return (
             f"ERR pinned={name} (unpin via UPDATE skill_usage SET pinned=0 "
@@ -968,6 +1003,15 @@ def _action_delete(name: str, *, force: bool = False) -> str:
         key=name,
     ):
         return f"ERR {reason}"
+    try:
+        inbound_refs = rewrite_inbound_wikilinks(
+            name,
+            replacement_name,
+            lessons_path=get_path(),
+            skill_roots=_skill_roots(),
+        )
+    except OSError as e:
+        return f"ERR inbound_link_rewrite_failed name={name}: {e}"
     tombstone = ""
     if WRITE_ORIGIN == "curator":
         tombstone = capture_skill_tombstone("skill_deleted", name, sdir)
@@ -995,7 +1039,11 @@ def _action_delete(name: str, *, force: bool = False) -> str:
             snapshot_rel=tombstone,
         )
     conn.commit()
-    return "ok"
+    inbound = format_inbound_wikilinks(inbound_refs)
+    if not inbound:
+        return "ok"
+    outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
+    return f"ok {outcome}={inbound}"
 
 
 def _restore_skill_usage_row(
@@ -1054,12 +1102,17 @@ def _action_restore(name: str) -> str:
 # skill_list
 # ──────────────────────────────────────────────────────────────────────────
 
-@read_tool()
+@write_tool()
 def skill_list(include_archived: bool = False) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
             state=<active|stale|archived> uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
+
+    Each returned row is a visibility event: its ``view_count`` and
+    ``last_viewed_at`` are updated before the list is returned. The curator
+    inventory itself is deliberately excluded, so an automated audit cannot
+    make every skill look recently consulted.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -1075,6 +1128,13 @@ def skill_list(include_archived: bool = False) -> str:
     if not rows:
         return "no_skills_tracked"
     now = int(time.time())
+    conn.executemany(
+        "UPDATE skill_usage SET last_viewed_at=?, view_count=view_count+1, "
+        "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
+        "WHERE name=?",
+        ((now, r["name"]) for r in rows),
+    )
+    conn.commit()
     out: list[str] = []
     for r in rows:
         if conn.execute(
@@ -1110,8 +1170,9 @@ def skill_list(include_archived: bool = False) -> str:
         )
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
-            f"state={r['state']} uses={r['use_count']} "
-            f"fg_uses={fg_uses} views={r['view_count']} "
+            f"state={'active' if r['state'] == 'stale' else r['state']} "
+            f"uses={r['use_count']} "
+            f"fg_uses={fg_uses} views={(r['view_count'] or 0) + 1} "
             f"patches={r['patch_count']} wrong={wrong_n} "
             f"pinned={r['pinned']} last_active={age}_ago"
         )
@@ -1390,6 +1451,7 @@ def review_thread(thread_id: str,
     # avoids a circular import on package load. slim=True loads ONLY
     # thread-keeper MCP for the child (no context7/figma/etc) — review
     # work doesn't need any of those, and it cuts startup RAM dramatically.
+    from ..spawn_result import parse_spawn_result
     from .spawn import spawn  # type: ignore
     result = spawn(
         prompt=full_prompt,
@@ -1411,6 +1473,10 @@ def review_thread(thread_id: str,
             "mcp__thread-keeper__skill_list"
         ),
     )
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
+
     # The spawned child IS an application of the ai-memory-learning-loop
     # skill (review prompt = that skill's procedure baked in). The child
     # won't invoke Skill(...) explicitly, so bump the counter here so
@@ -1433,4 +1499,4 @@ def review_thread(thread_id: str,
         conn.commit()
     except sqlite3.OperationalError:
         pass  # skill_usage missing on this conn
-    return result
+    return spawn_result.text

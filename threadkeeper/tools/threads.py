@@ -17,6 +17,7 @@ from ..helpers import gen_thread_id, fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, _vec_upsert_note, _notes_mapped, embed_tag
+from ..memory_compat import memory_provenance
 from ..retrieval import retrieve_notes
 from ..brief import render_brief, render_context
 from ..config import WRITE_ORIGIN
@@ -137,6 +138,10 @@ def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> 
         ):
             raise ValueError("authority_stamp_failed")
         _vec_upsert_note(conn, note_id, emb)
+        memory_provenance(
+            conn, "note", note_id, source_event_kind=f"note:{kind}",
+            source_event_id=thread_id, source_thread_id=thread_id,
+        )
         conn.execute(
             "UPDATE threads SET last_touched_at=?, last_move=?, "
             "state=CASE WHEN state IN ('idle','closed') THEN 'active' ELSE state END "
@@ -243,7 +248,12 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
             (thread_id, note_body, "move", now, identity._session_id,
              emb, embed_tag(emb)),
         )
-        _vec_upsert_note(conn, _note_gid(conn, cur.lastrowid), emb)
+        note_id = _note_gid(conn, cur.lastrowid)
+        _vec_upsert_note(conn, note_id, emb)
+        memory_provenance(
+            conn, "note", note_id, source_event_kind="skill_materialized",
+            source_event_id=path, source_thread_id=thread_id,
+        )
         conn.execute(
             "UPDATE threads SET last_touched_at=?, last_move=? WHERE id=?",
             (now, note_body[:90], thread_id),
@@ -317,6 +327,7 @@ def evolve_format(suggestion: str, rationale: str = "") -> str:
     """Propose a change to the brief format itself. The format is not fixed — this
     is how it adapts. Examples: 'field X unused this session, drop it';
     'add field failed_attempts under each open thread'; 'shorten Z to single token'."""
+    identity.ensure_session_started()
     conn = get_db()
     now = int(time.time())
     conn.execute(

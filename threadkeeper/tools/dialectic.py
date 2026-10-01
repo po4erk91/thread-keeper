@@ -65,7 +65,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from .._mcp import read_tool, write_tool
 from ..config import WRITE_ORIGIN
@@ -77,6 +77,7 @@ from ..db import get_db
 from ..elicitation import elicit_confirm_reject
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..memory_compat import memory_provenance
 
 
 VALID_KINDS = ("support", "contradict")
@@ -443,6 +444,10 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     ):
         conn.rollback()
         return "ERR authority_unknown_origin"
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_claim",
+        source_event_id=source.strip() or "manual",
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     _emit(conn, "dialectic_claim", target=pid, summary=claim[:140])
@@ -783,6 +788,10 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
     elif not derive(conn, "claim", pid, [("claim", old_id)]):
         conn.rollback()
         return "ERR authority_derivation_failed"
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_supersede",
+        source_event_id=old_id,
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     conn.execute(

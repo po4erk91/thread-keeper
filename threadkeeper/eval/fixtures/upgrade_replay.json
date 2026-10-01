@@ -1,0 +1,67 @@
+{
+  "thresholds": {
+    "recall": 0.95,
+    "abstention": 0.95,
+    "knowledge_update": 0.95,
+    "derived_decision": 0.95
+  },
+  "items": [
+    {
+      "id": "idempotent-write",
+      "expected_memory_ids": ["mem-01"],
+      "should_abstain": false,
+      "should_update": true,
+      "derived_decision": "accept",
+      "old_to_new": {
+        "retrieved_memory_ids": ["mem-01"],
+        "abstained": false,
+        "knowledge_updated": true,
+        "derived_decision": "accept"
+      },
+      "new_to_old": {
+        "retrieved_memory_ids": ["mem-01"],
+        "abstained": false,
+        "knowledge_updated": true,
+        "derived_decision": "accept"
+      }
+    },
+    {
+      "id": "unsupported-assumption",
+      "expected_memory_ids": [],
+      "should_abstain": true,
+      "should_update": false,
+      "derived_decision": "reject",
+      "old_to_new": {
+        "retrieved_memory_ids": [],
+        "abstained": true,
+        "knowledge_updated": false,
+        "derived_decision": "reject"
+      },
+      "new_to_old": {
+        "retrieved_memory_ids": [],
+        "abstained": true,
+        "knowledge_updated": false,
+        "derived_decision": "reject"
+      }
+    },
+    {
+      "id": "source-preference",
+      "expected_memory_ids": ["mem-03", "mem-04"],
+      "should_abstain": false,
+      "should_update": true,
+      "derived_decision": "accept",
+      "old_to_new": {
+        "retrieved_memory_ids": ["mem-03", "mem-04"],
+        "abstained": false,
+        "knowledge_updated": true,
+        "derived_decision": "accept"
+      },
+      "new_to_old": {
+        "retrieved_memory_ids": ["mem-03", "mem-04"],
+        "abstained": false,
+        "knowledge_updated": true,
+        "derived_decision": "accept"
+      }
+    }
+  ]
+}

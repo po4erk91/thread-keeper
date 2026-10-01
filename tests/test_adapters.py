@@ -383,6 +383,7 @@ def test_codex_spawn_argv_skips_git_repo_check(tmp_path, monkeypatch):
     assert argv[:3] == ["/usr/local/bin/codex", "exec", "--skip-git-repo-check"]
     assert argv[-1] == "-"
     assert "-m" in argv and "gpt-5.5" in argv
+    assert 'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"' in argv
     # Default (non-bypass) path still sandboxes.
     assert "--sandbox" in argv and "workspace-write" in argv
 
@@ -412,6 +413,173 @@ def test_codex_spawn_argv_enables_native_search_for_curator(
     assert argv[:4] == [
         "/usr/local/bin/codex", "--search", "exec", "--skip-git-repo-check",
     ]
+
+
+def test_codex_spawn_argv_preapproves_granted_thread_keeper_tools(
+    tmp_path, monkeypatch,
+):
+    # `codex exec` runs with approval policy "never": a thread-keeper write
+    # tool missing from config.toml failed with "MCP tool call requires
+    # approval", so Curator children could never persist their reports.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv(
+        "audit",
+        extra_allowed_tools=(
+            "Read,mcp__thread-keeper__curator_report_write,"
+            "mcp__thread-keeper__note,mcp__other__tool,"
+            'mcp__thread-keeper__bad.name="x",mcp__thread-keeper__note'
+        ),
+    )
+
+    assert argv is not None
+    approvals = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c" and ".approval_mode=" in argv[i + 1]
+    ]
+    assert approvals == [
+        'mcp_servers.thread-keeper.tools.curator_report_write.approval_mode="approve"',
+        'mcp_servers.thread-keeper.tools.note.approval_mode="approve"',
+    ]
+    assert argv[-1] == "-"
+
+
+def test_codex_spawn_argv_forwards_child_identity_to_its_mcp_server(
+    tmp_path, monkeypatch,
+):
+    # Codex starts MCP servers with a scrubbed environment. Without this the
+    # child's thread-keeper server ran as an ordinary session, so every
+    # Curator report write was refused as unauthorized.
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(
+        codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex",
+    )
+
+    argv = pkg["codex"].spawn_argv("audit")
+
+    forwarded = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1])
+        if arg == "-c"
+        and argv[i + 1].startswith("mcp_servers.thread-keeper.env_vars=")
+    ]
+    assert len(forwarded) == 1
+    names = json.loads(forwarded[0].split("=", 1)[1])
+    for key in (
+        "THREADKEEPER_FORCE_CID", "THREADKEEPER_SPAWNED_CHILD",
+        "THREADKEEPER_WRITE_ORIGIN", "THREADKEEPER_CURATOR_PASS_ID",
+        "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    ):
+        assert key in names
+    assert "THREADKEEPER_ROLE" not in names  # the host's role must not leak
+    assert "THREADKEEPER_REAL_GH" in names  # gh wrapper must reach real gh
+    assert all("=" not in name for name in names)  # names only, no values
+
+
+def _codex_overrides(argv):
+    return [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c"]
+
+
+def _write_codex_config(path):
+    path.write_text(
+        'model = "gpt-6-sol"\n'
+        'model_reasoning_effort = "xhigh"\n'
+        'personality = "pragmatic"\n'
+        'notify = ["/Applications/Tool.app/notify"]\n'
+        '[model_providers.corp]\n'
+        'base_url = "https://llm.example/v1"\n'
+        '[mcp_servers.trello]\n'
+        'command = "trello-mcp"\n'
+        '[mcp_servers.thread-keeper]\n'
+        'command = "/opt/tk/python"\n'
+        'args = ["-m", "threadkeeper.server"]\n'
+        'tool_timeout_sec = 120\n'
+        '[mcp_servers.thread-keeper.env]\n'
+        'PYTHONPATH = "/opt/tk"\n'
+        'SECRET_TOKEN = "do-not-copy"\n'
+        'THREADKEEPER_FORCE_CID = "stale-cid"\n'
+        '[plugins."computer-use@openai-bundled"]\n'
+        'enabled = true\n',
+        encoding="utf-8",
+    )
+
+
+def test_codex_child_runs_without_the_user_codex_config(tmp_path, monkeypatch):
+    """Children get thread-keeper only, like Claude's --strict-mcp-config:
+    no other MCP server, plugin, hook or notify program from config.toml."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex")
+    monkeypatch.setattr(codex_mod, "_supports_ignore_user_config", lambda _bin: True)
+    cfg = tmp_path / "config.toml"
+    _write_codex_config(cfg)
+    monkeypatch.setattr(pkg["codex"], "config_path", cfg)
+
+    argv = pkg["codex"].spawn_argv(
+        "research",
+        extra_allowed_tools=(
+            "Read,WebSearch,mcp__thread-keeper__broadcast,"
+            "mcp__thread-keeper__evolve_research_handoff"
+        ),
+    )
+
+    assert argv[:5] == [
+        "/usr/local/bin/codex", "--search", "exec", "--skip-git-repo-check",
+        "--ignore-user-config",
+    ]
+    overrides = _codex_overrides(argv)
+    text = "\n".join(overrides)
+    for expected in (
+        'model="gpt-6-sol"',
+        'model_reasoning_effort="xhigh"',
+        'model_providers.corp.base_url="https://llm.example/v1"',
+        'mcp_servers.thread-keeper.command="/opt/tk/python"',
+        'mcp_servers.thread-keeper.args=["-m", "threadkeeper.server"]',
+        "mcp_servers.thread-keeper.tool_timeout_sec=120",
+        'mcp_servers.thread-keeper.env.PYTHONPATH="/opt/tk"',
+        'mcp_servers.thread-keeper.env.PYTHONSAFEPATH="1"',
+        'mcp_servers.thread-keeper.enabled_tools=["broadcast", "evolve_research_handoff"]',
+    ):
+        assert expected in overrides, expected
+    for leaked in ("trello", "SECRET_TOKEN", "stale-cid", "computer-use", "notify", "personality"):
+        assert leaked not in text, leaked
+
+
+def test_codex_child_disables_other_servers_on_older_codex(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex")
+    monkeypatch.setattr(codex_mod, "_supports_ignore_user_config", lambda _bin: False)
+    cfg = tmp_path / "config.toml"
+    _write_codex_config(cfg)
+    monkeypatch.setattr(pkg["codex"], "config_path", cfg)
+
+    argv = pkg["codex"].spawn_argv("audit", extra_allowed_tools="mcp__thread-keeper__note")
+
+    assert "--ignore-user-config" not in argv
+    overrides = _codex_overrides(argv)
+    assert "mcp_servers.trello.enabled=false" in overrides
+    assert not any(o.startswith("mcp_servers.thread-keeper.enabled=") for o in overrides)
+    assert 'mcp_servers.thread-keeper.enabled_tools=["note"]' in overrides
+
+
+def test_codex_child_synthesizes_a_thread_keeper_entry(tmp_path, monkeypatch):
+    import sys as _sys
+
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex")
+    monkeypatch.setattr(codex_mod, "_supports_ignore_user_config", lambda _bin: True)
+    monkeypatch.setattr(pkg["codex"], "config_path", tmp_path / "missing.toml")
+
+    overrides = _codex_overrides(pkg["codex"].spawn_argv("audit"))
+
+    assert f"mcp_servers.thread-keeper.command={json.dumps(_sys.executable)}" in overrides
+    assert any(o.startswith("mcp_servers.thread-keeper.env.PYTHONPATH=") for o in overrides)
 
 
 def test_codex_iter_messages_filters_developer_turns(tmp_path, monkeypatch):
