@@ -429,6 +429,46 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
     created_at     INTEGER NOT NULL
 );
 
+-- Immutable write-time authority.  It is separate from evidence weight,
+-- confidence and tier so a later trusted writer cannot upgrade old input.
+CREATE TABLE IF NOT EXISTS memory_authority (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    source_principal TEXT NOT NULL,
+    source_channel TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    invalidated_at INTEGER,
+    invalidation_reason TEXT,
+    PRIMARY KEY (artifact_kind, artifact_id)
+);
+CREATE TABLE IF NOT EXISTS memory_authority_roots (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (artifact_kind, artifact_id, principal, channel, authority_class)
+);
+CREATE TABLE IF NOT EXISTS memory_derivations (
+    parent_kind TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    child_kind TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (parent_kind, parent_id, child_kind, child_id)
+);
+CREATE TRIGGER IF NOT EXISTS memory_authority_immutable
+BEFORE UPDATE OF artifact_kind, artifact_id, authority_class, source_principal, source_channel
+ON memory_authority BEGIN
+    SELECT RAISE(ABORT, 'memory authority is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS memory_authority_root_immutable
+BEFORE UPDATE ON memory_authority_roots BEGIN
+    SELECT RAISE(ABORT, 'memory authority root is immutable');
+END;
+
 -- Knowledge graph: typed edges between any pair of entities. Lets us run
 -- traversal queries ("what concepts refine this thread", "what threads
 -- contradict each other"). Nodes addressed by (kind, id) so we don't need
@@ -782,6 +822,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_to            ON edges(to_kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_relation      ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_derivations_parent ON memory_derivations(parent_kind, parent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_authority_visible ON memory_authority(artifact_kind, invalidated_at);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);

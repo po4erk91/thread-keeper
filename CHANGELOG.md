@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.19.0 — 2026-10-01
+
+- **Added: immutable memory authority and Write–Execute–Forget lifecycle
+  controls (#338).** Durable dialog, dialectic, lesson, and skill artifacts
+  now retain write-time authority plus principal/channel provenance; declared
+  derivations preserve their lowest root. The observable consequential-action
+  gate requires independent trusted corroboration or explicit confirmation for
+  observed memory. Selective forget traverses the derivation graph and
+  invalidates descendants so they no longer retrieve or authorize actions.
+
 ## v0.18.4 — 2026-09-30
 
 - **Added: canonical skills over the stable MCP Skills extension (#336).**

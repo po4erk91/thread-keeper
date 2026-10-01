@@ -20,6 +20,8 @@ from ..embeddings import _embed, _vec_upsert_note, _notes_mapped, embed_tag
 from ..memory_compat import memory_provenance
 from ..retrieval import retrieve_notes
 from ..brief import render_brief, render_context
+from ..config import WRITE_ORIGIN
+from ..authority import can_stamp, stamp
 
 
 def _note_gid(conn, rowid):
@@ -98,7 +100,7 @@ def open_thread(question: str, parent_id: str = "") -> str:
 
 
 @write_tool()
-def note(thread_id: str, content: str, kind: str = "move") -> str:
+def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> str:
     """Add a note to a thread. Write terse, optimized for future-Claude.
 
     `kind`: 'move' (we tried/decided X), 'failed' (tried X, broke because Y),
@@ -127,6 +129,14 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
              emb, embed_tag(emb)),
         )
         note_id = _note_gid(conn, cur.lastrowid)
+        if not can_stamp(conn, "note", str(note_id), write_origin=WRITE_ORIGIN, source=source):
+            raise ValueError("authority_source_unknown")
+        if not stamp(
+            conn, "note", str(note_id), write_origin=WRITE_ORIGIN,
+            principal=identity._session_id or "unknown-principal", channel="mcp:note",
+            source=source,
+        ):
+            raise ValueError("authority_stamp_failed")
         _vec_upsert_note(conn, note_id, emb)
         memory_provenance(
             conn, "note", note_id, source_event_kind=f"note:{kind}",
@@ -141,7 +151,12 @@ def note(thread_id: str, content: str, kind: str = "move") -> str:
         _emit(conn, f"note:{kind}", target=thread_id, summary=content)
         return f"ok id={note_id}"
 
-    return run_write("note", _write)
+    try:
+        return run_write("note", _write)
+    except ValueError as exc:
+        if str(exc).startswith("authority_"):
+            return f"ERR {exc}"
+        raise
 
 
 @write_tool(idempotent=True)

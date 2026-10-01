@@ -1247,6 +1247,17 @@ loops: a claim that surfaces in `brief()` and then gets "confirmed" by a
 review-fork reading the same dialog can't ride that internal evidence
 all the way to high confidence — internal evidence buys half as much.
 
+**Immutable authority and action confirmation.** Confidence and tier describe
+how useful a claim seems; they do not upgrade the authority of its evidence.
+New dialog, claim, evidence, lesson, and skill artifacts retain a write-time
+authority class plus their source principal/channel. Declared references such
+as `dialog:<uuid>`, `claim:<id>`, `lesson:<slug>`, and `skill:<name>` form a
+derivation graph; summaries and promotions inherit the least-authoritative
+root. Unknown writer origins are rejected. Before any consequential action,
+call `memory_authorize_action`: observed memory needs either an independent
+trusted principal or explicit `confirmed=True`. `forget` quarantines every
+derived descendant, so it can no longer be retrieved or authorize an action.
+
 **Discrete tier on each claim** — `hypothesis → observed → validated`
 (plus `disputed`). Independent of the continuous confidence band; tier
 is the **action-gating** signal:
