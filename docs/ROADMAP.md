@@ -1181,14 +1181,14 @@ transport, migration, memory-safety, and learning-quality gaps:
   the stable MCP Skills extension with paginated discovery, complete manifests,
   origin-qualified `skill://` resources, and file digests. Keep filesystem
   mirroring as the compatibility path for hosts without the extension.
-- **Model-upgrade migration gate (#337).** Stage a target embedding generation
-  while the prior generation remains active, validate complete coverage, then
-  switch atomically. Record writer-model provenance for derived memories and
-  replay a fixed corpus in both upgrade directions before activation.
-- **Non-malleable memory authority (#338).** Bind authority to the original
-  principal/channel, propagate the lowest authority through derived artifacts,
-  prevent repetition from manufacturing corroboration, and add end-to-end
-  Write–Execute–Forget security tests with descendant invalidation.
+- ✅ DONE (#337). **Model-upgrade migration gate.** A target embedding
+  generation is built beside the active one, checked for complete coverage and
+  replay quality in both upgrade directions, and activated atomically. Derived
+  memories also retain writer-model provenance and source pointers.
+- ✅ DONE (#338). **Non-malleable memory authority.** Authority is bound to
+  the original principal/channel and propagated through derived artifacts;
+  repeated evidence cannot manufacture independent corroboration, and the
+  Write–Execute–Forget lifecycle invalidates descendants after erasure.
 - **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
   and multi-timescale replay before changing supersession policy, so a one-off
   task exception cannot silently replace a validated durable preference.
@@ -1227,6 +1227,35 @@ retention:
 - **Autonomous-workflow retention (#349).** Bound terminal Curator manifests,
   frozen batch bodies, reports, Evolve research handoffs, and owned files while
   preserving active, retryable, unapplied, and recoverable work.
+
+**2026-10-01 reviewer additions (issue-backed).**
+The current audit added four concrete gaps around tool discovery, portable MCP
+guidance, Curator research privacy, and Evolve review cadence:
+
+- **Role-scoped MCP tool profiles (#353).** Advertise a small daily-use catalog
+  by default, keep a `full` compatibility profile, support validated
+  include/exclude overrides, and provide bounded capability discovery for hosts
+  without native deferred tool search. Spawned-child allowlists remain the
+  upper bound and cannot be widened by a profile.
+- **Portable server instructions (#354).** Publish concise MCP initialization
+  guidance for brief/context loading, thread lifecycle, read-only resources,
+  and destructive-operation confirmation. Generate it from the same source as
+  the setup-managed CLI block so the two paths cannot drift.
+- **Curator web-research privacy boundary (#355).** The web researcher currently
+  combines full lesson/skill/concept and repository reads with external search.
+  Give it only a bounded, redacted, public-safe research brief; keep the full
+  local inventory on the web-free evaluator side and fall back to offline or
+  human review for private/unknown-sensitivity entries.
+- **Evolve research spawn retry (#356).** A returned research admission error
+  currently advances the review high-water even though no child launched, so a
+  transient refusal can suppress the weekly audit. Apply the same transient
+  cursor-preservation contract already tested for audit-phase spawn failures.
+
+The mechanical dedup gate also linked the Evolve researcher's extra
+`broadcast` capability back to completed confinement issue #263 rather than
+filing a duplicate. The implementation still needs to make the documented
+single-handoff write boundary literal; this is a regression signal for #263,
+not a second roadmap item.
 
 ---
 
