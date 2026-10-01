@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.19.0 — 2026-10-01
+
+- **Added: immutable memory authority and Write–Execute–Forget lifecycle
+  controls (#338).** Durable dialog, dialectic, lesson, and skill artifacts
+  now retain write-time authority plus principal/channel provenance; declared
+  derivations preserve their lowest root. The observable consequential-action
+  gate requires independent trusted corroboration or explicit confirmation for
+  observed memory. Selective forget traverses the derivation graph and
+  invalidates descendants so they no longer retrieve or authorize actions.
+
 ## v0.18.4 — 2026-09-30
 
 - **Added: canonical skills over the stable MCP Skills extension (#336).**
@@ -522,6 +532,19 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.17.0 — 2026-09-30
+
+### Added
+
+- **Staged model-compatibility gate (#337).** Embedding upgrades now build a
+  resumable target generation beside one durable active pointer, validate full
+  note/dialog coverage, run fixed old→new and new→old replay thresholds, and
+  atomically activate only after all gates pass. `tk-migrate-embeddings` and
+  `mp_dashboard()` show active/staging/coverage/validation state; `--rollback`
+  atomically restores the previous generation. Newly derived lessons, skills,
+  notes, and dialectic claims retain writer provider/model/revision and source
+  pointers without copying private transcript text.
 
 ## v0.16.3 — 2026-07-19
 

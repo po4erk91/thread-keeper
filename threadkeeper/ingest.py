@@ -561,6 +561,15 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
                 except Exception:
                     pass
             if inserted:
+                # Transcript content is observed input, never a trusted policy
+                # assertion.  Stamp its adapter/session identity at ingest so
+                # later summaries must carry this original low authority.
+                from .authority import record_root
+                record_root(
+                    conn, "dialog", nm.uuid, authority="observed",
+                    principal=nm.session_id or nm.uuid,
+                    channel=f"adapter:{adapter.name}:{nm.role}",
+                )
                 added += 1
         # For text messages, only the process that won INSERT owns passive
         # skill accounting. Tool-only turns have no dialog row, so their

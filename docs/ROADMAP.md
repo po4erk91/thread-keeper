@@ -69,6 +69,12 @@ remains a live question.
   generation, and CI pre-fetches the pinned snapshot before running semantic
   tests offline. An intentional model/revision upgrade requires
   `tk-migrate-embeddings --all`.
+- ✅ DONE (#337): Model upgrades use a durable active-generation pointer and a
+  separate resumable staging generation. Full coverage validation and a fixed
+  old→new/new→old replay gate precede an atomic activation; CLI/dashboard
+  reports expose active, staging, coverage, validation, and rollback state.
+  Newly derived lessons, skills, notes, and dialectic claims retain writer
+  model/provider/revision plus source pointers without copying transcript text.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
@@ -178,6 +184,12 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Memory authority lifecycle (#338): new durable dialog, dialectic, lesson,
+  and skill artifacts receive immutable write-time authority plus
+  principal/channel provenance. Explicit derivations keep the least-authority
+  root, repeated observations from one principal cannot satisfy the
+  consequential-action gate, and `forget` recursively invalidates descendants
+  so they disappear from retrieval and cannot authorize later actions.
 - Pre-ingest privacy denylist (#145): configured project/CWD paths and globs
   now drop matching adapter messages before redaction, embedding, or any dialog
   write. The per-file ingest watermark still advances past skipped messages;
