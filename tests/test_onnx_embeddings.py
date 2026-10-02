@@ -111,10 +111,11 @@ def test_migration_recomputes_tags_and_is_idempotent(sem_pkg):
                  dry_run=False, log=lambda _m: None)
     assert rc == 0
     assert mig._count_stale(conn, "notes", active) == 0
-    tagged = conn.execute(
-        "SELECT COUNT(*) FROM notes WHERE embed_backend=?", (active,)
+    staged = conn.execute(
+        "SELECT COUNT(*) FROM embedding_generation_vectors "
+        "WHERE generation=? AND memory_kind='note'", (active,)
     ).fetchone()[0]
-    assert tagged >= 3
+    assert staged >= 3
 
     # idempotent: a second pass finds nothing stale and changes nothing.
     rc2 = mig.run(do_notes=True, do_dialog=False, batch=2,

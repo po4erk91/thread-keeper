@@ -44,6 +44,7 @@ from .config import (
     CANDIDATE_REVIEW_FLUSH_AGE_S,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
+    CANDIDATE_REVIEW_BATCH_SIZE,
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
@@ -108,7 +109,18 @@ choose exactly one action:
      brief(). Call:
         accept_candidate(id=..., target_kind='verbatim')
 
-  6. REJECT — false positive that slipped past extract's noise
+  6. LESSON — only when a compact lesson is a better fallback than a
+     SKILL.md. Before a new `lesson_append`, call:
+        lesson_neighbors(title=<prospective>, summary=<prospective>,
+                         body=<prospective>, k=3)
+     Read relevant suggested slugs. Patch/consolidate an incumbent when it
+     covers the rule; otherwise add `[[suggested-slug]]` to the new body when
+     the lessons are related, then call `lesson_append(...)`. If an existing
+     lesson already covers the rule and the candidate shows it was broken
+     again, call `lesson_violation(slug=<existing>, evidence=<one line>)`
+     and accept the candidate as that lesson instead of duplicating it.
+
+  7. REJECT — false positive that slipped past extract's noise
      filters (system prompt fragment, log dump, etc.). Call:
         reject_candidate(id=..., reason='<one-line>')
 
@@ -231,28 +243,41 @@ def _active_skills_dump(conn: sqlite3.Connection, limit: int = 15,
 def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     """Build the inventory the reviewer child will read.
 
-    Returns (dump_text, n_pending). Only candidates within last 30
-    days are surfaced — older = stale, likely already overtaken by
-    fresh dialog.
+    Returns (dump_text, n_pending) where n_pending counts every surfaced
+    candidate. Only candidates within last 30 days are surfaced — older =
+    stale, likely already overtaken by fresh dialog. At most
+    CANDIDATE_REVIEW_BATCH_SIZE of them, oldest first, go into one prompt;
+    the rest stay pending for the next pass instead of growing the prompt
+    without bound (#24).
     """
     now = int(time.time())
     stale_cutoff = now - 30 * 86400
+    limit = max(1, int(CANDIDATE_REVIEW_BATCH_SIZE))
     try:
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM extract_candidates "
+            "WHERE status='pending' AND created_at > ?",
+            (stale_cutoff,),
+        ).fetchone()[0])
         rows = conn.execute(
             "SELECT id, kind, source_uuid, source_cid, content, "
             "       rationale, created_at "
             "FROM extract_candidates "
             "WHERE status='pending' AND created_at > ? "
-            "ORDER BY created_at DESC",
-            (stale_cutoff,),
+            "ORDER BY created_at ASC, id ASC LIMIT ?",
+            (stale_cutoff, limit),
         ).fetchall()
     except sqlite3.OperationalError:
         return ("", 0)
     if not rows:
         return ("", 0)
-    parts: list[str] = [f"PENDING CANDIDATES (n={len(rows)})\n"]
+    shown = (
+        f"n={len(rows)}" if len(rows) == total
+        else f"n={len(rows)} of {total}; the rest stay pending for the next pass"
+    )
+    parts: list[str] = [f"PENDING CANDIDATES ({shown})\n"]
     parts.extend(_format_candidate(dict(r)) for r in rows)
-    return ("\n".join(parts), len(rows))
+    return ("\n".join(parts), total)
 
 
 def _oldest_pending_ts(conn: sqlite3.Connection) -> int:
@@ -382,6 +407,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             + fence_observed(inventory, "pending candidate snippets")
         )
 
+        from .spawn_result import parse_spawn_result
         from .tools.spawn import spawn  # type: ignore
         try:
             result = spawn(
@@ -401,18 +427,28 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     "mcp__thread-keeper__accept_candidate,"
                     "mcp__thread-keeper__reject_candidate,"
                     "mcp__thread-keeper__lesson_append,"
+                    "mcp__thread-keeper__lesson_neighbors,"
+                    "mcp__thread-keeper__lesson_violation,"
                     "mcp__thread-keeper__mark_skill_materialized"
                 ),
             )
         except Exception as e:
-            _record_review_pass(conn, now, f"spawn_error: {e}")
+            _record_review_pass(
+                conn, _last_review_ts(conn), f"spawn_error: {e}"
+            )
             return f"spawn_error: {e}"
+
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
+            out = f"spawn_error: {spawn_result.reason}"
+            _record_review_pass(conn, _last_review_ts(conn), out)
+            return out
 
         _record_review_pass(
             conn, now,
-            f"spawned pending={n_pending} :: {str(result)[:140]}",
+            f"spawned pending={n_pending} :: {spawn_result.text[:140]}",
         )
-        return str(result)
+        return spawn_result.text
 
 
 def _serve_loop() -> None:
