@@ -656,6 +656,14 @@ mutation count.
   interval at the new claim's start; `dialectic_review(as_of=...)` and
   `dialectic_synthesis(include_history=True)` expose time-scoped user-model
   queries.
+- ✅ DONE (#339). **Durable preference-drift evaluation pilot.** A fixed,
+  anonymized replay corpus now separates durable change, task-local exception,
+  high-impact ambiguity, and poisoning. Its read-only report records
+  supersession precision/recall, false durable-flip and clarification rates,
+  poisoning containment, evidence IDs, and a counterfactual for every proposed
+  supersession. It deliberately does not change the validator or automatic
+  supersession policy; documented thresholds and a representative pilot review
+  are required before that separate change.
 - **Decay/eviction** scoring for the saturating ~1054-section lessons store.
   ✅ DONE — lesson reads now update `lesson_usage`, and the curator dry-run
   inventory surfaces ranked stale lesson candidates using a recency/frequency

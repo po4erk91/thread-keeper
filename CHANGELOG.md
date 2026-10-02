@@ -6,6 +6,18 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-02
+
+### Features
+
+- **Durable preference-drift evaluation pilot (#339).** Added a fixed,
+  anonymized replay corpus and a read-only report for durable change,
+  task-local exception, high-impact ambiguity, and poisoning. The report
+  includes supersession precision/recall, false durable-flip and clarification
+  rates, poisoning containment, cited evidence IDs, and counterfactuals. It
+  does not alter the production supersession policy.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

@@ -1250,6 +1250,31 @@ remain as observability counters (incremented by 1 per row regardless of
 weight); confidence and tier are driven by the weighted sums over the
 `dialectic_evidence` table.
 
+### Durable preference-drift pilot
+
+`python -m threadkeeper.dialectic_drift_eval --json` replays a fixed,
+anonymized corpus before any durable-preference supersession policy is changed.
+The corpus has durable changes, explicitly task-scoped exceptions, high-impact
+ambiguous flips on elicitation-capable and unsupported hosts, and poisoned
+observations. It is read-only: it does not call `dialectic_validator` or
+`dialectic_supersede`, and it does not mutate a user model.
+
+Each replay row includes the proposed action, the supporting memory IDs for the
+replacement, the contradicting memory IDs for the old claim, the recent and
+older evidence windows, and a counterfactual explaining what would have kept
+the old claim. A validated preference with one explicit task-scoped exception
+is therefore reported as `preserve`; a high-impact ambiguous flip reports one
+`clarify` action only when elicitation is available, otherwise it is
+non-destructive. Poisoned evidence reports `contain`.
+
+The report records supersession precision/recall, false durable-flip rate,
+clarification rate, and poisoning containment. The pilot thresholds are
+precision ≥95%, recall ≥90%, false durable-flip rate ≤2%, and poisoning
+containment =100%. Passing the synthetic fixture only verifies the evaluator;
+it never enables an automatic policy. Any later policy change requires a
+documented representative pilot run meeting those thresholds and a separate
+reviewed implementation.
+
 ### Tier state machine
 
 Independent of the continuous confidence band, each claim carries a
