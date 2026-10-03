@@ -1257,6 +1257,27 @@ filing a duplicate. The implementation still needs to make the documented
 single-handoff write boundary literal; this is a regression signal for #263,
 not a second roadmap item.
 
+**2026-10-03 reviewer additions (issue-backed).**
+The current audit added two privacy gaps at the boundary between the shared
+local store and the projects or storage media that contain it:
+
+- **Project-scoped memory (#359).** Give project-bound threads, notes, dialog,
+  tasks, and derived artifacts a stable privacy-safe project identity. Default
+  briefs, retrieval, resources, and learning-loop inputs to the current project
+  plus explicitly global/shared memory; require a visible opt-in for
+  cross-project recall and fail closed on ambiguous legacy rows.
+- **Encrypted storage profile (#360).** Offer an opt-in, SQLCipher-backed
+  database profile with OS-secret-store key custody and tested WAL, temporary
+  file, backup/restore, rekey, migration, crash-recovery, and multi-process
+  behavior. Keep ordinary SQLite as the default and document which external
+  workflow artifacts remain outside the encrypted database boundary.
+
+The other research leads map to existing work: the draft Tasks extension stays
+on the standards watchlist (#341); resource subscriptions, protocol
+conformance, tracing, and outcome-based memory evaluation are tracked in
+#345, #344, #346, and #347; source authority is complete in #338. Broader
+structured output was already considered under #67/#70 and is not re-filed.
+
 ---
 
 ## Principle
