@@ -6,6 +6,18 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-10-03
+
+### Changed
+
+- **Documented the draft MCP standards watchlist (#341).** The architecture now
+  maps audit records, capability trust, authorization denials, asynchronous
+  approvals, citations, and AI-invocation context to existing local concepts
+  without implementing their proposal wire formats. Each release review checks
+  the authoritative tracker links; an accepted or final proposal requires its
+  own compatibility-review issue before implementation.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

@@ -383,7 +383,9 @@ as a fallback. The visible/Terminal path records via a `--record` shell
 line.
 
 **Documentation.** README / ARCHITECTURE / this file — update now.
-Going forward: keep in sync when the set of tools or daemons changes.
+Going forward: keep in sync when the set of tools or daemons changes. The
+[draft MCP standards watchlist](ARCHITECTURE.md#draft-mcp-standards-watchlist)
+tracks overlapping proposal areas without adopting their unstable wire formats.
 Scope: ongoing.
 
 **Curator policy tuning.** ✅ DONE — now a three-day deep audit rather than the

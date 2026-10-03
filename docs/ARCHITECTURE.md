@@ -1573,6 +1573,27 @@ and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
 clients, older Claude clients), behavior is unchanged: the tool applies
 immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
 
+### Draft MCP standards watchlist
+
+This is the single maintained mapping for MCP proposals that overlap existing
+local concepts. Statuses below were checked against the
+[MCP SEP tracker](https://plan.modelcontextprotocol.io/seps) on 2026-10-03.
+They are design signals, not implemented interoperability claims: do not add a
+public API, database schema, or protocol payload that mirrors any listed draft.
+
+| Watched proposal and tracker status | Closest current ThreadKeeper concept | Draft wire shape | Reconsideration trigger |
+|---|---|---|---|
+| [SEP-3004: Tamper-Evident Audit Record Contract](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3004) — proposal; source PR closed unmerged | Mutation `events` plus curator-report SHA-256 provenance | **Not implemented.** Events are local SQLite records; they are not a canonical, hash-chained audit-record contract. | An accepted/final SEP successor emerges; review retention, canonicalization, export, and append-only compatibility before opening a scoped implementation issue. |
+| [SEP-3140: Signed Capability Declarations & Trustworthy Trust Labels](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3140) — proposal; source PR closed unmerged | MCP `ToolAnnotations`; local `skill_usage.created_by_origin` and lesson trust tiers | **Not implemented.** Local hints and origin/tier labels are neither signed declarations nor portable trust labels. | An accepted/final SEP successor emerges; review signer identity, key lifecycle, and how remote claims relate to local provenance before opening a scoped implementation issue. |
+| [SEP-2643: Structured Authorization Denials](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2643) — proposal; source PR open | Local guard errors (`ERR ...`) and confirmation refusal paths | **Not implemented.** ThreadKeeper is local and has no authorization-denial payload or public denial schema. | The tracker reaches accepted/final and a remote/authenticated deployment is in scope; review error compatibility and information disclosure before opening a scoped implementation issue. |
+| [SEP-2848: Asynchronous Approval for Tool Calls](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2848) — proposal; source PR open | Capability-gated, in-request `elicit_confirm_reject()` for `dialectic_supersede` | **Not implemented.** The existing confirmation is synchronous and host-local; it does not expose an asynchronous approval lifecycle. | The tracker reaches accepted/final; review host support, timeout/cancellation semantics, and idempotency before opening a scoped implementation issue. |
+| [SEP-3094: Granular Citations Format](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3094) — proposal; source PR open | `dialectic_evidence.source` freeform pointers and quoted evidence | **Not implemented.** Evidence pointers are internal provenance, not a portable granular-citation result format. | The tracker reaches accepted/final; review result compatibility, source privacy, and stable identifiers before opening a scoped implementation issue. |
+| [SEP-2817: AI Invocation Audit Context in Request `_meta`](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2817) — proposal; source PR open | `events`, session `client`/`write_origin`, and spawned-task lineage | **Not implemented.** ThreadKeeper does not accept or persist the proposal's client-asserted invocation metadata. | The tracker reaches accepted/final; review redaction, retention, trust boundaries, and request-context availability before opening a scoped implementation issue. |
+
+At each release, the release reviewer checks these tracker links. A proposal
+that has become accepted/final gets a separate scoped issue only after its
+compatibility review; it is never adopted by silently changing this table.
+
 ## Tests
 
 ```
