@@ -37,6 +37,7 @@ from ..curator import (
     _last_inventory_fingerprint,
     _last_curator_ts,
     curator_report_sha256,
+    lesson_promotion_telemetry,
     run_curator_pass,
 )
 from ..curator_snapshots import (
@@ -136,6 +137,7 @@ def curator_review_status() -> str:
         )
     except Exception:
         lines.append("current_inventory_sha256=(unavailable)")
+    lines.append(lesson_promotion_telemetry(conn))
     lines.extend(["", "recent passes (newest first):"])
     try:
         rows = conn.execute(

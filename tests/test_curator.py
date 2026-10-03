@@ -51,6 +51,7 @@ def _bootstrap(
     monkeypatch,
     interval="0",
     min_lessons="3",
+    promotion_min_lessons="3",
     destructive=None,
     retention=None,
     max_destructive=None,
@@ -70,6 +71,7 @@ def _bootstrap(
         "THREADKEEPER_CURATOR_INTERVAL_S": interval,
         "THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS": "0",
         "THREADKEEPER_CURATOR_MIN_LESSONS": min_lessons,
+        "THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS": promotion_min_lessons,
         "THREADKEEPER_CURATOR_REPORTS_DIR": str(tmp_path / "curator"),
         "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_TASK_LOG_DIR": str(tmp_path / "tasks"),
@@ -176,6 +178,195 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
     assert "STALE LESSONS (dry-run decay ranking)" in dump
+
+
+def test_dense_lesson_cluster_crosses_promotion_threshold(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="snapshot journal procedure", source="shadow",
+        )
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert candidates == []
+
+    pkg["lessons"].append_lesson(
+        title="curator snapshot restores lesson recovery",
+        body="snapshot journal procedure",
+        source="shadow",
+    )
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.topic_terms == ("curator", "snapshot")
+    assert candidate.decision == "PROMOTE_TO_SKILL"
+    assert candidate.protected_slugs == ()
+    assert candidate.lesson_slugs == (
+        "curator-snapshot-keeps-lesson-evidence",
+        "curator-snapshot-protects-lesson-rollback",
+        "curator-snapshot-restores-lesson-recovery",
+    )
+
+
+def test_protected_dense_cluster_requires_human_review(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+        "curator snapshot restores lesson recovery",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="snapshot journal procedure", source="T123",
+        )
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].decision == "HUMAN_REVIEW"
+    assert candidates[0].protected_slugs == candidates[0].lesson_slugs
+
+
+def test_promotion_ignores_generic_title_joiners(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "and not one relay",
+        "and not one queue",
+        "and not one cache",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="separate concrete mechanism", source="shadow",
+        )
+
+    conn = pkg["db"].get_db()
+    detection = pkg["curator"]._analyze_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert detection.candidates == ()
+    assert dict(detection.rejected_by_reason) == {
+        "no_meaningful_title_pair": 1,
+    }
+
+
+def test_promotion_rejects_high_document_frequency_title_term(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "deployment rollout admits signed artifacts",
+        "deployment rollout restores failed artifacts",
+        "deployment rollout records release state",
+        "deployment cache isolates workers",
+        "deployment quota protects runners",
+        "render trace samples requests",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="release journal checkpoint", source="shadow",
+        )
+
+    conn = pkg["db"].get_db()
+    detection = pkg["curator"]._analyze_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert detection.candidates == ()
+    assert dict(detection.rejected_by_reason) == {
+        "high_document_frequency_term": 1,
+    }
+
+
+def test_promotion_requires_shared_body_mechanism(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title, body in (
+        ("socket transport rotates certificates", "certificate handshake cipher"),
+        ("socket transport serializes writes", "sqlite transaction journal"),
+        ("socket transport limits workers", "cgroup runtime quota"),
+    ):
+        pkg["lessons"].append_lesson(title=title, body=body, source="shadow")
+
+    conn = pkg["db"].get_db()
+    detection = pkg["curator"]._analyze_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert detection.candidates == ()
+    assert dict(detection.rejected_by_reason) == {"low_body_cohesion": 1}
+
+
+def test_promotion_keeps_one_maximal_cohesive_cluster(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "alpha beta gamma first",
+        "alpha beta gamma second",
+        "alpha beta gamma third",
+        "alpha beta delta fourth",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="ledger protocol checkpoint", source="shadow",
+        )
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].topic_terms == ("alpha", "beta")
+    assert len(candidates[0].lesson_slugs) == 4
+    assert candidates[0].cohesion_terms == ("checkpoint", "ledger", "protocol")
+
+
+def test_promotion_detector_does_not_require_embeddings(tmp_path, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_NO_EMBEDDINGS", "1")
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "lockfile resolver records manifest",
+        "lockfile resolver restores checksum",
+        "lockfile resolver validates policy",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="manifest checksum ledger", source="shadow",
+        )
+
+    conn = pkg["db"].get_db()
+    candidates = pkg["curator"]._detect_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].topic_terms == ("lockfile", "resolver")
+
+
+def test_curator_status_reports_promotion_rejections(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title, body in (
+        ("socket transport rotates certificates", "certificate handshake cipher"),
+        ("socket transport serializes writes", "sqlite transaction journal"),
+        ("socket transport limits workers", "cgroup runtime quota"),
+    ):
+        pkg["lessons"].append_lesson(title=title, body=body, source="shadow")
+
+    from threadkeeper._mcp import mcp
+    status = mcp._tool_manager._tools["curator_review_status"].fn()
+
+    assert "promotion_candidates emitted=0 rejected=1" in status
+    assert "rejected_by_reason=low_body_cohesion:1" in status
 
 
 def test_collect_inventory_marks_legacy_and_unknown_skills_protected(
@@ -317,6 +508,44 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+
+def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path,
+        monkeypatch,
+        min_lessons="3",
+        write_origin="shadow_review",
+    )
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+        "curator snapshot restores lesson recovery",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="snapshot journal procedure", source="shadow",
+        )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        captured.append(kwargs)
+        return "spawn task_id=fake-promotion-curator pid=0"
+
+    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+
+    out = pkg["curator"].run_curator_pass(force=True)
+    assert "fake-promotion-curator" in out
+    assert len(captured) == 1
+    prompt = captured[0]["prompt"]
+    assert "LESSON CLUSTER PROMOTION CANDIDATES (n=1)" in prompt
+    assert "PROMOTE_TO_SKILL: topic=curator snapshot lesson_count=3" in prompt
+    assert "Create one new, clearly named canonical skill" in prompt
+    assert "## Retired lessons" in prompt
+    assert "Only after it passes may you call" in prompt
 
 
 def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(

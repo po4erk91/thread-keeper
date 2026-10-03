@@ -98,6 +98,13 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-03
+
+- **Added: cohesive lesson-to-skill promotion candidates (#340).** Curator
+  ignores generic title words, filters high document-frequency terms, requires
+  a shared body mechanism, and reports emitted and rejection-reason counts so
+  only concrete lesson clusters reach human or Curator review.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

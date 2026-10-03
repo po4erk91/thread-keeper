@@ -1134,6 +1134,21 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Lesson-to-skill promotion** — the curator deterministically groups lessons
+  only when a concrete title-term pair reaches
+  `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries (default 3) and every
+  member shares at least one non-generic body mechanism. Stop words, generic
+  domain vocabulary, and high document-frequency title terms are excluded
+  before clustering. Maximal clusters are deduplicated, and
+  `curator_review_status()` reports `promotion_candidates` emitted/rejected
+  counts plus rejection reasons (`no_meaningful_title_pair`,
+  `high_document_frequency_term`, or `low_body_cohesion`). An unprotected
+  `PROMOTE_TO_SKILL` candidate directs the curator to read every source lesson,
+  create a checklist-style canonical skill with a `Retired lessons` provenance
+  section, validate it, and only then retire those source lessons. Any protected
+  member makes the candidate `HUMAN_REVIEW`, so a background curator never
+  creates a partial promotion or deletes protected memory.
+
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the
   normal `lesson_append`, `lesson_remove`, or `skill_manage` tools run under
@@ -1765,6 +1780,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | review an undersized queue once its oldest candidate is this old (0 = threshold only) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
+| `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` | 3 | dense same-subtopic lessons required before the curator proposes a skill promotion |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` | curator child writes its REPORT then applies PATCH/PRUNE/CONSOLIDATE directly; set `0` for advisory-only; protected entries are refused server-side |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | `0` | explicit snapshot-scoped authority to repair/merge/delete foreground skills; pins and untracked provenance remain protected |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain `lesson_remove` / `skill_manage(delete)` recovery artifacts under `<db dir>/curator/trash` |

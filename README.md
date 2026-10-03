@@ -638,7 +638,16 @@ ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The child reads every
+rows with no real `SKILL.md` remain explicit orphans. The same inventory also
+flags a dense lesson subtopic when at least
+`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
+concrete title terms and a non-generic body mechanism. Generic joins and
+domain-wide/high-document-frequency title words cannot form a candidate. The
+inventory and `curator_review_status()` report emitted/rejected counts and
+rejection reasons, so the rule can be tuned from production data. A
+non-protected candidate must become one validated, checklist-style canonical
+skill before its source lessons are retired; protected clusters are left for
+human review. The child reads every
 complete skill and relevant support file, performs current web research against
 official docs and comparable
 public skills, then writes numbered per-skill verdicts to
