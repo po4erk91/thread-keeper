@@ -1172,6 +1172,112 @@ The current audit found two boundary violations in the spawn and status paths:
   separate from watchdog enforcement, so a read-only MCP call or menu poll
   cannot kill a child, mutate lifecycle state, or spend a retry spawn.
 
+**2026-09-29 reviewer additions (issue-backed).**
+The current audit reconciled the completed September work and added five
+transport, migration, memory-safety, and learning-quality gaps:
+
+- ✅ DONE (#336). **MCP Skills transport.** The canonical skill library is
+  served through
+  the stable MCP Skills extension with paginated discovery, complete manifests,
+  origin-qualified `skill://` resources, and file digests. Keep filesystem
+  mirroring as the compatibility path for hosts without the extension.
+- ✅ DONE (#337). **Model-upgrade migration gate.** A target embedding
+  generation is built beside the active one, checked for complete coverage and
+  replay quality in both upgrade directions, and activated atomically. Derived
+  memories also retain writer-model provenance and source pointers.
+- ✅ DONE (#338). **Non-malleable memory authority.** Authority is bound to
+  the original principal/channel and propagated through derived artifacts;
+  repeated evidence cannot manufacture independent corroboration, and the
+  Write–Execute–Forget lifecycle invalidates descendants after erasure.
+- **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
+  and multi-timescale replay before changing supersession policy, so a one-off
+  task exception cannot silently replace a validated durable preference.
+- **Lesson-promotion precision (#340).** Expand stop-word and document-frequency
+  filtering, require topic cohesion beyond one shared title pair, and record
+  emitted/rejected candidate telemetry. This is the durable issue for legacy
+  evolve suggestion 85.
+- **MCP standards watchlist (#341).** Track the draft Tasks, audit, approval,
+  trust, authorization-denial, citation, and AI-invocation proposals against
+  current internal concepts. Do not implement their public wire shapes until
+  the relevant proposal reaches accepted/final status. The existing durable
+  task spool is the compatibility substrate if the Tasks extension stabilizes;
+  an MCP App for human memory review remains a product decision, not an implied
+  protocol commitment.
+
+**2026-09-30 reviewer additions (issue-backed).**
+The current audit added six gaps around protocol compatibility, resource
+freshness, observability, evaluation quality, read purity, and workflow-data
+retention:
+
+- **Dual-era MCP conformance (#344).** Test legacy and 2026 request flows over
+  real stdio, normalize them into one internal request context, and make
+  replayed multi-round mutations idempotent or explicitly reject them.
+- **Live private memory resources (#345).** Add capability-gated subscriptions,
+  commit-aware/coalesced invalidation, and honest private-cache metadata for
+  the four `memory://` resources while retaining the pull-only fallback.
+- **Privacy-safe workflow tracing (#346).** Offer an opt-in OTLP exporter that
+  correlates parent, child, MCP/tool, retry, and terminal events without
+  exporting prompts, payloads, memory bodies, credentials, or private paths.
+- **Outcome-based memory evaluation (#347).** Score evidence recall separately
+  from final-answer quality and run a stable matrix across retrieval backends,
+  retention/curation state, and personal-memory egress policy.
+- **Observationally pure read surfaces (#348).** Stop tools and resources marked
+  read-only from bootstrapping sessions/daemons or reconciling task/RSS state;
+  move persistence to daemon-owned or explicitly write-annotated paths.
+- **Autonomous-workflow retention (#349).** Bound terminal Curator manifests,
+  frozen batch bodies, reports, Evolve research handoffs, and owned files while
+  preserving active, retryable, unapplied, and recoverable work.
+
+**2026-10-01 reviewer additions (issue-backed).**
+The current audit added four concrete gaps around tool discovery, portable MCP
+guidance, Curator research privacy, and Evolve review cadence:
+
+- **Role-scoped MCP tool profiles (#353).** Advertise a small daily-use catalog
+  by default, keep a `full` compatibility profile, support validated
+  include/exclude overrides, and provide bounded capability discovery for hosts
+  without native deferred tool search. Spawned-child allowlists remain the
+  upper bound and cannot be widened by a profile.
+- **Portable server instructions (#354).** Publish concise MCP initialization
+  guidance for brief/context loading, thread lifecycle, read-only resources,
+  and destructive-operation confirmation. Generate it from the same source as
+  the setup-managed CLI block so the two paths cannot drift.
+- **Curator web-research privacy boundary (#355).** The web researcher currently
+  combines full lesson/skill/concept and repository reads with external search.
+  Give it only a bounded, redacted, public-safe research brief; keep the full
+  local inventory on the web-free evaluator side and fall back to offline or
+  human review for private/unknown-sensitivity entries.
+- **Evolve research spawn retry (#356).** A returned research admission error
+  currently advances the review high-water even though no child launched, so a
+  transient refusal can suppress the weekly audit. Apply the same transient
+  cursor-preservation contract already tested for audit-phase spawn failures.
+
+The mechanical dedup gate also linked the Evolve researcher's extra
+`broadcast` capability back to completed confinement issue #263 rather than
+filing a duplicate. The implementation still needs to make the documented
+single-handoff write boundary literal; this is a regression signal for #263,
+not a second roadmap item.
+
+**2026-10-03 reviewer additions (issue-backed).**
+The current audit added two privacy gaps at the boundary between the shared
+local store and the projects or storage media that contain it:
+
+- **Project-scoped memory (#359).** Give project-bound threads, notes, dialog,
+  tasks, and derived artifacts a stable privacy-safe project identity. Default
+  briefs, retrieval, resources, and learning-loop inputs to the current project
+  plus explicitly global/shared memory; require a visible opt-in for
+  cross-project recall and fail closed on ambiguous legacy rows.
+- **Encrypted storage profile (#360).** Offer an opt-in, SQLCipher-backed
+  database profile with OS-secret-store key custody and tested WAL, temporary
+  file, backup/restore, rekey, migration, crash-recovery, and multi-process
+  behavior. Keep ordinary SQLite as the default and document which external
+  workflow artifacts remain outside the encrypted database boundary.
+
+The other research leads map to existing work: the draft Tasks extension stays
+on the standards watchlist (#341); resource subscriptions, protocol
+conformance, tracing, and outcome-based memory evaluation are tracked in
+#345, #344, #346, and #347; source authority is complete in #338. Broader
+structured output was already considered under #67/#70 and is not re-filed.
+
 ---
 
 ## Principle
