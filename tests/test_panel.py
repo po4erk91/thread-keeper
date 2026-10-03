@@ -138,6 +138,26 @@ def test_convene_panel_distill_spawns_voters(tmp_path, monkeypatch):
         assert "may vote against" in c["prompt"].lower()
 
 
+def test_convene_panel_excludes_returned_spawn_errors(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _seed_distill(pkg, "Derr", "this should not count as a launch")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = _tool(pkg, "convene_panel")(target_kind="distill", target_id="Derr")
+
+    assert "spawned=0" in out
+    assert "spawn_errors:" in out
+    conn = pkg["db"].get_db()
+    event = conn.execute(
+        "SELECT summary FROM events WHERE kind='convene_panel' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert "spawned=0" in event["summary"]
+
+
 def test_convene_panel_claim_uses_dialectic_tool(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()

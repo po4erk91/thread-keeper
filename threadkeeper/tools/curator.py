@@ -15,6 +15,13 @@ audit pass:
 
   curator_restore(pass_id, lesson_slug="", skill_name="")
     Restore one lesson or skill from a destructive pass snapshot.
+
+  curator_research_write(pass_id, content, batch_index, batch_total)
+    Persist one parent-authorized, bounded web-research handoff. Only the
+    read-only Curator research phase can call it.
+
+  curator_merge_verdict(slug_a, slug_b, reason)
+    Remember a reviewed lesson pair that must remain separate.
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from .._mcp import read_tool, write_tool
 from ..db import get_db
 from ..identity import _ensure_session
 from ..curator import (
+    CURATOR_RESEARCH_MAX_CHARS,
+    CURATOR_RESEARCH_PROVENANCE_KIND,
     CURATOR_PROMPT,
     CURATOR_REPORT_PROVENANCE_KIND,
     _collect_inventory,
@@ -36,8 +45,14 @@ from ..curator import (
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
+    _record_batch_report_provenance,
+    curator_research_authorization,
+    curator_research_payload,
     curator_report_sha256,
     lesson_promotion_telemetry,
+    curator_pass_status,
+    CURATOR_REPORT_COMPLETE_MARKER,
+    record_merge_verdict,
     run_curator_pass,
 )
 from ..curator_snapshots import (
@@ -47,12 +62,14 @@ from ..curator_snapshots import (
     snapshots_root,
 )
 from ..permissions import chmod_private_file
+from ..link_health import scan_wikilink_health
 from ..skill_audit import build_skill_audit
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
     CURATOR_REPORTS_DIR,
     CURATOR_DESTRUCTIVE,
+    CURATOR_MAX_CONCURRENT_BATCHES,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
     SPAWNED_CHILD,
     WRITE_ORIGIN,
@@ -62,6 +79,24 @@ from ..config import (
 _PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MAX_REPORT_CHARS = 2_000_000
 logger = logging.getLogger(__name__)
+
+
+@write_tool(idempotent=True)
+def curator_merge_verdict(slug_a: str, slug_b: str, reason: str) -> str:
+    """Remember a curator-reviewed lesson pair that should remain separate.
+
+    This records only the safe `keep_both` outcome for a rejected merge
+    candidate. The next curator inventory includes the pair and short reason,
+    so a later pass can respect the deliberate layering without re-reading
+    both full lesson bodies.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    try:
+        left, right = record_merge_verdict(conn, slug_a, slug_b, reason)
+    except ValueError as exc:
+        return f"ERR {exc}"
+    return f"ok merge_verdict={left},{right} decision=keep_both"
 
 
 @write_tool()
@@ -114,6 +149,7 @@ def curator_review_status() -> str:
     lines = [
         f"interval_s={CURATOR_INTERVAL_S:.0f} "
         f"min_lessons={CURATOR_MIN_LESSONS} "
+        f"max_concurrent_batches={CURATOR_MAX_CONCURRENT_BATCHES} "
         f"mode={mode} "
         f"manage_foreground_skills={int(CURATOR_MANAGE_FOREGROUND_SKILLS)} "
         f"reports_dir={CURATOR_REPORTS_DIR}",
@@ -127,14 +163,31 @@ def curator_review_status() -> str:
         )
     else:
         lines.append("inventory_sha256=(none)")
+    batch_state = curator_pass_status(conn)
+    lines.append(
+        "batch_state "
+        f"pass_id={batch_state['pass_id'] or '-'} "
+        f"expected={batch_state['expected']} "
+        f"running={batch_state['running']} "
+        f"failed={batch_state['failed']} "
+        f"complete={batch_state['complete']} "
+        f"unapplied={batch_state['unapplied']} "
+        f"endorsed={int(bool(batch_state['endorsed']))}"
+    )
     try:
-        current_fp, n_lessons, n_skills, n_concepts = (
+        collection, current_fp, n_lessons, n_skills, n_concepts = (
             _current_inventory_fingerprint(conn)
         )
-        lines.append(
-            f"current_inventory_sha256={current_fp} lessons={n_lessons} "
-            f"skills={n_skills} concepts={n_concepts}"
-        )
+        if collection.completeness.complete:
+            lines.append(
+                f"current_inventory_sha256={current_fp} lessons={n_lessons} "
+                f"skills={n_skills} concepts={n_concepts}"
+            )
+        else:
+            lines.append(
+                "current_inventory_sha256=(unavailable) "
+                + collection.completeness.failure_outcome()
+            )
     except Exception:
         lines.append("current_inventory_sha256=(unavailable)")
     lines.append(lesson_promotion_telemetry(conn))
@@ -266,6 +319,105 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
     )
 
 
+@read_tool()
+def wikilink_health(include_archived: bool = True) -> str:
+    """List unresolved ``[[slug]]`` links in all lesson and skill bodies.
+
+    This detector is read-only. It reports each dead target with the lesson
+    or skill that references it; repair remains a separate curator action.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    return json.dumps(
+        scan_wikilink_health(conn, include_archived=include_archived),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+@write_tool(idempotent=True)
+def curator_research_write(
+    pass_id: str,
+    content: str,
+    batch_index: int = 0,
+    batch_total: int = 0,
+) -> str:
+    """Persist bounded web evidence to the parent-authorized Curator handoff.
+
+    Only a spawned ``curator_researcher`` child carrying the matching pass ID may
+    call this tool. The parent chooses the filename from pass and batch metadata;
+    callers cannot select a destination or hand evidence to another batch.
+    """
+    clean_id = pass_id.strip()
+    if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
+        return "ERR invalid_pass_id"
+    try:
+        batch_index = int(batch_index)
+        batch_total = int(batch_total)
+    except (TypeError, ValueError):
+        return "ERR invalid_batch"
+    if not (1 <= batch_index <= batch_total <= 9999):
+        return "ERR invalid_batch"
+    evidence = content.rstrip()
+    if len(evidence) > CURATOR_RESEARCH_MAX_CHARS:
+        return f"ERR research_too_large max_chars={CURATOR_RESEARCH_MAX_CHARS}"
+    if not evidence or not evidence.endswith("CURATOR_RESEARCH_COMPLETE"):
+        return "ERR malformed_research"
+    if WRITE_ORIGIN != "curator_research" or not SPAWNED_CHILD:
+        return "ERR research_write_not_authorized"
+    if current_pass_id() != clean_id:
+        return "ERR research_write_pass_mismatch"
+    conn = get_db()
+    _ensure_session(conn)
+    authorization = curator_research_authorization(
+        conn, clean_id, batch_index, batch_total,
+    )
+    if authorization is None:
+        return "ERR research_write_not_authorized"
+    target = CURATOR_REPORTS_DIR / authorization["research_name"]
+    persisted = curator_research_payload(authorization, evidence)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(persisted, encoding="utf-8")
+        temporary.replace(target)
+        chmod_private_file(target)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return f"ERR research_write_failed={exc}"
+    digest = curator_report_sha256(persisted)
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                _ensure_session(conn),
+                CURATOR_RESEARCH_PROVENANCE_KIND,
+                str(target.resolve()),
+                json.dumps(
+                    {
+                        "pass_id": clean_id,
+                        "batch_index": batch_index,
+                        "batch_total": batch_total,
+                        "sha256": digest,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("curator research provenance record failed", exc_info=True)
+        return f"ERR research_provenance_failed={exc}"
+    return f"ok path={target} chars={len(evidence)}"
+
+
 @write_tool(idempotent=True)
 def curator_report_write(
     pass_id: str,
@@ -341,6 +493,14 @@ def curator_report_write(
                 f"pass_id={clean_id} sha256={digest}",
                 int(time.time()),
             ),
+        )
+        _record_batch_report_provenance(
+            conn,
+            pass_id=clean_id,
+            report_name=report_name,
+            digest=digest,
+            complete=CURATOR_REPORT_COMPLETE_MARKER in persisted,
+            now=int(time.time()),
         )
         conn.commit()
     except Exception as exc:

@@ -153,6 +153,26 @@ def _editable_spec(repo: Path) -> str:
     return f"{repo}{suffix}"
 
 
+def _pip_available() -> bool:
+    return importlib.util.find_spec("pip") is not None
+
+
+def _pip_install_argv(*args: str) -> list[str]:
+    """`pip install` for this interpreter, through uv when the venv has no pip.
+
+    uv-created virtualenvs ship without pip, so `python -m pip` fails with
+    "No module named pip" and every git-mode update ended install=failed with
+    its restart suppressed.
+    """
+    if not _pip_available():
+        from .adapters.base import find_cli_executable
+
+        uv = find_cli_executable("uv")
+        if uv:
+            return [uv, "pip", "install", "--python", sys.executable, *args]
+    return [sys.executable, "-m", "pip", "install", *args]
+
+
 def _installed_version() -> str:
     try:
         return importlib.metadata.version(PACKAGE_NAME)
@@ -517,7 +537,7 @@ def _update_git_checkout(repo: Path) -> str:
     _, new_rev, _ = _git_stdout(repo, "rev-parse", "--short", "HEAD")
 
     install = _run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "-e", _editable_spec(repo)],
+        _pip_install_argv("--quiet", "-e", _editable_spec(repo)),
         timeout=AUTO_UPDATE_TIMEOUT_S,
     )
     if install.returncode != 0:
@@ -542,7 +562,7 @@ def _update_installed_package() -> str:
             return f"no_update mode=pip version={old_version}"
 
     install = _run(
-        [sys.executable, "-m", "pip", "install", "--upgrade", _package_spec()],
+        _pip_install_argv("--upgrade", _package_spec()),
         timeout=AUTO_UPDATE_TIMEOUT_S,
     )
     if install.returncode != 0:

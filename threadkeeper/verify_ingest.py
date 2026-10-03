@@ -25,10 +25,11 @@ layer.
 
 Adapter slots
 -------------
-The production ingest contract targets the three currently ingestible CLI
-families below. Antigravity (``agy``) is supported for MCP and spawning, but
-its sqlite/protobuf conversation store is not parsed yet; it is therefore
-reported as a capability gap rather than an impossible required ingest slot.
+The production ingest contract targets the three CLI families below.
+Antigravity (``agy``) transcripts are ingested too, but agy is not one of the
+issue-#1 targets, so it is an optional source: its rows count as non-Claude
+evidence for the cross-adapter and learning-loop criteria without becoming a
+required slot that every install would have to fill.
 """
 from __future__ import annotations
 
@@ -45,9 +46,10 @@ SLOT_BY_SOURCE: dict[str, str] = {
     "claude-desktop": "claude-code",  # same vendor surface, Claude slot
     "codex": "codex",
     "copilot": "copilot",
-    # Antigravity is supported for MCP/spawn but its protobuf/sqlite transcript
-    # format is not ingestible yet, so it is intentionally not a required slot.
 }
+
+# Ingested non-Claude sources that are not required slots (see docstring).
+OPTIONAL_NON_CLAUDE_SOURCES: frozenset[str] = frozenset({"antigravity"})
 
 # A source with at least this many live rows counts as production-verified
 # for its slot. Below it (but >0) is "thin" — present but not yet a
@@ -124,7 +126,9 @@ def evaluate_verdict(
     verified_slots = [s for s, i in slots.items() if i["status"] == "verified"]
 
     non_claude_window = [
-        s for s in window if SLOT_BY_SOURCE.get(s) not in (None, "claude-code")
+        s for s in window
+        if SLOT_BY_SOURCE.get(s) not in (None, "claude-code")
+        or s in OPTIONAL_NON_CLAUDE_SOURCES
     ]
 
     c1_pass = len(verified_slots) == len(CANONICAL_SLOTS)
