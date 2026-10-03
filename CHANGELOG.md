@@ -15,6 +15,11 @@ version bumps follow semver per the policy in
   observed memory. Selective forget traverses the derivation graph and
   invalidates descendants so they no longer retrieve or authorize actions.
 
+- **Added: cohesive lesson-to-skill promotion candidates (#340).** Curator
+  ignores generic title words, filters high document-frequency terms, requires
+  a shared body mechanism, and reports emitted and rejection-reason counts so
+  only concrete lesson clusters reach human or Curator review.
+
 ## v0.18.4 — 2026-09-30
 
 - **Added: canonical skills over the stable MCP Skills extension (#336).**

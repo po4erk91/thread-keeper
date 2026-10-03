@@ -1347,21 +1347,26 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Lesson-to-skill promotion** — the curator deterministically groups lessons
+  only when a concrete title-term pair reaches
+  `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries (default 3) and every
+  member shares at least one non-generic body mechanism. Stop words, generic
+  domain vocabulary, and high document-frequency title terms are excluded
+  before clustering. Maximal clusters are deduplicated, and
+  `curator_review_status()` reports `promotion_candidates` emitted/rejected
+  counts plus rejection reasons (`no_meaningful_title_pair`,
+  `high_document_frequency_term`, or `low_body_cohesion`). An unprotected
+  `PROMOTE_TO_SKILL` candidate directs the curator to read every source lesson,
+  create a checklist-style canonical skill with a `Retired lessons` provenance
+  section, validate it, and only then retire those source lessons. Any protected
+  member makes the candidate `HUMAN_REVIEW`, so a background curator never
+  creates a partial promotion or deletes protected memory.
+
 - **Wikilink health** — `wikilink_health(include_archived=True)` is a
   deterministic, read-only scan across every materialized lesson and skill
   body. It resolves `[[slug]]` targets against the combined lesson/skill
   inventory and returns every unresolved target with its source entry. It
   detects global link drift; it does not repair links during a scan.
-
-- **Lesson-to-skill promotion** — the curator also deterministically groups
-  lessons that share a pair of meaningful slug/title terms. A group reaches a
-  promotion candidate at `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries
-  (default 3). An unprotected `PROMOTE_TO_SKILL` candidate directs the curator
-  to read every source lesson, create a checklist-style canonical skill with a
-  `Retired lessons` provenance section, validate it, and only then retire those
-  source lessons. Any protected member makes the candidate `HUMAN_REVIEW`, so a
-  background curator never creates a partial promotion or deletes protected
-  memory.
 
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the

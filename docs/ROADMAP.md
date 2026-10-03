@@ -1066,6 +1066,11 @@ GitHub issues:
   checklist-style canonical skill with a `Retired lessons` provenance section
   before the source lessons are retired; any protected member produces a
   `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
+- **Promotion cohesion precision.** ✅ DONE (#340). Candidates now require
+  concrete, non-high-frequency title terms and a shared non-generic body
+  mechanism; generic joins and lexically accidental clusters are rejected
+  before Curator review. Status telemetry reports emitted/rejected counts and
+  reasons for production threshold tuning.
 - **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
   unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
