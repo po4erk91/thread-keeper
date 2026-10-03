@@ -2,7 +2,7 @@
 
 `render_brief` builds the multi-section ctx string returned by the
 `brief()` MCP tool: ctx header, core_memory, inbox, tasks_running,
-live_peers, open/idle/closed threads, style, verbatim, query-relevant
+live_peers, worktree_safety, open/idle/closed threads, style, verbatim, query-relevant
 hits, weak_spots, concepts, distill_pending, extract_pending,
 pickup_top, evolve_pending, and the trailing user-facing reminder.
 
@@ -424,6 +424,21 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                     f" {marker}{sid[:8]} (no user msg) msgs={d['msgs']} "
                     f"last={fmt_age(now - d['last_at'])}_ago"
                 )
+
+    # ── worktree_safety ──────────────────────────────────────────────────
+    # Concurrent sessions can otherwise stage, commit, or push each other's
+    # work from a shared checkout. The spawn path must give every session its
+    # own worktree; until that is true, make the boundary explicit in the
+    # session-start snapshot where git actions are planned.
+    if peers_n and full:
+        out.append("")
+        out.append(f"worktree_safety peers={peers_n}")
+        out.append(
+            "  → concurrent sessions detected. BEFORE commit/push: verify "
+            "this session has its own git worktree. If it does not, do NOT "
+            "stage broadly, commit, or push — move the work to an isolated "
+            "worktree first"
+        )
 
     # ── open ──────────────────────────────────────────────────────────────
     open_t = conn.execute(
