@@ -5,6 +5,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## [Unreleased]
+
+- **Documented the draft MCP standards watchlist (#341).** The architecture
+  maps audit records, capability trust, authorization denials, asynchronous
+  approvals, citations, and AI-invocation context to existing local concepts
+  without implementing their proposal wire formats. Each release review checks
+  the authoritative tracker links; an accepted or final proposal requires its
+  own compatibility-review issue before implementation.
+
 ## v0.19.0 — 2026-10-01
 
 - **Added: immutable memory authority and Write–Execute–Forget lifecycle
