@@ -98,6 +98,19 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-04
+
+### Added
+
+- **Dual-era MCP conformance and replay-safe modern writes (#344).** The MCP
+  server now runs on SDK 2.x and serves the `2025-11-25` initialize handshake
+  alongside the `2026-07-28` per-request envelope. Modern discovery and static
+  catalogs carry public freshness hints; sealed continuation state is bound to
+  each request's caller envelope and expires after five minutes. A caller-bound
+  replay ledger returns the original terminal result for a repeated modern
+  mutating JSON-RPC request, or rejects an ambiguous in-flight replay rather
+  than committing it twice. Wire-level stdio tests cover both eras.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

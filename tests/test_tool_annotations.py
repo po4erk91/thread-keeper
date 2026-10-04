@@ -97,7 +97,7 @@ def test_every_tool_has_explicit_read_write_hint(fresh_mp):
     tools = _tools(fresh_mp)
     missing = [
         n for n, t in tools.items()
-        if t.annotations is None or t.annotations.readOnlyHint is None
+        if t.annotations is None or t.annotations.read_only_hint is None
     ]
     assert not missing, f"tools missing explicit readOnlyHint: {sorted(missing)}"
 
@@ -106,15 +106,15 @@ def test_read_tools_are_read_only(fresh_mp):
     tools = _tools(fresh_mp)
     for n in READ_TOOLS:
         a = tools[n].annotations
-        assert a.readOnlyHint is True, f"{n} should be readOnlyHint=True"
-        assert a.destructiveHint in (None, False), f"{n} read tool is destructive?"
+        assert a.read_only_hint is True, f"{n} should be readOnlyHint=True"
+        assert a.destructive_hint in (None, False), f"{n} read tool is destructive?"
 
 
 def test_no_mutating_tool_marked_read_only(fresh_mp):
     tools = _tools(fresh_mp)
     bad = [
         n for n in (WRITE_TOOLS | DELETE_CLASS_TOOLS)
-        if tools[n].annotations.readOnlyHint is not False
+        if tools[n].annotations.read_only_hint is not False
     ]
     assert not bad, f"mutating tools wrongly marked read-only: {sorted(bad)}"
 
@@ -123,13 +123,13 @@ def test_delete_class_tools_are_destructive(fresh_mp):
     tools = _tools(fresh_mp)
     for n in DELETE_CLASS_TOOLS:
         a = tools[n].annotations
-        assert a.readOnlyHint is False, f"{n} delete-class must not be read-only"
-        assert a.destructiveHint is True, f"{n} must carry destructiveHint=True"
+        assert a.read_only_hint is False, f"{n} delete-class must not be read-only"
+        assert a.destructive_hint is True, f"{n} must carry destructiveHint=True"
 
 
 def test_non_destructive_writes_not_flagged_destructive(fresh_mp):
     tools = _tools(fresh_mp)
-    bad = [n for n in WRITE_TOOLS if tools[n].annotations.destructiveHint is True]
+    bad = [n for n in WRITE_TOOLS if tools[n].annotations.destructive_hint is True]
     assert not bad, f"non-destructive writes flagged destructive: {sorted(bad)}"
 
 
@@ -138,11 +138,11 @@ def test_annotation_consistency(fresh_mp):
     tools = _tools(fresh_mp)
     for n, t in tools.items():
         a = t.annotations
-        if a.readOnlyHint:
-            assert a.destructiveHint in (None, False), n
-            assert a.idempotentHint in (None, False), n
-        if a.destructiveHint:
-            assert a.readOnlyHint is False, n
+        if a.read_only_hint:
+            assert a.destructive_hint in (None, False), n
+            assert a.idempotent_hint in (None, False), n
+        if a.destructive_hint:
+            assert a.read_only_hint is False, n
 
 
 @pytest.mark.parametrize("name", sorted(STATUS_TOOLS))
@@ -164,5 +164,5 @@ def test_status_tools_emit_validating_structured_content(fresh_mp, name):
     assert text_blocks, f"{name} dropped its legacy text block"
 
     # structured content present and validates against the advertised schema
-    assert result.structuredContent is not None, f"{name} returned no structuredContent"
-    jsonschema.validate(result.structuredContent, tool.output_schema)
+    assert result.structured_content is not None, f"{name} returned no structuredContent"
+    jsonschema.validate(result.structured_content, tool.output_schema)

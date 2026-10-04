@@ -65,7 +65,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from .._mcp import read_tool, write_tool
 from ..config import WRITE_ORIGIN

@@ -1715,7 +1715,7 @@ the suite on every push and PR.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
-├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── _mcp.py               # MCPServer singleton + read_tool()/write_tool() annotation wrappers
 ├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults
@@ -1763,6 +1763,15 @@ shared form-mode confirmation helper. It probes the host's elicitation
 capability before prompting, uses only a flat primitive schema, and leaves
 unsupported clients on the existing text/tool fallback path. The first protected
 write is `dialectic_supersede`.
+
+**Protocol compatibility (#344).** The stdio server supports the
+`2025-11-25` initialize-handshake era and the `2026-07-28` request-envelope
+era. Legacy hosts retain the existing tools, resources, and prompts. Modern
+calls derive identity and capabilities from every request, static discovery
+catalogs advertise public cache freshness, and replaying a completed write with
+the same caller-bound JSON-RPC id returns the original result instead of
+committing a second mutation. Sealed continuation state expires after five
+minutes; an interrupted write with no terminal result is rejected on replay.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

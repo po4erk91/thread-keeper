@@ -848,6 +848,16 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#344). **Dual-era MCP protocol conformance and replay-safe writes.**
+  The SDK 2.x migration serves `2025-11-25` initialize clients and the
+  `2026-07-28` per-request envelope through one tool implementation. Legacy
+  discovery retains core tools/resources/prompts without modern-only methods;
+  modern identity and capabilities come from every request, not process-global
+  handshake state. Static catalogs have public cache hints, continuation state
+  is integrity-checked/caller-bound/short-lived, and a caller-bound JSON-RPC
+  replay ledger returns the original completed write result or rejects an
+  ambiguous replay. `tests/test_mcp_protocol_conformance.py` drives both lanes
+  over real stdio.
 - ✅ DONE (#76). **Learning-loop memory-poisoning boundary.** Observed dialog is
   fenced as untrusted data in every synthesis prompt, loop children use
   path-scoped memory tools instead of bare filesystem writes, stated-policy

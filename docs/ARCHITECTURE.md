@@ -13,7 +13,7 @@ use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
@@ -1488,7 +1488,7 @@ below).
 | panel | 1 | convene_panel |
 | session | 1 | session_end |
 
-Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+Each tool is a synchronous Python function; MCPServer wraps it in JSON-Schema
 automatically from type annotations. One process — one mcp instance
 (`threadkeeper._mcp.mcp`).
 
@@ -1518,6 +1518,29 @@ which calls warrant a prompt (substrate for #26). The five status tools
 the legacy human-readable text block for backward compatibility. The contract
 is enforced by `tests/test_tool_annotations.py`.
 
+### Dual protocol eras and replay safety (#344)
+
+The SDK's dual-era runner normalizes the legacy `2025-11-25` initialize
+handshake and the `2026-07-28` request-envelope model before tools run. The
+business tool functions are shared; only the transport boundary differs. A
+legacy connection cannot call modern-only `server/discover` or subscription
+methods, while its tools/resources/prompts remain unchanged.
+
+For 2026 requests, `protocol.py` derives a caller fingerprint and capabilities
+from that request's `_meta` envelope instead of retaining handshake identity or
+capabilities in process-global state. Static discovery catalogs (`server/discover`
+and the tools/resources/prompts lists) are stable for a server process and
+advertise one-hour public cache hints. Resource content remains private and
+immediately stale because it reflects the live memory store.
+
+The SDK seals continuation `requestState` values with an integrity-protected,
+caller-bound envelope that expires after five minutes. The replay guard
+uses the same caller scope plus a JSON-RPC request id and an argument digest
+for modern mutating calls: a completed re-entry receives its saved result; a
+same-id argument mismatch or an incomplete prior write is rejected. This
+chooses safety over a duplicate mutation when a process dies after a business
+write but before its terminal response is recorded.
+
 ### MCP resources & prompts (#78)
 
 Tools are only one of MCP's three server primitives. thread-keeper also adopts
@@ -1541,7 +1564,7 @@ the other two for the read/act split they fit naturally:
   one instruction message that drives the existing read/act tools (it does not act
   on its own).
 
-Both are **additive**: FastMCP advertises the `resources` / `prompts`
+Both are **additive**: MCPServer advertises the `resources` / `prompts`
 capabilities, which only changes what a capability-aware host *sees* — never the
 tool surface. A host that uses neither falls back to the hook-injected brief and
 the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on
