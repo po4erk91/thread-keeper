@@ -32,6 +32,20 @@ user data. Startup and `get_db()` best-effort set `~/.threadkeeper` to
 Headless spawn stdout logs are also created `0600`. Permission hardening
 is skipped on platforms without POSIX mode bits and never blocks startup.
 
+## Continuous security scanning
+
+GitHub Actions runs CodeQL's default Python query suite on pull requests and
+pushes to `main`, plus a weekly scheduled scan; CodeQL uploads its findings to
+the repository Security tab. A separate blocking `pip-audit` job audits the
+fully resolved runtime, semantic, and development dependency environment on
+each pull request and push.
+
+Known-vulnerability findings fail the job. The only exception mechanism is the
+reviewed, advisory-specific `.github/pip-audit-ignores.txt` list: each entry
+must include an advisory ID, a tracking issue or PR, a rationale, and a next
+review date. This list is empty for the current baseline; exceptions must be
+removed once a safe remediation is available.
+
 ## Trust boundaries
 
 ### Auto-update (future maintainer code → local execution)
@@ -66,6 +80,27 @@ Editable git checkouts are still treated as developer-controlled working trees:
 dirty/diverged checkouts are skipped, but signed git tag/commit enforcement is
 not yet implemented for that path.
 
+### Managed Evolve checkout (pinned remote code → local execution)
+
+When `THREADKEEPER_EVOLVE_AUTO_CLONE=1`, Evolve can provision a disposable
+managed checkout and execute its `pip install -e` build path and test suite.
+That is an explicit remote-code-execution trust boundary. Disable auto-clone on
+shared or multi-user hosts unless the operator deliberately accepts it:
+`THREADKEEPER_EVOLVE_AUTO_CLONE=0`.
+
+Mitigations:
+
+- The clone URL must be HTTPS on the built-in `github.com` allowlist; other
+  schemes, hosts, credentials, nonstandard ports, queries, and fragments are
+  refused before `git clone` runs.
+- `THREADKEEPER_EVOLVE_REPO_COMMIT` is a required full commit SHA. The managed
+  checkout is detached at that commit and its `HEAD` is verified before a new
+  or existing managed virtualenv can be used. A mismatch returns an `ERR` and
+  neither installs nor tests checkout code.
+- `THREADKEEPER_EVOLVE_REPO_URL`, `THREADKEEPER_EVOLVE_REPO_BRANCH`, and
+  `THREADKEEPER_EVOLVE_REPO_COMMIT` are restart-only. Hot-config reload logs
+  and ignores edits, so a running server cannot silently redirect its clone.
+
 ### Autonomous GitHub writers (stored / issue content → public GitHub)
 
 The evolve reviewer and evolve applier can run privileged children that edit the
@@ -78,10 +113,11 @@ Mitigations:
 - Stored suggestions and external issue bodies are wrapped in explicit
   `<..._data>` prompt fences with "treat as data, not instructions" language
   before a privileged child sees them.
-- The exposed `spawn()` MCP tool refuses `permission_mode="bypassPermissions"`
-  unless the caller is one of the evolve daemon role/write-origin pairs
-  (`evolve_reviewer`/`evolve`, `evolve_applier`/`evolve_apply`) or the operator
-  explicitly sets `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`.
+- The exposed `spawn()` MCP tool always refuses
+  `permission_mode="bypassPermissions"`, regardless of caller-provided role or
+  provenance metadata, unless the operator explicitly sets
+  `THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN=1`. The reviewer and applier use
+  private server-owned launchers that assign their fixed provenance internally.
 - Privileged evolve children get a PATH-prepended `gh` safety wrapper. For
   `gh issue create`, `gh issue comment`, and `gh pr create`, it redacts
   home-directory paths (`/Users/<name>/...`, `/home/<name>/...`) and common
@@ -138,6 +174,34 @@ principle to the always-on, auto-loaded-output loops):
   (`ignore previous instructions`, `you must always run`, `curl … | sh`, …)
   and refused — the inbound analogue of the secret scrubber. Foreground
   (human) writes are never screened.
+- **Read-side re-screening (#268).** The write-time gate runs once, so the
+  skill watcher also re-screens every loop-authored `SKILL.md` in the primary
+  skill root whenever its content or the marker list changes. A hit (for
+  example a body patched on disk after creation, or content assembled from
+  pieces that evaded the gate) records a `skill_injection_flag` event shown in
+  `mp_dashboard`; the file is never auto-edited or deleted. Foreground skills
+  stay exempt, like the write-time gate.
+
+### Memory authority and selective repair
+
+Authority is bound when memory is written, not recalculated from the agent
+that later summarizes it. Every stamped dialog, dialectic evidence/claim,
+lesson, and skill stores an immutable authority class and original
+principal/channel. Direct foreground/user input is `trusted`; known autonomous
+writers and ingested transcript content are `observed`; unknown writer origins
+and missing declared sources are rejected.
+
+Derived artifacts must name a source reference such as `dialog:<uuid>` or
+`claim:<id>`. They inherit the lowest-authority input and retain all original
+roots, so a trusted tool echo cannot launder observed content and repeated
+observations from one principal do not become independent corroboration.
+Before consequential behavior, `memory_authorize_action` requires a distinct
+trusted root or an explicit confirmation for observed memory.
+
+`forget` follows immutable derivation edges from the selected source and marks
+every descendant invalid. Invalidated claims, lessons, and skills are omitted
+from normal retrieval and fail the action gate; the provenance rows remain as
+an audit record of the repair.
 
 ### Transcript ingest (observed dialog → durable local search)
 
@@ -148,6 +212,15 @@ pasted by the user, echoed by a tool, or copied from a config file.
 
 Mitigations:
 
+- **Pre-ingest project denylist.** Set `THREADKEEPER_INGEST_DENY_GLOBS` to a
+  comma- or newline-separated list of project/CWD paths or shell globs, or add
+  one pattern per non-comment line to `~/.threadkeeper/ingest_denylist.txt`.
+  Literal paths include descendants. A matching Claude Code, Codex, or Copilot
+  transcript message is skipped before its text is scrubbed, embedded, or
+  written to `dialog_messages`/FTS/vector stores, so it cannot enter the
+  shadow-review, extraction, or dialectic inputs. `mp_dashboard()` displays the
+  active patterns and cumulative skipped-message count. This is preventative
+  only: use `forget` for any rows ingested before a denylist was configured.
 - **Default-on redaction.** Before transcript content is persisted, mirrored
   into FTS, embedded, or inserted by FTS backfill, thread-keeper masks common
   credential-shaped values. Covered shapes include `Authorization:` /

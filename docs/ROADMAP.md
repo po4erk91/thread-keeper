@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Spawn launch-result contract: internal callers parse the public text response
+  and treat a child as launched only when it has a task identifier, so returned
+  admission failures cannot advance loop state, inflate telemetry, or retain
+  child-only claims.
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
   RSS instead of ~1.3GB.
 - Search proxy in parent process — slim child performs semantic search
@@ -27,6 +31,12 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Stable MCP Skills distribution (#336): MCP 2026-07-28 discovery advertises
+  `io.modelcontextprotocol/skills`; deterministic `skills/list` / `skills/get`
+  manifests and origin-qualified `skill://thread-keeper/...` resources expose
+  canonical skill files with byte-size and SHA-256 integrity data. Filesystem
+  mirrors remain the fallback for hosts without the extension; discovery/read
+  remains delivery, never activation or approval.
 - Learning-loop skill-create cap (#98): `skill_manage(action='create')`
   enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
   `candidate_review`, `shadow_review`, and `background_review` origins, so a
@@ -35,6 +45,13 @@ remains a live question.
 - `skill_watcher` daemon — tracks SKILL.md changes, bumps
   `last_patched_at`.
 - `skill_usage` telemetry + backfill from historical jsonl.
+- Curator false-positive skill pruning (#166): background-review skills with
+  zero foreground consultations remain eligible after 14 days even when
+  automated maintenance has increased their patch counts.
+- Skill telemetry sanity (#168): passive `Skill` invocations increment raw and
+  foreground use counters, `skill_list` records visibility, and curator
+  inventory shows raw uses, foreground uses, views, and patches without
+  counting its own automated inventory read as a consultation.
 - Dialectic user model: `dialectic_claim` / `evidence` / `synthesis` /
   `review` / `supersede`, smoothed-ratio confidence, grouping by domain
   in brief.
@@ -52,6 +69,12 @@ remains a live question.
   generation, and CI pre-fetches the pinned snapshot before running semantic
   tests offline. An intentional model/revision upgrade requires
   `tk-migrate-embeddings --all`.
+- ✅ DONE (#337): Model upgrades use a durable active-generation pointer and a
+  separate resumable staging generation. Full coverage validation and a fixed
+  old→new/new→old replay gate precede an atomic activation; CLI/dashboard
+  reports expose active, staging, coverage, validation, and rollback state.
+  Newly derived lessons, skills, notes, and dialectic claims retain writer
+  model/provider/revision plus source pointers without copying transcript text.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
@@ -62,7 +85,8 @@ remains a live question.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
   creates/updates roadmap issues; Evolve applier drains one open issue at a
-  time behind a visible GitHub issue claim comment and PR, advances past
+  time behind an author-authenticated visible GitHub issue claim comment and
+  PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
 - Auto-update self-restart safety gate (#19): restarts after a daily git/pip
@@ -85,28 +109,38 @@ remains a live question.
   `state=all` (including closed `not_planned` issues), records filed
   fingerprints in `evolve_issues`, skips matching ledger/GitHub/same-pass
   duplicates, and records duplicate skips as telemetry.
-- Evolve reviewer backlog governor (#115): before the privileged,
-  issue-creating audit phase, the parent counts open, not-yet-applied roadmap
-  issues. At `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables
-  it), the audit is withheld and `evolve_review_pass` records
+- Evolve reviewer backlog governor (#115, #304): before the privileged,
+  issue-creating audit phase, the parent counts only open, not-yet-applied
+  issues carrying the deliberate `roadmap` label. Unlabelled issues do not use
+  the cap; skip-labelled and untrusted-author roadmap issues still count because
+  those gates only stop autonomous pickup. At
+  `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` (default 25; `0` disables it), the
+  audit is withheld and `evolve_review_pass` records
   `backlog_saturated open=<n> cap=<max>`; read-only research remains eligible.
 - Evolve roadmap automation git safety (#43): before a privileged reviewer
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
   with `skipped_dirty_worktree` (untracked scratch files do not block), refuses
   overlapping reviewer/applier git writers in the shared checkout, and prompts
-  children to fetch and branch from `origin/main` / `origin/<EVOLVE_REPO_BRANCH>`
-  instead of arbitrary current `HEAD`.
-- Evolve managed-checkout stale-merge recovery: a killed conflict-repair child
-  no longer blocks the entire backlog after its PR was merged elsewhere. The
-  parent first excludes live git writers, requires the default managed checkout
-  plus an applier-owned branch and an exact GitHub `MERGED` state, archives the
-  tracked diff under `evolve-recovery/`, and returns the checkout to the fetched
-  base. Explicit operator checkouts and uncertain PR states remain fail-closed.
+  children to fetch the configured branch but branch only from the configured
+  immutable managed-checkout pin instead of arbitrary current `HEAD`.
+- Evolve managed-checkout interrupted-merge recovery: a killed conflict-repair
+  child no longer blocks the entire backlog whether its exact PR remains open
+  or was merged elsewhere. The parent first excludes live git writers, requires
+  the default managed checkout plus an applier-owned branch, archives the
+  tracked diff under `evolve-recovery/`, aborts open-PR merges for a clean retry,
+  and discards already-merged leftovers as stale before returning to the fetched
+  pinned base. Explicit operator checkouts and uncertain/closed-unmerged PR states
+  remain fail-closed.
 - Evolve managed-checkout lifecycle (#128): the disposable clone now refreshes
-  to the configured `origin/<EVOLVE_REPO_BRANCH>` base before each code pass,
-  without touching explicit checkouts. Clone/venv provisioning has a bounded
+  to its configured base before each code pass, without touching explicit
+  checkouts. Clone/venv provisioning has a bounded
   lock, a configurable free-disk reserve, visible footprint telemetry, and an
   explicit managed-venv prune tool.
+- Evolve managed-clone execution integrity (#132): auto-provisioning accepts
+  only HTTPS `github.com` URLs, checks out and verifies a release-pinned commit
+  before `pip install -e` or tests, and ignores runtime reloads of the source,
+  branch, or pin. The remote-code-execution boundary and shared-host opt-out
+  are documented.
 - Evolve reviewer roadmap-doc PR dedup (#54): before spawning the privileged
   audit child, the parent checks open PRs for automation-owned changes touching
   `docs/ROADMAP.md`; the prompt tells the reviewer to append/skip when one
@@ -150,22 +184,36 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Memory authority lifecycle (#338): new durable dialog, dialectic, lesson,
+  and skill artifacts receive immutable write-time authority plus
+  principal/channel provenance. Explicit derivations keep the least-authority
+  root, repeated observations from one principal cannot satisfy the
+  consequential-action gate, and `forget` recursively invalidates descendants
+  so they disappear from retrieval and cannot authorize later actions.
+- Pre-ingest privacy denylist (#145): configured project/CWD paths and globs
+  now drop matching adapter messages before redaction, embedding, or any dialog
+  write. The per-file ingest watermark still advances past skipped messages;
+  `mp_dashboard()` displays the active patterns and cumulative skipped count.
+  This prevention control complements secret redaction (#37), retention (#45),
+  and selective erasure (#104) for data stored before the denylist was enabled.
 - Cross-CLI ingest production verification (issue #1): the contract test in
   `scripts/tk_verify_ingest.py` gained a read-only `--live` mode that scores
   the three acceptance criteria — all CLI slots have production rows, shadow-
   review spans >1 adapter in one window, and the learning loop fires on
   non-Claude sessions — into a `PASS`/`PARTIAL`/`FAIL` verdict
   (`threadkeeper/verify_ingest.py`). Turns the ad-hoc, one-off manual check
-  into a single reproducible command. Antigravity (`agy`) does not yet parse
-  its sqlite/protobuf conversation store (tracked below under "more
-  adapters"), so it is reported as a capability gap instead of a permanently
-  absent required ingest slot.
+  into a single reproducible command. Antigravity (`agy`) transcripts are
+  ingested since #20; agy stays an optional source that counts as non-Claude
+  evidence rather than a required slot.
 - Dialog transcript secret redaction (#37): live ingest now scrubs common
   credential-shaped values before writing transcript content to
   `dialog_messages`, `dialog_fts`, embeddings, or FTS backfill. The default-on
   `THREADKEEPER_REDACT_DIALOG_SECRETS` knob can be disabled only for rare local
   debugging where raw transcript fidelity intentionally wins over durable
   secret protection.
+- Child-log status redaction: bounded success and failure excerpts are scrubbed
+  before they enter status snapshots or notification payloads; owner-only raw
+  task logs remain available through `task_logs` for local diagnosis.
 - PyPI release authorization gate (#57): merge-to-main release readiness now
   runs with `contents: read` only, validates version/changelog metadata, and
   stops before tag creation or workflow dispatch. Publishing is decoupled from
@@ -241,7 +289,7 @@ machine by design; the SQLite store lives at
 paths. Move to a hosted topology where N users connect their CLIs to
 one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
 
-- **HTTP / SSE transport.** FastMCP already supports
+- **HTTP / SSE transport.** MCPServer already supports
   `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
   Scope: S.
 - **Per-user auth.** Bearer token in `Authorization` header on every
@@ -287,11 +335,9 @@ sentence-transformers similarity scorer plus a classifier, bootstrap from
 the current ledger. But: review_candidates is not actively used yet,
 first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 
-**Rule-enforcement escalation.** Repeatedly re-broken class-level rules
-should stop living only as passive memory. When the same lesson keeps
-getting violated despite an existing entry, mark it `memory-insufficient`
-and surface a recommendation to escalate the rule into an active hard
-guard such as a `PreToolUse` hook. Scope: M. Tracked in issue #228.
+**Rule-enforcement escalation.** ✅ DONE (#228). Repeatedly re-broken
+class-level rules are tracked as `memory-insufficient`, and the learning loop
+can recommend escalation from passive guidance to an active hook guard.
 
 **ACL (former Phase 4).** Folded into the "Multi-user / remote
 deployment" item above — see the ACL sub-bullet there.
@@ -406,10 +452,23 @@ foreground/unknown provenance, and non-foreground children cannot escalate with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
-Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
-plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
-its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.
-Scope: S–M each.
+Completed follow-ups: the recovery/UX path outside snapshots has a recoverable
+lesson-removal trash flow (#52), and candidate-reviewer dispatch now uses a
+bounded payload so a full queue cannot hit `E2BIG` (#24). The Curator inventory
+side was completed in #105.
+Scope: S–M.
+
+✅ DONE: Curator multi-batch completion is now durable. A SQLite pass manifest
+records the inventory fingerprint, expected batches, individual dispatch/task
+state, final report provenance, and advisory apply state. An inventory is
+endorsed only after every expected child succeeds with its matching final
+report; failed, timed-out, and resource-refused batches remain visible and are
+the only ones retried. `CURATOR_MAX_CONCURRENT_BATCHES` (default 1) bounds a
+pass's live fan-out before the normal atomic spawn-budget admission. Advisory
+application enumerates all complete, unapplied reports from one endorsed pass
+in batch order. Incomplete passes are reconciled at `CURATOR_BATCH_POLL_S`
+(default 60) rather than waiting a full audit interval, and Curator status
+exposes expected/running/failed/complete/unapplied counts.
 
 ✅ DONE (#106): destructive Curator passes now have a server-side shared
 admission ceiling before `lesson_remove` or `skill_manage(action='delete')`
@@ -440,6 +499,14 @@ instead of asking another curator child to re-grade the same snapshot. The same
 dispatch lock and running-child guard coalesce concurrent foreground wake-ups
 before they re-read the inventory, and `curator_review_status()` surfaces the
 last endorsed `inventory_sha256` plus the current hash for quiescence checks.
+
+✅ DONE (#298): Curator inventory reads now fail closed. Lessons, skill
+telemetry, skill files, and concepts each return an explicit completeness
+result, so a read/parse/audit/query failure records
+`inventory_error source=<source> error=<type>` and stops before fingerprint
+endorsement, report authorization, snapshot creation, or child dispatch.
+Successfully read empty stores still reach the normal threshold decision; the
+previous endorsed fingerprint remains visible through Curator and agent status.
 
 ✅ DONE (#99): curator and candidate_reviewer now honor their recorded pass
 high-water before spawning. A recent `curator_pass` or
@@ -523,15 +590,28 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   `curator_report_provenance`, and the applier rechecks that path/hash both
   before spawning and before it marks the report applied. Forged, swapped, or
   replayed `REPORT-*.md` files are refused.
+- ✅ DONE (#289). Curator web research and durable-memory mutation now run in
+  separate children. The web-enabled researcher can write only a bounded,
+  parent-authorized pass-and-batch handoff; the web-free evaluator receives it
+  as fenced untrusted data before any advisory report or destructive action.
+  A research child that keeps failing (three attempts) falls back to a
+  non-mutating evaluator that records `HUMAN_REVIEW`, while the existing
+  protected-memory, snapshot, restore, and delete-cap
+  controls remain in the evaluator phase.
 - ✅ DONE (#22). The autonomous GitHub-writing daemons run privileged evolve
   children, but the dangerous pieces are now bounded: `spawn()` refuses
-  `permission_mode="bypassPermissions"` outside the evolve role/write-origin
-  pairs unless an explicit env override is set; stored evolve suggestions and
-  external GitHub issue bodies are embedded inside data fences; and privileged
-  evolve children get a PATH-prepended `gh` wrapper that redacts home-directory
-  paths and common token shapes from public issue/comment/PR bodies before the
-  real GitHub CLI sees them, refusing if a known unsafe pattern remains.
-  Parent-authored claim/dead-letter comments use the same scrubber.
+  `permission_mode="bypassPermissions"` outside server-owned launchers or an
+  explicit env override; stored evolve suggestions and external GitHub issue
+  bodies are embedded inside data fences; and privileged evolve children get a
+  PATH-prepended `gh` wrapper that redacts home-directory paths and common token
+  shapes from public issue/comment/PR bodies before the real GitHub CLI sees
+  them, refusing if a known unsafe pattern remains. Parent-authored
+  claim/dead-letter comments use the same scrubber.
+- ✅ DONE (#308). Public `spawn()` no longer treats caller-supplied role or
+  write-origin metadata as an authorization credential for bypassing sandbox
+  permissions. Reviewer and applier launchers now hold the private in-process
+  capability and assign fixed provenance themselves; the explicit operator
+  override remains the only public bypass path.
 - ✅ DONE (#76). The **learning-loop synthesis children** (distinct from #22's
   GitHub daemons) turn *raw observed dialog* into *auto-loaded* skill / lesson /
   user-model artifacts with no injection fence and no provenance trust-tiering —
@@ -580,11 +660,20 @@ applier drains them. Listed here so the roadmap reflects the live backlog.
   injected content) and #63 (issue-author trust gate); the open web cannot be
   author-allowlisted, so those don't cover this path. Scope was S–M.
 
-**Evolve issue-flow reliability.** The applier posts a claim comment *before*
-spawning the implementer; a spawn failure or red-CI abort leaks the claim for a
-full 24h (TTL-only, no reaper), and a marker-write failure after `gh pr create`
-can open a duplicate PR. Add a claim reaper + open-PR dedup + the missing
-spawn-after-claim test. (#23) Scope: S.
+- ✅ DONE (#144). **CI security scanning.** CodeQL now analyzes the default
+  Python query suite on PRs and pushes to `main` plus a weekly schedule, and
+  uploads results to the Security tab. A blocking `pip-audit` job scans the
+  fully resolved runtime, semantic, and development dependency set; the
+  initially clean baseline has no exceptions, and any future advisory-specific
+  suppression must be reviewed, tracked, justified, and dated in
+  `.github/pip-audit-ignores.txt`. Dependabot also tracks the Docker base image.
+  Scope was S.
+
+**Evolve issue-flow reliability (done, #23).** The applier now checks for an
+existing issue-linked PR before claiming, resolves multi-host claim races, and
+retracts its claim when spawning raises. Returned `ERR ...` admission results
+that do not raise are tracked separately by the open spawn-result contract
+work (#276). Scope was S.
 
 **Evolve reviewer roadmap-doc PR dedup (done, #54).** Reviewer audit passes now
 get a parent-side `gh pr list --json number,url,headRefName,title,author,body,files`
@@ -670,7 +759,8 @@ mutation count.
 Scope: S–M each.
 
 Also filed in the same audit: status-path `gh` fan-out on the menu-bar poll
-(#18), and Antigravity transcript ingest not yet implemented (#20).
+(#18), and Antigravity transcript ingest (#20, ✅ DONE: read-only SQLite/
+protobuf reader for user prompts and final answers).
 
 Follow-up gaps from the 2026-06-17 audit:
 - ✅ DONE (#34). Semantic lesson dedup at write time: loop-authored
@@ -963,76 +1053,131 @@ GitHub issues:
   records views and `lesson_get` records full-body consultations in
   `lesson_usage`; the curator inventory and stale-lesson decay score use those
   counters and timestamps rather than registration age alone.
-- **Surgical lesson patching.** Add a `lesson_patch` primitive and a same-slug
-  shadow edit path that can fix long lessons without re-transcribing them from
-  scratch (#161).
-- **Inbound link repair on consolidation.** Repoint or warn on `[[wikilinks]]`
-  that target merged-away lesson/skill slugs so consolidation does not leave
-  dead pointers behind (#162).
-- **Lesson-to-skill promotion.** When a lesson cluster becomes a dense
-  subtopic, promote it into a structured skill and retire the subsumed lessons
-  instead of leaving a noisy long tail (#163).
-- **Spawn worktree isolation.** Each spawned session should get its own git
-  worktree, or repo-mutating work should be blocked when sessions would share a
-  checkout (#164).
-- **Fail-loud event emission.** `_emit()` should not silently no-op when
-  session setup is missing; forgetting the setup call should be a loud error or
-  an auto-ensure path (#165).
-- **Skill prune heuristic fix.** The curator's false-positive skill prune logic
-  should key on real foreground use, not on auto-patch counts that make the
-  current gate unreachable (#166).
-- **Lesson contradiction reconciliation.** When a new lesson debunks an older
-  permissive lesson or encodes an absolute user directive, flag the older
-  guidance for patch/cross-link/supersession review (#167).
-- **Skill telemetry sanity.** Skill view/use counters need to be verified and
-  surfaced correctly so the curator can trust the disuse/prune signal instead of
-  operating on a dead or undercounted metric (#168).
+- **Surgical lesson patching.** ✅ DONE (#161). `lesson_patch(slug,
+  old_string, new_string)` changes one unique lesson substring without
+  reserializing its section. Overlong `source='shadow'` replacements may only
+  bypass the cap for an existing same slug when they do not increase its body
+  size, so old long lessons remain repairable without admitting new growth.
+- **Inbound link repair on consolidation.** ✅ DONE (#162). `lesson_remove`
+  and `skill_manage(action='delete')` accept a surviving umbrella target and
+  rewrite inbound `[[wikilinks]]` across lessons and mirrored skills. Plain
+  removals report the full dangling-source set for immediate repair.
+- **Lesson-to-skill promotion.** ✅ DONE (#163). The Curator now flags a
+  deterministic dense subtopic when at least three lessons share a pair of
+  meaningful title terms. An unprotected candidate becomes one validated,
+  checklist-style canonical skill with a `Retired lessons` provenance section
+  before the source lessons are retired; any protected member produces a
+  `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
+- **Promotion cohesion precision.** ✅ DONE (#340). Candidates now require
+  concrete, non-high-frequency title terms and a shared non-generic body
+  mechanism; generic joins and lexically accidental clusters are rejected
+  before Curator review. Status telemetry reports emitted/rejected counts and
+  reasons for production threshold tuning.
+- **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
+  unique task branch/worktree; a dirty source checkout is refused before launch.
+- **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
+  caller skips session setup, and audited watchdog, format-evolution, and
+  passive skill-tier paths initialize their session before emitting events.
+- **Skill prune heuristic fix.** ✅ DONE (#166). The curator's
+  false-positive prune rubric now keys on foreground consultations: a
+  background-review skill with `fg_uses=0` remains eligible after 14 days even
+  when automated maintenance increments its patch counter.
+- **Lesson contradiction reconciliation.** ✅ DONE (#167). `lesson_append`
+  now detects clear debunks and absolute directives, records a
+  `lesson_reconciliation` event for each older permissive lesson on the same
+  concrete practice, and returns those slugs for patch/cross-link/supersession
+  review.
+- **Skill telemetry sanity.** ✅ DONE (#168). `skill_list` increments view
+  counters, transcripted `Skill` invocations record raw and foreground use
+  where appropriate, and the curator inventory shows raw uses, foreground
+  uses, views, and patches without counting its own inventory read as a
+  consultation.
 
 **2026-06-26 reviewer additions (issue-backed).**
 A follow-up audit surfaced two more concrete gaps in the learning-loop / lesson
 path:
 
-- **Curator merge-verdict memory.** Persist rejected merge candidates and
-  surface cross-link adjacency in the curator inventory so later passes stop
-  re-litigating the same layered pairs (#189).
-- **Lesson neighbor suggestions at birth.** Before a new lesson is written,
-  surface nearest-neighbor lesson slugs so shadow/candidate authors can add
-  cross-links or consolidate while the lesson is being materialized (#190).
+- ✅ DONE (#189): Curator now persists rejected lesson merge candidates as
+  structured `keep_both` verdicts (normalized pair plus short reason), and each
+  later inventory surfaces applicable verdicts alongside current bidirectional
+  `[[wikilink]]` adjacency. Deliberately layered pairs no longer need a repeated
+  full-body review.
+- ✅ DONE (#190): Before a new lesson is written, `lesson_neighbors(...)`
+  surfaces nearest-neighbor lesson slugs so shadow/candidate authors can add
+  `[[slug]]` cross-links or consolidate while the lesson is being materialized.
 
 **2026-07-03 reviewer additions (issue-backed).**
 A follow-up audit surfaced one more concrete gap in the lesson/skill graph
 path:
 
-- **Dangling wikilink health check.** Scan lesson and skill bodies for
-  unresolved `[[slug]]` references and surface the dead targets in a
-  read-only health view so manual body reads are not the only way to spot
-  broken cross-links (#202).
+- **Dangling wikilink health check.** ✅ DONE (#202). `wikilink_health()`
+  deterministically scans every materialized lesson and skill body for
+  unresolved `[[slug]]` references, reporting each source entry and dead
+  target without mutating either store. It complements, rather than replaces,
+  the consolidation-time repair path in #162.
 
 **2026-08-10 reviewer additions (issue-backed).**
 The current audit reconciled three post-July open issues and added four newly
 verified gaps from the present code and test suite:
 
-- **Parallel-test readiness and Evolve test cost.** Make fixtures and scratch
-  state safe under `pytest-xdist`, then remove the per-test fork bottleneck and
-  cut repeated managed-checkout setup in Evolve tests (#217).
-- **Research-phase write confinement.** Replace the Evolve research child's
-  generic `Write` capability with a mechanically destination-scoped, bounded,
-  pass-linked digest handoff (#263).
-- **Loop-authored skill re-screening.** Re-run the existing injection-marker
-  screen when a loop-authored `SKILL.md` changes (and after detector upgrades),
-  record a review flag, and surface it without auto-deleting the skill (#268).
-- **Spawn-result contract.** Several callers treat returned `ERR ...` admission
-  failures as successful launches, advancing Evolve phase/cadence, retaining
-  claims, and emitting false panel/probe/candidate telemetry. Introduce one
-  typed/shared success contract and migrate every caller (#276).
-- **Authenticated roadmap claims.** Ignore public Evolve claim-marker comments
-  unless their author has a trusted repository association or is an explicitly
-  configured automation actor; claim text alone must not suppress work (#277).
-- **Generated documentation inventory.** Remove hand-maintained test/tool
-  counts or check them mechanically so README and architecture totals cannot
-  drift from collection and the MCP registry (#278).
-- **MCP SDK 2.x migration.** Port the server/context/elicitation and registry
-  contracts before lifting the temporary `mcp<2` compatibility cap (#279).
+- ✅ DONE (#217). **Parallel-test readiness and Evolve test cost.** Fixtures
+  and scratch state are safe under `pytest-xdist`; CI uses forked shards and
+  Evolve tests reuse managed-checkout setup where isolation permits.
+- **Research-phase write confinement (done, #263).** The Evolve researcher has
+  no generic `Write`; the parent registers a child-bound pass and the sole
+  `evolve_research_handoff` route writes its bounded digest to the derived
+  target. Audit consumes only a fresh handoff whose final SHA-256 still matches
+  the accepted pass record; rejected, failed, stale, and tampered handoffs stay
+  visible in telemetry.
+- ✅ DONE (#268). **Loop-authored skill re-screening.** Changed loop-authored
+  skills are re-screened after writes and detector upgrades, with review state
+  recorded and surfaced without automatic deletion.
+- ✅ DONE (#276). **Spawn-result contract.** Spawn callers use one typed result
+  parser, so returned admission errors cannot advance cadence, retain claims,
+  or emit false success telemetry.
+- ✅ DONE (#277). **Authenticated roadmap claims.** Public claim markers count
+  only when their author has a trusted repository association or is an
+  explicitly configured automation actor.
+- ✅ DONE (#278). **Generated documentation inventory.** README and
+  architecture no longer carry hand-maintained test or tool totals; a docs
+  test rejects them and checks the architecture tool table against the live
+  MCP registry.
+- ✅ DONE (#279, #336). **MCP SDK 2.x migration and Skills distribution.**
+  The server requires `mcp>=2.2.0,<3` for the stable MCP 2026-07-28 Skills
+  extension; CI covers that supported surface and a subprocess stdio smoke
+  test.
+
+**2026-09-10 reviewer additions (issue-backed).**
+The current audit reconciled five late-August/September issues and added one
+newly verified Evolve backlog-governor gap:
+
+- ✅ DONE (#289). **Curator capability separation.** External research and
+  privileged lesson/skill mutation run in separate children, so no Curator
+  child holds web access and destructive memory tools together.
+- ✅ DONE (#290). **Durable multi-batch completion.** Every Curator batch has a
+  terminal result, and a pass is endorsed only after all expected reports
+  complete; partial, timeout, and retry outcomes remain explicit.
+- ✅ DONE (#293). **Database transaction cleanup.** Non-autocommit `get_db()`
+  callers cannot leak implicit transactions that retain locks and wedge the
+  single-writer path.
+- ✅ DONE (#298). **Fail-closed Curator inventories.** Lesson or skill
+  inventory read failures defer or fail the pass instead of dispatching an
+  incomplete inventory that could drive unsafe destructive decisions.
+- ✅ DONE (#299). **Child-log redaction.** Captured child-output samples are
+  redacted before storage in agent status and recent-result telemetry.
+- ✅ DONE (#304). **Scoped Evolve backlog pressure.** The reviewer backlog
+  governor counts only eligible roadmap work, so unrelated open issues cannot
+  suppress future audits.
+
+**2026-09-13 reviewer additions (issue-backed).**
+The current audit found two boundary violations in the spawn and status paths:
+
+- ✅ DONE (#308). **Server-controlled privileged spawning.** Public MCP callers
+  cannot use caller-controlled role or origin strings to obtain an unsandboxed
+  process; privileged Evolve launches use a private server-controlled path.
+- ✅ DONE (#309). **Side-effect-free agent status.** Status observation is
+  separate from watchdog enforcement, so a read-only MCP call or menu poll
+  cannot kill a child, mutate lifecycle state, or spend a retry spawn.
 
 ---
 

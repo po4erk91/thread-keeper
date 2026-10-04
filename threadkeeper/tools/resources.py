@@ -82,7 +82,7 @@ def context_resource() -> str:
     mime_type="text/plain",
 )
 def dashboard_resource() -> str:
-    # mp_dashboard() is the read_tool() function; FastMCP leaves it directly
+    # mp_dashboard() is the read_tool() function; MCPServer leaves it directly
     # callable. It opens its own db handle and is defensive on partial schemas.
     return mp_dashboard()
 
