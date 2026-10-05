@@ -26,6 +26,19 @@ def test_slot_mapping_excludes_non_ingestible_and_removed_adapters():
     assert slot_for_source("vscode") is None  # not a canonical slot
 
 
+def test_antigravity_rows_count_as_non_claude_learning_input():
+    rep = evaluate_verdict(
+        source_counts={"claude-code": 100, "antigravity": 40},
+        window_sources=["claude-code", "antigravity"],
+        shadow_passes=3,
+    )
+    loop = rep["criteria"]["learning_loop_non_claude"]
+    assert loop["pass"] is True
+    assert loop["sources"] == ["antigravity"]
+    # optional source: it never fills or blocks a required slot
+    assert "antigravity" not in rep["slots"]
+
+
 def test_coverage_status_verified_thin_absent():
     cov = evaluate_coverage(
         {"claude-code": 200, "codex": 50, "copilot": 2},

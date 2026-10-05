@@ -21,6 +21,7 @@ SPAWN_CUE_SAMPLES = [
     ("en", "do these in parallel"),
     ("es", "hazlo en paralelo"),
     ("pt", "faça isso em paralelo"),
+    ("pt-PT", "faz isto em simultâneo"),
     ("fr", "fais-le en parallèle"),
     ("de", "mach das parallel"),
     ("ru", "сделай параллельно"),
@@ -28,6 +29,8 @@ SPAWN_CUE_SAMPLES = [
     ("ar", "افعل ذلك بالتوازي"),
     ("zh", "同时做这个"),
     ("ja", "並行で進めて"),
+    ("ko", "병렬로 진행해"),
+    ("bn", "সমান্তরালে করো"),
     # Cross-language count + plural noun
     ("en-count", "3 tasks pending"),
     ("es-count", "tres tareas pendientes"),
@@ -42,6 +45,8 @@ WANT_SAMPLES = [
     ("en", "I want you to never use X"),
     ("es", "quiero que nunca uses X"),
     ("pt", "eu quero que você nunca use X"),
+    ("pt-PT", "tu tens de usar X"),
+    ("pt-PT-neg", "não faças X outra vez"),
     ("fr", "je veux que tu ne fasses jamais X"),
     ("de", "ich möchte, dass du nie X verwendest"),
     ("ru", "я хочу чтобы ты не использовал X"),
@@ -49,12 +54,15 @@ WANT_SAMPLES = [
     ("ar", "أريدك أن لا تفعل X"),
     ("zh", "我想要你不要再用 X"),
     ("ja", "X をしてほしい"),
+    ("ko", "X를 절대 다시 사용하지 마"),
+    ("bn", "আমি চাই তুমি আর X ব্যবহার করো না"),
 ]
 
 INSIGHT_SAMPLES = [
     ("en", "the key point is X"),
     ("es", "la conclusión es X"),
     ("pt", "a conclusão é X"),
+    ("pt-PT", "em suma, X"),
     ("fr", "la conclusion: X"),
     ("de", "die Schlussfolgerung ist X"),
     ("ru", "вывод: X"),
@@ -62,12 +70,15 @@ INSIGHT_SAMPLES = [
     ("ar", "الخلاصة X"),
     ("zh", "关键是 X"),
     ("ja", "結論は X"),
+    ("ko", "핵심은 X"),
+    ("bn", "মূল কথা হলো X"),
 ]
 
 EXAMPLE_SAMPLES = [
     ("en", "for example X"),
     ("es", "por ejemplo X"),
     ("pt", "por exemplo X"),
+    ("pt-PT", "a título de exemplo X"),
     ("fr", "par exemple X"),
     ("de", "zum Beispiel X"),
     ("de-short", "z.B. X funktioniert"),
@@ -76,12 +87,15 @@ EXAMPLE_SAMPLES = [
     ("ar", "على سبيل المثال X"),
     ("zh", "例如 X"),
     ("ja", "例えば X"),
+    ("ko", "예를 들어 X"),
+    ("bn", "যেমন X"),
 ]
 
 FRAME_SAMPLES = [
     ("en", "this typically happens"),
     ("es", "típicamente sucede"),
     ("pt", "tipicamente acontece"),
+    ("pt-PT", "nestes casos acontece X"),
     ("fr", "typiquement cela arrive"),
     ("de", "typischerweise passiert das"),
     ("ru", "обычно так"),
@@ -89,6 +103,8 @@ FRAME_SAMPLES = [
     ("ar", "عادة يحدث هذا"),
     ("zh", "通常会发生"),
     ("ja", "通常そうなる"),
+    ("ko", "보통 이런 경우 X"),
+    ("bn", "সাধারণত এই ধরনের ক্ষেত্রে X"),
 ]
 
 
@@ -154,5 +170,11 @@ def test_negatives_no_false_positives_on_neutral_english():
 
 def test_supported_locales_listed():
     assert set(i18n.SUPPORTED_LOCALES) == {
-        "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja",
+        "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja", "ko", "bn",
     }
+
+
+def test_korean_as_above_is_not_a_parallel_cue():
+    # 같이 also means "like/as": "위와 같이 설정했어" = "configured as above".
+    assert not i18n.SPAWN_CUE_RE.search("위와 같이 설정했어")
+    assert i18n.SPAWN_CUE_RE.search("동시에 진행해")
