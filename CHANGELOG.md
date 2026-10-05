@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added dual-era MCP conformance and replay-safe modern writes (#344).**
+  The server accepts the `2025-11-25` initialize handshake and the
+  `2026-07-28` request envelope. Modern discovery catalogs use public cache
+  hints; sealed continuation state is caller-bound and expires after five
+  minutes; a caller-bound replay ledger returns the first terminal result for
+  a repeated modern mutation rather than committing it twice.
+
 - **Documented the draft MCP standards watchlist (#341).** The architecture
   maps audit records, capability trust, authorization denials, asynchronous
   approvals, citations, and AI-invocation context to existing local concepts

@@ -17,6 +17,13 @@ same `MCPServer` instance continues to provide tool/resource/prompt
 registration, annotations, output schemas, structured content, elicitation,
 and stdio transport.
 
+The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
+and the `2026-07-28` per-request envelope. Business tools are shared across
+both paths. Modern static discovery catalogs advertise one-hour public cache
+hints, sealed continuation state is bound to the caller and expires after five
+minutes, and a caller-scoped replay ledger returns the first terminal result
+for a repeated modern mutation rather than running it twice.
+
 ## Package map
 
 ```
