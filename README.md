@@ -173,13 +173,12 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Python MCP SDK compatibility
+### Python MCP SDK surface
 
-thread-keeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). Fresh
-installs resolve 2.x. A small internal adapter uses the SDK 2.x `MCPServer`
-name and falls back to its SDK 1.x `FastMCP` predecessor, so tools, resources,
-prompts, annotations, structured content, elicitation, and stdio behavior keep
-the same public contract across both supported SDK majors.
+thread-keeper requires MCP Python SDK 2.2 or later (`mcp>=2.2.0,<3`). Its
+stable Skills extension uses the MCP 2026-07-28 extension surface, while tools,
+resources, prompts, annotations, structured content, elicitation, and stdio
+continue to use the same `MCPServer` instance.
 
 ### MCP primitives (tools, resources, prompts, elicitation)
 
@@ -218,6 +217,29 @@ Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 / `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
+
+### MCP Skills extension
+
+On MCP 2026-07-28 hosts, thread-keeper also advertises the stable
+`io.modelcontextprotocol/skills` extension. `skills/list` pages the canonical
+library deterministically, and `skills/get` returns the full manifest for one
+skill. Each resource URI is origin-qualified, for example
+`skill://thread-keeper/release-check/SKILL.md`, so hosts retain the server
+identity alongside a possibly colliding skill name.
+
+The manifest covers `SKILL.md` and every permitted file below `references/`,
+`templates/`, `scripts/`, or `assets/`, with its byte length and a
+`sha256:<hex>` digest. Files are individually available through ordinary
+`resources/read`; traversal, undeclared files, and reads over 1 MiB are
+rejected. Hosts should compare both size and digest before using a retrieved
+file. The canonical directory is published once; the existing per-CLI
+filesystem mirrors remain the fallback for clients that do not implement the
+extension.
+
+Discovery and `resources/read` are delivery only. Reading `SKILL.md` does not
+activate it, approve its tools, record use telemetry, or approve supporting
+files. Activation and any user approval remain responsibilities of the host's
+skill-loading path.
 
 ### Memory egress (cross-provider privacy)
 
@@ -698,10 +720,14 @@ for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
 rows with no real `SKILL.md` remain explicit orphans. The same inventory also
 flags a dense lesson subtopic when at least
-`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share a pair
-of meaningful title terms. A non-protected candidate must become one validated,
-checklist-style canonical skill before its source lessons are retired; protected
-clusters are left for human review. A read-only research child reads every
+`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
+concrete title terms and a non-generic body mechanism. Generic joins and
+domain-wide/high-document-frequency title words cannot form a candidate. The
+inventory and `curator_review_status()` report emitted/rejected counts and
+rejection reasons, so the rule can be tuned from production data. A
+non-protected candidate must become one validated, checklist-style canonical
+skill before its source lessons are retired; protected clusters are left for
+human review. A read-only research child reads every
 complete skill and relevant support file, performs current web research against
 official docs and comparable public skills, then writes a bounded
 `RESEARCH-<pass>-batch-NNN-of-MMM.json` handoff through a destination-scoped
@@ -1225,6 +1251,17 @@ loops: a claim that surfaces in `brief()` and then gets "confirmed" by a
 review-fork reading the same dialog can't ride that internal evidence
 all the way to high confidence — internal evidence buys half as much.
 
+**Immutable authority and action confirmation.** Confidence and tier describe
+how useful a claim seems; they do not upgrade the authority of its evidence.
+New dialog, claim, evidence, lesson, and skill artifacts retain a write-time
+authority class plus their source principal/channel. Declared references such
+as `dialog:<uuid>`, `claim:<id>`, `lesson:<slug>`, and `skill:<name>` form a
+derivation graph; summaries and promotions inherit the least-authoritative
+root. Unknown writer origins are rejected. Before any consequential action,
+call `memory_authorize_action`: observed memory needs either an independent
+trusted principal or explicit `confirmed=True`. `forget` quarantines every
+derived descendant, so it can no longer be retrieved or authorize an action.
+
 **Discrete tier on each claim** — `hypothesis → observed → validated`
 (plus `disputed`). Independent of the continuous confidence band; tier
 is the **action-gating** signal:
@@ -1341,6 +1378,9 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | embedding runtime: `onnx` (fastembed, no PyTorch) or `sentence-transformers` (legacy fallback) |
 | `THREADKEEPER_EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384-dim cross-lingual embedding model |
 | `THREADKEEPER_EMBED_REVISION` | backend-specific immutable commit | Hugging Face snapshot pin; set an intentional replacement commit only together with a re-embedding plan |
+| `THREADKEEPER_WRITER_PROVIDER` | active client | optional provider identity recorded for newly derived lessons, skills, notes, and claims |
+| `THREADKEEPER_WRITER_MODEL` | resolved model / `unknown` | optional writer-model identity recorded with derived-memory provenance |
+| `THREADKEEPER_WRITER_REVISION` | `unknown` | optional immutable writer-model revision recorded with derived-memory provenance |
 | `THREADKEEPER_EMBED_CACHE_DIR` | `~/.cache/huggingface/hub` | durable Hugging Face snapshot cache |
 | `THREADKEEPER_EMBED_LOCAL_FILES_ONLY` | false | require the pinned snapshot in the local Hugging Face cache (offline / air-gapped mode) |
 | `THREADKEEPER_SPAWNED_CHILD` | "" | spawn-internal marker; disables autonomous daemons in children |
@@ -1677,26 +1717,37 @@ export THREADKEEPER_EMBED_BACKEND=sentence-transformers
 
 # After any backend switch, homogenize the stored corpus so queries and
 # stored vectors live in the same space:
-tk-migrate-embeddings --all          # or --notes-only / --dialog-only
-tk-migrate-embeddings --dry-run      # report stale counts only
+tk-migrate-embeddings --all          # stage both stores, validate, atomically activate
+tk-migrate-embeddings --notes-only   # build part of a target; activation stays pending
+tk-migrate-embeddings --status       # active/staging/coverage/validation report
+tk-migrate-embeddings --rollback     # atomically return to the prior generation
 ```
 
-The migration is batched, resumable, and idempotent (a second run finds
-nothing stale). Both backends emit 384-dim vectors, so the `vec0` schema is
-unchanged.
+The migration is batched, resumable, and idempotent. It stores target vectors
+under a separate generation while the durable active-generation pointer keeps
+the prior space queryable. An interrupted command resumes the staged target;
+readers never see it until `--all` validates full note/dialog coverage and
+switches the one pointer in a SQLite transaction. `--rollback` is the inverse
+transaction and leaves the failed target available for inspection or a later
+retry. Both backends emit 384-dim vectors, so the `vec0` schema is unchanged.
 
 **Intentional model revision upgrade.** Set `THREADKEEPER_EMBED_REVISION` to
 the immutable commit for the selected backend's Hugging Face artifact, restart
 the host, then run `tk-migrate-embeddings --all`. A changed revision is a new
-embedding generation; until migration, old vectors remain available through
-FTS rather than being compared against the new vector space.
+embedding generation. During staging, queries are encoded against the durable
+old generation and keep their semantic recall; the new configuration is not
+exposed until activation. The migration output and `mp_dashboard()` show
+active, staging, coverage, validation, and activation state.
 
 Stored rows carry an embedding-generation fingerprint, not just the backend:
 backend, model ID, vector dimension, pooling contract, and compatible runtime
-version. Search never compares a current query vector with a stale generation;
-those rows remain retrievable through FTS until `tk-migrate-embeddings` refreshes
-them. `mp_dashboard()` shows total/current-generation/vec coverage for notes and
-dialog rows.
+version. Newly derived lessons, skills, notes, and dialectic claims additionally
+record writer provider/model/revision plus source event or thread references;
+those records contain pointers and hashes, not another copy of transcript text.
+The fixed anonymized upgrade corpus runs both old→new and new→old paths before
+activation, with explicit recall, abstention, knowledge-update, and
+derived-memory decision thresholds. Run `python -m threadkeeper.eval` to print
+that release-gate report.
 
 Retrieval is hybrid by default. FTS candidate generation always runs, even
 when embeddings are installed or only part of the corpus has vectors. Dense
@@ -1946,6 +1997,15 @@ shared form-mode confirmation helper. It probes the host's elicitation
 capability before prompting, uses only a flat primitive schema, and leaves
 unsupported clients on the existing text/tool fallback path. The first protected
 write is `dialectic_supersede`.
+
+**Protocol compatibility (#344).** The stdio server supports the
+`2025-11-25` initialize-handshake era and the `2026-07-28` request-envelope
+era. Legacy hosts retain the existing tools, resources, and prompts. Modern
+calls derive identity and capabilities from every request, static discovery
+catalogs advertise public cache freshness, and replaying a completed write with
+the same caller-bound JSON-RPC id returns the original result instead of
+committing a second mutation. Sealed continuation state expires after five
+minutes; an interrupted write with no terminal result is rejected on replay.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

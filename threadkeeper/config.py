@@ -104,6 +104,12 @@ class Settings(BaseSettings):
             "THREADKEEPER_EMBED_REVISION", "embed_revision"
         ),
     )
+    # Optional explicit identity for an LLM that synthesizes durable memory.
+    # Empty values preserve the active client/model resolution and are recorded
+    # as "unknown" only when that host cannot expose a model identifier.
+    writer_provider: str = ""
+    writer_model: str = ""
+    writer_revision: str = ""
     # Refuse network access when the required snapshot should already be in the
     # Hugging Face cache. This is useful for deterministic/offline CI and
     # air-gapped deployments.
@@ -807,6 +813,9 @@ def _derive_constants(s: "Settings") -> dict:
         "DB_PATH": s.db,
         "EMBED_MODEL_NAME": s.embed_model,
         "EMBED_BACKEND": s.embed_backend,  # already normalized to lower
+        "WRITER_PROVIDER": s.writer_provider,
+        "WRITER_MODEL": s.writer_model,
+        "WRITER_REVISION": s.writer_revision,
         "NO_EMBEDDINGS": s.no_embeddings,
         "CLIENT_LABEL": s.client,
         "WRITE_ORIGIN": s.write_origin,

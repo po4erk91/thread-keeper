@@ -9,31 +9,36 @@ One process per session, one SQLite store in WAL mode. Multiple windows can
 read concurrently; SQLite still admits only one writer at a time, so writers
 use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
-## MCP SDK compatibility
+## MCP SDK surface
 
-ThreadKeeper supports MCP Python SDK 1.x and 2.x (`mcp>=1.10.0,<3`). The
-single adapter in `_mcp.py` imports the SDK 2.x `MCPServer` and `Context` names,
-then falls back to SDK 1.x's `FastMCP` and `Context` only when needed. Tool
-modules import `Context` through that adapter, keeping server construction,
-tool/resource/prompt registration, annotations, output schemas, structured
-content, elicitation, and stdio transport behavior identical across supported
-majors. Fresh installs resolve SDK 2.x; CI runs the full suite and a real stdio
-subprocess smoke test against both majors.
+ThreadKeeper requires MCP Python SDK 2.2 or later (`mcp>=2.2.0,<3`). The
+stable Skills extension uses the MCP 2026-07-28 extension surface, while the
+same `MCPServer` instance continues to provide tool/resource/prompt
+registration, annotations, output schemas, structured content, elicitation,
+and stdio transport.
+
+The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
+and the `2026-07-28` per-request envelope. Business tools are shared across
+both paths. Modern static discovery catalogs advertise one-hour public cache
+hints, sealed continuation state is bound to the caller and expires after five
+minutes, and a caller-scoped replay ledger returns the first terminal result
+for a repeated modern mutation rather than running it twice.
 
 ## Package map
 
 ```
 threadkeeper/
 ├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── mcp_skills.py       stable Skills extension + canonical skill manifests (#336)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
 ├── identity.py        per-process session + self-cid + daemon launchers
 ├── ingest.py          live ingest of jsonl transcripts + skill_usage backfill
 ├── verify_ingest.py   cross-CLI production verification — slot coverage + PASS/PARTIAL/FAIL verdict (issue #1)
-├── eval/              offline learning-loop decision-quality harness — precision/recall/F1 + judge↔human agreement (issue #72)
+├── eval/              offline learning-loop and model-upgrade replay harness
 ├── embeddings.py      pluggable backend (ONNX/fastembed default; ST fallback), cosine search
-├── migrate_embeddings.py  CLI: recompute stored vectors after a backend switch
+├── migrate_embeddings.py  CLI: stage, validate, and atomically activate vectors
 ├── helpers.py         ID generators, fmt_age, q-quoting, alive-pid check
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
@@ -323,6 +328,18 @@ Steady-state access is split by intent:
    batch, and `processed` is terminal. Stale claims are requeued, bumping
    `requeue_count`; rows that hit the requeue cap are terminally skipped as
    poison rather than re-leased forever.
+
+9. **memory_authority + memory_authority_roots + memory_derivations** — the
+   write-time security provenance layer. Every new stamped artifact has an
+   immutable authority class (`trusted` only for direct foreground/user input;
+   otherwise `observed`), source principal, and source channel. A derived
+   artifact copies every root and takes the minimum authority; records cannot
+   be restamped by a later, more trusted writer. The roots table makes repeated
+   messages from one principal one corroboration source, not many. The
+   `memory_authorize_action` gate permits observed memory only after an
+   independent trusted principal or explicit confirmation. `forget` traverses
+   `memory_derivations`, marks all descendants invalid, and retrieval paths
+   omit those artifacts while retaining the audit trail.
 
 In addition: `probe_results`/`reliability`, `concepts`, `edges`,
 `extract_candidates`, `distillates`/`votes`, `tasks` (spawned children:
@@ -1337,21 +1354,26 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Lesson-to-skill promotion** — the curator deterministically groups lessons
+  only when a concrete title-term pair reaches
+  `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries (default 3) and every
+  member shares at least one non-generic body mechanism. Stop words, generic
+  domain vocabulary, and high document-frequency title terms are excluded
+  before clustering. Maximal clusters are deduplicated, and
+  `curator_review_status()` reports `promotion_candidates` emitted/rejected
+  counts plus rejection reasons (`no_meaningful_title_pair`,
+  `high_document_frequency_term`, or `low_body_cohesion`). An unprotected
+  `PROMOTE_TO_SKILL` candidate directs the curator to read every source lesson,
+  create a checklist-style canonical skill with a `Retired lessons` provenance
+  section, validate it, and only then retire those source lessons. Any protected
+  member makes the candidate `HUMAN_REVIEW`, so a background curator never
+  creates a partial promotion or deletes protected memory.
+
 - **Wikilink health** — `wikilink_health(include_archived=True)` is a
   deterministic, read-only scan across every materialized lesson and skill
   body. It resolves `[[slug]]` targets against the combined lesson/skill
   inventory and returns every unresolved target with its source entry. It
   detects global link drift; it does not repair links during a scan.
-
-- **Lesson-to-skill promotion** — the curator also deterministically groups
-  lessons that share a pair of meaningful slug/title terms. A group reaches a
-  promotion candidate at `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries
-  (default 3). An unprotected `PROMOTE_TO_SKILL` candidate directs the curator
-  to read every source lesson, create a checklist-style canonical skill with a
-  `Retired lessons` provenance section, validate it, and only then retire those
-  source lessons. Any protected member makes the candidate `HUMAN_REVIEW`, so a
-  background curator never creates a partial promotion or deletes protected
-  memory.
 
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the
@@ -1483,13 +1505,30 @@ is:
 | `background_review`   | 0.5      |
 | `candidate_review`    | 0.5      |
 | `curator`             | 0.5      |
-| (anything else)       | 1.0      |
+| (anything else)       | rejected before persistence |
 
 Defends against the self-confirmation loop where a claim surfaced by
 `brief()` gets "re-observed" by a shadow-review fork reading the same
 dialog window. Internal observations still count, but earn half as much
 confidence per row — twice as many internal supports are needed to
 promote a claim into a load-bearing state.
+
+### Immutable authority and derivation
+
+Evidence `weight`, claim confidence, and tier are relevance signals; none can
+raise source authority. A new durable artifact is either a direct, known-origin
+root or declares an input reference (`dialog:<uuid>`, `evidence:<id>`,
+`claim:<id>`, `lesson:<slug>`, `skill:<name>`, `note:<id>`, or
+`verbatim:<id>`). Derived records preserve the least-authoritative root,
+principal, and channel, and retain every root for corroboration checks.
+Unknown write origins and missing/invalid source references fail closed.
+
+`memory_authorize_action(kind, id, confirmed=False)` is the explicit boundary
+for consequential behavior. Observed memory is denied unless a trusted root
+from a different principal corroborates it or the caller supplies explicit
+confirmation. `forget` follows derivation edges and invalidates descendants;
+stamped invalidated claims, lessons, and skills are excluded from normal
+retrieval.
 
 The `support_count` / `contradict_count` columns on `user_dialectic`
 remain as observability counters (incremented by 1 per row regardless of
@@ -1677,10 +1716,20 @@ legacy). FastEmbed resolves its ONNX artifact to a pinned local Hub snapshot
 before loading; sentence-transformers receives its configured revision directly.
 `THREADKEEPER_EMBED_CACHE_DIR` holds the durable snapshot cache, and
 `THREADKEEPER_EMBED_LOCAL_FILES_ONLY=1` makes a cache miss fail without a Hub
-request. Dense retrieval filters to the current fingerprint; stale rows remain
-visible to the always-on FTS channel. After a backend/model/revision/runtime
-generation switch, run `tk-migrate-embeddings --all`
-(`migrate_embeddings.py`) to recompute stale rows into one consistent space.
+request. The singleton `embedding_generation_state` is the durable reader
+pointer. A backend/model/revision/runtime upgrade writes target blobs to
+`embedding_generation_vectors`, keyed by generation plus source identity/hash,
+while readers continue to encode and retrieve in the prior active space. The
+batched command `tk-migrate-embeddings --all` resumes incomplete staging, locks
+briefly to validate note/dialog coverage, and atomically moves that pointer.
+`--rollback` atomically restores `previous_generation`; no derived vector is
+rewritten in place. The dashboard and CLI expose active/staging/coverage/state.
+
+`memory_provenance` records writer provider, model, revision, and source event
+or thread references when a derived note, lesson, skill, or dialectic claim is
+created. It stores no duplicate transcript/artifact text. Writer identity is
+resolved from the active client/model unless the optional `THREADKEEPER_WRITER_*`
+knobs provide an explicit provider/model/revision.
 
 `retrieval.py` normalizes notes and dialog hits into one `Candidate` model.
 Lexical and dense generators over-fetch independently; reciprocal-rank fusion
@@ -1729,6 +1778,7 @@ below).
 | consolidate | consolidate |
 | validate | validate_threads |
 | forget | forget |
+| authority | memory_authorize_action |
 | invariants | find_invariants |
 | missed_spawns | find_missed_spawns |
 | db_maintenance | db_compact, db_deduplicate_embeddings |
@@ -1821,6 +1871,27 @@ and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
 clients, older Claude clients), behavior is unchanged: the tool applies
 immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
 
+### Draft MCP standards watchlist
+
+This is the single maintained mapping for MCP proposals that overlap existing
+local concepts. Statuses below were checked against the
+[MCP SEP tracker](https://plan.modelcontextprotocol.io/seps) on 2026-10-03.
+They are design signals, not implemented interoperability claims: do not add a
+public API, database schema, or protocol payload that mirrors any listed draft.
+
+| Watched proposal and tracker status | Closest current ThreadKeeper concept | Draft wire shape | Reconsideration trigger |
+|---|---|---|---|
+| [SEP-3004: Tamper-Evident Audit Record Contract](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3004) — proposal; source PR closed unmerged | Mutation `events` plus curator-report SHA-256 provenance | **Not implemented.** Events are local SQLite records; they are not a canonical, hash-chained audit-record contract. | An accepted/final SEP successor emerges; review retention, canonicalization, export, and append-only compatibility before opening a scoped implementation issue. |
+| [SEP-3140: Signed Capability Declarations & Trustworthy Trust Labels](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3140) — proposal; source PR closed unmerged | MCP `ToolAnnotations`; local `skill_usage.created_by_origin` and lesson trust tiers | **Not implemented.** Local hints and origin/tier labels are neither signed declarations nor portable trust labels. | An accepted/final SEP successor emerges; review signer identity, key lifecycle, and how remote claims relate to local provenance before opening a scoped implementation issue. |
+| [SEP-2643: Structured Authorization Denials](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2643) — proposal; source PR open | Local guard errors (`ERR ...`) and confirmation refusal paths | **Not implemented.** ThreadKeeper is local and has no authorization-denial payload or public denial schema. | The tracker reaches accepted/final and a remote/authenticated deployment is in scope; review error compatibility and information disclosure before opening a scoped implementation issue. |
+| [SEP-2848: Asynchronous Approval for Tool Calls](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2848) — proposal; source PR open | Capability-gated, in-request `elicit_confirm_reject()` for `dialectic_supersede` | **Not implemented.** The existing confirmation is synchronous and host-local; it does not expose an asynchronous approval lifecycle. | The tracker reaches accepted/final; review host support, timeout/cancellation semantics, and idempotency before opening a scoped implementation issue. |
+| [SEP-3094: Granular Citations Format](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3094) — proposal; source PR open | `dialectic_evidence.source` freeform pointers and quoted evidence | **Not implemented.** Evidence pointers are internal provenance, not a portable granular-citation result format. | The tracker reaches accepted/final; review result compatibility, source privacy, and stable identifiers before opening a scoped implementation issue. |
+| [SEP-2817: AI Invocation Audit Context in Request `_meta`](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2817) — proposal; source PR open | `events`, session `client`/`write_origin`, and spawned-task lineage | **Not implemented.** ThreadKeeper does not accept or persist the proposal's client-asserted invocation metadata. | The tracker reaches accepted/final; review redaction, retention, trust boundaries, and request-context availability before opening a scoped implementation issue. |
+
+At each release, the release reviewer checks these tracker links. A proposal
+that has become accepted/final gets a separate scoped issue only after its
+compatibility review; it is never adopted by silently changing this table.
+
 ## Tests
 
 ```
@@ -1904,7 +1975,8 @@ The harness (`python -m threadkeeper.eval`, pure verdict logic in
   fully-synthetic sets: `shadow.json` (dialog windows + expected
   materialize/skip), `candidates.json` (candidate snippets + expected
   accept/reject), and `skill_quality.json` (skill bodies + a human high/low
-  label). `test_eval_harness.py` asserts they carry no secrets/private paths.
+  label), plus `upgrade_replay.json` for old→new and new→old model paths.
+  `test_eval_harness.py` asserts they carry no secrets/private paths.
 - **Two judges** (mirroring the `verify_ingest` / memory-recall split between an
   offline CI-safe path and an LLM path):
   - `rubric` (default, deterministic, offline) — a *signal-vote* classifier
@@ -1930,12 +2002,13 @@ The harness (`python -m threadkeeper.eval`, pure verdict logic in
   agreement against a fixed human-labeled set is what makes a drifting judge
   (offline heuristic or LLM) visible before its scores are trusted.
 
-The CLI exits non-zero only when the harness itself is broken (no fixtures /
-nothing computable), never on model quality — quality is a number to track and
-optimize against (e.g. the ROADMAP's extract-precision and "do we need tiers"
-open questions), not a gate. `--fixtures-dir` scores a custom labeled set.
-Smoke-tested in `tests/test_eval_harness.py` (pure-function units +
-rubric-sensitivity + a subprocess end-to-end run).
+The historical decision-quality metrics remain an optimization signal. The
+fixed upgrade replay is a release gate: both directions must meet explicit
+thresholds for recall, abstention, knowledge update, and derived-memory
+decisions or the CLI exits non-zero and staged activation is refused.
+`--fixtures-dir` scores a custom labeled set. Smoke-tested in
+`tests/test_eval_harness.py` (pure-function units + rubric sensitivity + a
+subprocess end-to-end run).
 ## Env knobs (config.py)
 
 `Settings` keeps pydantic's permissive `extra="ignore"` behavior, but startup

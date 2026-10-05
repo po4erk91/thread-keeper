@@ -46,6 +46,15 @@ from .. import identity
 from ..identity import _ensure_session
 from ..db import get_db
 from ..config import WRITE_ORIGIN
+from ..authority import (
+    authority_for_origin,
+    can_derive,
+    derive,
+    record_origin_root,
+    source_is_live,
+    source_parent,
+)
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
     admit_curator_destructive_action,
     record_curator_action,
@@ -420,6 +429,16 @@ def _record_lesson_append_event(
     )
 
 
+def _stamp_lesson_authority(conn: sqlite3.Connection, slug: str, source: str) -> bool:
+    parent = source_parent(source)
+    if parent is not None:
+        return source_is_live(conn, parent) and derive(conn, "lesson", slug, [parent])
+    return authority_for_origin(WRITE_ORIGIN) is not None and record_origin_root(
+        conn, "lesson", slug, write_origin=WRITE_ORIGIN,
+        principal=identity._session_id or "unknown-principal", channel="mcp:lesson",
+    )
+
+
 def _record_lesson_reconciliation_events(
     conn: sqlite3.Connection,
     new_slug: str,
@@ -532,8 +551,14 @@ def lesson_append(
                     if updated["slug"] == slug:
                         ensure_lesson_usage(conn, updated)
                         break
+                if not _stamp_lesson_authority(conn, slug, source):
+                    return "ERR authority_source_unknown"
                 try:
                     op = "dedup_patch" if changed else "dedup_existing"
+                    memory_provenance(
+                        conn, "lesson", slug, source_event_kind="lesson_append",
+                        source_event_id=source, source_thread_id=source,
+                    )
                     _record_lesson_append_event(
                         conn, slug, op=op, source=source,
                         extra=f"score={semantic_score:.2f}",
@@ -561,6 +586,11 @@ def lesson_append(
     # Determined BEFORE the write so the dashboard's curator-net-change line
     # can split added vs patched.
     existed = existing_item is not None
+    parent = source_parent(source)
+    if parent is not None and not can_derive(conn, "lesson", slug_guess, parent):
+        return "ERR authority_source_unknown"
+    if parent is None and authority_for_origin(WRITE_ORIGIN) is None:
+        return "ERR authority_unknown_origin"
     slug = append_lesson(
         title=title, body=body, summary=summary, source=source,
     )
@@ -568,12 +598,18 @@ def lesson_append(
         if item["slug"] == slug:
             ensure_lesson_usage(conn, item)
             break
+    if not _stamp_lesson_authority(conn, slug, source):
+        return "ERR authority_derivation_failed"
     # Record the write so mp_dashboard can count store growth (issue #61),
     # mirroring the lesson_remove event below. The events table always exists
     # (db schema); guard defensively anyway so a logging hiccup never loses
     # the lesson the caller just materialized.
     op = "replace" if existed else "create"
     try:
+        memory_provenance(
+            conn, "lesson", slug, source_event_kind="lesson_append",
+            source_event_id=source, source_thread_id=source,
+        )
         extra = ""
         if WRITE_ORIGIN == "curator":
             tombstone = record_curator_action(
@@ -761,7 +797,10 @@ def lesson_list(k: int = 20) -> str:
     """
     conn = get_db()
     _ensure_session(conn)
-    items = list(iter_lessons())
+    items = [item for item in iter_lessons() if not conn.execute(
+        "SELECT 1 FROM memory_authority WHERE artifact_kind='lesson' "
+        "AND artifact_id=? AND invalidated_at IS NOT NULL", (item["slug"],)
+    ).fetchone()]
     if not items:
         return "no_lessons"
     items.sort(key=lambda x: x["ts"], reverse=True)
@@ -795,6 +834,12 @@ def lesson_get(slug: str) -> str:
     _ensure_session(conn)
     for it in iter_lessons():
         if it["slug"] == slug:
+            blocked = conn.execute(
+                "SELECT 1 FROM memory_authority WHERE artifact_kind='lesson' "
+                "AND artifact_id=? AND invalidated_at IS NOT NULL", (slug,)
+            ).fetchone()
+            if blocked:
+                return f"ERR invalidated slug={slug}"
             record_lesson_access(conn, it, kind="use")
             conn.commit()
             return it["body"]

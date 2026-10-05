@@ -429,6 +429,46 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
     created_at     INTEGER NOT NULL
 );
 
+-- Immutable write-time authority.  It is separate from evidence weight,
+-- confidence and tier so a later trusted writer cannot upgrade old input.
+CREATE TABLE IF NOT EXISTS memory_authority (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    source_principal TEXT NOT NULL,
+    source_channel TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    invalidated_at INTEGER,
+    invalidation_reason TEXT,
+    PRIMARY KEY (artifact_kind, artifact_id)
+);
+CREATE TABLE IF NOT EXISTS memory_authority_roots (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (artifact_kind, artifact_id, principal, channel, authority_class)
+);
+CREATE TABLE IF NOT EXISTS memory_derivations (
+    parent_kind TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    child_kind TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (parent_kind, parent_id, child_kind, child_id)
+);
+CREATE TRIGGER IF NOT EXISTS memory_authority_immutable
+BEFORE UPDATE OF artifact_kind, artifact_id, authority_class, source_principal, source_channel
+ON memory_authority BEGIN
+    SELECT RAISE(ABORT, 'memory authority is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS memory_authority_root_immutable
+BEFORE UPDATE ON memory_authority_roots BEGIN
+    SELECT RAISE(ABORT, 'memory authority root is immutable');
+END;
+
 -- Knowledge graph: typed edges between any pair of entities. Lets us run
 -- traversal queries ("what concepts refine this thread", "what threads
 -- contradict each other"). Nodes addressed by (kind, id) so we don't need
@@ -782,12 +822,74 @@ CREATE INDEX IF NOT EXISTS idx_edges_to            ON edges(to_kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_relation      ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_derivations_parent ON memory_derivations(parent_kind, parent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_authority_visible ON memory_authority(artifact_kind, invalidated_at);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
 CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
     ON curator_merge_verdicts(updated_at DESC);
+
+-- A vector-space switch is a data migration, not a configuration flip.  The
+-- singleton keeps the one generation readers may query while a second one is
+-- built in the side table below.  It deliberately has no foreign keys: note
+-- ids can become TEXT during the optional sync migration and dialog ids are
+-- already TEXT.
+CREATE TABLE IF NOT EXISTS embedding_generation_state (
+    id                 INTEGER PRIMARY KEY CHECK(id = 1),
+    active_generation  TEXT,
+    staging_generation TEXT,
+    previous_generation TEXT,
+    state              TEXT NOT NULL DEFAULT 'ready'
+                       CHECK(state IN ('ready','staging','validated')),
+    started_at         INTEGER,
+    validated_at       INTEGER,
+    activated_at       INTEGER
+);
+
+-- Staged vectors are keyed by generation and source identity, never by a
+-- mutable base-table embedding slot. source_hash lets a resumed migration
+-- detect a source edit without retaining another copy of private text.
+CREATE TABLE IF NOT EXISTS embedding_generation_vectors (
+    generation   TEXT NOT NULL,
+    memory_kind  TEXT NOT NULL CHECK(memory_kind IN ('note','dialog')),
+    memory_id    TEXT NOT NULL,
+    source_hash  TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY(generation, memory_kind, memory_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_generation_vectors_lookup
+    ON embedding_generation_vectors(generation, memory_kind, memory_id);
+
+-- Provenance is a pointer-only audit record. It records the writer identity
+-- and source event/thread references without duplicating transcript text.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    memory_kind         TEXT NOT NULL,
+    memory_id           TEXT NOT NULL,
+    writer_provider     TEXT NOT NULL,
+    writer_model        TEXT NOT NULL,
+    writer_revision     TEXT NOT NULL,
+    source_event_kind   TEXT,
+    source_event_id     TEXT,
+    source_thread_id    TEXT,
+    recorded_at         INTEGER NOT NULL,
+    PRIMARY KEY(memory_kind, memory_id)
+);
+
+-- Durable operator audit of the fixed-corpus upgrade gate. Details are
+-- metrics only; fixtures remain bundled and anonymized rather than copied
+-- into the user's memory store.
+CREATE TABLE IF NOT EXISTS memory_upgrade_replays (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction           TEXT NOT NULL,
+    writer_generation   TEXT NOT NULL,
+    embedding_generation TEXT NOT NULL,
+    passed              INTEGER NOT NULL CHECK(passed IN (0,1)),
+    report_json         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL
+);
 
 -- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
 -- Node identity + Hybrid Logical Clock singleton.
@@ -852,6 +954,22 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_alive      INTEGER NOT NULL,
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
+);
+
+-- The 2026 MCP protocol is stateless. Keep the first terminal response for a
+-- caller's JSON-RPC request id so a reconnect/re-entry cannot re-run a write.
+-- A claimed row deliberately has no expiry: after a process dies in the small
+-- interval after a business write, rejecting the ambiguous replay is safer
+-- than risking a duplicate mutation.
+CREATE TABLE IF NOT EXISTS mcp_replay_ledger (
+    caller_id       TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    arguments_hash  TEXT NOT NULL,
+    response_json   TEXT,
+    created_at      INTEGER NOT NULL,
+    completed_at    INTEGER,
+    PRIMARY KEY (caller_id, request_id)
 );
 CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
     left_slug   TEXT NOT NULL,
@@ -1399,6 +1517,13 @@ def bootstrap_db(force: bool = False) -> None:
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
             _ensure_additive_runtime_schema(conn)
+            # Seed the single durable embedding-generation pointer while this
+            # bootstrap connection already owns the writer slot. Read-only
+            # retrieval/dashboard connections must never need to initialize it
+            # themselves (and therefore never contend with a staged migration).
+            from .embeddings import embedding_fingerprint
+            from .memory_compat import generation_state
+            generation_state(conn, embedding_fingerprint())
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
             _ensure_sync_capture(conn)
             conn.commit()

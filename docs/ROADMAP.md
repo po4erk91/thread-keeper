@@ -31,6 +31,12 @@ remains a live question.
   idempotent via `events.kind='shadow_review_pass'`.
 - Skills system: `skill_manage` (create/edit/patch/write_file/remove_file/
   delete), `skill_record`, `skill_list`, `curator_run` for archiving stale.
+- Stable MCP Skills distribution (#336): MCP 2026-07-28 discovery advertises
+  `io.modelcontextprotocol/skills`; deterministic `skills/list` / `skills/get`
+  manifests and origin-qualified `skill://thread-keeper/...` resources expose
+  canonical skill files with byte-size and SHA-256 integrity data. Filesystem
+  mirrors remain the fallback for hosts without the extension; discovery/read
+  remains delivery, never activation or approval.
 - Learning-loop skill-create cap (#98): `skill_manage(action='create')`
   enforces `LEARNING_LOOP_SKILL_CREATE_LIMIT` per child session for
   `candidate_review`, `shadow_review`, and `background_review` origins, so a
@@ -63,6 +69,12 @@ remains a live question.
   generation, and CI pre-fetches the pinned snapshot before running semantic
   tests offline. An intentional model/revision upgrade requires
   `tk-migrate-embeddings --all`.
+- ✅ DONE (#337): Model upgrades use a durable active-generation pointer and a
+  separate resumable staging generation. Full coverage validation and a fixed
+  old→new/new→old replay gate precede an atomic activation; CLI/dashboard
+  reports expose active, staging, coverage, validation, and rollback state.
+  Newly derived lessons, skills, notes, and dialectic claims retain writer
+  model/provider/revision plus source pointers without copying transcript text.
 - `extract_recent` + review/accept/reject ledger — regex candidates with
   manual approval (mem0-style without LLM on this side).
 - ingest fix — Skill-tool-only messages are no longer skipped.
@@ -172,6 +184,12 @@ remains a live question.
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
+- Memory authority lifecycle (#338): new durable dialog, dialectic, lesson,
+  and skill artifacts receive immutable write-time authority plus
+  principal/channel provenance. Explicit derivations keep the least-authority
+  root, repeated observations from one principal cannot satisfy the
+  consequential-action gate, and `forget` recursively invalidates descendants
+  so they disappear from retrieval and cannot authorize later actions.
 - Pre-ingest privacy denylist (#145): configured project/CWD paths and globs
   now drop matching adapter messages before redaction, embedding, or any dialog
   write. The per-file ingest watermark still advances past skipped messages;
@@ -411,7 +429,9 @@ as a fallback. The visible/Terminal path records via a `--record` shell
 line.
 
 **Documentation.** README / ARCHITECTURE / this file — update now.
-Going forward: keep in sync when the set of tools or daemons changes.
+Going forward: keep in sync when the set of tools or daemons changes. The
+[draft MCP standards watchlist](ARCHITECTURE.md#draft-mcp-standards-watchlist)
+tracks overlapping proposal areas without adopting their unstable wire formats.
 Scope: ongoing.
 
 **Curator policy tuning.** ✅ DONE — now a three-day deep audit rather than the
@@ -920,6 +940,16 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#344). **Dual-era MCP protocol conformance and replay-safe writes.**
+  The SDK 2.x migration serves `2025-11-25` initialize clients and the
+  `2026-07-28` per-request envelope through one tool implementation. Legacy
+  discovery retains core tools/resources/prompts without modern-only methods;
+  modern identity and capabilities come from every request, not process-global
+  handshake state. Static catalogs have public cache hints, continuation state
+  is integrity-checked/caller-bound/short-lived, and a caller-bound JSON-RPC
+  replay ledger returns the original completed write result or rejects an
+  ambiguous replay. `tests/test_mcp_protocol_conformance.py` drives both lanes
+  over real stdio.
 - ✅ DONE (#76). **Learning-loop memory-poisoning boundary.** Observed dialog is
   fenced as untrusted data in every synthesis prompt, loop children use
   path-scoped memory tools instead of bare filesystem writes, stated-policy
@@ -1048,6 +1078,11 @@ GitHub issues:
   checklist-style canonical skill with a `Retired lessons` provenance section
   before the source lessons are retired; any protected member produces a
   `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
+- **Promotion cohesion precision.** ✅ DONE (#340). Candidates now require
+  concrete, non-high-frequency title terms and a shared non-generic body
+  mechanism; generic joins and lexically accidental clusters are rejected
+  before Curator review. Status telemetry reports emitted/rejected counts and
+  reasons for production threshold tuning.
 - **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
   unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
@@ -1117,10 +1152,10 @@ verified gaps from the present code and test suite:
   architecture no longer carry hand-maintained test or tool totals; a docs
   test rejects them and checks the architecture tool table against the live
   MCP registry.
-- ✅ DONE (#279). **MCP SDK 2.x migration.** The server/context compatibility
-  adapter now supports both SDK 1.x and 2.x, and the dependency range is
-  `mcp>=1.10.0,<3`; the CI matrix covers both majors and a subprocess stdio
-  smoke test.
+- ✅ DONE (#279, #336). **MCP SDK 2.x migration and Skills distribution.**
+  The server requires `mcp>=2.2.0,<3` for the stable MCP 2026-07-28 Skills
+  extension; CI covers that supported surface and a subprocess stdio smoke
+  test.
 
 **2026-09-10 reviewer additions (issue-backed).**
 The current audit reconciled five late-August/September issues and added one

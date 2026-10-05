@@ -5,6 +5,47 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## [Unreleased]
+
+- **Added dual-era MCP conformance and replay-safe modern writes (#344).**
+  The server accepts the `2025-11-25` initialize handshake and the
+  `2026-07-28` request envelope. Modern discovery catalogs use public cache
+  hints; sealed continuation state is caller-bound and expires after five
+  minutes; a caller-bound replay ledger returns the first terminal result for
+  a repeated modern mutation rather than committing it twice.
+
+- **Documented the draft MCP standards watchlist (#341).** The architecture
+  maps audit records, capability trust, authorization denials, asynchronous
+  approvals, citations, and AI-invocation context to existing local concepts
+  without implementing their proposal wire formats. Each release review checks
+  the authoritative tracker links; an accepted or final proposal requires its
+  own compatibility-review issue before implementation.
+
+## v0.19.0 — 2026-10-01
+
+- **Added: immutable memory authority and Write–Execute–Forget lifecycle
+  controls (#338).** Durable dialog, dialectic, lesson, and skill artifacts
+  now retain write-time authority plus principal/channel provenance; declared
+  derivations preserve their lowest root. The observable consequential-action
+  gate requires independent trusted corroboration or explicit confirmation for
+  observed memory. Selective forget traverses the derivation graph and
+  invalidates descendants so they no longer retrieve or authorize actions.
+
+- **Added: cohesive lesson-to-skill promotion candidates (#340).** Curator
+  ignores generic title words, filters high document-frequency terms, requires
+  a shared body mechanism, and reports emitted and rejection-reason counts so
+  only concrete lesson clusters reach human or Curator review.
+
+## v0.18.4 — 2026-09-30
+
+- **Added: canonical skills over the stable MCP Skills extension (#336).**
+  MCP 2026-07-28 discovery now declares `io.modelcontextprotocol/skills` and
+  serves deterministic `skills/list` / `skills/get` manifests with
+  origin-qualified `skill://thread-keeper/...` file resources, raw-byte sizes,
+  and SHA-256 digests. Reads reject traversal, undeclared files, and oversized
+  content; they remain delivery only, never activation or approval. Existing
+  per-CLI skill mirrors remain the fallback for non-supporting hosts.
+
 ## v0.18.3 — 2026-09-28
 
 - **Fixed: a slim child no longer falls back to the full MCP config.** When
@@ -512,6 +553,19 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.17.0 — 2026-09-30
+
+### Added
+
+- **Staged model-compatibility gate (#337).** Embedding upgrades now build a
+  resumable target generation beside one durable active pointer, validate full
+  note/dialog coverage, run fixed old→new and new→old replay thresholds, and
+  atomically activate only after all gates pass. `tk-migrate-embeddings` and
+  `mp_dashboard()` show active/staging/coverage/validation state; `--rollback`
+  atomically restores the previous generation. Newly derived lessons, skills,
+  notes, and dialectic claims retain writer provider/model/revision and source
+  pointers without copying private transcript text.
 
 ## v0.16.3 — 2026-07-19
 

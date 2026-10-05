@@ -98,29 +98,25 @@ def test_glama_dockerfile_pin_matches_the_project_release():
     assert f"threadkeeper=={version}" in DOCKERFILE.read_text()
 
 
-def test_mcp_requirement_supports_both_sdk_majors_through_one_adapter():
+def test_mcp_requirement_uses_the_2x_skills_extension_surface():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     mcp_req = next(d for d in deps if d.split(">")[0].split("<")[0].strip() == "mcp")
-    assert mcp_req == "mcp>=1.10.0,<3"
+    assert mcp_req == "mcp>=2.2.0,<3"
 
-    adapter = (ROOT / "threadkeeper" / "_mcp.py").read_text()
-    assert "mcp.server.mcpserver" in adapter
-    assert "mcp.server.fastmcp" in adapter
     for importer in (
+        ROOT / "threadkeeper" / "_mcp.py",
         ROOT / "threadkeeper" / "elicitation.py",
         ROOT / "threadkeeper" / "tools" / "dialectic.py",
     ):
         text = importer.read_text()
         assert "mcp.server.fastmcp" not in text
-        assert "mcp.server.mcpserver" not in text
+    assert "mcp.server.mcpserver" in (ROOT / "threadkeeper" / "_mcp.py").read_text()
 
 
-def test_ci_matrix_covers_both_supported_mcp_sdk_majors():
+def test_ci_matrix_covers_the_supported_mcp_sdk_surface():
     matrix = _workflow("test.yml")["jobs"]["pytest-shard"]["strategy"]["matrix"]
-    majors = set(matrix["mcp"]) | {
-        extra["mcp"] for extra in matrix.get("include", [])
-    }
-    assert majors == {">=1.10.0,<2", ">=2.0.0,<3"}
+    assert matrix["mcp"] == [">=2.2.0,<3"]
+    assert "include" not in matrix
     assert '"mcp${{ matrix.mcp }}"' in _workflow_text("test.yml")
 
 def test_ci_security_scanning_covers_code_and_resolved_dependencies():

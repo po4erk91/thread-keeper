@@ -42,6 +42,15 @@ from ..config import (
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
     WRITE_ORIGIN,
 )
+from ..authority import (
+    authority_for_origin,
+    can_derive,
+    derive,
+    record_origin_root,
+    source_is_live,
+    source_parent,
+)
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
     PASS_ID_ENV,
     SNAPSHOT_DIR_ENV,
@@ -543,6 +552,10 @@ def _record_event(name: str, kind: str) -> None:
             "ON CONFLICT(name) DO NOTHING",
             (name, now, cid, WRITE_ORIGIN, now),
         )
+        memory_provenance(
+            conn, "skill", name, source_event_kind="skill_create",
+            source_event_id=name,
+        )
         conn.commit()
         return
     # ensure row exists for upserts that aren't 'create'
@@ -655,6 +668,7 @@ def skill_manage(action: str,
                  new_string: str = "",
                  sub_path: str = "",
                  description: str = "",
+                 source: str = "",
                  force: bool = False,
                  replacement_name: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
@@ -689,13 +703,13 @@ def skill_manage(action: str,
     if action != "delete" and (err := _validate_name(name)):
         return f"ERR {err}"
     if action == "create":
-        return _action_create(name, content, description)
+        return _action_create(name, content, description, source)
     if action == "edit":
-        return _action_edit(name, content)
+        return _action_edit(name, content, source)
     if action == "patch":
-        return _action_patch(name, old_string, new_string)
+        return _action_patch(name, old_string, new_string, source)
     if action == "write_file":
-        return _action_write_file(name, sub_path, content)
+        return _action_write_file(name, sub_path, content, source)
     if action == "remove_file":
         return _action_remove_file(name, sub_path)
     if action == "delete":
@@ -714,7 +728,26 @@ def skill_manage(action: str,
     )
 
 
-def _action_create(name: str, content: str, description: str) -> str:
+def _stamp_skill_authority(conn: sqlite3.Connection, name: str, source: str) -> bool:
+    parent = source_parent(source)
+    if parent is not None:
+        return source_is_live(conn, parent) and derive(conn, "skill", name, [parent])
+    return authority_for_origin(WRITE_ORIGIN) is not None and record_origin_root(
+        conn, "skill", name, write_origin=WRITE_ORIGIN,
+        principal=_detect_self_cid() or "unknown-principal", channel="mcp:skill",
+    )
+
+
+def _authority_write_allowed(conn: sqlite3.Connection, name: str, source: str) -> bool:
+    parent = source_parent(source)
+    return (
+        can_derive(conn, "skill", name, parent)
+        if parent is not None
+        else authority_for_origin(WRITE_ORIGIN) is not None
+    )
+
+
+def _action_create(name: str, content: str, description: str, source: str = "") -> str:
     sdir = _skill_dir(name)
     md = _skill_md_path(name)
     if md.exists():
@@ -738,11 +771,15 @@ def _action_create(name: str, content: str, description: str) -> str:
     if reason := _screen_synthesized_body(body):
         return f"ERR {reason}"
     conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     if reason := _skill_create_limit_error(conn):
         return f"ERR {reason}"
     sdir.mkdir(parents=True, exist_ok=True)
     md.write_text(body, encoding="utf-8")
     _record_event(name, "create")
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_create", target=name, summary=str(md))
     if WRITE_ORIGIN == "curator":
@@ -757,7 +794,7 @@ def _action_create(name: str, content: str, description: str) -> str:
     return f"ok path={md}"
 
 
-def _action_edit(name: str, content: str) -> str:
+def _action_edit(name: str, content: str, source: str = "") -> str:
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
@@ -765,9 +802,13 @@ def _action_edit(name: str, content: str) -> str:
         return f"ERR validate_failed: {err}"
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     md.write_text(content, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_edit", target=name, summary=str(md))
     if WRITE_ORIGIN == "curator":
@@ -782,7 +823,7 @@ def _action_edit(name: str, content: str) -> str:
     return f"ok path={md}"
 
 
-def _action_patch(name: str, old_string: str, new_string: str) -> str:
+def _action_patch(name: str, old_string: str, new_string: str, source: str = "") -> str:
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
@@ -804,9 +845,13 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     # stay patchable.
     if reason := _screen_synthesized_body(new_string):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     md.write_text(updated, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_patch", target=name)
     if WRITE_ORIGIN == "curator":
@@ -821,7 +866,7 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     return "ok"
 
 
-def _action_write_file(name: str, sub_path: str, content: str) -> str:
+def _action_write_file(name: str, sub_path: str, content: str, source: str = "") -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
@@ -843,11 +888,15 @@ def _action_write_file(name: str, sub_path: str, content: str) -> str:
         return f"ERR file_exceeds_{MAX_SKILL_FILE_BYTES}_bytes"
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     target = sdir / sub_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_write_file", target=name, summary=sub_path)
     if WRITE_ORIGIN == "curator":
@@ -1088,6 +1137,11 @@ def skill_list(include_archived: bool = False) -> str:
     conn.commit()
     out: list[str] = []
     for r in rows:
+        if conn.execute(
+            "SELECT 1 FROM memory_authority WHERE artifact_kind='skill' "
+            "AND artifact_id=? AND invalidated_at IS NOT NULL", (r["name"],)
+        ).fetchone():
+            continue
         last = max(
             r["last_used_at"] or 0,
             r["last_viewed_at"] or 0,

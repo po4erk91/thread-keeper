@@ -89,7 +89,11 @@ $EDITOR server.json
 # 4. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
 $EDITOR CHANGELOG.md
 
-# 5. Commit, open a PR, and merge it to main after tests pass
+# 5. Review the draft MCP standards watchlist. Open each upstream tracker link
+#    in docs/ARCHITECTURE.md; if any entry is accepted/final, open a separate
+#    scoped compatibility-review issue. Do not copy a draft wire format here.
+
+# 6. Commit, open a PR, and merge it to main after tests pass
 git commit -am "release: 0.4.1"
 ```
 
