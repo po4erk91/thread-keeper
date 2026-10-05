@@ -429,7 +429,9 @@ as a fallback. The visible/Terminal path records via a `--record` shell
 line.
 
 **Documentation.** README / ARCHITECTURE / this file — update now.
-Going forward: keep in sync when the set of tools or daemons changes.
+Going forward: keep in sync when the set of tools or daemons changes. The
+[draft MCP standards watchlist](ARCHITECTURE.md#draft-mcp-standards-watchlist)
+tracks overlapping proposal areas without adopting their unstable wire formats.
 Scope: ongoing.
 
 **Curator policy tuning.** ✅ DONE — now a three-day deep audit rather than the
@@ -938,6 +940,16 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#344). **Dual-era MCP protocol conformance and replay-safe writes.**
+  The SDK 2.x migration serves `2025-11-25` initialize clients and the
+  `2026-07-28` per-request envelope through one tool implementation. Legacy
+  discovery retains core tools/resources/prompts without modern-only methods;
+  modern identity and capabilities come from every request, not process-global
+  handshake state. Static catalogs have public cache hints, continuation state
+  is integrity-checked/caller-bound/short-lived, and a caller-bound JSON-RPC
+  replay ledger returns the original completed write result or rejects an
+  ambiguous replay. `tests/test_mcp_protocol_conformance.py` drives both lanes
+  over real stdio.
 - ✅ DONE (#76). **Learning-loop memory-poisoning boundary.** Observed dialog is
   fenced as untrusted data in every synthesis prompt, loop children use
   path-scoped memory tools instead of bare filesystem writes, stated-policy
@@ -1066,6 +1078,11 @@ GitHub issues:
   checklist-style canonical skill with a `Retired lessons` provenance section
   before the source lessons are retired; any protected member produces a
   `HUMAN_REVIEW` plan instead of a partial autonomous promotion.
+- **Promotion cohesion precision.** ✅ DONE (#340). Candidates now require
+  concrete, non-high-frequency title terms and a shared non-generic body
+  mechanism; generic joins and lexically accidental clusters are rejected
+  before Curator review. Status telemetry reports emitted/rejected counts and
+  reasons for production threshold tuning.
 - **Spawn worktree isolation.** ✅ DONE (#164). Git-backed spawns now use a
   unique task branch/worktree; a dirty source checkout is refused before launch.
 - **Fail-loud event emission.** ✅ DONE (#165). `_emit()` now raises when a
