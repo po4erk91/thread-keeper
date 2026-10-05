@@ -17,6 +17,13 @@ same `MCPServer` instance continues to provide tool/resource/prompt
 registration, annotations, output schemas, structured content, elicitation,
 and stdio transport.
 
+The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
+and the `2026-07-28` per-request envelope. Business tools are shared across
+both paths. Modern static discovery catalogs advertise one-hour public cache
+hints, sealed continuation state is bound to the caller and expires after five
+minutes, and a caller-scoped replay ledger returns the first terminal result
+for a repeated modern mutation rather than running it twice.
+
 ## Package map
 
 ```
@@ -1347,21 +1354,26 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Lesson-to-skill promotion** — the curator deterministically groups lessons
+  only when a concrete title-term pair reaches
+  `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries (default 3) and every
+  member shares at least one non-generic body mechanism. Stop words, generic
+  domain vocabulary, and high document-frequency title terms are excluded
+  before clustering. Maximal clusters are deduplicated, and
+  `curator_review_status()` reports `promotion_candidates` emitted/rejected
+  counts plus rejection reasons (`no_meaningful_title_pair`,
+  `high_document_frequency_term`, or `low_body_cohesion`). An unprotected
+  `PROMOTE_TO_SKILL` candidate directs the curator to read every source lesson,
+  create a checklist-style canonical skill with a `Retired lessons` provenance
+  section, validate it, and only then retire those source lessons. Any protected
+  member makes the candidate `HUMAN_REVIEW`, so a background curator never
+  creates a partial promotion or deletes protected memory.
+
 - **Wikilink health** — `wikilink_health(include_archived=True)` is a
   deterministic, read-only scan across every materialized lesson and skill
   body. It resolves `[[slug]]` targets against the combined lesson/skill
   inventory and returns every unresolved target with its source entry. It
   detects global link drift; it does not repair links during a scan.
-
-- **Lesson-to-skill promotion** — the curator also deterministically groups
-  lessons that share a pair of meaningful slug/title terms. A group reaches a
-  promotion candidate at `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries
-  (default 3). An unprotected `PROMOTE_TO_SKILL` candidate directs the curator
-  to read every source lesson, create a checklist-style canonical skill with a
-  `Retired lessons` provenance section, validate it, and only then retire those
-  source lessons. Any protected member makes the candidate `HUMAN_REVIEW`, so a
-  background curator never creates a partial promotion or deletes protected
-  memory.
 
 - **Curator recovery and destructive telemetry** — destructive curator passes
   receive a pass id and pre-mutation snapshot dir in their environment. When the
@@ -1883,6 +1895,27 @@ user-model claim prompts with a confirm/reject form before writing the new claim
 and marking the old one superseded. On unsupported hosts (Codex, hookless MCP
 clients, older Claude clients), behavior is unchanged: the tool applies
 immediately and the existing brief/hook nudge ecosystem remains the UX fallback.
+
+### Draft MCP standards watchlist
+
+This is the single maintained mapping for MCP proposals that overlap existing
+local concepts. Statuses below were checked against the
+[MCP SEP tracker](https://plan.modelcontextprotocol.io/seps) on 2026-10-03.
+They are design signals, not implemented interoperability claims: do not add a
+public API, database schema, or protocol payload that mirrors any listed draft.
+
+| Watched proposal and tracker status | Closest current ThreadKeeper concept | Draft wire shape | Reconsideration trigger |
+|---|---|---|---|
+| [SEP-3004: Tamper-Evident Audit Record Contract](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3004) — proposal; source PR closed unmerged | Mutation `events` plus curator-report SHA-256 provenance | **Not implemented.** Events are local SQLite records; they are not a canonical, hash-chained audit-record contract. | An accepted/final SEP successor emerges; review retention, canonicalization, export, and append-only compatibility before opening a scoped implementation issue. |
+| [SEP-3140: Signed Capability Declarations & Trustworthy Trust Labels](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3140) — proposal; source PR closed unmerged | MCP `ToolAnnotations`; local `skill_usage.created_by_origin` and lesson trust tiers | **Not implemented.** Local hints and origin/tier labels are neither signed declarations nor portable trust labels. | An accepted/final SEP successor emerges; review signer identity, key lifecycle, and how remote claims relate to local provenance before opening a scoped implementation issue. |
+| [SEP-2643: Structured Authorization Denials](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2643) — proposal; source PR open | Local guard errors (`ERR ...`) and confirmation refusal paths | **Not implemented.** ThreadKeeper is local and has no authorization-denial payload or public denial schema. | The tracker reaches accepted/final and a remote/authenticated deployment is in scope; review error compatibility and information disclosure before opening a scoped implementation issue. |
+| [SEP-2848: Asynchronous Approval for Tool Calls](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2848) — proposal; source PR open | Capability-gated, in-request `elicit_confirm_reject()` for `dialectic_supersede` | **Not implemented.** The existing confirmation is synchronous and host-local; it does not expose an asynchronous approval lifecycle. | The tracker reaches accepted/final; review host support, timeout/cancellation semantics, and idempotency before opening a scoped implementation issue. |
+| [SEP-3094: Granular Citations Format](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3094) — proposal; source PR open | `dialectic_evidence.source` freeform pointers and quoted evidence | **Not implemented.** Evidence pointers are internal provenance, not a portable granular-citation result format. | The tracker reaches accepted/final; review result compatibility, source privacy, and stable identifiers before opening a scoped implementation issue. |
+| [SEP-2817: AI Invocation Audit Context in Request `_meta`](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2817) — proposal; source PR open | `events`, session `client`/`write_origin`, and spawned-task lineage | **Not implemented.** ThreadKeeper does not accept or persist the proposal's client-asserted invocation metadata. | The tracker reaches accepted/final; review redaction, retention, trust boundaries, and request-context availability before opening a scoped implementation issue. |
+
+At each release, the release reviewer checks these tracker links. A proposal
+that has become accepted/final gets a separate scoped issue only after its
+compatibility review; it is never adopted by silently changing this table.
 
 ## Tests
 

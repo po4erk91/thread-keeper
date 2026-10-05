@@ -720,10 +720,14 @@ for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
 rows with no real `SKILL.md` remain explicit orphans. The same inventory also
 flags a dense lesson subtopic when at least
-`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share a pair
-of meaningful title terms. A non-protected candidate must become one validated,
-checklist-style canonical skill before its source lessons are retired; protected
-clusters are left for human review. A read-only research child reads every
+`THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
+concrete title terms and a non-generic body mechanism. Generic joins and
+domain-wide/high-document-frequency title words cannot form a candidate. The
+inventory and `curator_review_status()` report emitted/rejected counts and
+rejection reasons, so the rule can be tuned from production data. A
+non-protected candidate must become one validated, checklist-style canonical
+skill before its source lessons are retired; protected clusters are left for
+human review. A read-only research child reads every
 complete skill and relevant support file, performs current web research against
 official docs and comparable public skills, then writes a bounded
 `RESEARCH-<pass>-batch-NNN-of-MMM.json` handoff through a destination-scoped
@@ -2000,6 +2004,15 @@ shared form-mode confirmation helper. It probes the host's elicitation
 capability before prompting, uses only a flat primitive schema, and leaves
 unsupported clients on the existing text/tool fallback path. The first protected
 write is `dialectic_supersede`.
+
+**Protocol compatibility (#344).** The stdio server supports the
+`2025-11-25` initialize-handshake era and the `2026-07-28` request-envelope
+era. Legacy hosts retain the existing tools, resources, and prompts. Modern
+calls derive identity and capabilities from every request, static discovery
+catalogs advertise public cache freshness, and replaying a completed write with
+the same caller-bound JSON-RPC id returns the original result instead of
+committing a second mutation. Sealed continuation state expires after five
+minutes; an interrupted write with no terminal result is rejected on replay.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

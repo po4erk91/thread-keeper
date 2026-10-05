@@ -955,6 +955,22 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
 );
+
+-- The 2026 MCP protocol is stateless. Keep the first terminal response for a
+-- caller's JSON-RPC request id so a reconnect/re-entry cannot re-run a write.
+-- A claimed row deliberately has no expiry: after a process dies in the small
+-- interval after a business write, rejecting the ambiguous replay is safer
+-- than risking a duplicate mutation.
+CREATE TABLE IF NOT EXISTS mcp_replay_ledger (
+    caller_id       TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    arguments_hash  TEXT NOT NULL,
+    response_json   TEXT,
+    created_at      INTEGER NOT NULL,
+    completed_at    INTEGER,
+    PRIMARY KEY (caller_id, request_id)
+);
 CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
     left_slug   TEXT NOT NULL,
     right_slug  TEXT NOT NULL,

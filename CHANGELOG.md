@@ -5,6 +5,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## [Unreleased]
+
+- **Added dual-era MCP conformance and replay-safe modern writes (#344).**
+  The server accepts the `2025-11-25` initialize handshake and the
+  `2026-07-28` request envelope. Modern discovery catalogs use public cache
+  hints; sealed continuation state is caller-bound and expires after five
+  minutes; a caller-bound replay ledger returns the first terminal result for
+  a repeated modern mutation rather than committing it twice.
+
+- **Documented the draft MCP standards watchlist (#341).** The architecture
+  maps audit records, capability trust, authorization denials, asynchronous
+  approvals, citations, and AI-invocation context to existing local concepts
+  without implementing their proposal wire formats. Each release review checks
+  the authoritative tracker links; an accepted or final proposal requires its
+  own compatibility-review issue before implementation.
+
 ## v0.19.0 — 2026-10-01
 
 - **Added: immutable memory authority and Write–Execute–Forget lifecycle
@@ -14,6 +30,11 @@ version bumps follow semver per the policy in
   gate requires independent trusted corroboration or explicit confirmation for
   observed memory. Selective forget traverses the derivation graph and
   invalidates descendants so they no longer retrieve or authorize actions.
+
+- **Added: cohesive lesson-to-skill promotion candidates (#340).** Curator
+  ignores generic title words, filters high document-frequency terms, requires
+  a shared body mechanism, and reports emitted and rejection-reason counts so
+  only concrete lesson clusters reach human or Curator review.
 
 ## v0.18.4 — 2026-09-30
 

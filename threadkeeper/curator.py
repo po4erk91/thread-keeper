@@ -60,7 +60,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -275,9 +275,9 @@ LESSON RUBRIC (answer for every lesson; skills use the deep validator and
 verdicts above):
 
 DENSE LESSON CLUSTER PROMOTION — the inventory may include deterministic
-`PROMOTE_TO_SKILL` candidates. Each candidate names lessons that share a pair
-of meaningful title terms and crossed the configured density threshold. Treat
-an unprotected `PROMOTE_TO_SKILL` candidate as an affirmative consolidation
+`PROMOTE_TO_SKILL` candidates. Each candidate has already passed concrete
+title-pair, document-frequency, and shared body-mechanism checks. Treat an
+unprotected `PROMOTE_TO_SKILL` candidate as an affirmative consolidation
 decision, not merely a loose similarity lead:
   1. Read every named lesson in full with `lesson_get` and preserve its unique
      procedure, caveats, and examples.
@@ -470,27 +470,58 @@ class _LessonPromotionCandidate:
     topic_terms: tuple[str, str]
     lesson_slugs: tuple[str, ...]
     protected_slugs: tuple[str, ...]
+    cohesion_terms: tuple[str, ...]
 
     @property
     def decision(self) -> str:
         return "HUMAN_REVIEW" if self.protected_slugs else "PROMOTE_TO_SKILL"
 
 
+@dataclass(frozen=True)
+class _LessonPromotionDetection:
+    """Candidates and explainable rejections from one inventory snapshot."""
+
+    candidates: tuple[_LessonPromotionCandidate, ...]
+    rejected_by_reason: tuple[tuple[str, int], ...]
+
+    @property
+    def rejected_count(self) -> int:
+        return sum(count for _reason, count in self.rejected_by_reason)
+
+
 _LESSON_PROMOTION_TOKEN_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _LESSON_PROMOTION_STOP_WORDS = frozenset({
-    "about", "after", "also", "always", "before", "being", "bulk",
-    "check", "each", "from", "into", "lesson", "must", "need", "only",
-    "should", "that", "the", "then", "this", "with", "when", "where",
+    "about", "after", "again", "all", "also", "always", "and", "any",
+    "are", "before", "being", "both", "bulk", "but", "can", "check",
+    "each", "either", "every", "for", "from", "have", "into", "its",
+    "lesson", "lessons", "make", "more", "most", "must", "need", "not",
+    "one", "only", "other", "our", "over", "should", "that", "the",
+    "their", "then", "these", "this", "those", "through", "use", "used",
+    "using", "via", "was", "were", "what", "when", "where", "which",
+    "with", "would",
+    # ThreadKeeper/domain words that describe a lesson's form, not its topic.
+    "action", "agent", "agents", "approach", "behavior", "config",
+    "configuration", "context", "data", "details", "error", "example",
+    "general", "implementation", "issue", "library", "logic", "memory",
+    "method", "process", "project", "rule", "skill", "skills", "system",
+    "test", "tests", "threadkeeper", "tool", "tools", "workflow",
+    "workflows",
 })
+_LESSON_PROMOTION_BODY_STOP_WORDS = _LESSON_PROMOTION_STOP_WORDS | frozenset({
+    "always", "avoid", "ensure", "first", "follow", "important", "keep",
+    "procedure", "result", "step", "steps", "then", "way",
+})
+_LESSON_PROMOTION_HIGH_DF_RATIO_NUMERATOR = 3
+_LESSON_PROMOTION_HIGH_DF_RATIO_DENOMINATOR = 5
+_LESSON_PROMOTION_HIGH_DF_MIN_DOCUMENTS = 5
 
 
 def _lesson_promotion_tokens(item: dict) -> frozenset[str]:
     """Meaningful terms from a lesson's stable slug/title.
 
-    The detector deliberately does not mine arbitrary body prose: broad prose
-    tends to link otherwise unrelated lessons through generic implementation
-    words. Slugs come from the author-facing title and keep the clustering
-    deterministic even with embeddings disabled.
+    Slugs keep title clustering deterministic even with embeddings disabled.
+    Generic joins and domain-wide vocabulary are deliberately excluded before
+    they can form an accidental pair.
     """
     slug = (item.get("slug") or "").replace("-", " ").lower()
     return frozenset(
@@ -499,18 +530,52 @@ def _lesson_promotion_tokens(item: dict) -> frozenset[str]:
     )
 
 
-def _detect_lesson_promotion_candidates(
+def _lesson_promotion_body_tokens(item: dict) -> frozenset[str]:
+    """Concrete terms that can corroborate a title-derived cluster."""
+    body = (item.get("body") or "").lower()
+    return frozenset(
+        token for token in _LESSON_PROMOTION_TOKEN_RE.findall(body)
+        if token not in _LESSON_PROMOTION_BODY_STOP_WORDS
+    )
+
+
+def _high_document_frequency_terms(
+    title_tokens: dict[str, frozenset[str]],
+    *,
+    min_cluster_size: int,
+) -> frozenset[str]:
+    """Terms common enough across the store to be poor topic discriminators."""
+    document_count = len(title_tokens)
+    if not document_count:
+        return frozenset()
+    min_documents = max(
+        _LESSON_PROMOTION_HIGH_DF_MIN_DOCUMENTS,
+        min_cluster_size + 2,
+        (
+            document_count * _LESSON_PROMOTION_HIGH_DF_RATIO_NUMERATOR
+            + _LESSON_PROMOTION_HIGH_DF_RATIO_DENOMINATOR - 1
+        ) // _LESSON_PROMOTION_HIGH_DF_RATIO_DENOMINATOR,
+    )
+    frequency = Counter(
+        token for tokens in title_tokens.values() for token in tokens
+    )
+    return frozenset(
+        token for token, count in frequency.items() if count >= min_documents
+    )
+
+
+def _analyze_lesson_promotion_candidates(
     lesson_items: list[dict],
     lesson_usage: dict[str, dict],
     *,
     min_cluster_size: int = CURATOR_PROMOTION_MIN_LESSONS,
-) -> list[_LessonPromotionCandidate]:
-    """Find dense lesson clusters by recurring pairs of meaningful title terms.
+) -> _LessonPromotionDetection:
+    """Find title-dense clusters that also describe a shared mechanism.
 
-    A pair shared by at least ``min_cluster_size`` lessons is a deliberately
-    conservative offline density signal. It avoids treating one generic word
-    as a subtopic, while making the threshold and promotion decision testable
-    without an embedding model or a curator child.
+    The deterministic detector needs a recurring concrete title pair and at
+    least one non-generic body token shared by every member. This intentionally
+    rejects weak clusters before they create Curator work; no embeddings or
+    semantic model are required.
     """
     threshold = max(2, int(min_cluster_size))
     by_slug = {
@@ -518,9 +583,20 @@ def _detect_lesson_promotion_candidates(
         for item in lesson_items
         if item.get("slug")
     }
+    if len(by_slug) < threshold:
+        return _LessonPromotionDetection((), ())
+
+    title_tokens = {
+        slug: _lesson_promotion_tokens(item)
+        for slug, item in by_slug.items()
+    }
+    high_df_terms = _high_document_frequency_terms(
+        title_tokens,
+        min_cluster_size=threshold,
+    )
     pair_members: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for slug, item in by_slug.items():
-        for pair in combinations(sorted(_lesson_promotion_tokens(item)), 2):
+    for slug, tokens in title_tokens.items():
+        for pair in combinations(sorted(tokens), 2):
             pair_members[pair].add(slug)
 
     clusters: dict[frozenset[str], set[tuple[str, str]]] = defaultdict(set)
@@ -528,11 +604,40 @@ def _detect_lesson_promotion_candidates(
         if len(members) >= threshold:
             clusters[frozenset(members)].add(pair)
 
+    rejected: Counter[str] = Counter()
+    if not clusters:
+        rejected["no_meaningful_title_pair"] += 1
+        return _LessonPromotionDetection(
+            (), tuple(sorted(rejected.items())),
+        )
+
+    eligible_clusters: dict[frozenset[str], set[tuple[str, str]]] = {}
+    cohesion_by_cluster: dict[frozenset[str], frozenset[str]] = {}
+    for members, pairs in clusters.items():
+        concrete_pairs = {
+            pair for pair in pairs if not set(pair).intersection(high_df_terms)
+        }
+        if not concrete_pairs:
+            rejected["high_document_frequency_term"] += 1
+            continue
+        body_token_sets = [
+            _lesson_promotion_body_tokens(by_slug[slug]) - title_tokens[slug]
+            for slug in members
+        ]
+        shared_body_terms = set(body_token_sets[0]).intersection(
+            *body_token_sets[1:]
+        )
+        if not shared_body_terms:
+            rejected["low_body_cohesion"] += 1
+            continue
+        eligible_clusters[members] = concrete_pairs
+        cohesion_by_cluster[members] = frozenset(shared_body_terms)
+
     # A broader cluster subsumes every one of its pair-specific subsets. Keep
     # only maximal clusters so one topic produces one promotion decision.
     maximal_clusters = [
-        members for members in clusters
-        if not any(members < other for other in clusters)
+        members for members in eligible_clusters
+        if not any(members < other for other in eligible_clusters)
     ]
     candidates: list[_LessonPromotionCandidate] = []
     for members in sorted(maximal_clusters, key=lambda group: tuple(sorted(group))):
@@ -544,11 +649,53 @@ def _detect_lesson_promotion_candidates(
             )[0]
         )
         candidates.append(_LessonPromotionCandidate(
-            topic_terms=min(clusters[members]),
+            topic_terms=min(eligible_clusters[members]),
             lesson_slugs=slugs,
             protected_slugs=protected,
+            cohesion_terms=tuple(sorted(cohesion_by_cluster[members]))[:3],
         ))
-    return candidates
+    return _LessonPromotionDetection(
+        tuple(candidates), tuple(sorted(rejected.items())),
+    )
+
+
+def _detect_lesson_promotion_candidates(
+    lesson_items: list[dict],
+    lesson_usage: dict[str, dict],
+    *,
+    min_cluster_size: int = CURATOR_PROMOTION_MIN_LESSONS,
+) -> list[_LessonPromotionCandidate]:
+    """Compatibility wrapper for callers that only need emitted candidates."""
+    return list(_analyze_lesson_promotion_candidates(
+        lesson_items,
+        lesson_usage,
+        min_cluster_size=min_cluster_size,
+    ).candidates)
+
+
+def _format_lesson_promotion_telemetry(
+    detection: _LessonPromotionDetection,
+) -> str:
+    reasons = ",".join(
+        f"{reason}:{count}" for reason, count in detection.rejected_by_reason
+    ) or "-"
+    return (
+        f"promotion_candidates emitted={len(detection.candidates)} "
+        f"rejected={detection.rejected_count} rejected_by_reason={reasons}"
+    )
+
+
+def lesson_promotion_telemetry(conn: sqlite3.Connection) -> str:
+    """Return the current detector outcome for status and production tuning."""
+    try:
+        usage = lessons.lesson_usage_map(conn)
+        detection = _analyze_lesson_promotion_candidates(
+            list(lessons.iter_lessons()), usage,
+        )
+    except Exception:
+        logger.debug("curator: lesson promotion telemetry failed", exc_info=True)
+        return "promotion_candidates emitted=0 rejected=0 rejected_by_reason=unavailable"
+    return _format_lesson_promotion_telemetry(detection)
 
 
 def _format_lesson_promotion_candidate(
@@ -557,7 +704,8 @@ def _format_lesson_promotion_candidate(
     protected = ", ".join(candidate.protected_slugs) or "-"
     return (
         f"- {candidate.decision}: topic={' '.join(candidate.topic_terms)} "
-        f"lesson_count={len(candidate.lesson_slugs)}\n"
+        f"lesson_count={len(candidate.lesson_slugs)} "
+        f"cohesion={' '.join(candidate.cohesion_terms)}\n"
         f"    lessons: {', '.join(candidate.lesson_slugs)}\n"
         f"    protected_lessons: {protected}"
     )
@@ -1682,15 +1830,16 @@ def _collect_inventory_entry_groups(
         logger.debug("curator: iter_lessons failed", exc_info=True)
         raise _InventoryCollectionError("lessons", exc) from exc
 
+    promotion_detection = _analyze_lesson_promotion_candidates(
+        lesson_items, usage,
+    )
     promotion_entries = [
         _InventoryEntry(
             "lesson_promotion",
             "/".join(candidate.lesson_slugs),
             _format_lesson_promotion_candidate(candidate),
         )
-        for candidate in _detect_lesson_promotion_candidates(
-            lesson_items, usage,
-        )
+        for candidate in promotion_detection.candidates
     ]
 
     try:
@@ -1787,6 +1936,10 @@ def _collect_inventory(
         parts.extend(entry.text for entry in promotion_entries)
     else:
         parts.append("(none)")
+    parts.append(
+        "\n## LESSON CLUSTER PROMOTION TELEMETRY\n"
+        + lesson_promotion_telemetry(conn)
+    )
     parts.append(f"\n## PRIOR MERGE VERDICTS (n={len(merge_verdicts)})\n")
     if merge_verdicts:
         parts.extend(_format_merge_verdict(row) for row in merge_verdicts)
