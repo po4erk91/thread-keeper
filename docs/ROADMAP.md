@@ -1209,35 +1209,34 @@ transport, migration, memory-safety, and learning-quality gaps:
 - **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
   and multi-timescale replay before changing supersession policy, so a one-off
   task exception cannot silently replace a validated durable preference.
-- **Lesson-promotion precision (#340).** Expand stop-word and document-frequency
-  filtering, require topic cohesion beyond one shared title pair, and record
-  emitted/rejected candidate telemetry. This is the durable issue for legacy
-  evolve suggestion 85.
-- **MCP standards watchlist (#341).** Track the draft Tasks, audit, approval,
-  trust, authorization-denial, citation, and AI-invocation proposals against
-  current internal concepts. Do not implement their public wire shapes until
-  the relevant proposal reaches accepted/final status. The existing durable
-  task spool is the compatibility substrate if the Tasks extension stabilizes;
-  an MCP App for human memory review remains a product decision, not an implied
-  protocol commitment.
+- ✅ DONE (#340). **Lesson-promotion precision.** Candidates now filter
+  generic and high-document-frequency terms, require a shared body mechanism,
+  keep one maximal cohesive cluster, and report emitted/rejected telemetry.
+- ✅ DONE (#341). **MCP standards watchlist.** Architecture docs now map the
+  tracked draft audit, approval, trust, authorization-denial, citation, and
+  AI-invocation proposals to current internal concepts and explicit
+  reconsideration triggers without freezing proposal wire shapes.
 
 **2026-09-30 reviewer additions (issue-backed).**
 The current audit added six gaps around protocol compatibility, resource
 freshness, observability, evaluation quality, read purity, and workflow-data
 retention:
 
-- **Dual-era MCP conformance (#344).** Test legacy and 2026 request flows over
-  real stdio, normalize them into one internal request context, and make
-  replayed multi-round mutations idempotent or explicitly reject them.
+- ✅ DONE (#344). **Dual-era MCP conformance.** Legacy and 2026 request
+  flows now run through real-stdio conformance tests and one normalized request
+  context; caller-bound sealed continuations and a replay ledger make modern
+  mutations once-only or reject uncertain re-entry.
 - **Live private memory resources (#345).** Add capability-gated subscriptions,
   commit-aware/coalesced invalidation, and honest private-cache metadata for
   the four `memory://` resources while retaining the pull-only fallback.
 - **Privacy-safe workflow tracing (#346).** Offer an opt-in OTLP exporter that
   correlates parent, child, MCP/tool, retry, and terminal events without
   exporting prompts, payloads, memory bodies, credentials, or private paths.
-- **Outcome-based memory evaluation (#347).** Score evidence recall separately
-  from final-answer quality and run a stable matrix across retrieval backends,
-  retention/curation state, and personal-memory egress policy.
+- **Outcome- and action-based memory evaluation (#347).** Score evidence recall
+  separately from final-answer quality, then add sandboxed multi-session cases
+  where remembered constraints must change the tool/action plan. Run ablations
+  across memory-off, retrieval-only, and full brief/skills paths, including
+  adversarial bundle-level authority/poisoning cases.
 - **Observationally pure read surfaces (#348).** Stop tools and resources marked
   read-only from bootstrapping sessions/daemons or reconciling task/RSS state;
   move persistence to daemon-owned or explicitly write-annotated paths.
@@ -1289,11 +1288,40 @@ local store and the projects or storage media that contain it:
   behavior. Keep ordinary SQLite as the default and document which external
   workflow artifacts remain outside the encrypted database boundary.
 
-The other research leads map to existing work: the draft Tasks extension stays
-on the standards watchlist (#341); resource subscriptions, protocol
-conformance, tracing, and outcome-based memory evaluation are tracked in
-#345, #344, #346, and #347; source authority is complete in #338. Broader
-structured output was already considered under #67/#70 and is not re-filed.
+The other research leads map to existing work: resource subscriptions, tracing,
+and outcome-based memory evaluation are tracked in #345, #346, and #347;
+dual-era conformance and the immutable source-authority substrate are complete
+in #344 and #338. Broader structured output was already considered under
+#67/#70 and is not re-filed.
+
+**2026-10-05 reviewer additions (issue-backed).**
+The current audit added three gaps around portable status, Evolve retry cadence,
+and Curator child-capability isolation:
+
+- **Portable read-only MCP App dashboard (#364).** Add a capability-gated
+  `ui://thread-keeper/dashboard` frontend over the existing structured status,
+  task, budget, failure, and materialization data. Keep initial load and refresh
+  observationally pure, sandboxed, and compatible with hosts that only use the
+  existing text tools/resources.
+- **Evolve applier transient retry cadence (#365).** Do not consume the full
+  apply interval when checkout, GitHub, claim, lock, or spawn preflight fails
+  before a child launches. Preserve the cursor, collapse repeated blocker
+  telemetry, and retry on a bounded short cadence while keeping real issue
+  attempts and empty-queue throttling unchanged.
+- **Curator per-child capability isolation (#366).** Stop conveying Curator
+  pass/snapshot authority by temporarily mutating the server process
+  environment. Pass server-owned values explicitly to the intended child,
+  strip stale values from ordinary spawns, and bind report/research writers to
+  the owning task, role, and batch.
+
+The mechanical issue gate linked the protocol-native Tasks/MRTR proposal to
+completed conformance issue #344 instead of opening a parallel issue. The code
+still uses custom task polling and `elicitation/create`, so any further native
+Tasks lifecycle work should be re-scoped against #344 rather than duplicated.
+It likewise linked automatic authority enforcement and compositional poisoning
+evaluation to open outcome-quality issue #347; that roadmap item now calls out
+the missing action-use and adversarial bundle coverage explicitly. Tool-profile
+disclosure and project namespaces remain tracked in #353 and #359.
 
 ---
 
