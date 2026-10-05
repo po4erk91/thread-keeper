@@ -118,6 +118,10 @@ def test_watchdog_kills_overcap_child(mp_with_cid, monkeypatch):
         assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
         # Single-flight releases: an ended row no longer counts as running.
         assert sb._running_tasks_rss(conn) == 0
+        event = conn.execute(
+            "SELECT 1 FROM events WHERE kind='spawn_timeout' AND target='tk_hung'"
+        ).fetchone()
+        assert event is not None
         assert _wait_dead(pid), "watchdog did not actually kill the child"
     finally:
         try:
@@ -221,6 +225,9 @@ def test_watchdog_immediately_respawns_with_continuation_prompt(
     assert call["role"] == "evolve_applier"
     assert call["write_origin"] == "evolve_apply"
     assert call["permission_mode"] == "bypassPermissions"
+    # The continuation of an admitted privileged child keeps its authority;
+    # without the private capability the public gate would refuse it.
+    assert call["_bypass_capability"] is spawn_mod._EVOLVE_BYPASS_CAPABILITY
     assert call["extra_allowed_tools"] == "Bash(git *)"
     assert call["capture_output"] is True
     assert call["visible"] is False
@@ -398,3 +405,77 @@ def test_agent_status_reports_timed_out(mp_with_cid, monkeypatch):
     snap = agent_status_snapshot(refresh=False)
     assert snap["timed_out_count"] == 1
     assert "timed_out=1" in format_agent_status(snap)
+
+
+def test_refresh_all_running_enforce_false_skips_kill_and_respawn(
+    mp_with_cid, monkeypatch
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+
+    reap_calls: list = []
+    respawn_calls: list = []
+    monkeypatch.setattr(
+        sb, "_reap_timed_out",
+        lambda conn, row, now: reap_calls.append(row["id"]) or True,
+    )
+    monkeypatch.setattr(
+        sb, "_respawn_timed_out",
+        lambda conn, row, age: respawn_calls.append(row["id"]),
+    )
+
+    old = int(time.time()) - 200
+    conn = _insert_running(pkg, "tk_enforce", os.getpid(), old)
+
+    sb._refresh_all_running(conn, enforce=False)
+
+    assert reap_calls == []
+    assert respawn_calls == []
+    row = conn.execute(
+        "SELECT ended_at FROM tasks WHERE id='tk_enforce'"
+    ).fetchone()
+    assert row["ended_at"] is None
+
+    sb._refresh_all_running(conn)
+
+    assert len(reap_calls) == 1
+
+
+def test_watchdog_continuation_inherits_curator_pass_identity(
+    mp_with_cid, monkeypatch,
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "2")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(sb, "_terminate_tree", lambda pid, grace: None)
+    monkeypatch.setattr(
+        sb, "_curator_retry_env",
+        lambda conn, task_id: (
+            {"THREADKEEPER_CURATOR_PASS_ID": "20260927T101010"}
+            if task_id == "tk_curator_batch" else {}
+        ),
+    )
+    seen: list[str | None] = []
+
+    def fake_spawn(**kwargs):
+        seen.append(os.environ.get("THREADKEEPER_CURATOR_PASS_ID"))
+        return "ok task=tk_curator_cont pid=321 child_cid=abcd perm=auto"
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
+    monkeypatch.delenv("THREADKEEPER_CURATOR_PASS_ID", raising=False)
+    conn = _insert_running(
+        pkg, "tk_curator_batch", os.getpid(), int(time.time()) - 200,
+        prompt="You are an autonomous CURATOR for thread-keeper",
+    )
+    pkg["identity"]._ensure_session(conn)
+
+    sb._refresh_all_running(conn)
+
+    assert seen == ["20260927T101010"]
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ

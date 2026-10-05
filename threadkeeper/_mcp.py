@@ -17,12 +17,50 @@ to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 import secrets
 
 from mcp.server.caching import CacheHint
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.server.request_state import RequestStateSecurity
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import AnyUrl
 from pydantic import BaseModel
 
+from .mcp_skills import (
+    MAX_SKILL_RESOURCE_BYTES,
+    SKILL_URI_ORIGIN,
+    SkillsExtension,
+    read_skill_resource,
+    resource_catalog,
+)
 from .protocol import ReplaySafeWrites, caller_principal
+
+
+class ThreadKeeperMCPServer(MCPServer):
+    """MCPServer with a live, read-only view of canonical skill files.
+
+    The SDK resource manager owns the static memory resources.  Skills change
+    while this server is running, so their resource metadata is rebuilt for
+    each list/read request instead of registering stale copies at startup.
+    """
+
+    async def list_resources(self):
+        static_resources = await super().list_resources()
+        return [*static_resources, *resource_catalog()]
+
+    async def read_resource(self, uri: AnyUrl | str, context=None):
+        value = str(uri)
+        if value.startswith(f"skill://{SKILL_URI_ORIGIN}/"):
+            item = read_skill_resource(value)
+            try:
+                data = item.path.read_bytes()
+            except OSError as exc:
+                raise ResourceNotFoundError(f"Unknown resource: {value}") from exc
+            if len(data) > MAX_SKILL_RESOURCE_BYTES:
+                raise ResourceNotFoundError(f"Unknown resource: {value}")
+            # The client checks the catalog digest.  This read is delivery only;
+            # it does not activate the skill or record any usage telemetry.
+            return [ReadResourceContents(content=data, mime_type=item.mime_type)]
+        return await super().read_resource(uri, context)
 
 
 # Discovery is static for one server process: decorators register the complete
@@ -41,9 +79,10 @@ _CATALOG_CACHE_HINTS = {
 # stdio serving starts without duplicating business-tool metadata.
 WRITE_TOOL_NAMES: set[str] = set()
 
-mcp = MCPServer(
+mcp = ThreadKeeperMCPServer(
     "thread-keeper",
-    version="0.17.0",
+    version="0.19.0",
+    extensions=[SkillsExtension()],
     cache_hints=_CATALOG_CACHE_HINTS,
     request_state_security=RequestStateSecurity(
         keys=[secrets.token_bytes(32)],
@@ -53,6 +92,7 @@ mcp = MCPServer(
     middleware=[ReplaySafeWrites(WRITE_TOOL_NAMES)],
 )
 
+
 def read_tool(**kwargs):
     """Register a read-only MCP tool (``readOnlyHint=True``).
 
@@ -60,7 +100,7 @@ def read_tool(**kwargs):
     searches, status snapshots, listings. Extra kwargs pass through to
     ``mcp.tool`` (e.g. ``name=``)."""
     return mcp.tool(
-        annotations=ToolAnnotations(readOnlyHint=True),
+        annotations=ToolAnnotations(read_only_hint=True),
         **kwargs,
     )
 
@@ -74,9 +114,9 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
     is a no-op (closing an already-closed thread, deleting a missing key)."""
     register = mcp.tool(
         annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=destructive,
-            idempotentHint=idempotent,
+            read_only_hint=False,
+            destructive_hint=destructive,
+            idempotent_hint=idempotent,
         ),
         **kwargs,
     )
@@ -98,5 +138,5 @@ def structured_result(text: str, model: BaseModel) -> CallToolResult:
     for tools that emit structured content."""
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
-        structuredContent=model.model_dump(mode="json", by_alias=True),
+        structured_content=model.model_dump(mode="json", by_alias=True),
     )

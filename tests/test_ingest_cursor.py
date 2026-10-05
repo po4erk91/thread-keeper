@@ -116,3 +116,48 @@ def test_ingest_same_second_append_uses_size_to_avoid_mtime_skip(
     ) == 0
     conn.commit()
     assert _row_count(conn) == 2
+
+
+def test_full_ingest_budget_is_per_adapter(fresh_mp, tmp_path, monkeypatch):
+    """A backlog in one CLI must not use up the catch-up for the others."""
+    from threadkeeper import ingest
+    import threadkeeper.adapters as adapters
+
+    ingest.SEMANTIC_AVAILABLE = False
+    conn = fresh_mp["db"].get_db()
+
+    class _Named(_FakeAdapter):
+        def __init__(self, name, fp, messages):
+            super().__init__(messages)
+            self.name = name
+            self._fp = fp
+
+        def transcript_files(self):
+            return [self._fp]
+
+    def _msgs(prefix, n):
+        return [
+            NormalizedMessage(
+                uuid=f"{prefix}-{i}", session_id=prefix, role="user",
+                content=f"{prefix} backlog message number {i}", model="",
+                created_at=1_800_000_000 + i, raw={},
+            )
+            for i in range(n)
+        ]
+
+    busy_fp = tmp_path / "busy.jsonl"
+    new_fp = tmp_path / "new.db"
+    busy_fp.write_text("x\n", encoding="utf-8")
+    new_fp.write_text("y\n", encoding="utf-8")
+    busy = _Named("busy-cli", busy_fp, _msgs("busy", 5))
+    newcomer = _Named("new-cli", new_fp, _msgs("new", 3))
+    monkeypatch.setattr(adapters, "installed_adapters", lambda: [busy, newcomer])
+
+    assert ingest._ingest_all(conn, max_msgs=2) == (4, 2)
+    sources = [
+        r["source"] for r in conn.execute(
+            "SELECT source FROM dialog_messages ORDER BY source"
+        ).fetchall()
+    ]
+    assert sources == ["busy-cli", "busy-cli", "new-cli", "new-cli"]
+
