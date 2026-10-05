@@ -297,7 +297,14 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"ERR: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(report, indent=2) if args.json else format_report(report))
+    safe_report = dict(report)
+    if "rows" in safe_report:
+        safe_report["rows"] = {"redacted": True, "count": len(report["rows"])}
+    print(
+        json.dumps(safe_report, indent=2)
+        if args.json
+        else format_report(safe_report)
+    )
     return 0
 
 
