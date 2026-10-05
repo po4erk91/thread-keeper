@@ -6,6 +6,7 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a
@@ -97,6 +98,16 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.17.0 — 2026-10-05
+- **Added: live, privately cacheable memory resources (#345).** The four
+  `memory://` resources now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Capability-aware hosts can
+  subscribe to individual URIs and receive coalesced, post-commit invalidation
+  notifications containing only the URI and freshness metadata; non-subscribing
+  hosts retain pull-only reads. The durable event-log map keeps thread, signal,
+  task, learning-loop, and static-memory updates scoped to their affected
+  resources, while rolled-back writes cannot notify.
 
 ## v0.16.3 — 2026-07-19
 

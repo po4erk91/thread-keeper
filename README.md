@@ -174,7 +174,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
 | **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
-| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
+| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically; capable hosts may subscribe |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
 **Resources** back the genuinely read-only memory views with the same render
@@ -185,6 +185,13 @@ is `brief()`, `memory://context` is `context()`, and so on. The win is for
 surface memory as attachable / `@`-mentionable context through a mechanical
 channel. The brief resource renders lean and agent-status uses a cached snapshot,
 so an automatic host pull is **side-effect-free**.
+
+All four memory resources are private, short-lived snapshots (`cacheScope:
+private`, TTL 30 seconds). Hosts that support `resources/subscribe` can subscribe
+to a URI and receive a coalesced invalidation after the relevant SQLite
+transaction commits; the notification contains only that URI plus freshness
+metadata, never memory content. Hosts that do not subscribe keep the same
+pull-only behavior.
 
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.

@@ -1534,6 +1534,16 @@ the other two for the read/act split they fit naturally:
   pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
   URIs are static: resource *templates* (`{param}`) are still unevenly supported
   across hosts, so parameterized URIs are a later, host-gated step.
+  Each snapshot advertises `cacheScope: private`, a 30-second TTL, priority,
+  `lastModified`, and its rendered byte size. Hosts that send
+  `resources/subscribe` are tracked per URI; a short poller reads only committed
+  rows from the durable event log, coalesces a burst, and emits an update with
+  the URI plus freshness metadata only. The narrow invalidation map is: thread
+  mutations → brief/context/dashboard; signals → brief/dashboard; task lifecycle
+  → brief/dashboard/agent-status; learning-loop commits → dashboard/agent-status;
+  core/style/verbatim/concept/distill memory → brief/dashboard. An unsupported
+  or non-subscribing host remains pull-only, and rolled-back rows never appear in
+  the event log so cannot produce a notification.
 - **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,
   parameterized* templates for the curation / audit / review flows:
   `review_recent_threads`, `run_library_curation`, `audit_threadkeeper`. Claude

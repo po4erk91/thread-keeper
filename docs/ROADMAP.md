@@ -848,6 +848,17 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#345). **Live, privately cacheable memory resources.** The four
+  `memory://` snapshots now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Hosts that support
+  `resources/subscribe` can subscribe to an individual URI; a durable,
+  transaction-aware event-log poller maps each committed mutation to the
+  smallest affected URI set and coalesces bursts before sending URI-plus-
+  freshness notifications. Thread edits refresh brief/context/dashboard,
+  signals refresh brief/dashboard, task lifecycle changes also refresh
+  agent-status, and learning-loop commits refresh dashboard/agent-status.
+  Rollbacks and non-subscribing hosts remain silent/pull-only, and update
+  messages never contain memory content.
 - ✅ DONE (#76). **Learning-loop memory-poisoning boundary.** Observed dialog is
   fenced as untrusted data in every synthesis prompt, loop children use
   path-scoped memory tools instead of bare filesystem writes, stated-policy
