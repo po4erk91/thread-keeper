@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +32,55 @@ def test_get_db_sets_user_version_and_skips_legacy_alters(
         db.CURRENT_SCHEMA_VERSION
     )
     conn.close()
+
+
+_IDEMPOTENT_CREATE = re.compile(
+    r"\s*(--[^\n]*\n\s*)*CREATE\s+(VIRTUAL\s+)?(TABLE|INDEX|UNIQUE\s+INDEX|TRIGGER)"
+    r"\s+IF\s+NOT\s+EXISTS\b",
+    re.IGNORECASE,
+)
+
+
+def test_schema_contains_only_idempotent_creates(fresh_mp):
+    db = fresh_mp["db"]
+
+    non_idempotent = [
+        statement
+        for statement in db._iter_sql_statements(db.SCHEMA)
+        if not _IDEMPOTENT_CREATE.match(statement)
+    ]
+
+    assert non_idempotent == []
+
+
+def test_bootstrap_adds_schema_table_missing_from_current_version_db(fresh_mp):
+    db = fresh_mp["db"]
+    conn = db.get_db()
+    conn.execute("DROP TABLE memory_authority")
+    conn.commit()
+    conn.close()
+
+    db._BOOTSTRAPPED = False
+    db.bootstrap_db()
+
+    conn = db.get_db()
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            db.CURRENT_SCHEMA_VERSION
+        )
+        restored = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE tbl_name='memory_authority'"
+            )
+        }
+        assert {
+            "memory_authority",
+            "memory_authority_immutable",
+            "idx_memory_authority_visible",
+        } <= restored
+    finally:
+        conn.close()
 
 
 def test_non_duplicate_column_migration_error_surfaces(

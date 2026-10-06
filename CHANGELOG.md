@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: tables added after schema v5 now reach existing databases.**
+  Durable Curator passes, staged embedding upgrades, and memory authority added
+  tables to the baseline schema without a version bump. Databases already at v5
+  never received them, so the host's initial transcript ingest crashed on every
+  start with `no such table: memory_authority`. Every bootstrap now replays the
+  idempotent baseline schema, and a test keeps every baseline statement
+  `CREATE ... IF NOT EXISTS`.
+
 - **Fixed: an interrupted conflict repair with unstaged edits no longer
   blocks Evolve apply.** When a conflict-repair child was killed after staging
   a resolution and then editing the same file again, merge recovery used

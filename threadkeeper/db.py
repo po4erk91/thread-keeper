@@ -1496,9 +1496,14 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
 
 
 def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
-    """Materialize backward-compatible tables without a version migration."""
-    for statement in _iter_sql_statements(ADDITIVE_RUNTIME_SCHEMA):
-        conn.execute(statement)
+    """Materialize backward-compatible tables without a version migration.
+
+    SCHEMA is replayed too: it is CREATE ... IF NOT EXISTS only, and a table
+    added to it without a version bump must still reach current-version DBs.
+    """
+    for script in (SCHEMA, ADDITIVE_RUNTIME_SCHEMA):
+        for statement in _iter_sql_statements(script):
+            conn.execute(statement)
     for ddl in ADDITIVE_RUNTIME_COLUMN_MIGRATIONS:
         _apply_column_migration(conn, ddl)
 

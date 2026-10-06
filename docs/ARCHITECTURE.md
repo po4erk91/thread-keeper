@@ -268,7 +268,10 @@ legacy columns, run data backfills, then set `user_version` to the code's
 re-checks `user_version` before doing work, so only one process performs the
 migration. Duplicate-column `ALTER TABLE` failures are the only swallowed
 migration errors; any other `OperationalError` is logged and raised with the
-version left unchanged for a retry.
+version left unchanged for a retry. After the version gate, every bootstrap
+replays `SCHEMA` and `ADDITIVE_RUNTIME_SCHEMA`. Both are `CREATE ... IF NOT
+EXISTS` only (a test enforces this for `SCHEMA`), so a table added without a
+version bump still reaches databases that are already current.
 
 Steady-state access is split by intent:
 

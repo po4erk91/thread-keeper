@@ -1762,7 +1762,9 @@ that keeps a write transaction open for a minute or more.
 
 Schema migration uses SQLite `PRAGMA user_version`: a current database skips
 legacy `ALTER TABLE` work, while an old or fresh v0 database migrates once
-under a writer transaction and records the current version. Duplicate-column
+under a writer transaction and records the current version. Every startup
+also replays the idempotent baseline `CREATE ... IF NOT EXISTS` schema, so a
+table added after the last version bump still reaches existing databases. Duplicate-column
 migrations are the only expected no-op; other DDL errors are logged and raised.
 
 On POSIX systems, startup and `get_db()` harden the default local store
