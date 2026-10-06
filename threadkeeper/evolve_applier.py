@@ -1128,7 +1128,7 @@ def _recover_stale_managed_merge(
     child can otherwise block every future backlog item. This recovery is
     intentionally narrow: managed checkout, merge in progress, applier-owned
     branch, exact GitHub PR proven open or merged, archived tracked diff. An
-    open PR's interrupted merge is aborted so the conflict-repair child can
+    open PR's interrupted merge is reset so the conflict-repair child can
     restart it; an already-merged PR is discarded as stale. Any uncertain state
     remains fail-closed for a human.
     """
@@ -1193,16 +1193,11 @@ def _recover_stale_managed_merge(
     if backup_err or backup is None:
         return False, f"{backup_kind}_backup_failed={_short(backup_err)}"
 
-    if opened is not None:
-        reset_err = _run(["git", "merge", "--abort"], timeout=30, cwd=repo_root)
-        if reset_err:
-            return False, f"open_pr_merge_abort_failed={_short(reset_err)}"
-    else:
-        reset_err = _run(
-            ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
-        )
-        if reset_err:
-            return False, f"stale_merge_reset_failed={_short(reset_err)}"
+    # Not `git merge --abort`: it refuses when a killed repair child left
+    # unstaged edits on a merge-touched path. The archive already holds them.
+    reset_err = _run(["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root)
+    if reset_err:
+        return False, f"{backup_kind}_reset_failed={_short(reset_err)}"
     checkout_err = _run(
         [
             "git", "checkout", "-f", "-B", _base_branch_name(),

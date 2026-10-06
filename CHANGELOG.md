@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: an interrupted conflict repair with unstaged edits no longer
+  blocks Evolve apply.** When a conflict-repair child was killed after staging
+  a resolution and then editing the same file again, merge recovery used
+  `git merge --abort`, which refuses to drop those edits. Every scheduled pass
+  then stopped with `open_pr_merge_abort_failed`. Recovery now resets the
+  orphaned merge to `HEAD` after archiving the full tracked diff, which
+  already includes those edits.
+
 - **Added: durable MCP Tasks handles for headless spawned work (#370).**
   Clients that advertise `io.modelcontextprotocol/tasks` receive an opaque,
   authorization-bound handle for eligible `spawn(visible=False)` calls and can

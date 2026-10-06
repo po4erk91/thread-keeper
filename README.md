@@ -1112,8 +1112,9 @@ If a killed child leaves an unresolved merge or plain tracked WIP in the default
 auto-managed checkout, the next code-producing pass archives the diff before
 recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
 branches whose exact PR is confirmed open or merged. For an open PR, the parent
-archives the interrupted merge, aborts it, refreshes the disposable checkout,
-and lets the normal conflict-repair sweep retry that same PR. A merged PR's
+archives the interrupted merge (including edits the child made after staging
+a resolution), resets it, refreshes the disposable checkout, and lets the
+normal conflict-repair sweep retry that same PR. A merged PR's
 leftover merge is discarded as stale. Plain abandoned WIP is recoverable on
 those applier branches when PR state is readable, and also on the configured
 base branch: the disposable base can contain orphaned edits when an older child
