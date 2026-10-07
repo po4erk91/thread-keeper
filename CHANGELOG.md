@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: live, privately cacheable memory resources (#345).** The four
+  `memory://` resources now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Capability-aware hosts can
+  subscribe to individual URIs and receive coalesced, post-commit invalidation
+  notifications containing only the URI and freshness metadata; non-subscribing
+  hosts retain pull-only reads. The durable event-log map keeps thread, signal,
+  task, learning-loop, and static-memory updates scoped to their affected
+  resources, while rolled-back writes cannot notify.
+
 - **Added dual-era MCP conformance and replay-safe modern writes (#344).**
   The server accepts the `2025-11-25` initialize handshake and the
   `2026-07-28` request envelope. Modern discovery catalogs use public cache

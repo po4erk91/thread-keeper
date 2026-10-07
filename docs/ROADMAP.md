@@ -940,6 +940,17 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#345). **Live, privately cacheable memory resources.** The four
+  `memory://` snapshots now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Hosts that support
+  `resources/subscribe` can subscribe to an individual URI; a durable,
+  transaction-aware event-log poller maps each committed mutation to the
+  smallest affected URI set and coalesces bursts before sending URI-plus-
+  freshness notifications. Thread edits refresh brief/context/dashboard,
+  signals refresh brief/dashboard, task lifecycle changes also refresh
+  agent-status, and learning-loop commits refresh dashboard/agent-status.
+  Rollbacks and non-subscribing hosts remain silent/pull-only, and update
+  messages never contain memory content.
 - ✅ DONE (#344). **Dual-era MCP protocol conformance and replay-safe writes.**
   The SDK 2.x migration serves `2025-11-25` initialize clients and the
   `2026-07-28` per-request envelope through one tool implementation. Legacy
