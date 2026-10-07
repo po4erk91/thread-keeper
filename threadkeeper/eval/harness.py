@@ -452,14 +452,18 @@ def load_fixtures(fixtures_dir: Path) -> dict:
     out: dict[str, list] = {}
     for key, fname in (("shadow", "shadow.json"),
                        ("candidate", "candidates.json"),
-                       ("quality", "skill_quality.json")):
+                       ("quality", "skill_quality.json"),
+                       ("upgrade", "upgrade_replay.json")):
         path = fixtures_dir / fname
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             out[key] = []
             continue
-        out[key] = data.get("items", data) if isinstance(data, dict) else data
+        if key == "upgrade":
+            out[key] = data if isinstance(data, dict) else {"items": data}
+        else:
+            out[key] = data.get("items", data) if isinstance(data, dict) else data
     return out
 
 
@@ -507,6 +511,67 @@ def _eval_quality_axis(items: list[dict], *, judge: str, model: str,
     return agr
 
 
+def _upgrade_axis(items: list[dict], direction: str, thresholds: dict) -> dict:
+    """Score one fixed-corpus upgrade direction without live user data.
+
+    Fixtures contain anonymized identifiers and expected decisions. They cover
+    retrieval recall, correct abstention, knowledge updates, and whether a
+    derived-memory decision remains acceptable after a writer/model change.
+    """
+    recall_values: list[float] = []
+    abstain: list[tuple[bool, bool]] = []
+    updates: list[tuple[bool, bool]] = []
+    derived: list[tuple[str, str]] = []
+    for item in items:
+        path = item.get(direction, {})
+        expected = set(item.get("expected_memory_ids", []))
+        retrieved = set(path.get("retrieved_memory_ids", []))
+        if expected:
+            recall_values.append(len(expected & retrieved) / len(expected))
+        abstain.append((bool(path.get("abstained")), bool(item.get("should_abstain"))))
+        updates.append((bool(path.get("knowledge_updated")), bool(item.get("should_update"))))
+        derived.append((str(path.get("derived_decision", "reject")),
+                        str(item.get("derived_decision", "reject"))))
+    recall = sum(recall_values) / len(recall_values) if recall_values else 0.0
+    abstention = sum(actual == expected for actual, expected in abstain) / len(abstain) if abstain else 0.0
+    knowledge = sum(actual == expected for actual, expected in updates) / len(updates) if updates else 0.0
+    decision = sum(actual == expected for actual, expected in derived) / len(derived) if derived else 0.0
+    floors = {
+        "recall": float(thresholds.get("recall", 0.95)),
+        "abstention": float(thresholds.get("abstention", 0.95)),
+        "knowledge_update": float(thresholds.get("knowledge_update", 0.95)),
+        "derived_decision": float(thresholds.get("derived_decision", 0.95)),
+    }
+    scores = {
+        "recall": round(recall, 4), "abstention": round(abstention, 4),
+        "knowledge_update": round(knowledge, 4),
+        "derived_decision": round(decision, 4),
+    }
+    return {
+        "direction": direction, "n": len(items), "scores": scores,
+        "thresholds": floors, "passed": bool(items) and all(
+            scores[key] >= floors[key] for key in floors
+        ),
+    }
+
+
+def run_upgrade_replay(data: list[dict] | dict) -> dict:
+    """Run both migration directions over the bundled anonymized corpus."""
+    if isinstance(data, dict):
+        items = data.get("items", [])
+        thresholds = data.get("thresholds", {})
+    else:
+        items, thresholds = data, {}
+    old_to_new = _upgrade_axis(items, "old_to_new", thresholds)
+    new_to_old = _upgrade_axis(items, "new_to_old", thresholds)
+    return {
+        "old_to_new": old_to_new,
+        "new_to_old": new_to_old,
+        "ready": bool(items),
+        "passed": old_to_new["passed"] and new_to_old["passed"],
+    }
+
+
 def run_eval(fixtures_dir: Path = FIXTURES_DIR, *, judge: str = "rubric",
              llm_model: str = "claude-haiku-4-5-20251001") -> dict:
     """Run all three axes and assemble the report with a PASS/PARTIAL/FAIL
@@ -527,10 +592,16 @@ def run_eval(fixtures_dir: Path = FIXTURES_DIR, *, judge: str = "rubric",
         judge=judge, model=llm_model, api_key=api_key)
     quality = _eval_quality_axis(
         fx["quality"], judge=judge, model=llm_model, api_key=api_key)
+    upgrade = run_upgrade_replay(fx["upgrade"])
 
-    ready = [shadow["ready"], candidate["ready"], quality["ready"]]
-    if all(ready):
+    ready = [shadow["ready"], candidate["ready"], quality["ready"], upgrade["ready"]]
+    if all(ready) and upgrade["passed"]:
         verdict = "PASS"
+    elif not upgrade["passed"]:
+        # This corpus is a release gate rather than an observability-only
+        # signal. A failed direction must therefore fail closed even when the
+        # other historical axes are ready.
+        verdict = "FAIL"
     elif not any(ready):
         verdict = "FAIL"
     else:
@@ -541,13 +612,14 @@ def run_eval(fixtures_dir: Path = FIXTURES_DIR, *, judge: str = "rubric",
         "shadow": shadow,
         "candidate": candidate,
         "quality": quality,
+        "upgrade": upgrade,
         "verdict": verdict,
-        "summary": _summarize(verdict, shadow, candidate, quality),
+        "summary": _summarize(verdict, shadow, candidate, quality, upgrade),
     }
 
 
 def _summarize(verdict: str, shadow: dict, candidate: dict,
-               quality: dict) -> str:
+               quality: dict, upgrade: dict) -> str:
     def f1(m):
         return f"{m['f1']:.2f}" if m.get("f1") is not None else "n/a"
 
@@ -556,7 +628,8 @@ def _summarize(verdict: str, shadow: dict, candidate: dict,
 
     return (
         f"{verdict}: shadow_F1={f1(shadow)} candidate_F1={f1(candidate)} "
-        f"quality_agreement={agr(quality)} (n={quality.get('n', 0)})"
+        f"quality_agreement={agr(quality)} upgrade_gate="
+        f"{'PASS' if upgrade['passed'] else 'FAIL'} (n={quality.get('n', 0)})"
     )
 
 
@@ -613,6 +686,18 @@ def format_report(report: dict) -> str:
                 f"    ✗ {r['id']:<22} human={r['human']} judge={r['judge']}"
                 f"  {r['reason']}")
     out.append("")
+    out.append("fixed-corpus upgrade replay (release gate):")
+    for direction in ("old_to_new", "new_to_old"):
+        item = report["upgrade"][direction]
+        scores = item["scores"]
+        out.append(
+            f"  {direction}: recall={_fmt_pct(scores['recall'])} "
+            f"abstention={_fmt_pct(scores['abstention'])} "
+            f"knowledge_update={_fmt_pct(scores['knowledge_update'])} "
+            f"derived_decision={_fmt_pct(scores['derived_decision'])} "
+            f"{'PASS' if item['passed'] else 'FAIL'}"
+        )
+    out.append("")
     out.append(f"  VERDICT: {report['verdict']}")
     out.append(f"  {report['summary']}")
     out.append("──────────────────────────────────────────────────────────")
@@ -657,9 +742,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(format_report(report))
-    # Exit non-zero only when the harness itself is broken (no fixtures /
-    # nothing computable), never on model quality — quality is a number to
-    # track, not a gate.
+    # The historic decision axes remain observability metrics. The dedicated
+    # upgrade corpus is intentionally a release gate: it fails closed on either
+    # direction because a one-way replay misses rollback regressions.
     return 0 if report["verdict"] in ("PASS", "PARTIAL") else 1
 
 

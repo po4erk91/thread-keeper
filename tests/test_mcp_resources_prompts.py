@@ -137,10 +137,10 @@ def test_memory_resource_metadata_is_private_bounded_and_fresh(fresh_mp):
         resource = by_uri[uri]
         assert resource.annotations.audience == ["assistant"]
         assert 0.0 < resource.annotations.priority <= 1.0
-        assert resource.annotations.model_extra["lastModified"].endswith("Z")
+        assert resource.annotations.last_modified.endswith("Z")
         assert resource.meta["cacheScope"] == "private"
         assert resource.meta["ttl"] == 30
-        assert resource.meta["lastModified"] == resource.annotations.model_extra["lastModified"]
+        assert resource.meta["lastModified"] == resource.annotations.last_modified
         # Calculated from the same dynamic snapshot a client reads, not a stale
         # fixed declaration in the decorator.
         assert resource.size is not None and resource.size > 0
@@ -176,7 +176,7 @@ class _RecordingSession:
 
 
 def _notification_payload(notification):
-    return notification.root.params.model_dump(by_alias=True, exclude_none=True)
+    return notification.params.model_dump(by_alias=True, exclude_none=True)
 
 
 def test_subscriptions_emit_coalesced_private_updates_after_commit(fresh_mp, monkeypatch):
@@ -288,7 +288,9 @@ def test_audit_threadkeeper_prompt_renders(fresh_mp):
 # ──────────────────────────────────────────────────────────────────────
 
 def test_server_advertises_resources_and_prompts_capabilities(fresh_mp):
-    caps = fresh_mp["mcp"]._mcp_server.get_capabilities(NotificationOptions(), {})
+    caps = fresh_mp["mcp"]._lowlevel_server.get_capabilities(
+        NotificationOptions(), {}, protocol_version="2026-07-28",
+    )
     assert caps.resources is not None
     assert caps.resources.subscribe is True
     assert caps.prompts is not None

@@ -40,6 +40,7 @@ import logging
 from typing import Any
 
 from mcp import types
+from mcp.shared.subscriptions import ResourceUpdated
 from mcp.types import Annotations
 
 from .._mcp import mcp
@@ -278,9 +279,7 @@ class _MemoryResourceSubscriptions:
                     _meta=_freshness_metadata(uri, changed_at),
                 )
                 await session.send_notification(
-                    types.ServerNotification(
-                        types.ResourceUpdatedNotification(params=params)
-                    )
+                    types.ResourceUpdatedNotification(params=params)
                 )
             except Exception:
                 # A disconnected client cannot receive future updates. Remove
@@ -292,6 +291,9 @@ class _MemoryResourceSubscriptions:
                 item for item in self._subscriptions
                 if id(item.session) not in failed_sessions
             ]
+
+        for uri in {uri for _, uri in pending}:
+            await mcp._subscriptions.publish(ResourceUpdated(uri=uri))
 
 
 _subscriptions = _MemoryResourceSubscriptions()
@@ -344,7 +346,7 @@ def context_resource() -> str:
     meta={"cacheScope": RESOURCE_CACHE_SCOPE, "ttl": RESOURCE_TTL_SECONDS},
 )
 def dashboard_resource() -> str:
-    # mp_dashboard() is the read_tool() function; FastMCP leaves it directly
+    # mp_dashboard() is the read_tool() function; MCPServer leaves it directly
     # callable. It opens its own db handle and is defensive on partial schemas.
     return mp_dashboard()
 
@@ -364,35 +366,29 @@ def agent_status_resource() -> str:
     return format_agent_status(agent_status_snapshot(refresh=False))
 
 
-# FastMCP 1.x exposes resource subscription hooks on the low-level server but
-# does not register them for decorated resources. Keep the bridge local to the
-# four memory URIs, then advertise it through normal MCP capabilities.
-@mcp._mcp_server.subscribe_resource()
-async def _subscribe_memory_resource(uri) -> None:
-    uri_text = str(uri)
+# The high-level MCP server owns resource decorators, while the legacy
+# resources/subscribe request is registered on its low-level transport server.
+# Keeping this bridge local preserves per-session subscriptions without
+# changing the global resource catalog.
+async def _subscribe_memory_resource(context, params):
+    uri_text = str(params.uri)
     if uri_text not in MEMORY_RESOURCE_URIS:
         raise ValueError(f"unknown memory resource: {uri_text}")
-    await _subscriptions.subscribe(uri_text, mcp._mcp_server.request_context.session)
+    await _subscriptions.subscribe(uri_text, context.session)
+    return types.EmptyResult()
 
 
-@mcp._mcp_server.unsubscribe_resource()
-async def _unsubscribe_memory_resource(uri) -> None:
-    await _subscriptions.unsubscribe(str(uri), mcp._mcp_server.request_context.session)
+async def _unsubscribe_memory_resource(context, params):
+    await _subscriptions.unsubscribe(str(params.uri), context.session)
+    return types.EmptyResult()
 
 
-_original_get_capabilities = mcp._mcp_server.get_capabilities
-
-
-def _memory_resource_capabilities(notification_options, experimental_capabilities):
-    capabilities = _original_get_capabilities(
-        notification_options, experimental_capabilities
-    )
-    if capabilities.resources is not None:
-        capabilities.resources.subscribe = True
-    return capabilities
-
-
-mcp._mcp_server.get_capabilities = _memory_resource_capabilities
+mcp._lowlevel_server.add_request_handler(
+    "resources/subscribe", types.SubscribeRequestParams, _subscribe_memory_resource
+)
+mcp._lowlevel_server.add_request_handler(
+    "resources/unsubscribe", types.UnsubscribeRequestParams, _unsubscribe_memory_resource
+)
 
 
 _original_list_resources = mcp.list_resources
@@ -441,16 +437,15 @@ async def _list_memory_resources_with_metadata():
     return enriched
 
 
-async def _read_memory_resource_with_metadata(uri):
+async def _read_memory_resource_with_metadata(uri, context=None):
     # Reads remain exactly the former pull-only behavior. Metadata lives in
     # resources/list and update notifications; no memory body is put in a
     # notification payload.
-    return await _original_read_resource(uri)
+    return await _original_read_resource(uri, context)
 
 
-# Patch FastMCP's public methods and rebind its already-created low-level
-# handlers so direct Python callers and protocol clients see the same contract.
+# Patch MCPServer's public methods. Its low-level handlers delegate to these
+# methods at request time, so direct Python callers and protocol clients see
+# the same metadata contract.
 mcp.list_resources = _list_memory_resources_with_metadata
 mcp.read_resource = _read_memory_resource_with_metadata
-mcp._mcp_server.list_resources()(mcp.list_resources)
-mcp._mcp_server.read_resource()(mcp.read_resource)

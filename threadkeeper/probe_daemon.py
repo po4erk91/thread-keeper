@@ -253,11 +253,17 @@ def run_probe_pass(force: bool = False, *, scheduled: bool = False) -> str:
             result = _spawn_probe_child(due[0])
         except Exception as e:  # noqa: BLE001 — never crash the daemon
             out = f"graded={graded} spawn_error: {e}"
-            _record_probe_pass(conn, now_t, out)
+            _record_probe_pass(conn, _last_probe_ts(conn), out)
+            return out
+        from .spawn_result import parse_spawn_result
+        spawn_result = parse_spawn_result(result)
+        if not spawn_result.ok:
+            out = f"graded={graded} spawn_error: {spawn_result.reason}"
+            _record_probe_pass(conn, _last_probe_ts(conn), out)
             return out
         out = (
             f"graded={graded} spawned cat={due[0]['category']} "
-            f"{str(result)[:120]}"
+            f"{spawn_result.text[:120]}"
         )
         _record_probe_pass(conn, now_t, out)
         return out
