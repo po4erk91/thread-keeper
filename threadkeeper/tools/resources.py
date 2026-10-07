@@ -72,6 +72,7 @@ _RESOURCE_PRIORITIES = {
 }
 _RESOURCE_BOOTSTRAPPED_AT = int(datetime.now(timezone.utc).timestamp())
 _SUBSCRIPTION_POLL_SECONDS = 0.15
+_RESOURCE_RENDERED_SIZES: dict[str, tuple[int, int]] = {}
 
 
 def _iso_timestamp(timestamp: int) -> str:
@@ -403,6 +404,22 @@ def _contents_size(contents) -> int:
     return size
 
 
+async def _rendered_size(uri: str, modified_at: int) -> int | None:
+    """Return the rendered size cached for the resource's current revision."""
+    cached = _RESOURCE_RENDERED_SIZES.get(uri)
+    if cached is not None and cached[0] == modified_at:
+        return cached[1]
+    try:
+        contents = await _original_read_resource(uri)
+    except Exception:
+        # Size is optional in MCP. Preserve a usable listing if a dynamic
+        # snapshot temporarily cannot render.
+        return None
+    size = _contents_size(contents)
+    _RESOURCE_RENDERED_SIZES[uri] = (modified_at, size)
+    return size
+
+
 async def _list_memory_resources_with_metadata():
     """Attach current private-cache freshness metadata to resource listings.
 
@@ -417,14 +434,9 @@ async def _list_memory_resources_with_metadata():
         if uri not in MEMORY_RESOURCE_URIS:
             enriched.append(resource)
             continue
-        try:
-            contents = await _original_read_resource(uri)
-            size = _contents_size(contents)
-        except Exception:
-            # Size is optional in MCP. Preserve a usable listing if a dynamic
-            # snapshot temporarily cannot render.
-            size = None
-        freshness = _freshness_metadata(uri, modified[uri])
+        modified_at = modified[uri]
+        size = await _rendered_size(uri, modified_at)
+        freshness = _freshness_metadata(uri, modified_at)
         enriched.append(resource.model_copy(update={
             "annotations": Annotations(
                 audience=["assistant"],
