@@ -1103,6 +1103,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
 | `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after a pass deletes at least this many rows; 0 disables VACUUM |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
+| `THREADKEEPER_OTEL_ENABLED` | false | enable privacy-safe OTLP tracing only when an endpoint is also configured |
+| `THREADKEEPER_OTEL_ENDPOINT` | "" | OTLP/HTTP collector trace endpoint, normally `https://collector.example/v1/traces` |
+| `THREADKEEPER_OTEL_EXPORT_TIMEOUT_S` | 2 | collector request timeout; export happens outside the local workflow |
+| `THREADKEEPER_OTEL_EXPORT_QUEUE_SIZE` | 256 | bounded per-process span queue (1–2048); oldest queued spans are dropped under pressure |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
@@ -1304,6 +1308,38 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
 ---
 
 ## Telemetry
+
+### Privacy-safe OTLP traces
+
+OTLP export is **off by default**. To opt in, set both
+`THREADKEEPER_OTEL_ENABLED=1` and `THREADKEEPER_OTEL_ENDPOINT` to an
+OTLP/HTTP `/v1/traces` endpoint. ThreadKeeper sends OTLP JSON asynchronously;
+collector failure, timeout, or a full queue never delays a local MCP call,
+spawn, watchdog action, or SQLite write.
+
+One spawned workflow is linked as `MCP spawn → workflow → agent → child MCP
+operation`. The W3C trace context is saved with the task and passed only in the
+private child environment (and its slim MCP config), never in a prompt or CLI
+argument. A watchdog continuation uses the prior agent span as its parent, so
+retries remain in the same trace.
+
+The exporter has a fixed allowlist: operation/tool identifier, latency and
+queue wait, provider/model identifiers, input/output/total tokens, USD cost,
+retry count, and terminal outcome. Operation names are fixed; tool/provider
+identifiers are limited to 64 safe characters, model identifiers to 96, and a
+process exports at most 64 distinct model values (later values become
+`unknown`).
+Everything else is excluded by construction: prompts, MCP arguments/results,
+memory bodies, user quotes, credentials, paths, task logs, and SQLite event
+summaries are never span attributes.
+
+The local SQLite event ledger remains the source of truth. It retains only the
+opaque trace linkage beside a task row, so its existing task-retention policy
+also removes that linkage. Configure collector retention at the collector; no
+trace payload is persisted locally. If traces do not arrive, first verify the
+endpoint includes `/v1/traces`; then inspect collector connectivity. A full
+queue intentionally drops its oldest pending spans rather than growing memory
+or blocking the workflow.
 
 - **`mp_dashboard(window_days=7)`** — one-call rollup of the whole
   system, read-only. Three sections: **stores** (threads by state,

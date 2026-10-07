@@ -529,6 +529,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             retry_attempt=next_attempt,
             parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
             cli=str(_row_get(row, "chosen_cli", "") or ""),
+            traceparent_override=str(_row_get(row, "traceparent", "") or ""),
         )
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)

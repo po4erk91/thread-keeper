@@ -98,6 +98,17 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-07
+
+### Added
+
+- **Privacy-safe OpenTelemetry workflow tracing (#346).** The default-off,
+  bounded OTLP/HTTP exporter links parent MCP launch, spawned agent, child MCP
+  operations, watchdog continuations, and terminal task outcomes using private
+  environment/task-row context. Its typed allowlist exports only operational
+  metadata; prompts, tool payloads/results, memory content, quotes,
+  credentials, and paths are excluded by construction.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

@@ -14,11 +14,26 @@ writes without calling them:
 This static metadata layer is what a confirmation/elicitation client reads
 to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 """
+from functools import wraps
+
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel
 
 mcp = FastMCP("thread-keeper")
+
+
+def _traced_tool(fn):
+    """Add a payload-free span around an MCP handler when tracing is enabled."""
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        from .tracing import mcp_span
+
+        with mcp_span(fn.__name__):
+            return fn(*args, **kwargs)
+
+    return wrapped
 
 
 def read_tool(**kwargs):
@@ -27,10 +42,13 @@ def read_tool(**kwargs):
     Use for pure queries that do not modify thread-keeper state — briefs,
     searches, status snapshots, listings. Extra kwargs pass through to
     ``mcp.tool`` (e.g. ``name=``)."""
-    return mcp.tool(
-        annotations=ToolAnnotations(readOnlyHint=True),
-        **kwargs,
-    )
+    def register(fn):
+        return mcp.tool(
+            annotations=ToolAnnotations(readOnlyHint=True),
+            **kwargs,
+        )(_traced_tool(fn))
+
+    return register
 
 
 def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs):
@@ -40,14 +58,17 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
     overwrite, archive, or kill (``compost`` excluded — it only reads).
     ``idempotent=True`` sets ``idempotentHint=True`` where repeating the call
     is a no-op (closing an already-closed thread, deleting a missing key)."""
-    return mcp.tool(
-        annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=destructive,
-            idempotentHint=idempotent,
-        ),
-        **kwargs,
-    )
+    def register(fn):
+        return mcp.tool(
+            annotations=ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=destructive,
+                idempotentHint=idempotent,
+            ),
+            **kwargs,
+        )(_traced_tool(fn))
+
+    return register
 
 
 def structured_result(text: str, model: BaseModel) -> CallToolResult:

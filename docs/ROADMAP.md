@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Privacy-safe OTLP workflow traces (#346): default-off bounded exporter links
+  parent MCP launches, agent children, child MCP operations, watchdog
+  continuations, and terminal task outcomes without exporting prompts, tool
+  payloads, memory content, quotes, credentials, or private paths.
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
   RSS instead of ~1.3GB.
 - Search proxy in parent process — slim child performs semantic search

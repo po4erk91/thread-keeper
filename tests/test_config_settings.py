@@ -41,6 +41,9 @@ def test_defaults_match(monkeypatch):
     assert c.AUTO_UPDATE_INTERVAL_S == 86400
     assert c.AUTO_UPDATE_RESTART is True
     assert c.AUTO_UPDATE_SETUP == "check"
+    assert c.OTEL_ENABLED is False
+    assert c.OTEL_ENDPOINT == ""
+    assert c.OTEL_EXPORT_QUEUE_SIZE == 256
     assert c.RETENTION_INTERVAL_S == 0.0
     assert c.DIALOG_RETENTION_DAYS == 0.0
     assert c.TASK_RETENTION_DAYS == 30
