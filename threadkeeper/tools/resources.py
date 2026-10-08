@@ -33,12 +33,271 @@ later, host-gated step (see roadmap #78).
 """
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
+from typing import Any
+
+from mcp import types
+from mcp.shared.subscriptions import ResourceUpdated
+from mcp.types import Annotations
+
 from .._mcp import mcp
-from ..db import get_db
+from ..db import get_db, read_db
 from ..identity import _ensure_session
 from ..brief import render_brief, render_context
 from .dashboard import mp_dashboard
 from ..agent_status import agent_status_snapshot, format_agent_status
+
+
+logger = logging.getLogger(__name__)
+
+MEMORY_RESOURCE_URIS = frozenset({
+    "memory://brief",
+    "memory://context",
+    "memory://dashboard",
+    "memory://agent-status",
+})
+
+# Memory snapshots can contain personal and project context. They are useful
+# briefly, but must never be placed in a shared intermediary cache.
+RESOURCE_CACHE_SCOPE = "private"
+RESOURCE_TTL_SECONDS = 30
+_RESOURCE_PRIORITIES = {
+    "memory://brief": 1.0,
+    "memory://context": 0.85,
+    "memory://dashboard": 0.60,
+    "memory://agent-status": 0.70,
+}
+_RESOURCE_BOOTSTRAPPED_AT = int(datetime.now(timezone.utc).timestamp())
+_SUBSCRIPTION_POLL_SECONDS = 0.15
+_RESOURCE_RENDERED_SIZES: dict[str, tuple[int, int]] = {}
+
+
+def _iso_timestamp(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def resources_for_event(kind: str) -> frozenset[str]:
+    """Return the smallest memory-resource set changed by an event kind.
+
+    The event log is written in the same SQLite transaction as each mutation,
+    so this map is also the commit boundary for resource notifications. Unknown
+    events intentionally refresh nothing: expanding a new mutation's resource
+    impact is an explicit compatibility decision, not an accidental broadcast.
+    """
+    normalized = (kind or "").strip().lower()
+
+    # Thread edits change the working set and its aggregate counts.
+    if (
+        normalized in {
+            "open_thread", "close_thread", "idle_thread", "skill_materialized",
+        }
+        or normalized.startswith("note:")
+    ):
+        return frozenset({
+            "memory://brief",
+            "memory://context",
+            "memory://dashboard",
+        })
+
+    # Signals are surfaced in the brief inbox; the dashboard reports their
+    # aggregate count. They do not alter thread counts or process status.
+    if normalized.startswith("signal:"):
+        return frozenset({"memory://brief", "memory://dashboard"})
+
+    # Task lifecycle and capacity events feed the live working set, dashboard,
+    # and autonomous-status snapshot.
+    if normalized.startswith(("spawn", "task_", "tournament", "spawn_budget")):
+        return frozenset({
+            "memory://brief",
+            "memory://dashboard",
+            "memory://agent-status",
+        })
+
+    # Learning-loop passes and their materialized outputs are dashboard and
+    # agent-status data. A lesson/skill write is not injected into brief()
+    # directly, so it must not spuriously refresh the brief resource.
+    if (
+        normalized.endswith("_pass")
+        or normalized.startswith((
+            "lesson_", "candidate_", "curator_", "dialectic_", "tier_", "extract_",
+            "shadow_review", "evolve_apply", "roadmap_issue_",
+        ))
+    ):
+        return frozenset({"memory://dashboard", "memory://agent-status"})
+
+    # These tables are rendered by the brief, while the dashboard shows their
+    # inventory/event aggregates. They don't change runtime context or daemon
+    # liveness.
+    if normalized.startswith((
+        "core_", "style_", "verbatim_", "concept_", "distill_", "evolve_",
+    )):
+        return frozenset({"memory://brief", "memory://dashboard"})
+
+    return frozenset()
+
+
+def _resource_last_modified() -> dict[str, int]:
+    """Return each resource's newest relevant committed event timestamp."""
+    modified = {uri: _RESOURCE_BOOTSTRAPPED_AT for uri in MEMORY_RESOURCE_URIS}
+    try:
+        with read_db() as conn:
+            rows = conn.execute(
+                "SELECT kind, MAX(created_at) AS created_at FROM events GROUP BY kind"
+            ).fetchall()
+    except Exception:
+        # Resource listing should remain available during a transient database
+        # startup/lock failure; its short TTL makes this conservative fallback
+        # safe until the next list/read.
+        return modified
+    for row in rows:
+        for uri in resources_for_event(row["kind"]):
+            modified[uri] = max(modified[uri], int(row["created_at"] or 0))
+    return modified
+
+
+def _freshness_metadata(uri: str, modified_at: int | None = None) -> dict[str, Any]:
+    if modified_at is None:
+        modified_at = _resource_last_modified().get(uri, _RESOURCE_BOOTSTRAPPED_AT)
+    return {
+        "cacheScope": RESOURCE_CACHE_SCOPE,
+        "ttl": RESOURCE_TTL_SECONDS,
+        "lastModified": _iso_timestamp(modified_at),
+    }
+
+
+@dataclass
+class _ResourceSubscription:
+    session: Any
+    uri: str
+    after_event_id: int
+
+
+class _MemoryResourceSubscriptions:
+    """Subscription registry plus a small committed-event poller.
+
+    Background daemons can commit through a different process from the MCP
+    request server. Polling the durable event log, rather than a process-local
+    callback, keeps updates transaction-aware across that boundary. One poll
+    batch becomes at most one notification per subscribed URI/session.
+    """
+
+    def __init__(self) -> None:
+        self._subscriptions: list[_ResourceSubscription] = []
+        self._last_event_id: int | None = None
+        self._poller: asyncio.Task[None] | None = None
+
+    @staticmethod
+    def _latest_event_id() -> int:
+        with read_db() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS id FROM events"
+            ).fetchone()
+        return int(row["id"])
+
+    @property
+    def count(self) -> int:
+        return len(self._subscriptions)
+
+    async def subscribe(self, uri: str, session: Any) -> None:
+        if uri not in MEMORY_RESOURCE_URIS:
+            raise ValueError(f"unknown memory resource: {uri}")
+        latest = self._latest_event_id()
+        if not self._subscriptions:
+            self._last_event_id = latest
+        self._subscriptions = [
+            item for item in self._subscriptions
+            if not (item.session is session and item.uri == uri)
+        ]
+        self._subscriptions.append(
+            _ResourceSubscription(session=session, uri=uri, after_event_id=latest)
+        )
+        if self._poller is None or self._poller.done():
+            self._poller = asyncio.create_task(self._poll_loop())
+
+    async def unsubscribe(self, uri: str, session: Any) -> None:
+        self._subscriptions = [
+            item for item in self._subscriptions
+            if not (item.session is session and item.uri == uri)
+        ]
+        if not self._subscriptions:
+            self._last_event_id = None
+
+    async def _poll_loop(self) -> None:
+        try:
+            while self._subscriptions:
+                await asyncio.sleep(_SUBSCRIPTION_POLL_SECONDS)
+                await self.poll_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("memory resource subscription poller stopped", exc_info=True)
+
+    async def poll_once(self) -> None:
+        """Deliver one coalesced committed-event batch to current subscribers."""
+        if not self._subscriptions:
+            return
+        if self._last_event_id is None:
+            self._last_event_id = self._latest_event_id()
+            return
+        try:
+            with read_db() as conn:
+                rows = conn.execute(
+                    "SELECT id, kind, created_at FROM events WHERE id>? ORDER BY id",
+                    (self._last_event_id,),
+                ).fetchall()
+        except Exception:
+            logger.debug("memory resource update poll failed", exc_info=True)
+            return
+        if not rows:
+            return
+
+        self._last_event_id = int(rows[-1]["id"])
+        pending: dict[tuple[int, str], tuple[Any, int]] = {}
+        for row in rows:
+            event_id = int(row["id"])
+            changed_at = int(row["created_at"])
+            for uri in resources_for_event(row["kind"]):
+                for subscription in self._subscriptions:
+                    if subscription.uri != uri or event_id <= subscription.after_event_id:
+                        continue
+                    key = (id(subscription.session), uri)
+                    previous = pending.get(key)
+                    pending[key] = (
+                        subscription.session,
+                        max(changed_at, previous[1]) if previous else changed_at,
+                    )
+
+        failed_sessions: set[int] = set()
+        for (session_id, uri), (session, changed_at) in pending.items():
+            try:
+                params = types.ResourceUpdatedNotificationParams(
+                    uri=uri,
+                    _meta=_freshness_metadata(uri, changed_at),
+                )
+                await session.send_notification(
+                    types.ResourceUpdatedNotification(params=params)
+                )
+            except Exception:
+                # A disconnected client cannot receive future updates. Remove
+                # its subscriptions but never let it block healthy clients.
+                failed_sessions.add(session_id)
+                logger.debug("memory resource notification failed", exc_info=True)
+        if failed_sessions:
+            self._subscriptions = [
+                item for item in self._subscriptions
+                if id(item.session) not in failed_sessions
+            ]
+
+        for uri in {uri for _, uri in pending}:
+            await mcp._subscriptions.publish(ResourceUpdated(uri=uri))
+
+
+_subscriptions = _MemoryResourceSubscriptions()
 
 
 @mcp.resource(
@@ -49,6 +308,8 @@ from ..agent_status import agent_status_snapshot, format_agent_status
     "threads, live peers, style, verbatim, user-model. Read-only, rendered "
     "lean (no behavioral nudges, no side effects). Mirrors the brief() tool.",
     mime_type="text/plain",
+    annotations=Annotations(audience=["assistant"], priority=_RESOURCE_PRIORITIES["memory://brief"]),
+    meta={"cacheScope": RESOURCE_CACHE_SCOPE, "ttl": RESOURCE_TTL_SECONDS},
 )
 def brief_resource() -> str:
     conn = get_db()
@@ -65,6 +326,8 @@ def brief_resource() -> str:
     description="Runtime context: session id, age, semantic on/off, db path, "
     "thread counts. Read-only. Mirrors the context() tool's text block.",
     mime_type="text/plain",
+    annotations=Annotations(audience=["assistant"], priority=_RESOURCE_PRIORITIES["memory://context"]),
+    meta={"cacheScope": RESOURCE_CACHE_SCOPE, "ttl": RESOURCE_TTL_SECONDS},
 )
 def context_resource() -> str:
     conn = get_db()
@@ -80,9 +343,11 @@ def context_resource() -> str:
     description="One-call rollup: store sizes, autonomous-loop fire counts, and "
     "what those loops produced. Read-only. Mirrors the mp_dashboard() tool.",
     mime_type="text/plain",
+    annotations=Annotations(audience=["assistant"], priority=_RESOURCE_PRIORITIES["memory://dashboard"]),
+    meta={"cacheScope": RESOURCE_CACHE_SCOPE, "ttl": RESOURCE_TTL_SECONDS},
 )
 def dashboard_resource() -> str:
-    # mp_dashboard() is the read_tool() function; FastMCP leaves it directly
+    # mp_dashboard() is the read_tool() function; MCPServer leaves it directly
     # callable. It opens its own db handle and is defensive on partial schemas.
     return mp_dashboard()
 
@@ -95,6 +360,104 @@ def dashboard_resource() -> str:
     "Read-only cached snapshot (refresh=False, no process re-scan). Mirrors "
     "the agent_status() tool's formatted summary.",
     mime_type="text/plain",
+    annotations=Annotations(audience=["assistant"], priority=_RESOURCE_PRIORITIES["memory://agent-status"]),
+    meta={"cacheScope": RESOURCE_CACHE_SCOPE, "ttl": RESOURCE_TTL_SECONDS},
 )
 def agent_status_resource() -> str:
     return format_agent_status(agent_status_snapshot(refresh=False))
+
+
+# The high-level MCP server owns resource decorators, while the legacy
+# resources/subscribe request is registered on its low-level transport server.
+# Keeping this bridge local preserves per-session subscriptions without
+# changing the global resource catalog.
+async def _subscribe_memory_resource(context, params):
+    uri_text = str(params.uri)
+    if uri_text not in MEMORY_RESOURCE_URIS:
+        raise ValueError(f"unknown memory resource: {uri_text}")
+    await _subscriptions.subscribe(uri_text, context.session)
+    return types.EmptyResult()
+
+
+async def _unsubscribe_memory_resource(context, params):
+    await _subscriptions.unsubscribe(str(params.uri), context.session)
+    return types.EmptyResult()
+
+
+mcp._lowlevel_server.add_request_handler(
+    "resources/subscribe", types.SubscribeRequestParams, _subscribe_memory_resource
+)
+mcp._lowlevel_server.add_request_handler(
+    "resources/unsubscribe", types.UnsubscribeRequestParams, _unsubscribe_memory_resource
+)
+
+
+_original_list_resources = mcp.list_resources
+_original_read_resource = mcp.read_resource
+
+
+def _contents_size(contents) -> int:
+    size = 0
+    for content in contents:
+        value = content.content
+        size += len(value if isinstance(value, bytes) else value.encode("utf-8"))
+    return size
+
+
+async def _rendered_size(uri: str, modified_at: int) -> int | None:
+    """Return the rendered size cached for the resource's current revision."""
+    cached = _RESOURCE_RENDERED_SIZES.get(uri)
+    if cached is not None and cached[0] == modified_at:
+        return cached[1]
+    try:
+        contents = await _original_read_resource(uri)
+    except Exception:
+        # Size is optional in MCP. Preserve a usable listing if a dynamic
+        # snapshot temporarily cannot render.
+        return None
+    size = _contents_size(contents)
+    _RESOURCE_RENDERED_SIZES[uri] = (modified_at, size)
+    return size
+
+
+async def _list_memory_resources_with_metadata():
+    """Attach current private-cache freshness metadata to resource listings.
+
+    Size is calculated from the same side-effect-free snapshot implementation
+    a client reads, rather than guessed from an earlier render.
+    """
+    listed = await _original_list_resources()
+    modified = _resource_last_modified()
+    enriched = []
+    for resource in listed:
+        uri = str(resource.uri)
+        if uri not in MEMORY_RESOURCE_URIS:
+            enriched.append(resource)
+            continue
+        modified_at = modified[uri]
+        size = await _rendered_size(uri, modified_at)
+        freshness = _freshness_metadata(uri, modified_at)
+        enriched.append(resource.model_copy(update={
+            "annotations": Annotations(
+                audience=["assistant"],
+                priority=_RESOURCE_PRIORITIES[uri],
+                lastModified=freshness["lastModified"],
+            ),
+            "size": size,
+            "meta": freshness,
+        }))
+    return enriched
+
+
+async def _read_memory_resource_with_metadata(uri, context=None):
+    # Reads remain exactly the former pull-only behavior. Metadata lives in
+    # resources/list and update notifications; no memory body is put in a
+    # notification payload.
+    return await _original_read_resource(uri, context)
+
+
+# Patch MCPServer's public methods. Its low-level handlers delegate to these
+# methods at request time, so direct Python callers and protocol clients see
+# the same metadata contract.
+mcp.list_resources = _list_memory_resources_with_metadata
+mcp.read_resource = _read_memory_resource_with_metadata

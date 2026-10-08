@@ -396,7 +396,8 @@ def _reap_timed_out(conn, row, now: int) -> bool:
             row["id"], age, SPAWN_MAX_RUNTIME_S,
         )
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(conn, "spawn_timeout", target=row["id"],
                   summary=f"runtime {age}s exceeded cap {SPAWN_MAX_RUNTIME_S}s")
         except Exception:
@@ -467,6 +468,16 @@ def _parse_spawned_task_id(result: str) -> Optional[str]:
     return None
 
 
+def _curator_retry_env(conn, task_id: str) -> dict[str, str]:
+    """Curator pass identity a continuation must inherit ({} otherwise)."""
+    try:
+        from .curator import curator_retry_env
+        return curator_retry_env(conn, task_id)
+    except Exception:
+        logger.debug("curator retry env lookup failed", exc_info=True)
+        return {}
+
+
 def _respawn_timed_out(conn, row, age: int) -> None:
     """Immediately re-launch a watchdog-killed task with continuation context.
 
@@ -477,7 +488,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     """
     if SPAWN_TIMEOUT_RETRY_LIMIT <= 0:
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(conn, "spawn_timeout_retry_skipped", target=row["id"],
                   summary="disabled limit=0")
             conn.commit()
@@ -489,7 +501,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     next_attempt = current_attempt + 1
     if next_attempt > SPAWN_TIMEOUT_RETRY_LIMIT:
         try:
-            from .identity import _emit
+            from .identity import _emit, _ensure_session
+            _ensure_session(conn)
             _emit(
                 conn,
                 "spawn_timeout_retry_skipped",
@@ -510,34 +523,47 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     root_id = _retry_chain_root(conn, row)
     prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
     try:
-        from .tools.spawn import _spawn_impl
-        result = _spawn_impl(
-            prompt=prompt,
-            cwd=str(row["cwd"] or os.getcwd()),
-            append_system=str(_row_get(row, "append_system", "") or ""),
-            model=str(_row_get(row, "model", "") or ""),
-            effort=str(_row_get(row, "effort", "") or ""),
-            permission_mode=str(_row_get(row, "permission_mode", "auto") or "auto"),
-            extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
-            capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
-            visible=_as_bool(_row_get(row, "visible", 0), False),
-            role=str(_row_get(row, "role", "") or ""),
-            write_origin=str(_row_get(row, "write_origin", "") or ""),
-            slim=_as_bool(_row_get(row, "slim", 1), True),
-            retry_of=str(row["id"]),
-            retry_root=root_id,
-            retry_attempt=next_attempt,
-            parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
-            cli=str(_row_get(row, "chosen_cli", "") or ""),
-            traceparent_override=str(_row_get(row, "traceparent", "") or ""),
-        )
+        from .tools.spawn import _retry_bypass_capability, _spawn_impl
+        permission_mode = str(_row_get(row, "permission_mode", "auto") or "auto")
+        exported = _curator_retry_env(conn, str(row["id"]))
+        saved = {key: os.environ.get(key) for key in exported}
+        os.environ.update(exported)
+        try:
+            result = _spawn_impl(
+                prompt=prompt,
+                cwd=str(row["cwd"] or os.getcwd()),
+                append_system=str(_row_get(row, "append_system", "") or ""),
+                model=str(_row_get(row, "model", "") or ""),
+                effort=str(_row_get(row, "effort", "") or ""),
+                permission_mode=permission_mode,
+                extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
+                capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
+                visible=_as_bool(_row_get(row, "visible", 0), False),
+                role=str(_row_get(row, "role", "") or ""),
+                write_origin=str(_row_get(row, "write_origin", "") or ""),
+                slim=_as_bool(_row_get(row, "slim", 1), True),
+                retry_of=str(row["id"]),
+                retry_root=root_id,
+                retry_attempt=next_attempt,
+                parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
+                cli=str(_row_get(row, "chosen_cli", "") or ""),
+                traceparent_override=str(_row_get(row, "traceparent", "") or ""),
+                _bypass_capability=_retry_bypass_capability(permission_mode),
+            )
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)
         result = f"ERR exception={type(e).__name__}: {e}"
 
     retry_id = _parse_spawned_task_id(result)
     try:
-        from .identity import _emit
+        from .identity import _emit, _ensure_session
+        _ensure_session(conn)
         if retry_id:
             conn.execute(
                 "UPDATE tasks SET timeout_respawned_as=? WHERE id=?",
@@ -561,14 +587,15 @@ def _respawn_timed_out(conn, row, age: int) -> None:
         pass
 
 
-def _refresh_all_running(conn) -> int:
+def _refresh_all_running(conn, *, enforce: bool = True) -> int:
     """Sweep running tasks, update rss_kb with real measurement.
 
     pid>0 (headless) children are measured directly from their pid. Visible
     (pid<=0, Terminal-launched) children are resolved to a live pid via their
     forced session-id and measured too — and reaped past a TTL when no live
     process carries the cid (#64). Returns the number of rows whose rss_kb was
-    refreshed."""
+    refreshed. With enforce=False this is observation-only mode used by status
+    surfaces; lifecycle enforcement stays daemon-owned."""
     rows = conn.execute(
         "SELECT * FROM tasks "
         "WHERE ended_at IS NULL ORDER BY started_at DESC"
@@ -594,7 +621,7 @@ def _refresh_all_running(conn) -> int:
             )
             changed = True
             continue
-        if _over_runtime_cap(r, now):
+        if enforce and _over_runtime_cap(r, now):
             # Alive but hung past the wall-clock cap — kill it and close the
             # row so the loop's single-flight releases (#80).
             if _reap_timed_out(conn, r, now):
@@ -615,8 +642,9 @@ def _refresh_all_running(conn) -> int:
             conn.commit()
         except Exception:
             pass
-    for row, age in timed_out:
-        _respawn_timed_out(conn, row, age)
+    if enforce:
+        for row, age in timed_out:
+            _respawn_timed_out(conn, row, age)
     return updated
 
 
