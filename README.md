@@ -1597,9 +1597,9 @@ reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 ## Memory-quality evaluation
 
 The ingest verifier above answers *"did we capture the data?"*. The
-memory-quality harness answers the harder question — *"when we retrieve it,
-do we recall the right fact, and do we **refuse** to answer about things that
-never happened?"* It's modeled on
+memory-quality harness answers two separate questions: *"did we retrieve the
+right evidence?"* and *"does an agent produce the right final answer from
+that evidence?"* It's modeled on
 [LongMemEval](https://arxiv.org/pdf/2410.10813) (ICLR 2025) plus mem0's 2026
 [tokens-per-retrieval](https://mem0.ai/blog/ai-memory-benchmarks-in-2026)
 cost axis, and runs the **real** `search()` / `dialog_search()` / `brief()`
@@ -1610,24 +1610,34 @@ python scripts/memory_eval/run.py                 # bundled demo corpus, lexical
 python scripts/memory_eval/run.py --json          # machine-readable report
 python scripts/memory_eval/run.py --db snap.sqlite --ground-truth my_labels.json
 python scripts/memory_eval/run.py --semantic      # use embeddings if installed
-python scripts/memory_eval/run.py --judge llm      # LLM-graded (needs ANTHROPIC_API_KEY)
+python scripts/memory_eval/run.py --matrix --strict # FTS/hybrid migration gate
+age -d holdout.json.age | python scripts/memory_eval/run.py \
+  --ground-truth /dev/stdin --private-holdout       # no per-case output
 ```
 
-It reports four headline groups over a fixed ground-truth set:
+It reports these headline groups over a fixed ground-truth set:
 
-- **accuracy** — fraction of questions whose retrieval recalled the gold
-  fact, broken out per the five LongMemEval axes (information extraction,
-  multi-session reasoning, temporal reasoning, knowledge updates, abstention).
+- **evidence recall** and **final-answer correctness** — separate scores, both
+  per axis. The final answer comes from a deterministic replay responder that
+  may emit only facts found in the returned context; it gives CI a stable
+  boundary between retrieval and reasoning failures.
 - **abstention rate** — of the *never-happened* questions, the fraction the
-  system correctly refused. This is the highest-payoff axis: it directly
-  measures whether the auto-injected `brief()` context fabricates or surfaces
-  stale facts.
+  system correctly refused. Retention/curation removals and egress-blocked
+  personal memory are also required to end in a refusal.
 - **tokens-per-retrieval** — mean / median / max tokens of what each query
-  returned, so recall is never read apart from cost (a wider window that
-  recalls more also costs more).
+  returned, plus equivalent final-answer token totals.
 - **retrieval latency** — mean / p50 / p95 / max wall-clock milliseconds. With
   `--semantic`, the backend is reported as `hybrid`, because dense candidates
   augment rather than replace FTS.
+- **outcome classification** — retrieval failure, reasoning failure,
+  stale-memory use, removed-memory use, and privacy-policy violation.
+
+`--matrix` runs every public-fixture case through the FTS and hybrid backends,
+three fixture states (`baseline`, `retained`, `curated`), and every personal
+memory egress policy (`all`, `same-vendor`, `work-only`). A hybrid row is marked
+unavailable when the optional semantic extra is not installed. `--strict`
+requires the versioned fixture thresholds and zero safety violations, making
+the same command suitable for retrieval/model migration gates.
 
 For DB concurrency, run the reproducible local gate:
 
@@ -1639,18 +1649,20 @@ The JSON result includes expected/actual writes, throughput, p50/p95/p99/max
 write latency, worker errors, elapsed time, and `PRAGMA quick_check`; a non-zero
 exit means a lost write, worker failure, or integrity failure.
 
-With no `--db` the harness builds the bundled fixture
-(`scripts/memory_eval/ground_truth.json` — a fictional "billing service" told
-across three sessions) into a throwaway DB; it's a **golden baseline** where a
-faithful retrieval scores 100%, so a regression in the retrieval tools drops
-the number. `--db` runs **read-only**: the snapshot is copied to a temp file
-and the original is never opened for writing. The default judge is **lexical**
-(deterministic, offline, no API key, no embeddings) so the command is
-reproducible and CI-safe; `--judge llm` grades answer *reasoning* (not just
-retrieval recall) with an Anthropic model when a key is set — the intended
-optimization target for lesson-decay tuning (#27) and bi-temporal claims (#28)
-work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
-axes map onto thread-keeper's retrieval surface.
+With no `--db` the harness builds the bundled, versioned public synthetic
+fixture (`scripts/memory_eval/ground_truth.json` — a fictional "billing
+service") into a throwaway DB. Bump its `version` whenever cases, labels, or
+thresholds change; CI uses the checked-in version and its stable thresholds.
+`--db` runs **read-only**: the snapshot is copied to a temp file and the
+original is never opened for writing.
+
+For a private holdout, keep the corpus encrypted or outside the repository and
+pass it with `--private-holdout`. The runner does not decrypt data itself; it
+accepts a locally decrypted file or stdin and deletes its temporary DB on exit.
+Private mode emits aggregate metrics only — no case rows, failure details,
+retrieved context, or replayed answer is written to stdout, artifacts, or the
+repository. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the corpus
+contract and migration-gate interpretation.
 
 ## Evaluating learning-loop decision quality
 
