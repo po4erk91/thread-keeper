@@ -880,6 +880,33 @@ children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
 non-foreground `THREADKEEPER_WRITE_ORIGIN`; either condition prevents
 shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 
+### Privacy-safe OTLP workflow tracing
+
+`THREADKEEPER_OTEL_ENABLED=0` is the default. When it is explicitly enabled
+with a `THREADKEEPER_OTEL_ENDPOINT`, the server uses a bounded asynchronous
+OTLP/HTTP exporter. The parent MCP span starts a workflow span, the spawned
+child gets an agent span, and its MCP operations become child spans. The task
+row carries the opaque W3C `traceparent` plus workflow IDs; the child receives
+that context only through its process environment and slim MCP config. No
+trace state is put in prompts or command-line arguments. A watchdog
+continuation parents its replacement workflow to the timed-out agent span.
+
+Tracing accepts no generic attribute dictionary. Its typed allowlist is:
+operation/tool identifier, elapsed and queue-wait milliseconds,
+provider/model, token totals, USD cost, retry count, and fixed terminal
+outcome. Identifier lengths are capped (64 for operation/tool/provider, 96
+for model), each process admits at most 64 model values, and path- or
+credential-shaped values become `unknown`. Prompts,
+tool payloads/results, memory bodies, quotes, credentials, paths, event
+summaries, and spool/log contents never reach the OTLP payload. The worker
+queue is capped at 2048 spans (256 by default); it drops the oldest pending
+span under pressure and swallows exporter failures. SQLite writes and child
+lifecycle handling therefore continue even when a collector is unavailable.
+
+SQLite remains the authoritative local ledger. It keeps only opaque trace
+linkage on task rows, removed with normal task retention; operators set
+retention for exported trace records in their collector.
+
 Daemons share the WAL database, not a connection pool. Reads use independent
 query-only connections; write critical sections are kept short because WAL
 still permits only one writer.

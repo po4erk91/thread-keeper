@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: privacy-safe OpenTelemetry workflow tracing (#346).** The
+  default-off, bounded OTLP/HTTP exporter links parent MCP launches, spawned
+  agents, child MCP operations, watchdog continuations, and terminal task
+  outcomes using private environment/task-row context. Its typed allowlist
+  exports only operational metadata; prompts, tool payloads/results, memory
+  content, quotes, credentials, and paths are excluded by construction.
+
 - **Added: live, privately cacheable memory resources (#345).** The four
   `memory://` resources now advertise private 30-second cache metadata,
   priority, `lastModified`, and rendered size. Capability-aware hosts can

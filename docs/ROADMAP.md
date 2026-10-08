@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Privacy-safe OTLP workflow traces (#346): default-off bounded exporter links
+  parent MCP launches, agent children, child MCP operations, watchdog
+  continuations, and terminal task outcomes without exporting prompts, tool
+  payloads, memory content, quotes, credentials, or private paths.
 - Spawn launch-result contract: internal callers parse the public text response
   and treat a child as launched only when it has a task identifier, so returned
   admission failures cannot advance loop state, inflate telemetry, or retain

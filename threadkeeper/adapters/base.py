@@ -37,6 +37,7 @@ CHILD_MCP_ENV_KEYS: tuple[str, ...] = (
     "THREADKEEPER_CURATOR_PASS_ID",
     "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
     "THREADKEEPER_EGRESS_CONSUMER",
+    "THREADKEEPER_TRACEPARENT",
     # A privileged child's PATH starts with the gh safety wrapper; its MCP
     # server needs these to reach the real gh instead of looping on itself.
     "THREADKEEPER_GH_WRAPPER_DIR",

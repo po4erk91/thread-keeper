@@ -634,7 +634,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     retry_of      TEXT,
     retry_root    TEXT,
     retry_attempt INTEGER NOT NULL DEFAULT 0,
-    timeout_respawned_as TEXT
+    timeout_respawned_as TEXT,
+    traceparent TEXT,
+    trace_workflow_span_id TEXT,
+    trace_parent_span_id TEXT,
+    trace_started_ns INTEGER,
+    trace_queue_wait_ms INTEGER,
+    trace_exported_at INTEGER
 );
 
 -- Curator passes are durable work manifests. The event log remains useful
@@ -985,6 +991,17 @@ CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
     ON curator_merge_verdicts(updated_at DESC);
 """
 
+# These columns are independently additive: current databases deliberately do
+# not bump PRAGMA user_version for safe telemetry-only extensions.
+ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
+    "ALTER TABLE tasks ADD COLUMN traceparent TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_workflow_span_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_parent_span_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_started_ns INTEGER",
+    "ALTER TABLE tasks ADD COLUMN trace_queue_wait_ms INTEGER",
+    "ALTER TABLE tasks ADD COLUMN trace_exported_at INTEGER",
+)
+
 # Historical column migrations layered on top of the baseline SCHEMA.
 # Some columns are already present in new-table definitions; duplicate column
 # errors are the only expected no-op.
@@ -1264,6 +1281,8 @@ def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
     """Materialize backward-compatible tables without a version migration."""
     for statement in _iter_sql_statements(ADDITIVE_RUNTIME_SCHEMA):
         conn.execute(statement)
+    for ddl in ADDITIVE_RUNTIME_COLUMN_MIGRATIONS:
+        _apply_column_migration(conn, ddl)
 
 
 def _guard_managed_checkout_live_db() -> None:
