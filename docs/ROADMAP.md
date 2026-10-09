@@ -893,6 +893,16 @@ verified at the cited file:line, deduplicated against the issues above):
   to temp). Use the temporal-reasoning + knowledge-update axes as the
   optimization target for #27/#28.
 
+- ✅ DONE (#347). Extended the memory eval from raw retrieval recall to
+  **outcome quality**. The deterministic transcript replay now reports
+  evidence recall and final-answer correctness separately, with first-class
+  abstention and outcome classes for retrieval/reasoning failures,
+  stale/removed-memory use, and privacy-policy violations. Corpus v2 adds
+  dynamic state, workflow, premise-awareness, and implicit composed-request
+  cases. One `--matrix --strict` command compares FTS and hybrid across
+  baseline/retained/curated fixture states and every personal-memory egress
+  policy; private holdouts suppress case-level output.
+
 - ✅ DONE (#72). Learning-loop **decision-quality** eval harness. The
   quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
   make accept/reject/materialize calls with decision telemetry but no labeled

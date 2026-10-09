@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Memory-evaluation outcome replay (#347).** `scripts/memory_eval` now
+  reports evidence recall and deterministic final-answer correctness as separate
+  scores, while keeping abstention first-class. Corpus v2 covers dynamic state,
+  workflow recall, premise awareness, and implicit composed requests. `--matrix
+  --strict` compares FTS/hybrid retrieval across baseline, retained, and curated
+  fixture states plus every personal-memory egress policy, recording quality,
+  tokens, latency, and safety violations. Public synthetic fixtures stay
+  CI-safe; `--private-holdout` emits aggregate-only reports for external
+  encrypted/private holdouts.
+
 - **Added: privacy-safe OpenTelemetry workflow tracing (#346).** The
   default-off, bounded OTLP/HTTP exporter links parent MCP launches, spawned
   agents, child MCP operations, watchdog continuations, and terminal task

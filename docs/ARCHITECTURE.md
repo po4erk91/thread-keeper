@@ -1953,24 +1953,28 @@ Run: `.venv/bin/python -m pytest tests/ -q`; CI runs the same suite in
 shards with each test in its own process. Smoke parametrization automatically
 picks up any new tools without having to add tests.
 
-## Memory-quality evaluation (issue #71)
+## Memory-quality evaluation (issues #71 and #347)
 
 Two read-only harnesses measure the memory layer, not the code:
 
 - `scripts/tk_verify_ingest.py` — *write/ingest* side: did we capture rows from
   every CLI? (slot coverage, PASS/PARTIAL/FAIL; issue #1).
-- `scripts/memory_eval/run.py` — *read/retrieval* side: when we retrieve, do we
-  recall the right fact and **refuse** to answer about things that never
-  happened? Modeled on LongMemEval (ICLR 2025) + mem0's 2026
-  tokens-per-retrieval cost axis.
+- `scripts/memory_eval/run.py` — *read/outcome* side: did retrieval expose the
+  right evidence, and does the deterministic transcript replay produce a
+  correct final answer or required abstention? Modeled on LongMemEval (ICLR
+  2025) + mem0's tokens-per-retrieval cost axis.
 
 The eval harness is deliberately thin and treats the retrieval surface as a
 black box: each ground-truth question carries a `system`
 (`search` → notes, `dialog_search` → ingested transcripts, `brief` → the
 auto-injected context) and a `query`; `retrieve()` calls the *real* tool
-function and the judge reads its verbatim output, so tokens-per-retrieval is
-measured on exactly what an agent would receive. The five LongMemEval axes map
-onto thread-keeper as:
+function and the evidence judge reads its verbatim output, so
+tokens-per-retrieval is measured on exactly what an agent would receive. A
+local replay responder can only use matching evidence terms from that output;
+its final answer is scored separately. This is intentionally deterministic: a
+regression can be attributed to retrieval, answer reasoning, stale-memory use,
+or privacy policy rather than an API-backed judge's sampling. The corpus maps
+these axes onto thread-keeper:
 
 | Axis | What it probes here |
 |---|---|
@@ -1979,18 +1983,33 @@ onto thread-keeper as:
 | temporal_reasoning | retrieval surfaces the time-relevant evidence (before/after, latest) |
 | knowledge_update | the *current* value wins over a superseded one in the corpus |
 | abstention | never-happened question → no fabricated `trap_substring` leaks into context |
+| dynamic_state | a current operational state remains distinguishable from history |
+| workflow_recall | a required coding/deployment step is available before it is applied |
+| premise_awareness | an unsupported premise results in an explicit refusal |
+| implicit_composed_request | a request combines facts without spelling out their source terms |
 
-The default **lexical** judge is a deterministic substring scorer (gold recall;
-abstention = no trap surfaced) — offline, no API key, no embeddings, so it runs
-in CI and as a golden baseline (the bundled `ground_truth.json` demo corpus
-scores 100% under a faithful retrieval; a regression in `search()`/
-`dialog_search()` drops it). An optional `--judge llm` grades answer
-*reasoning* (true temporal ordering, knowledge-update correctness) via the
-Anthropic Messages API over `urllib` — no SDK dependency — and is an
-optimization target for lesson-decay tuning (#27) and bi-temporal (#28) work.
+The default **lexical** judge is deterministic and CI-safe. The versioned
+public synthetic `ground_truth.json` stores its corpus version, labels, fixture
+states, and stable thresholds together. Increase `version` when any of those
+contracts changes. `--strict` checks evidence recall, final-answer correctness,
+and zero safety violations against those thresholds.
+
+`--matrix` starts a fresh process for every FTS/hybrid × baseline/retained/
+curated × `all`/`same-vendor`/`work-only` cell. Fresh processes matter because
+embedding availability is import-time configuration. Retained and curated
+states remove named public fixture rows before the real retrieval tools run;
+the replay must refuse those removed facts. Brief cases set the consuming CLI,
+so egress-blocked personal facts must also be absent from both evidence and
+final answer. Matrix rows record evidence/final quality, retrieval token total,
+p95 latency, and safety violations; hybrid is reported unavailable rather than
+silently compared as FTS when the semantic extra is absent.
+
 `--db snapshot.sqlite` evaluates a real production snapshot, copied to a temp
-file first so the original is never opened for writing. Backend (`fts` vs
-`semantic`) is auto-detected and reported. Smoke-tested in
+file first so the original is never opened for writing. A private holdout stays
+outside the repository and runs with `--private-holdout`; the caller manages
+encryption/decryption, while the harness emits aggregate metrics only and
+deletes its temporary DB on exit. It never includes retrieved context, replayed
+answers, or case-level labels in a private report. Smoke-tested in
 `tests/test_memory_eval.py` (subprocess, to keep import-time env setup off the
 shared in-process package state).
 
