@@ -6,6 +6,7 @@ tools, plus the supporting helpers (`_claude_bin`, `_resolve_spawned_cid`,
 that defines cognitive stances a spawned child can adopt.
 """
 
+import logging
 import os
 import shlex
 import shutil
@@ -16,12 +17,15 @@ import sys
 import secrets
 import time
 import json as _json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..spawn_result import parse_spawn_result
 from .._mcp import mcp, read_tool, write_tool, structured_result
-from ..db import get_db
+from ..db import get_db, read_db, run_write
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
+from ..permissions import chmod_private_dir
 from ..task_spool import (
     TASK_SPOOL_EXEC_MODE,
     ensure_task_spool_dir,
@@ -38,24 +42,111 @@ from ..tool_schemas import (
 )
 from ..helpers import fmt_age, q, alive
 from .. import identity  # noqa: F401  (kept for future identity.* attr access)
-from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..identity import (
+    _ensure_session, _detect_self_cid, _emit, ensure_session_started,
+)
 from ..ingest import _parse_ts
+from ..tracing import TRACEPARENT_ENV, new_child_trace
+
+logger = logging.getLogger(__name__)
 
 # Path to the exit-code recorder that wraps spawned children so their real
 # return_code reaches the DB regardless of which session reaps them. Run by
 # file path (not `-m`) to avoid importing the package on every spawn.
 _WRAP = Path(__file__).resolve().parent.parent / "_spawn_wrap.py"
 
-_BYPASS_ALLOWED_PAIRS = {
-    ("evolve_reviewer", "evolve"),
-    ("evolve_applier", "evolve_apply"),
-}
 _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
+# This object is intentionally private and never accepted by an MCP tool.  The
+# Evolve-only launchers below are the only code paths that hold it.
+_EVOLVE_BYPASS_CAPABILITY = object()
+
+# Default allowlist for every spawned child: thread-keeper tools so the child
+# can actually report back via broadcast/whisper without the auto-mode
+# classifier (Claude) or the "never" approval policy (Codex) blocking it.
+# Callers extend it via extra_allowed_tools or replace it with
+# allowed_tools_override.
+_CHILD_DEFAULT_ALLOWED_TOOLS = (
+    "mcp__thread-keeper__broadcast",
+    "mcp__thread-keeper__whisper",
+    "mcp__thread-keeper__inbox",
+    "mcp__thread-keeper__wait",
+    "mcp__thread-keeper__ask",
+    "mcp__thread-keeper__respond",
+    "mcp__thread-keeper__peers",
+    "mcp__thread-keeper__whoami",
+    "mcp__thread-keeper__note",
+    "mcp__thread-keeper__open_thread",
+    "mcp__thread-keeper__close_thread",
+    "mcp__thread-keeper__search",
+    "mcp__thread-keeper__dialog_search",
+    "mcp__thread-keeper__brief",
+    "mcp__thread-keeper__context",
+    "mcp__thread-keeper__verbatim_user",
+    "mcp__thread-keeper__register_probe",
+    "mcp__thread-keeper__run_probe",
+    "mcp__thread-keeper__record_attempt",
+    "mcp__thread-keeper__reliability_for",
+    "mcp__thread-keeper__weak_spots",
+    "mcp__thread-keeper__pickup_candidates",
+    "mcp__thread-keeper__claim_pickup",
+    "mcp__thread-keeper__release_pickup",
+    "mcp__thread-keeper__register_concept",
+    "mcp__thread-keeper__list_concepts",
+    "mcp__thread-keeper__expand_concept",
+    "mcp__thread-keeper__distill",
+    "mcp__thread-keeper__vote_distill",
+    "mcp__thread-keeper__pending_distillates",
+    "mcp__thread-keeper__export_distillates",
+    "mcp__thread-keeper__find_invariants",
+    "mcp__thread-keeper__core_set",
+    "mcp__thread-keeper__core_remove",
+    "mcp__thread-keeper__core_list",
+    "mcp__thread-keeper__core_get",
+    "mcp__thread-keeper__link",
+    "mcp__thread-keeper__unlink",
+    "mcp__thread-keeper__neighbors",
+    "mcp__thread-keeper__tag_signal",
+    "mcp__thread-keeper__task_thread",
+    "mcp__thread-keeper__extract_recent",
+    "mcp__thread-keeper__review_candidates",
+    "mcp__thread-keeper__accept_candidate",
+    "mcp__thread-keeper__reject_candidate",
+    "mcp__thread-keeper__consolidate",
+    "mcp__thread-keeper__mark_skill_materialized",
+    "mcp__thread-keeper__skill_record",
+    "mcp__thread-keeper__skill_list",
+    "mcp__thread-keeper__curator_run",
+    "mcp__thread-keeper__search_via_parent",
+)
 
 # Linux caps one execve argv string at MAX_ARG_STRLEN (128 KiB), even when the
 # total ARG_MAX budget is larger. Keep Claude's positional prompt well below
 # that and feed larger prompts through the existing owner-only stdin spool.
 CLAUDE_PROMPT_ARGV_MAX_BYTES = 96 * 1024
+
+# A child that starts from a repository must never share that repository's
+# mutable checkout with another child.  Worktrees live in the protected task
+# spool rather than beside the caller's checkout, where they cannot surprise a
+# developer scanning their project tree.
+_SPAWN_WORKTREE_DIRNAME = "worktrees"
+_SPAWN_WORKTREE_BRANCH_PREFIX = "threadkeeper/spawn-"
+# Keep git preflight independent from tests (and callers) that replace the
+# child-launcher `subprocess.Popen` below.
+_GIT_POPEN = subprocess.Popen
+
+
+@dataclass(frozen=True)
+class _SpawnWorktree:
+    """A per-task checkout derived from a clean caller worktree."""
+
+    repo_root: Path
+    relative_cwd: Path
+    path: Path
+    branch: str
+
+    @property
+    def child_cwd(self) -> Path:
+        return self.path / self.relative_cwd
 
 
 def _utf8_len(text: str) -> int:
@@ -66,14 +157,22 @@ def _permission_mode_is_bypass(permission_mode: str) -> bool:
     return (permission_mode or "").strip().lower() == "bypasspermissions"
 
 
-def _bypass_permissions_allowed(role: str, write_origin: str) -> bool:
-    """Only evolve daemon roles may request bypassPermissions by default."""
+def _bypass_permissions_allowed(capability: object | None) -> bool:
+    """Allow bypass only for an internal capability or an operator override."""
     if os.environ.get(_BYPASS_ENV_OVERRIDE, "").strip() in {"1", "true", "yes"}:
         return True
-    return (
-        role.strip().lower(),
-        write_origin.strip().lower(),
-    ) in _BYPASS_ALLOWED_PAIRS
+    return capability is _EVOLVE_BYPASS_CAPABILITY
+
+
+def _retry_bypass_capability(permission_mode: str) -> object | None:
+    """Capability for the watchdog continuation of a timed-out child.
+
+    A task row records bypassPermissions only after `_spawn_impl` admitted the
+    original launch, so its continuation inherits that authority. The row is
+    server-written; public tool arguments never reach this path."""
+    if _permission_mode_is_bypass(permission_mode):
+        return _EVOLVE_BYPASS_CAPABILITY
+    return None
 
 
 def _install_gh_safety_wrapper(task_id: str) -> tuple[Optional[Path], str]:
@@ -116,10 +215,13 @@ def _claude_bin() -> Optional[str]:
 
 
 def _resolve_spawned_cid(conn: sqlite3.Connection, task_id: str,
-                        cwd: str, started_at: int) -> Optional[str]:
+                        cwd: str, started_at: int,
+                        claimed: frozenset[str] | set[str] = frozenset(),
+                        ) -> Optional[str]:
     """Find the jsonl created by this spawned child, if it has appeared.
     Heuristic: in the project dir for `cwd`, look for jsonl files whose
-    earliest message timestamp is within [started_at-2, started_at+120]."""
+    earliest message timestamp is within [started_at-2, started_at+120].
+    `claimed` holds cids already picked in this pass but not yet written."""
     # cwd starts with '/'; replacing yields '-Users-…' (single leading dash).
     # Prior code added another dash, breaking the lookup.
     slug = cwd.replace("/", "-")
@@ -131,7 +233,7 @@ def _resolve_spawned_cid(conn: sqlite3.Connection, task_id: str,
         r["spawned_cid"] for r in conn.execute(
             "SELECT spawned_cid FROM tasks WHERE spawned_cid IS NOT NULL"
         ).fetchall()
-    )
+    ) | set(claimed)
     candidates: list[tuple[float, str]] = []
     for p in project_dir.glob("*.jsonl"):
         # subagent jsonl files (spawned by the child via Task tool) have
@@ -216,6 +318,7 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
         "ORDER BY started_at DESC LIMIT 50"
     ).fetchall()
     changed = False
+    finished_task_ids: list[str] = []
     for t in rows:
         pid = t["pid"]
         try:
@@ -230,6 +333,7 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
                     (now_t, t["id"]),
                 )
                 changed = True
+                finished_task_ids.append(str(t["id"]))
             continue
         except OSError:
             continue
@@ -243,8 +347,12 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
                 (now_t, code, t["id"]),
             )
             changed = True
+            finished_task_ids.append(str(t["id"]))
     if changed:
         conn.commit()
+        from ..tracing import finish_task
+        for task_id in finished_task_ids:
+            finish_task(conn, task_id)
 
 
 def _refresh_tasks(conn: sqlite3.Connection) -> None:
@@ -261,6 +369,12 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
         "WHERE ended_at IS NULL OR spawned_cid IS NULL "
         "ORDER BY started_at DESC LIMIT 50"
     ).fetchall()
+    finished_task_ids: list[str] = []
+    # Scan transcripts first and write afterwards: an UPDATE here would open a
+    # write transaction that every other writer waits on through the whole
+    # filesystem scan below (#293).
+    pending: list[tuple[str, list]] = []
+    claimed: set[str] = set()
     for t in rows:
         updates: list[tuple[str, object]] = []
         if t["ended_at"] is None:
@@ -272,15 +386,26 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
                 if status == "idle" and end_guess:
                     updates.append(("ended_at", end_guess))
         if t["spawned_cid"] is None:
-            cid = _resolve_spawned_cid(conn, t["id"], t["cwd"], t["started_at"])
+            cid = _resolve_spawned_cid(
+                conn, t["id"], t["cwd"], t["started_at"], claimed,
+            )
             if cid:
+                claimed.add(cid)
                 updates.append(("spawned_cid", cid))
         if updates:
             sets = ", ".join(f"{k}=?" for k, _ in updates)
             params = [v for _, v in updates] + [t["id"]]
-            conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", params)
-    if rows:
+            if any(key == "ended_at" for key, _ in updates):
+                finished_task_ids.append(str(t["id"]))
+            pending.append((f"UPDATE tasks SET {sets} WHERE id=?", params))
+    for sql, params in pending:
+        conn.execute(sql, params)
+    if pending:
         conn.commit()
+    if finished_task_ids:
+        from ..tracing import finish_task
+        for task_id in finished_task_ids:
+            finish_task(conn, task_id)
 
 
 # Role library: predefined cognitive stances a spawned child can adopt.
@@ -327,8 +452,10 @@ ROLE_PROMPTS: dict[str, str] = {
 # MCP entry — is dropped so it never lands in the slim config (#68). The
 # transient run values the child actually needs arrive via env_overrides;
 # these cover package/runtime discovery plus thread-keeper's own knobs.
-_SLIM_MCP_ENV_ALLOW = frozenset({"PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME"})
-_SLIM_MCP_ENV_ALLOW_PREFIXES = ("THREADKEEPER_",)
+from ..adapters.base import (
+    CHILD_MCP_ENTRY_ENV_ALLOW as _SLIM_MCP_ENV_ALLOW,
+    CHILD_MCP_ENTRY_ENV_PREFIXES as _SLIM_MCP_ENV_ALLOW_PREFIXES,
+)
 
 
 def _build_slim_mcp_config(
@@ -343,8 +470,8 @@ def _build_slim_mcp_config(
     (matches their actual install). Fall back to a synthesized config
     based on the running Python interpreter and package location.
 
-    Returns the path to the slim config file, or None if neither path
-    can produce a valid entry (caller should fall back to full config).
+    Returns the path to the slim config file, or None if it cannot be
+    written; the caller then refuses the spawn rather than widen the child.
     """
     try:
         slim_dir = ensure_task_spool_dir(TASK_LOG_DIR)
@@ -388,6 +515,10 @@ def _build_slim_mcp_config(
     }
     if env_overrides:
         env.update(env_overrides)
+    # A spawned agent may run from a managed or per-task checkout containing
+    # another copy of ``threadkeeper``.  Keep the slim MCP server pinned to the
+    # configured PYTHONPATH instead of letting Python prepend the child cwd.
+    env["PYTHONSAFEPATH"] = "1"
     mp_entry["env"] = env
     try:
         write_spool_text(
@@ -400,6 +531,132 @@ def _build_slim_mcp_config(
     except OSError:
         return None
     return slim_path
+
+
+def _git_result(args: list[str], cwd: Path) -> tuple[str, str]:
+    """Run a short git query and return stdout plus a compact error string."""
+    try:
+        proc = _GIT_POPEN(
+            ["git", *args],
+            cwd=str(cwd),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = proc.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return "", "git command timed out"
+    except (FileNotFoundError, OSError) as e:
+        return "", str(e)
+    if proc.returncode == 0:
+        return stdout.strip(), ""
+    detail = (stderr or stdout or f"exit={proc.returncode}").strip()
+    return "", detail.replace("\n", " ")[:240]
+
+
+def _is_background_spawn(write_origin: str) -> bool:
+    """Whether a spawn is learning-loop work rather than a foreground helper.
+
+    Loops tag their children with a non-foreground write origin, and every
+    spawn made by the dedicated daemon host is background work."""
+    from .. import config as _cfg
+
+    origin = write_origin.strip().lower()
+    return (origin not in ("", "foreground")) or _cfg.PROCESS_ROLE == "host"
+
+
+def _background_workspace() -> Path:
+    """The neutral working directory for background children, owner-only."""
+    from .. import config as _cfg
+
+    workspace = _cfg.BACKGROUND_WORKSPACE_DIR
+    workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+    chmod_private_dir(workspace)
+    return workspace
+
+
+def _is_background_workspace(cwd: str) -> bool:
+    from .. import config as _cfg
+
+    try:
+        return Path(cwd).resolve() == _cfg.BACKGROUND_WORKSPACE_DIR.resolve()
+    except OSError:
+        return False
+
+
+def _spawn_worktree_plan(
+    cwd: str, task_id: str
+) -> tuple[Optional[_SpawnWorktree], str]:
+    """Return an isolated worktree plan or safely decline a git checkout.
+
+    Non-git directories keep the historic behavior.  Git directories must be
+    clean before a child can run: copying uncommitted tracked changes into a
+    second checkout would either lose them or reintroduce the shared-WIP race.
+    """
+    source_cwd = Path(cwd).resolve()
+    root_text, root_err = _git_result(
+        ["rev-parse", "--show-toplevel"], source_cwd
+    )
+    if root_err:
+        if "not a git repository" in root_err.lower():
+            return None, ""
+        return None, f"ERR spawn_worktree_check_failed={root_err}"
+    repo_root = Path(root_text).resolve()
+    try:
+        relative_cwd = source_cwd.relative_to(repo_root)
+    except ValueError:
+        return None, "ERR spawn_worktree_check_failed=cwd_outside_repo"
+
+    dirty, status_err = _git_result(
+        ["status", "--porcelain", "--untracked-files=no"], repo_root
+    )
+    if status_err:
+        return None, f"ERR spawn_worktree_check_failed={status_err}"
+    if dirty:
+        return None, "ERR spawn_dirty_worktree mode=git"
+
+    try:
+        parent = ensure_task_spool_dir(TASK_LOG_DIR / _SPAWN_WORKTREE_DIRNAME)
+    except OSError as e:
+        return None, f"ERR spawn_worktree_spool_unavailable={e}"
+    path = parent / task_id
+    if path.exists() or path.is_symlink():
+        return None, "ERR spawn_worktree_path_in_use"
+    return _SpawnWorktree(
+        repo_root=repo_root,
+        relative_cwd=relative_cwd,
+        path=path,
+        branch=_SPAWN_WORKTREE_BRANCH_PREFIX + task_id,
+    ), ""
+
+
+def _remove_spawn_worktree(worktree: _SpawnWorktree) -> None:
+    """Best-effort cleanup for a worktree whose child never launched."""
+    _git_result(
+        ["worktree", "remove", "--force", str(worktree.path)],
+        worktree.repo_root,
+    )
+    _git_result(["branch", "-D", worktree.branch], worktree.repo_root)
+
+
+def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
+    """Create the task's branch/worktree after the spawn budget is reserved."""
+    _, err = _git_result(
+        [
+            "worktree", "add", "--quiet", "-b", worktree.branch,
+            str(worktree.path), "HEAD",
+        ],
+        worktree.repo_root,
+    )
+    if err:
+        _remove_spawn_worktree(worktree)
+        return f"ERR spawn_worktree_create_failed={err}"
+    if not worktree.child_cwd.is_dir():
+        _remove_spawn_worktree(worktree)
+        return "ERR spawn_worktree_create_failed=cwd_not_in_clean_checkout"
+    return ""
 
 
 def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
@@ -416,7 +673,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
-                task_id_override: str = "") -> str:
+                traceparent_override: str = "",
+                task_id_override: str = "",
+                child_cid_override: str = "",
+                allowed_tools_override: Optional[tuple[str, ...]] = None,
+                _bypass_capability: object | None = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -466,16 +727,25 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     prompt = prompt.strip()
     if not prompt:
         return "ERR empty_prompt"
-    cwd = cwd.strip() or os.getcwd()
+    # A loop child without an explicit cwd must not inherit this process's cwd:
+    # the daemon host keeps the directory of whichever session started it, so
+    # the child would run (workspace-write, with that project's agent
+    # instructions) inside an unrelated user project, and a dirty git checkout
+    # there would refuse every loop spawn.
+    cwd = cwd.strip() or (
+        str(_background_workspace())
+        if _is_background_spawn(write_origin)
+        else os.getcwd()
+    )
     if not Path(cwd).exists():
         return f"ERR cwd_not_found={cwd}"
     bin_ = _claude_bin()
     if _permission_mode_is_bypass(permission_mode) and not _bypass_permissions_allowed(
-        role, write_origin
+        _bypass_capability
     ):
         return (
             "ERR bypassPermissions_refused "
-            "role/write_origin not allowlisted for privileged daemon spawn "
+            "public spawn cannot request privileged permissions "
             f"(set {_BYPASS_ENV_OVERRIDE}=1 to override)"
         )
 
@@ -505,20 +775,39 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         "broadcast/whisper a summary at the end.\n\n"
         "When replying to the user: paraphrase in plain language. Do NOT "
         "quote internal IDs (cids, signal #ids, thread T-codes, qids, "
-        "task tk_codes) — those are tool-call internals only."
+        "task tk_codes) — those are tool-call internals only.\n\n"
+        "This is a background task, not a user session: skip the session "
+        "protocol from your global instructions (brief/context at start, "
+        "open_thread/close_thread, session_end). Read and write what the "
+        "task below asks for, and report through the channels above."
     )
     # Generate the child's conversation_id up front. Pass it via --session-id
     # so claude uses it as the jsonl stem, AND via env so the child's MCP
     # server-process resolves itself to it via THREADKEEPER_FORCE_CID
     # (no ppid-walk needed for spawned children).
     import uuid as _uuid
-    child_cid = str(_uuid.uuid4())
+    requested_child_cid = child_cid_override.strip()
+    if requested_child_cid:
+        try:
+            child_cid = str(_uuid.UUID(requested_child_cid))
+        except (AttributeError, ValueError):
+            return "ERR invalid_child_cid"
+    else:
+        child_cid = str(_uuid.uuid4())
     task_id = task_id_override.strip() or ("tk_" + secrets.token_hex(3))
     if not task_id.startswith("tk_") or any(
         c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
         for c in task_id
     ):
         return "ERR invalid_task_id"
+    # The workspace is never a project checkout, even when a repository (a
+    # dotfiles repo in $HOME) happens to enclose the state dir.
+    worktree, worktree_err = (
+        (None, "") if _is_background_workspace(cwd)
+        else _spawn_worktree_plan(cwd, task_id)
+    )
+    if worktree_err:
+        return worktree_err
     sys_extra = sys_extra_template.format(
         parent=parent_cid or "(unknown)",
         child=child_cid,
@@ -536,7 +825,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if append_system:
         sys_extra += "\n\n" + append_system
     child_env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if k != "THREADKEEPER_ROLE"},
         "THREADKEEPER_DB": str(DB_PATH),
         "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
         "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
@@ -544,6 +833,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         "THREADKEEPER_SPAWNED_CHILD": "1",
         "THREADKEEPER_TZ": os.environ.get("THREADKEEPER_TZ", "UTC"),
     }
+    child_trace = new_child_trace(traceparent_override)
+    if child_trace is not None:
+        # Trace context travels only in the private child environment and task
+        # row; it is never copied into a user prompt or command-line argument.
+        child_env[TRACEPARENT_ENV] = child_trace.traceparent
     if "THREADKEEPER_ENV_FILE" in os.environ:
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
@@ -579,22 +873,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # the env explicitly already (allow opt-out by setting =0 explicitly).
     if slim and "THREADKEEPER_NO_EMBEDDINGS" not in child_env:
         child_env["THREADKEEPER_NO_EMBEDDINGS"] = "1"
+    from ..adapters.base import CHILD_MCP_ENV_KEYS
     mcp_env_overrides = {
-        k: child_env[k]
-        for k in (
-            "THREADKEEPER_FORCE_CID",
-            "THREADKEEPER_SPAWNED_CHILD",
-            "THREADKEEPER_DB",
-            "THREADKEEPER_ENV_FILE",
-            "THREADKEEPER_TASK_LOG_DIR",
-            "CLAUDE_PROJECTS_DIR",
-            "THREADKEEPER_TZ",
-            "THREADKEEPER_WRITE_ORIGIN",
-            "THREADKEEPER_NO_EMBEDDINGS",
-            "THREADKEEPER_CURATOR_PASS_ID",
-            "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
-        )
-        if k in child_env
+        k: child_env[k] for k in CHILD_MCP_ENV_KEYS if k in child_env
     }
     # Resolve which CLI agent should run this child. Claude is the
     # historical default and the only path with full MCP-config
@@ -606,6 +887,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if cli.strip() and cli_clean not in _sc.SUPPORTED_CLIS:
         return f"ERR spawn_unsupported cli={cli}"
     chosen_cli = cli_clean or _sc.resolve_agent(role or "", _id.active_cli())
+    home_cli = _sc.model_home_cli(model) if model else ""
+    if home_cli and chosen_cli in ("claude", "codex") and home_cli != chosen_cli:
+        if cli_clean:
+            return f"ERR model_cli_mismatch model={model} cli={chosen_cli}"
+        chosen_cli = home_cli
     chosen_model = model or _sc.resolve_model(chosen_cli, role or "")
     chosen_effort = effort or _sc.resolve_effort(chosen_cli, role or "")
     if chosen_cli == "claude" and not bin_:
@@ -619,6 +905,13 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     mcp_env_overrides["THREADKEEPER_EGRESS_CONSUMER"] = chosen_cli
     stdin_text: Optional[str] = None
     stdin_path: Optional[Path] = None
+    # One allowlist for every CLI: Claude receives it as --allowedTools, the
+    # Codex adapter pre-approves its thread-keeper tools for this invocation.
+    child_allowed_tools = (
+        list(allowed_tools_override)
+        if allowed_tools_override is not None
+        else list(_CHILD_DEFAULT_ALLOWED_TOOLS)
+    ) + [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
     if chosen_cli != "claude":
         from ..adapters import get_adapter
         _ad = get_adapter(chosen_cli)
@@ -635,7 +928,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             model=chosen_model,
             effort=chosen_effort,
             permission_mode=permission_mode,
-            extra_allowed_tools=extra_allowed_tools,
+            extra_allowed_tools=",".join(child_allowed_tools),
         )
         if not cmd:
             return f"ERR spawn_failed cli={chosen_cli} reason=binary_not_found"
@@ -659,65 +952,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     else:
         if permission_mode:
             cmd += ["--permission-mode", permission_mode]
-        # Default allowlist: thread-keeper tools so the child can actually
-        # report back via broadcast/whisper without auto-mode classifier
-        # blocking. Users extend via extra_allowed_tools.
-        _claude_default_allow = [
-        "mcp__thread-keeper__broadcast",
-        "mcp__thread-keeper__whisper",
-        "mcp__thread-keeper__inbox",
-        "mcp__thread-keeper__wait",
-        "mcp__thread-keeper__ask",
-        "mcp__thread-keeper__respond",
-        "mcp__thread-keeper__peers",
-        "mcp__thread-keeper__whoami",
-        "mcp__thread-keeper__note",
-        "mcp__thread-keeper__open_thread",
-        "mcp__thread-keeper__close_thread",
-        "mcp__thread-keeper__search",
-        "mcp__thread-keeper__dialog_search",
-        "mcp__thread-keeper__brief",
-        "mcp__thread-keeper__context",
-        "mcp__thread-keeper__verbatim_user",
-        "mcp__thread-keeper__register_probe",
-        "mcp__thread-keeper__run_probe",
-        "mcp__thread-keeper__record_attempt",
-        "mcp__thread-keeper__reliability_for",
-        "mcp__thread-keeper__weak_spots",
-        "mcp__thread-keeper__pickup_candidates",
-        "mcp__thread-keeper__claim_pickup",
-        "mcp__thread-keeper__release_pickup",
-        "mcp__thread-keeper__register_concept",
-        "mcp__thread-keeper__list_concepts",
-        "mcp__thread-keeper__expand_concept",
-        "mcp__thread-keeper__distill",
-        "mcp__thread-keeper__vote_distill",
-        "mcp__thread-keeper__pending_distillates",
-        "mcp__thread-keeper__export_distillates",
-        "mcp__thread-keeper__find_invariants",
-        "mcp__thread-keeper__core_set",
-        "mcp__thread-keeper__core_remove",
-        "mcp__thread-keeper__core_list",
-        "mcp__thread-keeper__core_get",
-        "mcp__thread-keeper__link",
-        "mcp__thread-keeper__unlink",
-        "mcp__thread-keeper__neighbors",
-        "mcp__thread-keeper__tag_signal",
-        "mcp__thread-keeper__task_thread",
-        "mcp__thread-keeper__extract_recent",
-        "mcp__thread-keeper__review_candidates",
-        "mcp__thread-keeper__accept_candidate",
-        "mcp__thread-keeper__reject_candidate",
-        "mcp__thread-keeper__consolidate",
-        "mcp__thread-keeper__mark_skill_materialized",
-        "mcp__thread-keeper__skill_record",
-        "mcp__thread-keeper__skill_list",
-        "mcp__thread-keeper__curator_run",
-            "mcp__thread-keeper__search_via_parent",
-        ]
-        extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-        allow = _claude_default_allow + extra_list
-        cmd += ["--allowedTools"] + allow
+        cmd += ["--allowedTools"] + child_allowed_tools
         if chosen_model:
             cmd += ["--model", chosen_model]
         if chosen_effort:
@@ -731,9 +966,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         # API integrations).
         if slim:
             slim_cfg = _build_slim_mcp_config(task_id, mcp_env_overrides)
-            if slim_cfg is not None:
-                cmd += ["--mcp-config", str(slim_cfg),
-                        "--strict-mcp-config"]
+            if slim_cfg is None:
+                # Without the slim file the child would start every MCP server
+                # the user configured; refuse instead of widening it.
+                return "ERR slim_mcp_config_failed"
+            cmd += ["--mcp-config", str(slim_cfg), "--strict-mcp-config"]
     log_path: Optional[Path] = None
     try:
         task_log_dir = ensure_task_spool_dir(TASK_LOG_DIR)
@@ -754,21 +991,29 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         log_path = task_log_dir / f"{task_id}.log"
     proc_pid = 0
     now_t = int(time.time())
-    conn = get_db()
-    _ensure_session(conn)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        _ok, _reason = check_budget(conn, _new_kb)
-        if not _ok:
-            conn.rollback()
-            return f"ERR {_reason}"
+    now_ns = time.time_ns()
+    trace_queue_wait_ms = (
+        max(0, (now_ns - child_trace.started_ns) // 1_000_000)
+        if child_trace is not None else None
+    )
+    ensure_session_started()
+
+    # The budget check and the reservation commit in one short transaction,
+    # so a concurrent spawner sees this child's estimate. Nothing below holds
+    # the writer lock: git, spool files, and Popen run between two short
+    # transactions, and a launch that never happens deletes its reservation.
+    def _reserve(conn: sqlite3.Connection) -> str:
+        ok, reason = check_budget(conn, _new_kb)
+        if not ok:
+            return reason
         conn.execute(
             "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "retry_attempt, traceparent, trace_workflow_span_id, "
+            "trace_parent_span_id, trace_started_ns, trace_queue_wait_ms) "
+            "VALUES (" + ",".join("?" for _ in range(28)) + ")",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -776,11 +1021,38 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 1 if visible else 0, 1 if slim else 0, chosen_model, chosen_effort,
                 append_system, chosen_cli, retry_of or None,
                 retry_root or None, int(retry_attempt or 0),
+                child_trace.traceparent if child_trace else None,
+                child_trace.workflow_span_id if child_trace else None,
+                child_trace.parent_span_id if child_trace else None,
+                child_trace.started_ns if child_trace else None,
+                trace_queue_wait_ms,
             ),
         )
+        return ""
+
+    def _release(reason: str) -> str:
+        try:
+            run_write(
+                "spawn_release",
+                lambda c: c.execute("DELETE FROM tasks WHERE id=?", (task_id,)),
+            )
+        except sqlite3.Error:
+            # The unlaunched row keeps pid=0, so the budget sweep reaps it
+            # after SPAWN_VISIBLE_TTL_S instead of pinning capacity forever.
+            pass
+        return reason
+
+    try:
+        refusal = run_write("spawn_reserve", _reserve)
     except sqlite3.Error as e:
-        conn.rollback()
         return f"ERR spawn_reservation_failed={e}"
+    if refusal:
+        return f"ERR {refusal}"
+    if worktree is not None:
+        worktree_create_err = _create_spawn_worktree(worktree)
+        if worktree_create_err:
+            return _release(worktree_create_err)
+        cwd = str(worktree.child_cwd)
     try:
         if visible:
             # Build a self-contained .command shell script that Terminal.app
@@ -807,6 +1079,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 ("THREADKEEPER_TZ",
                  os.environ.get("THREADKEEPER_TZ", "UTC")),
             ]
+            if child_trace is not None:
+                env_pairs.append((TRACEPARENT_ENV, child_trace.traceparent))
             if write_origin:
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)
@@ -897,8 +1171,9 @@ exit $rc
                     env=child_env,
                 )
             except (FileNotFoundError, OSError) as e:
-                conn.rollback()
-                return f"ERR open_terminal_failed={e}"
+                if worktree is not None:
+                    _remove_spawn_worktree(worktree)
+                return _release(f"ERR open_terminal_failed={e}")
             # pid for Terminal-launched claude isn't directly trackable from
             # here; tasks() relies on spawned_cid + jsonl mtime instead.
             proc_pid = 0
@@ -943,21 +1218,108 @@ exit $rc
                 stdin_f.close()
             proc_pid = proc.pid
     except (FileNotFoundError, OSError) as e:
-        conn.rollback()
-        return f"ERR spawn_failed={e}"
-    try:
-        conn.execute("UPDATE tasks SET pid=? WHERE id=?", (proc_pid, task_id))
+        if worktree is not None:
+            _remove_spawn_worktree(worktree)
+        return _release(f"ERR spawn_failed={e}")
+    except Exception:
+        if worktree is not None:
+            _remove_spawn_worktree(worktree)
+        _release("")
+        raise
+
+    def _record_launch(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "UPDATE tasks SET pid=?, cwd=? WHERE id=?", (proc_pid, cwd, task_id),
+        )
         _emit(conn, "spawn", target=task_id, summary=prompt[:140])
-        conn.commit()
+
+    pid_note = ""
+    try:
+        run_write("spawn_record", _record_launch)
     except sqlite3.Error as e:
-        conn.rollback()
-        return f"ERR spawn_record_failed={e}"
+        # The child is already running under its committed reservation, so
+        # this is not a failed launch: a caller that retried would start a
+        # duplicate. The budget sweep resolves the pid from spawned_cid, as it
+        # does for visible children, and the wrapper still records the exit.
+        logger.warning("spawn: task %s launched but pid not recorded: %s",
+                       task_id, e)
+        pid_note = " pid_recorded=0"
     mode = "visible" if visible else "headless"
     log_disp = log_path or ("Terminal.app" if visible else "devnull")
     return (
         f"ok task={task_id} pid={proc_pid} child_cid={child_cid[:8]} "
         f"parent_cid={(parent_cid or '-')[:8]} "
-        f"perm={permission_mode or '-'} mode={mode} log={log_disp}"
+        f"perm={permission_mode or '-'} mode={mode} log={log_disp}{pid_note}"
+    )
+
+
+def _spawn_evolve_reviewer(prompt: str, cwd: str = "", append_system: str = "",
+                           model: str = "", effort: str = "",
+                           extra_allowed_tools: str = "",
+                           capture_output: bool = True,
+                           visible: bool = True,
+                           slim: bool = True) -> str:
+    """Launch the privileged reviewer through a server-owned capability."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="bypassPermissions",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_reviewer",
+        write_origin="evolve",
+        slim=slim,
+        _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
+    )
+
+
+def _spawn_evolve_applier(prompt: str, cwd: str = "", append_system: str = "",
+                          model: str = "", effort: str = "",
+                          extra_allowed_tools: str = "",
+                          capture_output: bool = True,
+                          visible: bool = True,
+                          slim: bool = True) -> str:
+    """Launch the privileged applier through a server-owned capability."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="bypassPermissions",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_applier",
+        write_origin="evolve_apply",
+        slim=slim,
+        _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
+    )
+
+
+def _spawn_evolve_applier_maintenance(
+    prompt: str, cwd: str = "", append_system: str = "", model: str = "",
+    effort: str = "", extra_allowed_tools: str = "",
+    capture_output: bool = True, visible: bool = True, slim: bool = True,
+) -> str:
+    """Launch an applier maintenance child with fixed provenance, no bypass."""
+    return _spawn_impl(
+        prompt=prompt,
+        cwd=cwd,
+        append_system=append_system,
+        model=model,
+        effort=effort,
+        permission_mode="auto",
+        extra_allowed_tools=extra_allowed_tools,
+        capture_output=capture_output,
+        visible=visible,
+        role="evolve_applier",
+        write_origin="evolve_apply",
+        slim=slim,
     )
 
 
@@ -973,9 +1335,11 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
           slim: bool = True) -> str:
     """Launch a new child session in parallel.
 
-    This is the public MCP surface. Watchdog continuation retries use the
-    private `_spawn_impl` so retry lineage/config fields do not leak into the
-    normal tool contract.
+    This is the public MCP surface. `role` selects a cognitive stance and
+    `write_origin` labels ordinary child provenance; neither grants elevated
+    permissions. Privileged Evolve children use private server-owned launchers.
+    Watchdog continuation retries use `_spawn_impl` so retry lineage/config
+    fields do not leak into the normal tool contract.
     """
     return _spawn_impl(
         prompt=prompt,
@@ -1053,29 +1417,30 @@ def tournament(prompt: str,
             permission_mode="auto",
             role=role,
         )
-        m = re.search(r"task=(\S+)\s+.*child_cid=(\S+)", result)
-        if m:
+        spawn_result = parse_spawn_result(result)
+        if spawn_result.ok:
             spawned.append({
-                "role": role, "task_id": m.group(1),
-                "cid_short": m.group(2), "spawn_result": result,
+                "role": role, "task_id": spawn_result.task_id,
+                "spawn_result": spawn_result.text,
             })
         else:
-            spawned.append({"role": role, "error": result})
+            spawned.append({"role": role, "error": spawn_result.reason})
 
     started_at = int(time.time())
     deadline = started_at + max(15, min(int(timeout_s), 600))
-    conn = get_db()
     collected: dict[str, dict] = {}
     line_re = re.compile(
         rf"^\[{re.escape(tid)}\]\s*\[([^\]]+)\]\s*(.*)$", re.DOTALL
     )
     while len(collected) < len(role_list) and time.time() < deadline:
-        rows = conn.execute(
-            "SELECT id, from_cid, content, created_at FROM signals "
-            "WHERE kind='broadcast' AND created_at >= ? "
-            "AND content LIKE ? ORDER BY created_at",
-            (started_at - 2, f"[{tid}]%"),
-        ).fetchall()
+        # A short read per poll: this loop can run for up to ten minutes.
+        with read_db() as conn:
+            rows = conn.execute(
+                "SELECT id, from_cid, content, created_at FROM signals "
+                "WHERE kind='broadcast' AND created_at >= ? "
+                "AND content LIKE ? ORDER BY created_at",
+                (started_at - 2, f"[{tid}]%"),
+            ).fetchall()
         for r in rows:
             m = line_re.match(r["content"])
             if not m:
@@ -1122,12 +1487,16 @@ def tasks(include_ended: bool = True, k: int = 15) -> str:
     """List spawned tasks: id, pid, status, elapsed, spawned_cid (if linked),
     prompt prefix. Refreshes liveness and resolves spawned_cid lazily."""
     conn = get_db()
-    _ensure_session(conn)
-    _refresh_tasks(conn)
-    where = "" if include_ended else "WHERE ended_at IS NULL"
-    rows = conn.execute(
-        f"SELECT * FROM tasks {where} ORDER BY started_at DESC LIMIT ?", (k,)
-    ).fetchall()
+    try:
+        _ensure_session(conn)
+        _refresh_tasks(conn)
+        where = "" if include_ended else "WHERE ended_at IS NULL"
+        rows = conn.execute(
+            f"SELECT * FROM tasks {where} ORDER BY started_at DESC LIMIT ?",
+            (k,),
+        ).fetchall()
+    finally:
+        conn.close()
     if not rows:
         return "no_tasks"
     now_t = int(time.time())
@@ -1204,21 +1573,24 @@ def spawn_budget_status() -> SpawnBudgetStatus:
         SPAWN_COST_BUDGET_USD,
     )
     from ..spawn_budget import _daily_spawn_usage
-    conn = get_db()
-    _ensure_session(conn)
-    _refresh_tasks(conn)
-    rows = conn.execute(
-        "SELECT id, pid, spawned_cid, prompt, rss_kb, rss_updated_at, "
-        "started_at FROM tasks WHERE ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 20"
-    ).fetchall()
     now_t = int(time.time())
+    conn = get_db()
+    try:
+        _ensure_session(conn)
+        _refresh_tasks(conn)
+        rows = conn.execute(
+            "SELECT id, pid, spawned_cid, prompt, rss_kb, rss_updated_at, "
+            "started_at FROM tasks WHERE ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 20"
+        ).fetchall()
+        tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
+    finally:
+        conn.close()
     used_kb = sum(
         (r["rss_kb"] or 0) for r in rows
     )
     enabled = SPAWN_BUDGET_MB > 0
     free_kb = max(0, SPAWN_BUDGET_MB * 1024 - used_kb) if enabled else None
-    tokens_24h, cost_24h = _daily_spawn_usage(conn, now_t)
     token_enabled = SPAWN_TOKEN_BUDGET > 0
     cost_enabled = SPAWN_COST_BUDGET_USD > 0
     tokens_free = (
@@ -1372,11 +1744,11 @@ def task_kill(task_id: str, force: bool = False) -> str:
     the child started). Falls back to a single-pid ``kill`` if the group send
     is refused.
     """
-    conn = get_db()
-    _ensure_session(conn)
-    row = conn.execute(
-        "SELECT pid, ended_at FROM tasks WHERE id=?", (task_id,)
-    ).fetchone()
+    ensure_session_started()
+    with read_db() as conn:
+        row = conn.execute(
+            "SELECT pid, ended_at FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
     if not row:
         return f"ERR task_not_found={task_id}"
     if row["ended_at"]:
@@ -1389,11 +1761,13 @@ def task_kill(task_id: str, force: bool = False) -> str:
                 f"(visible/terminal task — close its window)")
 
     def _mark_dead() -> str:
-        conn.execute(
-            "UPDATE tasks SET ended_at=? WHERE id=?",
-            (int(time.time()), task_id),
+        run_write(
+            "task_kill_mark_dead",
+            lambda c: c.execute(
+                "UPDATE tasks SET ended_at=? WHERE id=?",
+                (int(time.time()), task_id),
+            ),
         )
-        conn.commit()
         return f"already_dead task={task_id}"
 
     sig_to_send = _sig.SIGKILL if force else _sig.SIGTERM

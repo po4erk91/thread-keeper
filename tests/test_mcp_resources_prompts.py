@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from mcp.server.lowlevel.server import NotificationOptions
 
 
@@ -126,6 +128,134 @@ def test_dashboard_and_agent_status_resources_read(fresh_mp):
     assert "loops" in agent
 
 
+def test_memory_resource_metadata_is_private_bounded_and_fresh(fresh_mp):
+    """The resource list is safe to cache only in a private, short-lived slot."""
+    resources = asyncio.run(fresh_mp["mcp"].list_resources())
+    by_uri = {str(resource.uri): resource for resource in resources}
+
+    for uri in RESOURCE_URIS:
+        resource = by_uri[uri]
+        assert resource.annotations.audience == ["assistant"]
+        assert 0.0 < resource.annotations.priority <= 1.0
+        assert resource.annotations.last_modified.endswith("Z")
+        assert resource.meta["cacheScope"] == "private"
+        assert resource.meta["ttl"] == 30
+        assert resource.meta["lastModified"] == resource.annotations.last_modified
+        # Calculated from the same dynamic snapshot a client reads, not a stale
+        # fixed declaration in the decorator.
+        assert resource.size is not None and resource.size > 0
+
+
+def test_committed_event_invalidation_map_is_narrow(fresh_mp):
+    from threadkeeper.tools.resources import resources_for_event
+
+    assert resources_for_event("open_thread") == {
+        "memory://brief", "memory://context", "memory://dashboard",
+    }
+    assert resources_for_event("signal:whisper") == {
+        "memory://brief", "memory://dashboard",
+    }
+    assert resources_for_event("task_kill") == {
+        "memory://brief", "memory://dashboard", "memory://agent-status",
+    }
+    assert resources_for_event("shadow_review_pass") == {
+        "memory://dashboard", "memory://agent-status",
+    }
+    assert resources_for_event("style_set") == {
+        "memory://brief", "memory://dashboard",
+    }
+    assert resources_for_event("unclassified_event") == set()
+
+
+class _RecordingSession:
+    def __init__(self):
+        self.notifications = []
+
+    async def send_notification(self, notification):
+        self.notifications.append(notification)
+
+
+def _notification_payload(notification):
+    return notification.params.model_dump(by_alias=True, exclude_none=True)
+
+
+def test_subscriptions_emit_coalesced_private_updates_after_commit(fresh_mp, monkeypatch):
+    """Two committed thread writes before a poll become one update per URI."""
+    from threadkeeper.tools import resources
+
+    monkeypatch.setattr(resources, "_SUBSCRIPTION_POLL_SECONDS", 60)
+    session = _RecordingSession()
+
+    async def exercise():
+        await resources._subscriptions.subscribe("memory://brief", session)
+        await resources._subscriptions.subscribe("memory://context", session)
+        tid = _tool(fresh_mp, "open_thread")(question="subscription thread")
+        assert _tool(fresh_mp, "note")(tid, "first committed note") == "ok id=1"
+        await resources._subscriptions.poll_once()
+
+    asyncio.run(exercise())
+
+    assert len(session.notifications) == 2
+    payloads = [_notification_payload(item) for item in session.notifications]
+    assert {str(payload["uri"]) for payload in payloads} == {
+        "memory://brief", "memory://context",
+    }
+    for payload in payloads:
+        # No content can be carried in an invalidation notification.
+        assert set(payload) == {"uri", "_meta"}
+        assert payload["_meta"] == {
+            "cacheScope": "private",
+            "ttl": 30,
+            "lastModified": payload["_meta"]["lastModified"],
+        }
+        assert payload["_meta"]["lastModified"].endswith("Z")
+
+
+def test_rolled_back_events_and_unrelated_resources_do_not_notify(fresh_mp, monkeypatch):
+    from threadkeeper import identity
+    from threadkeeper.db import run_write
+    from threadkeeper.tools import resources
+
+    monkeypatch.setattr(resources, "_SUBSCRIPTION_POLL_SECONDS", 60)
+    session = _RecordingSession()
+    # Start a thread once to initialize the process session, before subscribing.
+    _tool(fresh_mp, "open_thread")(question="initialization thread")
+
+    async def exercise():
+        await resources._subscriptions.subscribe("memory://context", session)
+        await resources._subscriptions.subscribe("memory://agent-status", session)
+
+        def rolled_back(conn):
+            identity._emit(conn, "open_thread", target="Trollback")
+            raise RuntimeError("force rollback")
+
+        with pytest.raises(RuntimeError, match="force rollback"):
+            run_write("rolled-back-resource-test", rolled_back)
+        await resources._subscriptions.poll_once()
+
+        # A committed signal changes the brief/dashboard only, not either URI
+        # subscribed above.
+        def signal(conn):
+            identity._emit(conn, "signal:whisper", target="peer")
+
+        run_write("unrelated-resource-test", signal)
+        await resources._subscriptions.poll_once()
+
+    asyncio.run(exercise())
+    assert session.notifications == []
+
+
+def test_clients_that_do_not_subscribe_keep_pull_only_behavior(fresh_mp):
+    from threadkeeper.tools import resources
+
+    assert resources._subscriptions.count == 0
+    tid = _tool(fresh_mp, "open_thread")(question="pull-only resource client")
+    # No session has opted into updates, while ordinary resource reads retain
+    # the pre-subscription behavior and expose the committed mutation.
+    assert resources._subscriptions.count == 0
+    assert tid in _read_resource(fresh_mp, "memory://brief")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Prompts: listing + render
 # ──────────────────────────────────────────────────────────────────────
@@ -158,8 +288,11 @@ def test_audit_threadkeeper_prompt_renders(fresh_mp):
 # ──────────────────────────────────────────────────────────────────────
 
 def test_server_advertises_resources_and_prompts_capabilities(fresh_mp):
-    caps = fresh_mp["mcp"]._mcp_server.get_capabilities(NotificationOptions(), {})
+    caps = fresh_mp["mcp"]._lowlevel_server.get_capabilities(
+        NotificationOptions(), {}, protocol_version="2026-07-28",
+    )
     assert caps.resources is not None
+    assert caps.resources.subscribe is True
     assert caps.prompts is not None
     assert caps.tools is not None  # tools unaffected
 
