@@ -14,9 +14,13 @@ writes without calling them:
 This static metadata layer is what a confirmation/elicitation client reads
 to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 """
+from functools import wraps
+
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel
+
+from .read_context import read_only_call
 
 mcp = FastMCP("thread-keeper")
 
@@ -27,10 +31,18 @@ def read_tool(**kwargs):
     Use for pure queries that do not modify thread-keeper state — briefs,
     searches, status snapshots, listings. Extra kwargs pass through to
     ``mcp.tool`` (e.g. ``name=``)."""
-    return mcp.tool(
-        annotations=ToolAnnotations(readOnlyHint=True),
-        **kwargs,
-    )
+    def register(fn):
+        @wraps(fn)
+        def observational_read(*args, **call_kwargs):
+            with read_only_call():
+                return fn(*args, **call_kwargs)
+
+        return mcp.tool(
+            annotations=ToolAnnotations(readOnlyHint=True),
+            **kwargs,
+        )(observational_read)
+
+    return register
 
 
 def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs):

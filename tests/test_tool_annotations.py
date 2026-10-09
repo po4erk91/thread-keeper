@@ -19,6 +19,8 @@ unannotated tool is caught in CI.
 """
 from __future__ import annotations
 
+import inspect
+
 import jsonschema
 import pytest
 
@@ -68,6 +70,7 @@ WRITE_TOOLS = {
     "shadow_review_run", "skill_record", "spawn", "spawn_budget_set",
     "style_set", "sync_now", "tag_signal", "tournament", "validate_threads",
     "verbatim_user", "vote_distill", "wait", "whisper",
+    "agent_status_refresh", "shadow_review_snapshot", "tasks_refresh",
 }
 
 # status tools that must expose outputSchema + structuredContent
@@ -143,6 +146,53 @@ def test_annotation_consistency(fresh_mp):
             assert a.idempotentHint in (None, False), n
         if a.destructiveHint:
             assert a.readOnlyHint is False, n
+
+
+def _read_tool_kwargs(fn) -> dict:
+    values = {
+        "kind": "thread",
+        "id": "missing",
+        "concept_id": "missing",
+        "task_id": "missing",
+        "probe_id": "missing",
+        "category": "missing",
+        "key": "missing",
+        "query": "missing",
+    }
+    return {
+        name: values.get(name, "missing")
+        for name, parameter in inspect.signature(fn).parameters.items()
+        if parameter.default is inspect.Parameter.empty
+    }
+
+
+def _durable_snapshot(pkg) -> dict[str, tuple]:
+    conn = pkg["db"].get_db()
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        return {
+            row["name"]: tuple(
+                tuple(value) for value in conn.execute(
+                    f'SELECT * FROM "{row["name"]}"'
+                ).fetchall()
+            )
+            for row in tables
+        }
+    finally:
+        conn.close()
+
+
+def test_read_tool_calls_are_observationally_pure_in_a_fresh_process(fresh_mp):
+    """Each advertised read must leave tables untouched on its first call."""
+    pkg = fresh_mp
+    tools = _tools(pkg)
+    before = _durable_snapshot(pkg)
+    for name in sorted(READ_TOOLS):
+        tools[name].fn(**_read_tool_kwargs(tools[name].fn))
+    assert _durable_snapshot(pkg) == before
 
 
 @pytest.mark.parametrize("name", sorted(STATUS_TOOLS))

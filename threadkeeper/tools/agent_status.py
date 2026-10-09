@@ -14,18 +14,31 @@ from ..tool_schemas import AgentStatusSnapshot
 
 
 @read_tool()
-def agent_status(json_output: bool = False, refresh: bool = True) -> AgentStatusSnapshot:
+def agent_status(json_output: bool = False, refresh: bool = False) -> AgentStatusSnapshot:
     """Show autonomous learning loops with state, backlog, last pass, and RSS.
 
     Set json_output=True for the same stable shape used by the menu-bar app.
     Always returns structuredContent (AgentStatusSnapshot); the text block is
     the JSON dump when json_output else the formatted summary.
     """
-    snapshot = agent_status_snapshot(refresh=refresh)
+    # This advertised read always serves cached values. Keep the old argument
+    # accepted so old clients do not fail, but make it observationally pure.
+    snapshot = agent_status_snapshot(refresh=False)
     if json_output:
         text = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
     else:
         text = format_agent_status(snapshot)
+    return structured_result(text, AgentStatusSnapshot(**snapshot))
+
+
+@write_tool(idempotent=True)
+def agent_status_refresh(json_output: bool = False) -> AgentStatusSnapshot:
+    """Refresh persisted task RSS/lifecycle state, then return the snapshot."""
+    snapshot = agent_status_snapshot(refresh=True)
+    text = (
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+        if json_output else format_agent_status(snapshot)
+    )
     return structured_result(text, AgentStatusSnapshot(**snapshot))
 
 

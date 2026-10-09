@@ -14,6 +14,7 @@ from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
+from .read_context import is_read_only_call
 from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -1203,7 +1204,10 @@ def get_db() -> sqlite3.Connection:
     are migrated, but no longer performs DDL after process bootstrap.
     """
     bootstrap_db()
-    conn, _ = _open_connection()
+    query_only = is_read_only_call()
+    conn, _ = _open_connection(autocommit=query_only)
+    if query_only:
+        conn.execute("PRAGMA query_only=ON")
     return conn
 
 

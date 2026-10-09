@@ -34,8 +34,7 @@ later, host-gated step (see roadmap #78).
 from __future__ import annotations
 
 from .._mcp import mcp
-from ..db import get_db
-from ..identity import _ensure_session
+from ..db import read_db
 from ..brief import render_brief, render_context
 from .dashboard import mp_dashboard
 from ..agent_status import agent_status_snapshot, format_agent_status
@@ -51,11 +50,10 @@ from ..agent_status import agent_status_snapshot, format_agent_status
     mime_type="text/plain",
 )
 def brief_resource() -> str:
-    conn = get_db()
-    _ensure_session(conn)
-    # lean=True keeps the pull side-effect-free: the spawn/thread/skill hint
-    # blocks (which write *_hint_shown events) are all gated on `not eff_lean`.
-    return render_brief(conn, scope="full", lean=True)
+    with read_db() as conn:
+        # lean=True keeps the pull side-effect-free: the spawn/thread/skill hint
+        # blocks (which write *_hint_shown events) are all gated on `not eff_lean`.
+        return render_brief(conn, scope="full", lean=True)
 
 
 @mcp.resource(
@@ -67,10 +65,9 @@ def brief_resource() -> str:
     mime_type="text/plain",
 )
 def context_resource() -> str:
-    conn = get_db()
-    _ensure_session(conn)
-    text, _ = render_context(conn)
-    return text
+    with read_db() as conn:
+        text, _ = render_context(conn)
+        return text
 
 
 @mcp.resource(

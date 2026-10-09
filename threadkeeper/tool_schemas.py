@@ -134,6 +134,7 @@ class AgentStatusSnapshot(_Lenient):
     """Autonomous learning loops + running children (JSON-ready snapshot)."""
 
     generated_at: int = 0
+    rss_freshness: str = "cached"
     running_count: int = 0
     total_rss_kb: int = 0
     total_rss_mb: int = 0

@@ -106,6 +106,13 @@ def _ensure_session_locked(conn: sqlite3.Connection,
     if _session_id is not None:
         return _session_id
 
+    # A host may inspect a resource or a readOnlyHint tool before any explicit
+    # user action. Do not turn that observation into a session/presence/cursor
+    # bootstrap or daemon start. The caller can still render the anonymous
+    # cached view; the next mutating action creates the real session.
+    if bool(conn.execute("PRAGMA query_only").fetchone()[0]):
+        return ""
+
     if _session_id is None:
         # pid embedded so two processes can never collide; hex tail keeps id short.
         # NB: claude desktop/code may multiplex several windows into one mcp

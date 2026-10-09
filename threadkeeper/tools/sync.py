@@ -20,14 +20,14 @@ def sync_status() -> str:
     conn = get_db()
     try:
         mig = is_migrated(conn)
-        node = sync_identity.get_node_id(conn) if mig else "-"
+        node = sync_identity.read_node_id(conn) if mig else "-"
         vv = protocol.version_vector(conn) if mig else {}
         oplog = (conn.execute("SELECT COUNT(*) FROM sync_oplog").fetchone()[0]
                  if mig else 0)
     finally:
         conn.close()
     peers = daemon.peers()
-    return (f"migrated={mig} node={node} peers={len(peers)} "
+    return (f"migrated={mig} node={node or '-'} peers={len(peers)} "
             f"listen={SYNC_LISTEN or '-'} oplog={oplog} origins={len(vv)}")
 
 

@@ -10,6 +10,11 @@ remains a live question.
 
 ## Closed
 
+- Read-only MCP purity (#348): every `readOnlyHint=True` tool and static memory
+  resource now runs in a query-only scope. Automatic discovery/polling cannot
+  bootstrap sessions, presence/cursors, daemons, task reaping/linking, or RSS
+  writes; cached status labels freshness, and explicit write tools perform task
+  and agent-status reconciliation.
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB

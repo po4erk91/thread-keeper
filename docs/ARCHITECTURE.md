@@ -1498,8 +1498,11 @@ Tools register through two thin wrappers in `_mcp.py` instead of bare
 `@mcp.tool()`, so `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for
 every tool:
 
-- `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
-  `search`, `dialog_search`, the status tools, `compost`, …).
+- `@read_tool()` → `readOnlyHint=True` — observational queries (`brief`,
+  `context`, `search`, `dialog_search`, cached status tools, `compost`, …).
+  The wrapper enters a query-only SQLite scope: it must not create a session,
+  presence/cursor rows, start daemons, reap tasks, link child CIDs, persist RSS,
+  or write files. Cached output explicitly labels its freshness.
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
   mutations. `lesson_list` and `lesson_get` are non-destructive writes because
   they update lesson access counters. The eleven delete/overwrite/kill tools carry
@@ -1531,7 +1534,10 @@ the other two for the read/act split they fit naturally:
   attachable / `@`-mentionable context without the agent *remembering* to call a
   tool — the mechanical channel that hookless CLIs lacked. The brief resource
   renders `lean=True` and agent-status uses `refresh=False`, so an automatic host
-  pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
+  pull is **side-effect-free**: even in a fresh process it cannot create
+  session/presence/cursor state, start daemons, reap tasks, or refresh RSS.
+  Reconciliation lives in explicit write tools (`tasks_refresh` and
+  `agent_status_refresh`).
   URIs are static: resource *templates* (`{param}`) are still unevenly supported
   across hosts, so parameterized URIs are a later, host-gated step.
 - **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,

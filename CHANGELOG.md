@@ -6,6 +6,15 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-10-09
+
+- **Fixed: advertised read-only MCP tools and memory resources are now
+  observationally pure (#348).** Read surfaces run against SQLite query-only
+  connections and never create sessions, presence/cursor rows, daemon work, or
+  lifecycle/RSS updates. Cached task and agent status now state their freshness;
+  explicit write actions (`tasks_refresh`, `agent_status_refresh`, and
+  `shadow_review_snapshot`) perform reconciliation or snapshot writing.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

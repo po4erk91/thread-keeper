@@ -60,6 +60,25 @@ def _render_prompt(pkg, name, args=None):
     return "\n".join(m.content.text for m in res.messages)
 
 
+def _durable_snapshot(pkg) -> dict[str, tuple]:
+    conn = pkg["db"].get_db()
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        return {
+            row["name"]: tuple(
+                tuple(value) for value in conn.execute(
+                    f'SELECT * FROM "{row["name"]}"'
+                ).fetchall()
+            )
+            for row in tables
+        }
+    finally:
+        conn.close()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Resources: listing + read content
 # ──────────────────────────────────────────────────────────────────────
@@ -124,6 +143,16 @@ def test_dashboard_and_agent_status_resources_read(fresh_mp):
     assert dash.startswith("dashboard window=")
     agent = _read_resource(pkg, "memory://agent-status")
     assert "loops" in agent
+
+
+def test_resource_reads_are_observationally_pure_on_first_process_call(fresh_mp):
+    """Discovery/polling reads cannot bootstrap a session or start work."""
+    pkg = fresh_mp
+    before = _durable_snapshot(pkg)
+    for uri in RESOURCE_URIS:
+        _read_resource(pkg, uri)
+    assert _durable_snapshot(pkg) == before
+    assert pkg["identity"]._session_id is None
 
 
 # ──────────────────────────────────────────────────────────────────────

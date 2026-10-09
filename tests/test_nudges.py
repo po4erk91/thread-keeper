@@ -85,9 +85,7 @@ def _tool(pkg, name):
 
 def _open_session(pkg):
     """Force session row + emit a no-op event so _session_id is populated."""
-    # brief() triggers _ensure_session.
-    _tool(pkg, "brief")()
-    return pkg["identity"]._session_id
+    return pkg["identity"].ensure_session_started()
 
 
 def _open_thread_with_notes(pkg, n_total: int, n_rich: int,
@@ -543,14 +541,13 @@ def test_thread_nudge_silent_without_session_id(tmp_path, monkeypatch):
     assert pkg["nudges"].compute_thread_nudge(conn, "") is None
 
 
-def test_brief_shows_thread_hint_once_then_suppresses(tmp_path, monkeypatch):
-    """brief() surfaces the nudge on the first call (no env set = hook-less
-    client), logs thread_hint_shown, and stays quiet thereafter."""
+def test_brief_never_persists_thread_hint(tmp_path, monkeypatch):
+    """An advertised read never records thread-hint telemetry."""
     pkg = _bootstrap_with_env(tmp_path, monkeypatch)
     monkeypatch.delenv("THREADKEEPER_BRIEF_NO_THREAD_NUDGE", raising=False)
     brief = _tool(pkg, "brief")
     out1 = brief()
-    assert "thread_hint" in out1
+    assert "thread_hint" not in out1
     out2 = brief()
     assert "thread_hint" not in out2
 

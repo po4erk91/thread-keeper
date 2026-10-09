@@ -1335,19 +1335,21 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
   base-table embedding BLOBs only when a matching sqlite-vec row is confirmed.
   Rows without vec coverage keep their fallback copy; run `db_compact()` after
   applying to return the freed pages to the filesystem.
-- **`shadow_review_status(snapshot_path="")`** — config, recent passes, and a
+- **`shadow_review_status()`** — config, recent passes, and a
   per-loop **production-validation rollup** for the 24h and 7d windows: how
   often the daemon fired, the outcome mix (`no_window` / `too_short` /
   `spawned` / `deferred` / `error`), the **MATERIALIZED-vs-SKIP hit rate** of
   the evaluator children it spawned, the durable skill writes attributable to
   `write_origin='shadow_review'`, and the **total Claude-spawn time** spent —
   so you can tell whether the loop earns its Opus minutes or just emits SKIPs.
-  Pass `snapshot_path` to also dump a markdown report for human review. The
-  verdict is read from each child's captured log tail; logs aged out of the
+  The verdict is read from each child's captured log tail; logs aged out of the
   ephemeral task-log dir (or skipped past the read cap) are counted as
-  `unknown` so the hit-rate denominator stays honest.
-- **`agent_status(json_output=False, refresh=True)`** — autonomous learning
-  loop status, shaped for UI clients. Shows every loop's enabled/running/ready
+  `unknown` so the hit-rate denominator stays honest. Use
+  `shadow_review_snapshot(snapshot_path)` to write a markdown report.
+- **`agent_status(json_output=False)`** — autonomous learning
+  loop status, shaped for UI clients. It reports cached RSS freshness; use
+  `agent_status_refresh()` when a persisted refresh is required. Shows every
+  loop's enabled/running/ready
   state, last pass, backlog, and active spawned-child RSS; running child agents
   are included as detail rows in the JSON. The JSON also includes
   `github_budget` (GitHub remaining/reset or active cooldown for roadmap
@@ -1747,8 +1749,10 @@ threadkeeper/
 **Tool annotation contract (#67).** Every tool registers through
 `@read_tool()` or `@write_tool(destructive=…, idempotent=…)` (in `_mcp.py`),
 so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for all 113 tools:
-`readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
-`dialog_search`, the status tools, …) and `readOnlyHint=False`
+`readOnlyHint=True` for observational reads (`brief`, `context`, `search`,
+`dialog_search`, and cached status tools). Such calls use query-only database
+connections and never bootstrap a session, start daemons, refresh process data,
+or change lifecycle state. `readOnlyHint=False`
 for mutations. `lesson_list` / `lesson_get` are classified as non-destructive
 writes because they bump lesson access counters. The ten delete/overwrite/kill
 tools carry `destructiveHint=True` (`compost` is read-only — it only surfaces
