@@ -8,6 +8,30 @@ remains a live question.
 
 ---
 
+## 2026-10-10 reviewer audit
+
+The resource-subscription (#345), privacy-safe tracing (#346), and
+outcome-evaluation (#347) items are complete. The remaining audit gaps are
+issue-backed and deliberately narrower:
+
+- **Standard MCP Tasks lifecycle (#370).** Give capable clients durable,
+  authorization-bound task handles with standard read and cooperative cancel
+  semantics, while preserving the current custom fallback for older hosts.
+- **Forgetting-aware store mutation evaluation (#371).** Exercise real
+  correction, supersession, consolidation, source erasure, and restart paths;
+  penalize obsolete evidence even when current evidence is also recalled.
+- **Protected-lesson freshness flags (#372).** Preserve protected lesson text
+  while attaching source-linked verified, contradicted, or unsubstantiated
+  states that are visible when the lesson is retrieved for a task.
+- **Source-missing skill reconciliation (#373).** Mark registry records without
+  a readable primary source unavailable, expose one recovery action, and allow
+  Curator to archive or remove a confirmed registry-only orphan after a
+  recoverable snapshot.
+
+The legacy task-gate suggestion was not re-filed because the setup matcher
+already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
+registry suggestions share one repair lifecycle and are consolidated in #373.
+
 ## Closed
 
 - Read-only MCP purity (#348): every `readOnlyHint=True` tool and static memory
