@@ -1251,17 +1251,19 @@ retention:
   flows now run through real-stdio conformance tests and one normalized request
   context; caller-bound sealed continuations and a replay ledger make modern
   mutations once-only or reject uncertain re-entry.
-- **Live private memory resources (#345).** Add capability-gated subscriptions,
-  commit-aware/coalesced invalidation, and honest private-cache metadata for
-  the four `memory://` resources while retaining the pull-only fallback.
-- **Privacy-safe workflow tracing (#346).** Offer an opt-in OTLP exporter that
-  correlates parent, child, MCP/tool, retry, and terminal events without
-  exporting prompts, payloads, memory bodies, credentials, or private paths.
-- **Outcome- and action-based memory evaluation (#347).** Score evidence recall
-  separately from final-answer quality, then add sandboxed multi-session cases
-  where remembered constraints must change the tool/action plan. Run ablations
-  across memory-off, retrieval-only, and full brief/skills paths, including
-  adversarial bundle-level authority/poisoning cases.
+- ✅ DONE (#345). **Live private memory resources.** The four `memory://`
+  resources now carry private cache metadata and transaction-aware freshness;
+  subscribing hosts receive coalesced URI-only invalidations while pull-only
+  hosts retain the existing behavior.
+- ✅ DONE (#346). **Privacy-safe workflow tracing.** The default-off OTLP
+  exporter now correlates parent, child, MCP/tool, retry, watchdog, and terminal
+  events without exporting prompts, payloads, memory bodies, credentials, or
+  private paths.
+- ✅ DONE (#347). **Outcome-based memory evaluation.** The deterministic replay
+  now scores evidence recall separately from final-answer correctness across
+  dynamic-state, workflow, premise-awareness, retention/curation, retrieval,
+  and egress-policy variants. A deeper store-mutation forgetting gate remains
+  separately tracked in #371.
 - **Observationally pure read surfaces (#348).** Stop tools and resources marked
   read-only from bootstrapping sessions/daemons or reconciling task/RSS state;
   move persistence to daemon-owned or explicitly write-annotated paths.
@@ -1339,14 +1341,36 @@ and Curator child-capability isolation:
   strip stale values from ordinary spawns, and bind report/research writers to
   the owning task, role, and batch.
 
-The mechanical issue gate linked the protocol-native Tasks/MRTR proposal to
-completed conformance issue #344 instead of opening a parallel issue. The code
-still uses custom task polling and `elicitation/create`, so any further native
-Tasks lifecycle work should be re-scoped against #344 rather than duplicated.
-It likewise linked automatic authority enforcement and compositional poisoning
-evaluation to open outcome-quality issue #347; that roadmap item now calls out
-the missing action-use and adversarial bundle coverage explicitly. Tool-profile
-disclosure and project namespaces remain tracked in #353 and #359.
+The earlier mechanical issue gate linked the protocol-native Tasks proposal to
+completed conformance issue #344. The current audit confirmed that conformance
+does not provide the standard long-running task lifecycle, so that remaining
+work is now narrowly re-scoped in #370. Outcome evaluation #347 is complete;
+the remaining stale-memory lifecycle gap is isolated in #371 rather than
+reopening the broader evaluator issue. Tool-profile disclosure and project
+namespaces remain tracked in #353 and #359.
+
+**2026-10-10 reviewer additions (issue-backed).**
+The current audit added four gaps around interoperable long-running work,
+forgetting correctness, protected-lesson freshness, and skill-registry repair:
+
+- **Standard MCP Tasks lifecycle (#370).** Give capable clients durable,
+  authorization-bound task handles with standard read and cooperative cancel
+  semantics, while preserving the current custom fallback for older hosts.
+- **Forgetting-aware store mutation evaluation (#371).** Exercise real
+  correction, supersession, consolidation, source erasure, and restart paths;
+  penalize obsolete evidence even when current evidence is also recalled.
+- **Protected-lesson freshness flags (#372).** Preserve protected lesson text
+  while attaching source-linked verified, contradicted, or unsubstantiated
+  states that are visible when the lesson is retrieved for a task.
+- **Source-missing skill reconciliation (#373).** Mark registry records without
+  a readable primary source unavailable, expose one recovery action, and allow
+  Curator to archive or remove a confirmed registry-only orphan after a
+  recoverable snapshot.
+
+The legacy task-gate suggestion was not re-filed: the current setup matcher
+already recognizes `Task`, `Agent`, and `Workflow`, including managed-hook
+migration on setup. The two source-missing registry suggestions share one
+repair lifecycle and are intentionally consolidated in #373.
 
 ---
 
