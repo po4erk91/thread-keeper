@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: advertised read-only MCP tools and memory resources are now
+  observationally pure (#348).** Read surfaces run against SQLite query-only
+  connections and never create sessions, presence/cursor rows, daemon work, or
+  lifecycle/RSS updates. Cached task and agent status now state their freshness;
+  explicit write actions (`tasks_refresh`, `agent_status_refresh`, and
+  `shadow_review_snapshot`) perform reconciliation or snapshot writing.
+
 - **Memory-evaluation outcome replay (#347).** `scripts/memory_eval` now
   reports evidence recall and deterministic final-answer correctness as separate
   scores, while keeping abstention first-class. Corpus v2 covers dynamic state,

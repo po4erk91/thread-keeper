@@ -816,7 +816,12 @@ def test_mcp_shadow_review_status_includes_telemetry_and_snapshot(
     assert "telemetry (production validation" in out
     assert "hit_rate=" in out
     assert "24h" in out and "7d" in out
-    assert snap.exists()
+    assert not snap.exists()
+    assert "shadow_review_snapshot" in out
+
+    write_tool = mcp._tool_manager._tools["shadow_review_snapshot"]
+    write_out = write_tool.fn(snapshot_path=str(snap))
+    assert write_out.startswith("ok wrote_markdown_snapshot=")
     md = snap.read_text(encoding="utf-8")
     assert "# Shadow-review telemetry" in md
     assert "| window |" in md

@@ -35,6 +35,7 @@ from .mcp_skills import (
     resource_catalog,
 )
 from .protocol import ReplaySafeWrites, caller_principal
+from .read_context import read_only_call
 
 
 class ThreadKeeperMCPServer(MCPServer):
@@ -130,7 +131,18 @@ def read_tool(**kwargs):
     )
 
     def decorate(fn):
-        return register(_traced_tool(fn))
+        if iscoroutinefunction(fn):
+            @wraps(fn)
+            async def observational_read(*args, **call_kwargs):
+                with read_only_call():
+                    return await fn(*args, **call_kwargs)
+        else:
+            @wraps(fn)
+            def observational_read(*args, **call_kwargs):
+                with read_only_call():
+                    return fn(*args, **call_kwargs)
+
+        return register(_traced_tool(observational_read))
 
     return decorate
 

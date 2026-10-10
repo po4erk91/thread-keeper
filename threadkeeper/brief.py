@@ -22,7 +22,6 @@ from .config import (
     PICKUP_CLAIM_TTL_S,
 )
 from .helpers import fmt_age, q
-from .db import run_write
 from .task_spool import append_spool_text
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
@@ -57,9 +56,9 @@ def _log_hint_event(render_conn: sqlite3.Connection, kind: str, target: str,
                     summary: str, now: int) -> None:
     """Best-effort hint telemetry without mutating a query-only renderer.
 
-    Direct low-level callers historically pass a writable connection and expect
-    the event to be visible there. The MCP tool passes ``read_db()`` instead,
-    so its telemetry gets a separate bounded write transaction.
+    Direct low-level callers can still record the event through their writable
+    connection. Observational MCP calls use a query-only connection, so the
+    telemetry is skipped for those calls.
     """
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -73,8 +72,6 @@ def _log_hint_event(render_conn: sqlite3.Connection, kind: str, target: str,
         if not query_only:
             _write(render_conn)
             render_conn.commit()
-        else:
-            run_write("brief-hint-event", _write, deadline_s=0.25)
     except sqlite3.OperationalError:
         pass
 
@@ -252,15 +249,10 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                 )
 
     # ── tasks_running ─────────────────────────────────────────────────────
-    # Only my own spawned children that are still alive. Refresh first so
-    # zombies (parent died, child orphaned and reaped) get marked ended
-    # instead of lingering as "running" forever.
+    # Only my own spawned children that are still alive. This is deliberately
+    # a cached view: reconciling task lifecycle belongs to tasks_refresh(), not
+    # to a read-only brief render.
     if self_cid:
-        try:
-            from .tools.spawn import _refresh_tasks
-            _refresh_tasks(conn)
-        except (sqlite3.OperationalError, NameError, ImportError):
-            pass  # tolerate at startup before tools.spawn is imported
         running = conn.execute(
             "SELECT id, pid, prompt, started_at, spawned_cid FROM tasks "
             "WHERE parent_cid=? AND ended_at IS NULL "

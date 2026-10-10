@@ -2031,7 +2031,9 @@ threadkeeper/
 so `tools/list` carries MCP 2025-06-18 `ToolAnnotations` for every
 registered tool: `readOnlyHint=True` for pure reads (`brief`, `context`, `search`,
 `dialog_search`, the status tools, …) and `readOnlyHint=False`
-for mutations. `lesson_list` / `lesson_get` are classified as non-destructive
+for mutations. Advertised reads use query-only database connections and never
+bootstrap a session, start daemon work, refresh process data, or mutate
+lifecycle state. `lesson_list` / `lesson_get` are classified as non-destructive
 writes because they bump lesson access counters. Delete/overwrite/kill tools
 carry `destructiveHint=True` (`compost` is read-only — it only surfaces idle
 threads). A confirmation/elicitation host reads this to decide which calls

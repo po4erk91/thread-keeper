@@ -1778,7 +1778,7 @@ below).
 |---|---|
 | threads | auto_review_trigger, brief, close_thread, compost, context, evolve_decide, evolve_format, evolve_issue_create, evolve_review, idle_thread, mark_skill_materialized, note, open_thread, search |
 | peers | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
-| spawn | spawn, tournament, tasks, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
+| spawn | spawn, tournament, tasks, tasks_refresh, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
 | skills | skill_manage, skill_record, skill_list, curator_run, review_thread |
 | dialectic | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
 | dialectic_feed | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
@@ -1791,7 +1791,7 @@ below).
 | graph | link, unlink, neighbors |
 | pickup | pickup_candidates, claim_pickup, release_pickup |
 | lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation |
-| shadow_review | shadow_review_run, shadow_review_status |
+| shadow_review | shadow_review_run, shadow_review_status, shadow_review_snapshot |
 | candidate_reviewer | candidate_review_run, candidate_review_status |
 | curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore |
 | evolve_research | evolve_research_handoff |
@@ -1799,7 +1799,7 @@ below).
 | style | style_set, verbatim_user |
 | process_health | mp_health, mp_cleanup |
 | dashboard | mp_dashboard |
-| agent_status | agent_status, agent_memory_cleanup |
+| agent_status | agent_status, agent_status_refresh, agent_memory_cleanup |
 | memory_guard | memory_guard_status, memory_guard_check, memory_guard_reclaim |
 | correlation | tag_signal, task_thread |
 | consolidate | consolidate |
@@ -1824,8 +1824,11 @@ Tools register through two thin wrappers in `_mcp.py` instead of bare
 `@mcp.tool()`, so `tools/list` exposes MCP 2025-06-18 `ToolAnnotations` for
 every tool:
 
-- `@read_tool()` → `readOnlyHint=True` — pure queries (`brief`, `context`,
-  `search`, `dialog_search`, the status tools, `compost`, …).
+- `@read_tool()` → `readOnlyHint=True` — observational queries (`brief`,
+  `context`, `search`, `dialog_search`, cached status tools, `compost`, …).
+  The wrapper enters a query-only SQLite scope: it must not create a session,
+  presence/cursor rows, start daemons, reap tasks, link child CIDs, persist RSS,
+  or write files. Cached output explicitly labels its freshness.
 - `@write_tool(destructive=…, idempotent=…)` → `readOnlyHint=False` —
   mutations. `lesson_list` and `lesson_get` are non-destructive writes because
   they update lesson access counters. Delete/overwrite/kill tools carry
@@ -1856,7 +1859,10 @@ the other two for the read/act split they fit naturally:
   attachable / `@`-mentionable context without the agent *remembering* to call a
   tool — the mechanical channel that hookless CLIs lacked. The brief resource
   renders `lean=True` and agent-status uses `refresh=False`, so an automatic host
-  pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
+  pull is **side-effect-free**: even in a fresh process it cannot create
+  session/presence/cursor state, start daemons, reap tasks, or refresh RSS.
+  Reconciliation lives in explicit write tools (`tasks_refresh` and
+  `agent_status_refresh`).
   URIs are static: resource *templates* (`{param}`) are still unevenly supported
   across hosts, so parameterized URIs are a later, host-gated step.
   Each snapshot advertises `cacheScope: private`, a 30-second TTL, priority,

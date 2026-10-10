@@ -1485,11 +1485,10 @@ def tournament(prompt: str,
 @read_tool()
 def tasks(include_ended: bool = True, k: int = 15) -> str:
     """List spawned tasks: id, pid, status, elapsed, spawned_cid (if linked),
-    prompt prefix. Refreshes liveness and resolves spawned_cid lazily."""
+    prompt prefix from the last persisted reconciliation."""
     conn = get_db()
     try:
         _ensure_session(conn)
-        _refresh_tasks(conn)
         where = "" if include_ended else "WHERE ended_at IS NULL"
         rows = conn.execute(
             f"SELECT * FROM tasks {where} ORDER BY started_at DESC LIMIT ?",
@@ -1528,7 +1527,20 @@ def tasks(include_ended: bool = True, k: int = 15) -> str:
             f"{t['id']} pid={pid_disp} {status} elapsed={elapsed} "
             f"cid={cid} {q(snip)}"
         )
-    return "\n".join(lines)
+    return "\n".join(["freshness=cached"] + lines)
+
+
+@write_tool(idempotent=True)
+def tasks_refresh() -> str:
+    """Reconcile tracked task lifecycle and spawned-session links now.
+
+    This is the explicit write action for process reaping and lazy child CID
+    linking. Read-only task/status surfaces only show the persisted cache.
+    """
+    conn = get_db()
+    _ensure_session(conn)
+    _refresh_tasks(conn)
+    return "ok freshness=refreshed"
 
 
 @read_tool()
@@ -1577,7 +1589,6 @@ def spawn_budget_status() -> SpawnBudgetStatus:
     conn = get_db()
     try:
         _ensure_session(conn)
-        _refresh_tasks(conn)
         rows = conn.execute(
             "SELECT id, pid, spawned_cid, prompt, rss_kb, rss_updated_at, "
             "started_at FROM tasks WHERE ended_at IS NULL "
@@ -1614,7 +1625,7 @@ def spawn_budget_status() -> SpawnBudgetStatus:
         header = (
             f"budget={SPAWN_BUDGET_MB}MB used={used_kb // 1024}MB "
             f"free={free_kb // 1024}MB running={len(rows)} "
-            f"poll={SPAWN_BUDGET_POLL_S}s{spend_suffix}"
+            f"poll={SPAWN_BUDGET_POLL_S}s freshness=cached{spend_suffix}"
         )
     tasks: list[SpawnTaskRss] = []
     lines = [header]

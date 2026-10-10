@@ -41,6 +41,7 @@ def test_context_sees_live_session_id(fresh_mp):
     This is the exact regression from `name '_session_start' is not defined` /
     `sess=-` in production briefs.
     """
+    fresh_mp["identity"].ensure_session_started()
     mcp = fresh_mp["mcp"]
     res = mcp._tool_manager._tools["context"].fn()
     # context() now returns a CallToolResult (structuredContent + legacy text, #67)
@@ -61,6 +62,7 @@ def test_context_sees_live_session_id(fresh_mp):
 def test_brief_ctx_line_carries_live_session_id(fresh_mp):
     """The first line of brief() reads `ctx sess=...`. If the snapshot bug
     is present, that prints `sess=-`. Pin to the live id."""
+    fresh_mp["identity"].ensure_session_started()
     mcp = fresh_mp["mcp"]
     out = mcp._tool_manager._tools["brief"].fn()
     first = out.split("\n", 1)[0]
