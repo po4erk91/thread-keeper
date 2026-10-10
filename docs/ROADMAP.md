@@ -12,6 +12,10 @@ remains a live question.
 
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
+- Privacy-safe OTLP workflow traces (#346): default-off bounded exporter links
+  parent MCP launches, agent children, child MCP operations, watchdog
+  continuations, and terminal task outcomes without exporting prompts, tool
+  payloads, memory content, quotes, credentials, or private paths.
 - Spawn launch-result contract: internal callers parse the public text response
   and treat a child as launched only when it has a task identifier, so returned
   admission failures cannot advance loop state, inflate telemetry, or retain
@@ -897,6 +901,16 @@ verified at the cited file:line, deduplicated against the issues above):
   to temp). Use the temporal-reasoning + knowledge-update axes as the
   optimization target for #27/#28.
 
+- ✅ DONE (#347). Extended the memory eval from raw retrieval recall to
+  **outcome quality**. The deterministic transcript replay now reports
+  evidence recall and final-answer correctness separately, with first-class
+  abstention and outcome classes for retrieval/reasoning failures,
+  stale/removed-memory use, and privacy-policy violations. Corpus v2 adds
+  dynamic state, workflow, premise-awareness, and implicit composed-request
+  cases. One `--matrix --strict` command compares FTS and hybrid across
+  baseline/retained/curated fixture states and every personal-memory egress
+  policy; private holdouts suppress case-level output.
+
 - ✅ DONE (#72). Learning-loop **decision-quality** eval harness. The
   quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
   make accept/reject/materialize calls with decision telemetry but no labeled
@@ -948,6 +962,17 @@ verified at the cited file:line, deduplicated against the issues above):
   pins list/read, prompt rendering, capability advertisement, side-effect-freeness,
   and the tool-only fallback. Different MCP capabilities from #67 (annotations) and
   #26 (elicitation); neither covered them.
+- ✅ DONE (#345). **Live, privately cacheable memory resources.** The four
+  `memory://` snapshots now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Hosts that support
+  `resources/subscribe` can subscribe to an individual URI; a durable,
+  transaction-aware event-log poller maps each committed mutation to the
+  smallest affected URI set and coalesces bursts before sending URI-plus-
+  freshness notifications. Thread edits refresh brief/context/dashboard,
+  signals refresh brief/dashboard, task lifecycle changes also refresh
+  agent-status, and learning-loop commits refresh dashboard/agent-status.
+  Rollbacks and non-subscribing hosts remain silent/pull-only, and update
+  messages never contain memory content.
 - ✅ DONE (#344). **Dual-era MCP protocol conformance and replay-safe writes.**
   The SDK 2.x migration serves `2025-11-25` initialize clients and the
   `2026-07-28` per-request envelope through one tool implementation. Legacy
