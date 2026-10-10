@@ -614,6 +614,43 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             "unique lesson-body substring without rewriting the full lesson"
         )
 
+    # ── consulted_lessons (this session) ──────────────────────────────────
+    # Lessons keep their access telemetry in lesson_usage rather than events:
+    # lesson_list records a view and lesson_get records a full recall. Surface
+    # the lessons touched since this session started so a later brief can show
+    # which procedural memory was actually consulted, including its durable
+    # read/view counts and the most recent full recall.
+    try:
+        session = conn.execute(
+            "SELECT started_at FROM sessions WHERE id=?",
+            (identity._session_id,),
+        ).fetchone()
+        session_started_at = session["started_at"] if session else now
+        consulted_lessons = conn.execute(
+            "SELECT slug, last_used_at, last_viewed_at, use_count, view_count "
+            "FROM lesson_usage "
+            "WHERE last_used_at >= ? OR last_viewed_at >= ? "
+            "ORDER BY MAX(COALESCE(last_used_at, 0), "
+            "             COALESCE(last_viewed_at, 0)) DESC, slug ASC",
+            (session_started_at, session_started_at),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        consulted_lessons = []
+    if consulted_lessons and full:
+        out.append("")
+        out.append("consulted_lessons")
+        for lesson in consulted_lessons:
+            parts = []
+            if lesson["view_count"]:
+                parts.append(f"viewed×{lesson['view_count']}")
+            if lesson["use_count"]:
+                parts.append(f"used×{lesson['use_count']}")
+            if lesson["last_used_at"]:
+                parts.append(
+                    f"last_recalled={fmt_age(now - lesson['last_used_at'])}_ago"
+                )
+            out.append(f"  {lesson['slug']}: {' '.join(parts)}")
+
     # ── consulted_skills (this session) ───────────────────────────────────
     # Surface which skills the agent actually invoked / viewed in the
     # current session, plus any user-judgment outcomes ('helped' /
