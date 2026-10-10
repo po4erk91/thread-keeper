@@ -7,6 +7,32 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Memory-evaluation outcome replay (#347).** `scripts/memory_eval` now
+  reports evidence recall and deterministic final-answer correctness as separate
+  scores, while keeping abstention first-class. Corpus v2 covers dynamic state,
+  workflow recall, premise awareness, and implicit composed requests. `--matrix
+  --strict` compares FTS/hybrid retrieval across baseline, retained, and curated
+  fixture states plus every personal-memory egress policy, recording quality,
+  tokens, latency, and safety violations. Public synthetic fixtures stay
+  CI-safe; `--private-holdout` emits aggregate-only reports for external
+  encrypted/private holdouts.
+
+- **Added: privacy-safe OpenTelemetry workflow tracing (#346).** The
+  default-off, bounded OTLP/HTTP exporter links parent MCP launches, spawned
+  agents, child MCP operations, watchdog continuations, and terminal task
+  outcomes using private environment/task-row context. Its typed allowlist
+  exports only operational metadata; prompts, tool payloads/results, memory
+  content, quotes, credentials, and paths are excluded by construction.
+
+- **Added: live, privately cacheable memory resources (#345).** The four
+  `memory://` resources now advertise private 30-second cache metadata,
+  priority, `lastModified`, and rendered size. Capability-aware hosts can
+  subscribe to individual URIs and receive coalesced, post-commit invalidation
+  notifications containing only the URI and freshness metadata; non-subscribing
+  hosts retain pull-only reads. The durable event-log map keeps thread, signal,
+  task, learning-loop, and static-memory updates scoped to their affected
+  resources, while rolled-back writes cannot notify.
+
 - **Added dual-era MCP conformance and replay-safe modern writes (#344).**
   The server accepts the `2025-11-25` initialize handshake and the
   `2026-07-28` request envelope. Modern discovery catalogs use public cache

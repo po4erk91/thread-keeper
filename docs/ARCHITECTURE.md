@@ -880,6 +880,33 @@ children carry `THREADKEEPER_SPAWNED_CHILD=1`, and review forks also carry a
 non-foreground `THREADKEEPER_WRITE_ORIGIN`; either condition prevents
 shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 
+### Privacy-safe OTLP workflow tracing
+
+`THREADKEEPER_OTEL_ENABLED=0` is the default. When it is explicitly enabled
+with a `THREADKEEPER_OTEL_ENDPOINT`, the server uses a bounded asynchronous
+OTLP/HTTP exporter. The parent MCP span starts a workflow span, the spawned
+child gets an agent span, and its MCP operations become child spans. The task
+row carries the opaque W3C `traceparent` plus workflow IDs; the child receives
+that context only through its process environment and slim MCP config. No
+trace state is put in prompts or command-line arguments. A watchdog
+continuation parents its replacement workflow to the timed-out agent span.
+
+Tracing accepts no generic attribute dictionary. Its typed allowlist is:
+operation/tool identifier, elapsed and queue-wait milliseconds,
+provider/model, token totals, USD cost, retry count, and fixed terminal
+outcome. Identifier lengths are capped (64 for operation/tool/provider, 96
+for model), each process admits at most 64 model values, and path- or
+credential-shaped values become `unknown`. Prompts,
+tool payloads/results, memory bodies, quotes, credentials, paths, event
+summaries, and spool/log contents never reach the OTLP payload. The worker
+queue is capped at 2048 spans (256 by default); it drops the oldest pending
+span under pressure and swallows exporter failures. SQLite writes and child
+lifecycle handling therefore continue even when a collector is unavailable.
+
+SQLite remains the authoritative local ledger. It keeps only opaque trace
+linkage on task rows, removed with normal task retention; operators set
+retention for exported trace records in their collector.
+
 Daemons share the WAL database, not a connection pool. Reads use independent
 query-only connections; write critical sections are kept short because WAL
 still permits only one writer.
@@ -1832,6 +1859,16 @@ the other two for the read/act split they fit naturally:
   pull is **side-effect-free** (no `*_hint_shown` events, no process re-scan).
   URIs are static: resource *templates* (`{param}`) are still unevenly supported
   across hosts, so parameterized URIs are a later, host-gated step.
+  Each snapshot advertises `cacheScope: private`, a 30-second TTL, priority,
+  `lastModified`, and its rendered byte size. Hosts that send
+  `resources/subscribe` are tracked per URI; a short poller reads only committed
+  rows from the durable event log, coalesces a burst, and emits an update with
+  the URI plus freshness metadata only. The narrow invalidation map is: thread
+  mutations → brief/context/dashboard; signals → brief/dashboard; task lifecycle
+  → brief/dashboard/agent-status; learning-loop commits → dashboard/agent-status;
+  core/style/verbatim/concept/distill memory → brief/dashboard. An unsupported
+  or non-subscribing host remains pull-only, and rolled-back rows never appear in
+  the event log so cannot produce a notification.
 - **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,
   parameterized* templates for the curation / audit / review flows:
   `review_recent_threads`, `run_library_curation`, `audit_threadkeeper`. Claude
@@ -1916,24 +1953,28 @@ Run: `.venv/bin/python -m pytest tests/ -q`; CI runs the same suite in
 shards with each test in its own process. Smoke parametrization automatically
 picks up any new tools without having to add tests.
 
-## Memory-quality evaluation (issue #71)
+## Memory-quality evaluation (issues #71 and #347)
 
 Two read-only harnesses measure the memory layer, not the code:
 
 - `scripts/tk_verify_ingest.py` — *write/ingest* side: did we capture rows from
   every CLI? (slot coverage, PASS/PARTIAL/FAIL; issue #1).
-- `scripts/memory_eval/run.py` — *read/retrieval* side: when we retrieve, do we
-  recall the right fact and **refuse** to answer about things that never
-  happened? Modeled on LongMemEval (ICLR 2025) + mem0's 2026
-  tokens-per-retrieval cost axis.
+- `scripts/memory_eval/run.py` — *read/outcome* side: did retrieval expose the
+  right evidence, and does the deterministic transcript replay produce a
+  correct final answer or required abstention? Modeled on LongMemEval (ICLR
+  2025) + mem0's tokens-per-retrieval cost axis.
 
 The eval harness is deliberately thin and treats the retrieval surface as a
 black box: each ground-truth question carries a `system`
 (`search` → notes, `dialog_search` → ingested transcripts, `brief` → the
 auto-injected context) and a `query`; `retrieve()` calls the *real* tool
-function and the judge reads its verbatim output, so tokens-per-retrieval is
-measured on exactly what an agent would receive. The five LongMemEval axes map
-onto thread-keeper as:
+function and the evidence judge reads its verbatim output, so
+tokens-per-retrieval is measured on exactly what an agent would receive. A
+local replay responder can only use matching evidence terms from that output;
+its final answer is scored separately. This is intentionally deterministic: a
+regression can be attributed to retrieval, answer reasoning, stale-memory use,
+or privacy policy rather than an API-backed judge's sampling. The corpus maps
+these axes onto thread-keeper:
 
 | Axis | What it probes here |
 |---|---|
@@ -1942,18 +1983,33 @@ onto thread-keeper as:
 | temporal_reasoning | retrieval surfaces the time-relevant evidence (before/after, latest) |
 | knowledge_update | the *current* value wins over a superseded one in the corpus |
 | abstention | never-happened question → no fabricated `trap_substring` leaks into context |
+| dynamic_state | a current operational state remains distinguishable from history |
+| workflow_recall | a required coding/deployment step is available before it is applied |
+| premise_awareness | an unsupported premise results in an explicit refusal |
+| implicit_composed_request | a request combines facts without spelling out their source terms |
 
-The default **lexical** judge is a deterministic substring scorer (gold recall;
-abstention = no trap surfaced) — offline, no API key, no embeddings, so it runs
-in CI and as a golden baseline (the bundled `ground_truth.json` demo corpus
-scores 100% under a faithful retrieval; a regression in `search()`/
-`dialog_search()` drops it). An optional `--judge llm` grades answer
-*reasoning* (true temporal ordering, knowledge-update correctness) via the
-Anthropic Messages API over `urllib` — no SDK dependency — and is an
-optimization target for lesson-decay tuning (#27) and bi-temporal (#28) work.
+The default **lexical** judge is deterministic and CI-safe. The versioned
+public synthetic `ground_truth.json` stores its corpus version, labels, fixture
+states, and stable thresholds together. Increase `version` when any of those
+contracts changes. `--strict` checks evidence recall, final-answer correctness,
+and zero safety violations against those thresholds.
+
+`--matrix` starts a fresh process for every FTS/hybrid × baseline/retained/
+curated × `all`/`same-vendor`/`work-only` cell. Fresh processes matter because
+embedding availability is import-time configuration. Retained and curated
+states remove named public fixture rows before the real retrieval tools run;
+the replay must refuse those removed facts. Brief cases set the consuming CLI,
+so egress-blocked personal facts must also be absent from both evidence and
+final answer. Matrix rows record evidence/final quality, retrieval token total,
+p95 latency, and safety violations; hybrid is reported unavailable rather than
+silently compared as FTS when the semantic extra is absent.
+
 `--db snapshot.sqlite` evaluates a real production snapshot, copied to a temp
-file first so the original is never opened for writing. Backend (`fts` vs
-`semantic`) is auto-detected and reported. Smoke-tested in
+file first so the original is never opened for writing. A private holdout stays
+outside the repository and runs with `--private-holdout`; the caller manages
+encryption/decryption, while the harness emits aggregate metrics only and
+deletes its temporary DB on exit. It never includes retrieved context, replayed
+answers, or case-level labels in a private report. Smoke-tested in
 `tests/test_memory_eval.py` (subprocess, to keep import-time env setup off the
 shared in-process package state).
 

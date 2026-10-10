@@ -14,6 +14,8 @@ writes without calling them:
 This static metadata layer is what a confirmation/elicitation client reads
 to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 """
+from functools import wraps
+from inspect import iscoroutinefunction
 import secrets
 
 from mcp.server.caching import CacheHint
@@ -93,16 +95,44 @@ mcp = ThreadKeeperMCPServer(
 )
 
 
+def _traced_tool(fn):
+    """Add a payload-free span around an MCP handler when tracing is enabled."""
+
+    if iscoroutinefunction(fn):
+        @wraps(fn)
+        async def wrapped(*args, **kwargs):
+            from .tracing import mcp_span
+
+            with mcp_span(fn.__name__):
+                return await fn(*args, **kwargs)
+
+        return wrapped
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        from .tracing import mcp_span
+
+        with mcp_span(fn.__name__):
+            return fn(*args, **kwargs)
+
+    return wrapped
+
+
 def read_tool(**kwargs):
     """Register a read-only MCP tool (``readOnlyHint=True``).
 
     Use for pure queries that do not modify thread-keeper state — briefs,
     searches, status snapshots, listings. Extra kwargs pass through to
     ``mcp.tool`` (e.g. ``name=``)."""
-    return mcp.tool(
+    register = mcp.tool(
         annotations=ToolAnnotations(read_only_hint=True),
         **kwargs,
     )
+
+    def decorate(fn):
+        return register(_traced_tool(fn))
+
+    return decorate
 
 
 def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs):
@@ -123,7 +153,7 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
 
     def decorate(fn):
         WRITE_TOOL_NAMES.add(kwargs.get("name") or fn.__name__)
-        return register(fn)
+        return register(_traced_tool(fn))
 
     return decorate
 

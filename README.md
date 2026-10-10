@@ -188,7 +188,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 | Primitive | Control | What thread-keeper exposes | When to use |
 |---|---|---|---|
 | **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
-| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
+| **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically; capable hosts may subscribe |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
 
 **Resources** back the genuinely read-only memory views with the same render
@@ -1310,6 +1310,10 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
 | `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after a pass deletes at least this many rows; 0 disables VACUUM |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
+| `THREADKEEPER_OTEL_ENABLED` | false | enable privacy-safe OTLP tracing only when an endpoint is also configured |
+| `THREADKEEPER_OTEL_ENDPOINT` | "" | OTLP/HTTP collector trace endpoint, normally `https://collector.example/v1/traces` |
+| `THREADKEEPER_OTEL_EXPORT_TIMEOUT_S` | 2 | collector request timeout; export happens outside the local workflow |
+| `THREADKEEPER_OTEL_EXPORT_QUEUE_SIZE` | 256 | bounded per-process span queue (1–2048); oldest queued spans are dropped under pressure |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
 | `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
@@ -1521,6 +1525,38 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
 ---
 
 ## Telemetry
+
+### Privacy-safe OTLP traces
+
+OTLP export is **off by default**. To opt in, set both
+`THREADKEEPER_OTEL_ENABLED=1` and `THREADKEEPER_OTEL_ENDPOINT` to an
+OTLP/HTTP `/v1/traces` endpoint. ThreadKeeper sends OTLP JSON asynchronously;
+collector failure, timeout, or a full queue never delays a local MCP call,
+spawn, watchdog action, or SQLite write.
+
+One spawned workflow is linked as `MCP spawn → workflow → agent → child MCP
+operation`. The W3C trace context is saved with the task and passed only in the
+private child environment (and its slim MCP config), never in a prompt or CLI
+argument. A watchdog continuation uses the prior agent span as its parent, so
+retries remain in the same trace.
+
+The exporter has a fixed allowlist: operation/tool identifier, latency and
+queue wait, provider/model identifiers, input/output/total tokens, USD cost,
+retry count, and terminal outcome. Operation names are fixed; tool/provider
+identifiers are limited to 64 safe characters, model identifiers to 96, and a
+process exports at most 64 distinct model values (later values become
+`unknown`).
+Everything else is excluded by construction: prompts, MCP arguments/results,
+memory bodies, user quotes, credentials, paths, task logs, and SQLite event
+summaries are never span attributes.
+
+The local SQLite event ledger remains the source of truth. It retains only the
+opaque trace linkage beside a task row, so its existing task-retention policy
+also removes that linkage. Configure collector retention at the collector; no
+trace payload is persisted locally. If traces do not arrive, first verify the
+endpoint includes `/v1/traces`; then inspect collector connectivity. A full
+queue intentionally drops its oldest pending spans rather than growing memory
+or blocking the workflow.
 
 - **`mp_dashboard(window_days=7)`** — one-call rollup of the whole
   system, read-only. Three sections: **stores** (threads by state,
@@ -1828,9 +1864,9 @@ reusable verdict logic lives in `threadkeeper/verify_ingest.py`.
 ## Memory-quality evaluation
 
 The ingest verifier above answers *"did we capture the data?"*. The
-memory-quality harness answers the harder question — *"when we retrieve it,
-do we recall the right fact, and do we **refuse** to answer about things that
-never happened?"* It's modeled on
+memory-quality harness answers two separate questions: *"did we retrieve the
+right evidence?"* and *"does an agent produce the right final answer from
+that evidence?"* It's modeled on
 [LongMemEval](https://arxiv.org/pdf/2410.10813) (ICLR 2025) plus mem0's 2026
 [tokens-per-retrieval](https://mem0.ai/blog/ai-memory-benchmarks-in-2026)
 cost axis, and runs the **real** `search()` / `dialog_search()` / `brief()`
@@ -1841,24 +1877,34 @@ python scripts/memory_eval/run.py                 # bundled demo corpus, lexical
 python scripts/memory_eval/run.py --json          # machine-readable report
 python scripts/memory_eval/run.py --db snap.sqlite --ground-truth my_labels.json
 python scripts/memory_eval/run.py --semantic      # use embeddings if installed
-python scripts/memory_eval/run.py --judge llm      # LLM-graded (needs ANTHROPIC_API_KEY)
+python scripts/memory_eval/run.py --matrix --strict # FTS/hybrid migration gate
+age -d holdout.json.age | python scripts/memory_eval/run.py \
+  --ground-truth /dev/stdin --private-holdout       # no per-case output
 ```
 
-It reports four headline groups over a fixed ground-truth set:
+It reports these headline groups over a fixed ground-truth set:
 
-- **accuracy** — fraction of questions whose retrieval recalled the gold
-  fact, broken out per the five LongMemEval axes (information extraction,
-  multi-session reasoning, temporal reasoning, knowledge updates, abstention).
+- **evidence recall** and **final-answer correctness** — separate scores, both
+  per axis. The final answer comes from a deterministic replay responder that
+  may emit only facts found in the returned context; it gives CI a stable
+  boundary between retrieval and reasoning failures.
 - **abstention rate** — of the *never-happened* questions, the fraction the
-  system correctly refused. This is the highest-payoff axis: it directly
-  measures whether the auto-injected `brief()` context fabricates or surfaces
-  stale facts.
+  system correctly refused. Retention/curation removals and egress-blocked
+  personal memory are also required to end in a refusal.
 - **tokens-per-retrieval** — mean / median / max tokens of what each query
-  returned, so recall is never read apart from cost (a wider window that
-  recalls more also costs more).
+  returned, plus equivalent final-answer token totals.
 - **retrieval latency** — mean / p50 / p95 / max wall-clock milliseconds. With
   `--semantic`, the backend is reported as `hybrid`, because dense candidates
   augment rather than replace FTS.
+- **outcome classification** — retrieval failure, reasoning failure,
+  stale-memory use, removed-memory use, and privacy-policy violation.
+
+`--matrix` runs every public-fixture case through the FTS and hybrid backends,
+three fixture states (`baseline`, `retained`, `curated`), and every personal
+memory egress policy (`all`, `same-vendor`, `work-only`). A hybrid row is marked
+unavailable when the optional semantic extra is not installed. `--strict`
+requires the versioned fixture thresholds and zero safety violations, making
+the same command suitable for retrieval/model migration gates.
 
 For DB concurrency, run the reproducible local gate:
 
@@ -1870,18 +1916,20 @@ The JSON result includes expected/actual writes, throughput, p50/p95/p99/max
 write latency, worker errors, elapsed time, and `PRAGMA quick_check`; a non-zero
 exit means a lost write, worker failure, or integrity failure.
 
-With no `--db` the harness builds the bundled fixture
-(`scripts/memory_eval/ground_truth.json` — a fictional "billing service" told
-across three sessions) into a throwaway DB; it's a **golden baseline** where a
-faithful retrieval scores 100%, so a regression in the retrieval tools drops
-the number. `--db` runs **read-only**: the snapshot is copied to a temp file
-and the original is never opened for writing. The default judge is **lexical**
-(deterministic, offline, no API key, no embeddings) so the command is
-reproducible and CI-safe; `--judge llm` grades answer *reasoning* (not just
-retrieval recall) with an Anthropic model when a key is set — the intended
-optimization target for lesson-decay tuning (#27) and bi-temporal claims (#28)
-work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
-axes map onto thread-keeper's retrieval surface.
+With no `--db` the harness builds the bundled, versioned public synthetic
+fixture (`scripts/memory_eval/ground_truth.json` — a fictional "billing
+service") into a throwaway DB. Bump its `version` whenever cases, labels, or
+thresholds change; CI uses the checked-in version and its stable thresholds.
+`--db` runs **read-only**: the snapshot is copied to a temp file and the
+original is never opened for writing.
+
+For a private holdout, keep the corpus encrypted or outside the repository and
+pass it with `--private-holdout`. The runner does not decrypt data itself; it
+accepts a locally decrypted file or stdin and deletes its temporary DB on exit.
+Private mode emits aggregate metrics only — no case rows, failure details,
+retrieved context, or replayed answer is written to stdout, artifacts, or the
+repository. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the corpus
+contract and migration-gate interpretation.
 
 ## Evaluating learning-loop decision quality
 
