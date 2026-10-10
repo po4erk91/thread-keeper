@@ -46,6 +46,7 @@ from ..identity import (
     _ensure_session, _detect_self_cid, _emit, ensure_session_started,
 )
 from ..ingest import _parse_ts
+from ..tracing import TRACEPARENT_ENV, new_child_trace
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
         "ORDER BY started_at DESC LIMIT 50"
     ).fetchall()
     changed = False
+    finished_task_ids: list[str] = []
     for t in rows:
         pid = t["pid"]
         try:
@@ -331,6 +333,7 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
                     (now_t, t["id"]),
                 )
                 changed = True
+                finished_task_ids.append(str(t["id"]))
             continue
         except OSError:
             continue
@@ -344,8 +347,12 @@ def _reap_finished_tasks(conn: sqlite3.Connection) -> None:
                 (now_t, code, t["id"]),
             )
             changed = True
+            finished_task_ids.append(str(t["id"]))
     if changed:
         conn.commit()
+        from ..tracing import finish_task
+        for task_id in finished_task_ids:
+            finish_task(conn, task_id)
 
 
 def _refresh_tasks(conn: sqlite3.Connection) -> None:
@@ -362,6 +369,7 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
         "WHERE ended_at IS NULL OR spawned_cid IS NULL "
         "ORDER BY started_at DESC LIMIT 50"
     ).fetchall()
+    finished_task_ids: list[str] = []
     # Scan transcripts first and write afterwards: an UPDATE here would open a
     # write transaction that every other writer waits on through the whole
     # filesystem scan below (#293).
@@ -387,11 +395,17 @@ def _refresh_tasks(conn: sqlite3.Connection) -> None:
         if updates:
             sets = ", ".join(f"{k}=?" for k, _ in updates)
             params = [v for _, v in updates] + [t["id"]]
+            if any(key == "ended_at" for key, _ in updates):
+                finished_task_ids.append(str(t["id"]))
             pending.append((f"UPDATE tasks SET {sets} WHERE id=?", params))
     for sql, params in pending:
         conn.execute(sql, params)
     if pending:
         conn.commit()
+    if finished_task_ids:
+        from ..tracing import finish_task
+        for task_id in finished_task_ids:
+            finish_task(conn, task_id)
 
 
 # Role library: predefined cognitive stances a spawned child can adopt.
@@ -659,6 +673,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
+                traceparent_override: str = "",
                 task_id_override: str = "",
                 child_cid_override: str = "",
                 allowed_tools_override: Optional[tuple[str, ...]] = None,
@@ -818,6 +833,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         "THREADKEEPER_SPAWNED_CHILD": "1",
         "THREADKEEPER_TZ": os.environ.get("THREADKEEPER_TZ", "UTC"),
     }
+    child_trace = new_child_trace(traceparent_override)
+    if child_trace is not None:
+        # Trace context travels only in the private child environment and task
+        # row; it is never copied into a user prompt or command-line argument.
+        child_env[TRACEPARENT_ENV] = child_trace.traceparent
     if "THREADKEEPER_ENV_FILE" in os.environ:
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
@@ -971,6 +991,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         log_path = task_log_dir / f"{task_id}.log"
     proc_pid = 0
     now_t = int(time.time())
+    now_ns = time.time_ns()
+    trace_queue_wait_ms = (
+        max(0, (now_ns - child_trace.started_ns) // 1_000_000)
+        if child_trace is not None else None
+    )
     ensure_session_started()
 
     # The budget check and the reservation commit in one short transaction,
@@ -986,8 +1011,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "retry_attempt, traceparent, trace_workflow_span_id, "
+            "trace_parent_span_id, trace_started_ns, trace_queue_wait_ms) "
+            "VALUES (" + ",".join("?" for _ in range(28)) + ")",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -995,6 +1021,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 1 if visible else 0, 1 if slim else 0, chosen_model, chosen_effort,
                 append_system, chosen_cli, retry_of or None,
                 retry_root or None, int(retry_attempt or 0),
+                child_trace.traceparent if child_trace else None,
+                child_trace.workflow_span_id if child_trace else None,
+                child_trace.parent_span_id if child_trace else None,
+                child_trace.started_ns if child_trace else None,
+                trace_queue_wait_ms,
             ),
         )
         return ""
@@ -1048,6 +1079,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 ("THREADKEEPER_TZ",
                  os.environ.get("THREADKEEPER_TZ", "UTC")),
             ]
+            if child_trace is not None:
+                env_pairs.append((TRACEPARENT_ENV, child_trace.traceparent))
             if write_origin:
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)

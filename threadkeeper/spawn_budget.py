@@ -547,6 +547,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
                 retry_attempt=next_attempt,
                 parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
                 cli=str(_row_get(row, "chosen_cli", "") or ""),
+                traceparent_override=str(_row_get(row, "traceparent", "") or ""),
                 _bypass_capability=_retry_bypass_capability(permission_mode),
             )
         finally:

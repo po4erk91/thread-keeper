@@ -25,9 +25,9 @@ Invocation (from ``tools/spawn.py``)::
 
     <python> <this file> <db_path> <task_id> -- <child argv...>
 
-Run by file *path* (not ``python -m``) on purpose: that way it never
-imports the ``threadkeeper`` package, so there is zero package-init cost and
-no import side effects on every spawn. Pure stdlib only.
+Run by file *path* (not ``python -m``) on purpose: recording an exit stays
+available even when the server process that launched the child is gone.  The
+optional trace-finisher import happens only after the SQLite update commits.
 """
 
 import json
@@ -273,6 +273,12 @@ def _record(db_path: str, task_id: str, rc: int, usage_text: str = "") -> None:
             conn.commit()
         finally:
             conn.close()
+        try:
+            from threadkeeper.tracing import finish_task_from_path
+            finish_task_from_path(db_path, task_id)
+        except Exception:
+            # Tracing is optional and must never affect the exit recorder.
+            pass
     except Exception:
         # The recorder must never take the child's exit status hostage.
         pass

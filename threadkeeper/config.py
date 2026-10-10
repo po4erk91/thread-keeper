@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     )
     write_origin: str = "foreground"
     spawned_child: bool = False
+    # Opt-in OTLP/HTTP tracing. The endpoint stays empty by default, so no
+    # trace worker or network traffic exists unless both values are configured.
+    otel_enabled: bool = False
+    otel_endpoint: str = ""
+    otel_export_timeout_s: float = Field(default=2.0, ge=0.1, le=30.0)
+    otel_export_queue_size: int = Field(default=256, ge=1, le=2048)
     # Hard kill-switch for every background daemon (memory_guard, spawn_budget,
     # search_proxy, ingest, skill_watcher, shadow_review, ...). Independent of
     # each daemon's poll/interval knob so flipping one of those back on (e.g. a
@@ -820,6 +826,10 @@ def _derive_constants(s: "Settings") -> dict:
         "CLIENT_LABEL": s.client,
         "WRITE_ORIGIN": s.write_origin,
         "SPAWNED_CHILD": s.spawned_child,
+        "OTEL_ENABLED": s.otel_enabled,
+        "OTEL_ENDPOINT": s.otel_endpoint,
+        "OTEL_EXPORT_TIMEOUT_S": s.otel_export_timeout_s,
+        "OTEL_EXPORT_QUEUE_SIZE": s.otel_export_queue_size,
         "DISABLE_BG_DAEMONS": s.disable_bg_daemons,
         "MENUBAR_AUTO_LAUNCH": s.menubar_auto_launch,
         "AUTO_UPDATE_INTERVAL_S": s.auto_update_interval_s,
