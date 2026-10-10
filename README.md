@@ -1243,6 +1243,13 @@ claim and its evidence but closes the old valid-time interval at the new claim's
 slice; `dialectic_review(as_of=...)` and
 `dialectic_synthesis(include_history=True)` expose past validity intervals.
 
+**Durable-preference drift pilot.** Run
+`python -m threadkeeper.dialectic_drift_eval --json` to replay the fixed,
+anonymized durable-change / task-exception / ambiguity / poisoning corpus. It
+reports supersession precision and recall, false durable-flip and clarification
+rates, poisoning containment, cited memory IDs, and counterfactuals. The pilot
+is read-only and does not change the live supersession policy.
+
 **Source-based evidence discount.** Each evidence row's effective weight
 is `base_weight × discount(WRITE_ORIGIN)`. Foreground (direct user / human
 signal) = 1.0. shadow_review / background_review / candidate_review /
