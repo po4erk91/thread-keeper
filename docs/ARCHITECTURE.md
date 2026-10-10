@@ -655,18 +655,30 @@ moving the high-water forward; `force=True` bypasses this due gate.
   pass row directly, so accumulated skip rows can never bury it.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
-  `gh pr list --json mergeStateStatus,mergeable,...` and repairs the oldest
-  same-repo applier PR whose merge state is conflicted (`DIRTY` /
-  `CONFLICTING`). This sweep is a hard preflight before new work: if PR state
-  cannot be read, the pass records `conflicted_pr_fetch_error` and does not
-  pick a fresh roadmap issue, Curator report, or promoted evolve suggestion.
-  Only same-repository `roadmap/…` and `evolve/…` head branches are eligible;
-  fork PRs are never fed to the privileged repair child. The repair child checks
-  out the existing PR branch, merges the current base branch, resolves
-  conflicts, runs the full suite, and pushes back to the same branch. It then
-  waits for GitHub checks on the pushed PR head and runs
-  `gh pr merge --squash --delete-branch`, so GitHub lands the PR into `main`
-  through branch protection instead of a raw local `git push origin main`.
+  `gh pr list --json mergeStateStatus,mergeable,headRefOid,...` and classifies
+  each same-repo applier PR (`_pr_landing_action`): `repair` for a conflicted
+  merge state (`DIRTY` / `CONFLICTING`), `update` for `BEHIND`, `merge` for
+  `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or red checks,
+  drafts, `UNKNOWN`, another base, or `EVOLVE_AUTOLAND=0`). This sweep is a hard
+  preflight before new work: if PR state cannot be read, the pass records
+  `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
+  report, or promoted evolve suggestion. Only same-repository `roadmap/…` and
+  `evolve/…` head branches are eligible; fork PRs are never fed to the
+  privileged repair child or merged. **Landing** (`_land_applier_prs`, parent
+  only, no child): squash-merge the oldest `merge` PR through
+  `PUT /pulls/{n}/merge` with `sha=<headRefOid>`, so a head pushed after the
+  green read is refused, then delete its branch; then call
+  `PUT /pulls/{n}/update-branch` with `expected_head_sha` on the oldest PR that
+  is behind (including green PRs that the merge just made behind). Strict branch
+  protection allows one merge per base commit, so one merge and one update per
+  sweep avoid CI runs the next merge would invalidate. Each attempt records an
+  `evolve_pr_landing` event; the shared GitHub budget cooldown stops the sweep.
+  Between due passes the daemon wakes every `EVOLVE_LANDING_POLL_S` (15 min) and
+  runs only `run_evolve_landing_pass()`, which skips while any reviewer/applier
+  git writer runs. Then, if a `repair` PR exists, the repair child checks out
+  the existing PR branch, merges the current base branch, resolves conflicts,
+  runs the full suite, and pushes back to the same branch; it never merges, and
+  the landing sweep lands it once GitHub reports it green.
   When no conflicted applier PR exists, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the

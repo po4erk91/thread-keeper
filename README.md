@@ -971,15 +971,23 @@ with that name instead of minting overlapping roadmap PRs.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
-the automatic pass first scans already-open same-repo applier PRs for GitHub
-merge conflicts. A conflicted `roadmap/…` or `evolve/…` PR is repaired before
-any new issue/report/evolve work is started; if the PR sweep itself cannot read
-GitHub state, the pass fails closed instead of taking fresh work blind. The
+the automatic pass first sweeps already-open same-repo applier PRs (`roadmap/…`
+or `evolve/…` head branches); if the PR sweep itself cannot read GitHub state,
+the pass fails closed instead of taking fresh work blind. The sweep lands the
+applier's own PRs: it squash-merges the oldest PR GitHub reports `CLEAN` (up to
+date, required checks green) through the protected merge API, pinned to the
+head SHA it saw green, and then asks GitHub to update the oldest `BEHIND` one —
+the "Update branch" button — so CI reruns against the new base. Strict branch
+protection lets only one PR merge per base commit, so PRs land one at a time,
+oldest first. Between full passes the daemon repeats only this cheap landing
+sweep every 15 minutes, so a green PR lands minutes after its checks finish;
+it skips while any reviewer/applier git writer runs. A `DIRTY` (conflicted) PR
+is repaired before any new issue/report/evolve work is started: the
 conflict-repair child checks out the existing PR branch, merges the current
 base branch, resolves conflicts, runs the full suite, and pushes back to the
-same branch. It then waits for GitHub checks on the pushed PR head and runs
-`gh pr merge --squash --delete-branch`, so GitHub lands the repaired PR into
-`main` through branch protection rather than a raw local `git push origin main`.
+same branch, then stops; the landing sweep merges it once it is green. Red or
+otherwise blocked PRs wait for a human. Set `THREADKEEPER_EVOLVE_AUTOLAND=0`
+to leave every merge to a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
@@ -1401,6 +1409,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
+| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land the applier's own same-repo `roadmap/…`/`evolve/…` PRs: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |

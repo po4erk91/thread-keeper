@@ -69,7 +69,14 @@ def _bootstrap(
         "_fetch_open_prs": evolve_applier._fetch_open_prs,
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
         "_git_worktree_precondition": evolve_applier._git_worktree_precondition,
+        "_run_landing_gh": evolve_applier._run_landing_gh,
     }
+    # PR landing writes (merge / update-branch / branch delete) never reach a
+    # real gh in unit tests; landing tests install capturing fakes instead.
+    monkeypatch.setattr(
+        evolve_applier, "_run_landing_gh",
+        lambda cmd, repo_root, what: "gh_disabled_in_tests",
+    )
     monkeypatch.setattr(
         evolve_applier, "_fetch_open_issues",
         lambda repo_root=None: ([], ""),
@@ -238,13 +245,14 @@ def _rest_issue(number, title=None, labels=("roadmap",),
 
 
 def _pr(number, title=None, head=None, merge_state="DIRTY",
-        mergeable="CONFLICTING", cross_repo=False, draft=False):
+        mergeable="CONFLICTING", cross_repo=False, draft=False, base="main"):
     return {
         "number": number,
         "title": title or f"PR {number}",
         "url": f"https://github.com/o/r/pull/{number}",
         "headRefName": head or f"roadmap/issue-{number}-thing-abcdef",
-        "baseRefName": "main",
+        "headRefOid": f"{number:040x}",
+        "baseRefName": base,
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "mergeable": mergeable,
@@ -1127,6 +1135,7 @@ def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
     assert "mergeStateStatus" in joined
     assert "mergeable" in joined
     assert "isCrossRepository" in joined
+    assert "headRefOid" in joined
     assert "--limit 1000" in joined
 
 
@@ -1156,11 +1165,13 @@ def test_apply_conflicted_pr_builds_repair_spawn(tmp_path, monkeypatch):
     assert "git checkout -B roadmap/issue-44-fix origin/roadmap/issue-44-fix" in prompt
     assert "git merge --no-edit origin/main" in prompt
     assert "git push origin roadmap/issue-44-fix" in prompt
-    assert "gh pr checks 44 --watch --fail-fast" in prompt
-    assert "gh pr merge 44 --squash --delete-branch" in prompt
+    # Landing is the parent's job now: the child pushes and stops.
+    assert "Do NOT run `gh pr merge`" in prompt
+    assert "gh pr merge 44" not in prompt
+    assert "gh pr checks 44 --watch" not in prompt
     assert "--auto" not in prompt
     assert "gh pr create" not in prompt
-    assert "Never run `git push origin main` directly" in prompt
+    assert "Never push to main and never merge the PR" in prompt
     assert "evolve_mark_roadmap_issue_applied" not in tools
     assert "evolve_mark_applied" not in tools
     assert "Do NOT call" in prompt
@@ -1184,6 +1195,269 @@ def test_apply_conflicted_pr_reports_returned_spawn_error(tmp_path, monkeypatch)
     out = pkg["ea"].apply_conflicted_pr()
 
     assert out == "spawn_error conflicted_pr=#44: spawn_reservation_failed=busy"
+
+
+# ── PR landing sweep: merge green applier PRs, update behind ones ──────────
+
+def _green(number, **kw):
+    return _pr(number, merge_state="CLEAN", mergeable="MERGEABLE", **kw)
+
+
+def _behind(number, **kw):
+    return _pr(number, merge_state="BEHIND", mergeable="MERGEABLE", **kw)
+
+
+def _fake_landing_gh(monkeypatch, pkg, results=None):
+    """Capture landing `gh api` writes. `results` maps a substring of the
+    command to the error the fake returns; anything else succeeds."""
+    calls = []
+
+    def _fake(cmd, repo_root, what):
+        calls.append((what, cmd))
+        joined = " ".join(cmd)
+        for needle, err in (results or {}).items():
+            if needle in joined:
+                return err
+        return ""
+
+    monkeypatch.setattr(pkg["ea"], "_run_landing_gh", _fake)
+    return calls
+
+
+def test_pr_landing_action_classifies_applier_prs(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    action = pkg["ea"]._pr_landing_action
+
+    assert action(_pr(1)) == "repair"
+    assert action(_behind(2)) == "update"
+    assert action(_green(3)) == "merge"
+    assert action(_pr(4, merge_state="HAS_HOOKS", mergeable="MERGEABLE")) == (
+        "merge"
+    )
+    # Pending/red checks, unstable, and not-yet-computed states wait.
+    for state in ("BLOCKED", "UNSTABLE", "UNKNOWN", ""):
+        assert action(_pr(5, merge_state=state, mergeable="MERGEABLE")) == (
+            "wait"
+        )
+    assert action(_green(6, draft=True)) == "wait"
+    assert action(_green(7, base="release")) == "wait"
+    headless = _green(8)
+    headless["headRefOid"] = ""
+    assert action(headless) == "wait"
+    # Human branches and forks are never touched.
+    assert action(_green(9, head="feature/manual-fix")) == ""
+    assert action(_green(10, cross_repo=True)) == ""
+
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTOLAND", False)
+    assert action(_green(3)) == "wait"
+    assert action(_behind(2)) == "wait"
+    assert action(_pr(1)) == "repair"
+
+
+def test_land_applier_prs_merges_oldest_green_then_updates_next(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    queue = [
+        ("merge", _green(
+            10, title="feat: ten", head="roadmap/issue-10-x-aaaaaa",
+        )),
+        ("merge", _green(11, head="evolve/apply-11-y")),
+        ("update", _behind(12)),
+    ]
+
+    out = ea._land_applier_prs(conn, queue, tmp_path)
+
+    assert out == "merged=#10 updated=#11"
+    assert [what for what, _cmd in calls] == [
+        "merge", "delete_branch", "update_branch",
+    ]
+    merge_cmd = calls[0][1]
+    assert merge_cmd[:4] == ["gh", "api", "-X", "PUT"]
+    assert "repos/{owner}/{repo}/pulls/10/merge" in merge_cmd
+    assert "merge_method=squash" in merge_cmd
+    assert f"sha={10:040x}" in merge_cmd
+    assert "commit_title=feat: ten (#10)" in merge_cmd
+    assert calls[1][1][:4] == ["gh", "api", "-X", "DELETE"]
+    assert calls[1][1][-1] == (
+        "repos/{owner}/{repo}/git/refs/heads/roadmap/issue-10-x-aaaaaa"
+    )
+    # #11 was green before #10 merged; strict protection makes it behind now,
+    # and only one PR is updated per sweep.
+    update_cmd = calls[2][1]
+    assert "repos/{owner}/{repo}/pulls/11/update-branch" in update_cmd
+    assert f"expected_head_sha={11:040x}" in update_cmd
+    rows = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=? ORDER BY id",
+        (ea.PR_LANDING_KIND,),
+    ).fetchall()
+    assert [(r["target"], r["summary"].split()[0]) for r in rows] == [
+        ("10", "merged"), ("11", "updated"),
+    ]
+
+
+def test_land_applier_prs_falls_through_refused_merge_and_current_branch(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _fake_landing_gh(monkeypatch, pkg, {
+        "pulls/20/merge": (
+            "gh_merge_failed: Base branch was modified. (HTTP 405)"
+        ),
+        "pulls/20/update-branch": (
+            "gh_update_branch_failed: There are no new commits on the base "
+            "branch. (HTTP 422)"
+        ),
+    })
+    queue = [
+        ("merge", _green(20)),
+        ("merge", _green(21)),
+        ("update", _behind(22)),
+    ]
+
+    out = pkg["ea"]._land_applier_prs(conn, queue, tmp_path)
+
+    # A refused merge does not starve the next green PR, and an update that
+    # finds the branch already current moves on to the next candidate.
+    assert out == "merge_failed=#20 merged=#21 updated=#22"
+
+
+def test_land_applier_prs_stops_on_github_cooldown(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    calls = _fake_landing_gh(
+        monkeypatch, pkg, {"pulls/40/merge": "github_cooldown"}
+    )
+    queue = [("merge", _green(40)), ("update", _behind(41))]
+
+    out = pkg["ea"]._land_applier_prs(conn, queue, tmp_path)
+
+    assert out == "github_cooldown"
+    assert [what for what, _cmd in calls] == ["merge"]
+
+
+def test_run_landing_gh_maps_cooldown_and_gh_errors(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    results = iter([
+        subprocess.CompletedProcess([], ea.GITHUB_RATE_COOLDOWN_EXIT, "", ""),
+        subprocess.CompletedProcess(
+            [], 1, "",
+            "gh: There are no new commits on the base branch. (HTTP 422)\n",
+        ),
+        subprocess.CompletedProcess([], 0, "{}", ""),
+    ])
+    monkeypatch.setattr(ea.subprocess, "run", lambda cmd, **kw: next(results))
+    real = pkg["orig"]["_run_landing_gh"]
+    monkeypatch.setattr(ea, "_run_landing_gh", real)
+
+    assert real(["gh", "api"], tmp_path, "merge") == "github_cooldown"
+    assert ea._update_applier_pr_branch(_behind(70), tmp_path) == (
+        "no_new_commits"
+    )
+    assert real(["gh", "api"], tmp_path, "merge") == ""
+
+
+def test_run_apply_pass_lands_green_pr_and_still_takes_new_work(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: ([_green(50)], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+    assert [what for what, _cmd in landing] == ["merge", "delete_branch"]
+
+
+def test_run_apply_pass_repairs_from_snapshot_after_landing_merge(
+    tmp_path, monkeypatch,
+):
+    """Right after a landing merge GitHub may report UNKNOWN while it
+    recomputes mergeability; the repair must still dispatch this pass."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    snapshots = iter([
+        [_green(50), _pr(51, head="roadmap/issue-51-conflict-aaaaaa")],
+    ])
+    recomputing = [_pr(51, merge_state="UNKNOWN", mergeable="UNKNOWN")]
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (next(snapshots, recomputing), ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert [what for what, _cmd in landing] == ["merge", "delete_branch"]
+    assert out.startswith("spawned conflicted_pr=#51"), out
+    assert "PULL REQUEST #51" in calls["prompt"]
+
+
+def test_run_evolve_landing_pass_gates_and_lands(tmp_path, monkeypatch):
+    import os
+
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        ea, "_fetch_open_prs", lambda repo_root=None: ([_green(60)], ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+
+    monkeypatch.setattr(ea, "EVOLVE_AUTOLAND", False)
+    assert ea.run_evolve_landing_pass() == "autoland_off"
+    monkeypatch.setattr(ea, "EVOLVE_AUTOLAND", True)
+
+    # Never race a repair child that may be mid-push.
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at) "
+        "VALUES (?,?,?,?,?)",
+        ("tk_rep", os.getpid(), "/tmp",
+         ea.EVOLVE_APPLY_PROMPT_PREFIX + " repairing", int(time.time())),
+    )
+    conn.commit()
+    assert ea.run_evolve_landing_pass() == "git_writer_running n=1"
+    assert landing == []
+    conn.execute(
+        "UPDATE tasks SET ended_at=? WHERE id='tk_rep'", (int(time.time()),)
+    )
+    conn.commit()
+
+    assert ea.run_evolve_landing_pass() == "merged=#60"
+    monkeypatch.setattr(ea, "EVOLVE_APPLY_INTERVAL_S", 0)
+    assert ea.run_evolve_landing_pass() == "disabled"
+
+
+def test_serve_tick_runs_landing_sweep_between_due_passes(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    monkeypatch.setattr(
+        ea, "run_evolve_apply_pass", lambda force=False: "full",
+    )
+    monkeypatch.setattr(ea, "run_evolve_landing_pass", lambda: "landing")
+
+    monkeypatch.setattr(ea, "_pass_due", lambda conn, now_t: True)
+    assert ea._serve_tick() == "full"
+    monkeypatch.setattr(ea, "_pass_due", lambda conn, now_t: False)
+    assert ea._serve_tick() == "landing"
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
@@ -3389,9 +3663,11 @@ def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
 
     out = _tool(pkg, "evolve_apply_status")()
 
+    assert "autoland=on" in out
     assert "conflicted_prs=1" in out
-    assert "conflicted PRs (next first):" in out
-    assert "#44  roadmap/issue-44-conflict-aaaaaa" in out
+    assert "landing_prs=0" in out
+    assert "applier PRs (oldest first):" in out
+    assert "#44  repair  DIRTY  roadmap/issue-44-conflict-aaaaaa" in out
 
 
 def test_evolve_apply_status_surfaces_stale_merge_recovery(
