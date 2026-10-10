@@ -7,6 +7,31 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Changed: the Evolve applier lands your green PRs.** Before, only the
+  conflict-repair child merged, and the sweep only acted on conflicted (`DIRTY`)
+  PRs. With strict branch protection every merge leaves the other open PRs
+  `BEHIND`, so applier PRs without conflicts, or whose post-repair merge was
+  refused, were never updated or merged and waited for a human click. The
+  parent now runs a landing sweep on each pass and every 15 minutes between
+  passes. It squash-merges the oldest non-draft PR authored by the account
+  `gh` acts as that GitHub reports `CLEAN` (pinned to the head SHA it saw
+  green), and asks GitHub to update the oldest `BEHIND` one. PRs from any other
+  account are never touched. Repair children now push and stop; the sweep
+  merges them once green. Red or blocked PRs still wait for a human, and so do
+  drafts. `THREADKEEPER_EVOLVE_AUTOLAND=0` restores human-only merging, and
+  `evolve_apply_status()` lists each of your PRs with its next action.
+
+- **Fixed: Evolve children branch from the fetched base tip, not the
+  provisioning pin.** Since the managed-clone pin landed (#132), applier,
+  conflict-repair, and reviewer children cut every feature branch from
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, a commit no release ever bumped. Each
+  applier PR was therefore implemented against months-old code and born
+  conflicted with `main` (stale version bumps in `pyproject.toml`,
+  `server.json`, the Dockerfile, and CHANGELOG). Children now branch and rebase
+  from the freshly fetched `origin/<EVOLVE_REPO_BRANCH>` tip and re-sync the
+  managed venv to that branch's dependencies; the pin still gates provisioning
+  and the parked checkout.
+
 - **Fixed: advertised read-only MCP tools and memory resources are now
   observationally pure (#348).** Read surfaces run against SQLite query-only
   connections and never create sessions, presence/cursor rows, daemon work, or

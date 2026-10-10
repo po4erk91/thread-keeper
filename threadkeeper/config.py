@@ -473,6 +473,11 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
+    # Land your own PRs: the parent squash-merges an open non-draft PR authored
+    # by the account `gh` acts as once GitHub reports it up to date with
+    # required checks green, and updates one that fell behind. Other accounts'
+    # PRs are never touched. 0 = a human merges every PR.
+    evolve_autoland: bool = True
     # Absolute path to the thread-keeper git checkout the evolve reviewer and
     # applier operate on (branch, run tests, open PRs against). Empty => resolve
     # automatically: the package's parent dir when it is itself a checkout (the
@@ -959,6 +964,7 @@ def _derive_constants(s: "Settings") -> dict:
         "EVOLVE_REVIEW_MIN": s.evolve_review_min,
         "EVOLVE_REVIEW_BACKLOG_MAX": s.evolve_review_backlog_max,
         "EVOLVE_APPLY_INTERVAL_S": s.evolve_apply_interval_s,
+        "EVOLVE_AUTOLAND": bool(s.evolve_autoland),
         "EVOLVE_REPO_ROOT": s.evolve_repo_root,
         "EVOLVE_AUTO_CLONE": s.evolve_auto_clone,
         "EVOLVE_REPO_URL": s.evolve_repo_url,

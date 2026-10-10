@@ -155,10 +155,10 @@ def test_agent_status_evolve_applier_ready_when_promoted_queue_exists(
     import threadkeeper.agent_status as status_mod
     import threadkeeper.evolve_applier as applier_mod
 
-    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._APPLIER_PR_CACHE.update({"at": 0, "count": 0})
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
     monkeypatch.setattr(
-        applier_mod, "_conflicted_applier_prs",
+        applier_mod, "_applier_pr_queue",
         lambda repo_root=None: ([], ""),
     )
     monkeypatch.setattr(
@@ -191,10 +191,10 @@ def test_agent_status_evolve_applier_ready_when_curator_report_exists(
     import threadkeeper.agent_status as status_mod
     import threadkeeper.evolve_applier as applier_mod
 
-    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._APPLIER_PR_CACHE.update({"at": 0, "count": 0})
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
     monkeypatch.setattr(
-        applier_mod, "_conflicted_applier_prs",
+        applier_mod, "_applier_pr_queue",
         lambda repo_root=None: ([], ""),
     )
     monkeypatch.setattr(
@@ -243,9 +243,9 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
     import threadkeeper.evolve_applier as applier_mod
 
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
-    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._APPLIER_PR_CACHE.update({"at": 0, "count": 0})
     monkeypatch.setattr(
-        applier_mod, "_conflicted_applier_prs",
+        applier_mod, "_applier_pr_queue",
         lambda repo_root=None: ([], ""),
     )
     monkeypatch.setattr(
@@ -275,7 +275,7 @@ def test_agent_status_evolve_applier_ready_when_roadmap_issue_exists(
     assert loop["status"] == "ready"
 
 
-def test_agent_status_evolve_applier_ready_when_conflicted_pr_exists(
+def test_agent_status_evolve_applier_ready_when_applier_pr_work_exists(
     mp_with_cid, monkeypatch,
 ):
     pkg = mp_with_cid(_FAKE_CID)
@@ -283,20 +283,39 @@ def test_agent_status_evolve_applier_ready_when_conflicted_pr_exists(
     import threadkeeper.agent_status as status_mod
     import threadkeeper.evolve_applier as applier_mod
 
-    status_mod._CONFLICTED_PR_CACHE.update({"at": 0, "count": 0})
+    status_mod._APPLIER_PR_CACHE.update({"at": 0, "count": 0})
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
+
+    def _pr(number, state, mergeable="MERGEABLE", author="po4erk91"):
+        return {
+            "number": number,
+            "title": f"PR {number}",
+            "headRefName": f"roadmap/issue-{number}-x-aaaaaa",
+            "headRefOid": f"{number:040x}",
+            "baseRefName": "main",
+            "mergeStateStatus": state,
+            "mergeable": mergeable,
+            "author": {"login": author},
+        }
+
     monkeypatch.setattr(
-        applier_mod, "_conflicted_applier_prs",
+        applier_mod, "_fetch_open_prs",
         lambda repo_root=None: (
-            [{
-                "number": 44,
-                "title": "Conflicted PR",
-                "headRefName": "roadmap/issue-44-conflict-aaaaaa",
-                "mergeStateStatus": "DIRTY",
-                "mergeable": "CONFLICTING",
-            }],
+            [
+                _pr(44, "DIRTY", "CONFLICTING"),
+                # Landing work counts too; a PR waiting on CI does not, and
+                # neither does another account's PR.
+                _pr(45, "BEHIND"),
+                _pr(46, "CLEAN"),
+                _pr(47, "BLOCKED"),
+                _pr(48, "CLEAN", author="collaborator"),
+            ],
             "",
         ),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_gh_viewer_login",
+        lambda repo_root=None: ("po4erk91", ""),
     )
     monkeypatch.setattr(
         applier_mod, "_fetch_open_issues",
@@ -307,7 +326,7 @@ def test_agent_status_evolve_applier_ready_when_conflicted_pr_exists(
 
     snap = agent_status_snapshot(refresh=False)
     loop = {l["id"]: l for l in snap["loops"]}["evolve_apply"]
-    assert loop["backlog_count"] == 1
+    assert loop["backlog_count"] == 3
     assert loop["backlog_label"] == "apply work items"
     assert loop["status"] == "ready"
 

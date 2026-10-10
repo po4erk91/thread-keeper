@@ -297,7 +297,7 @@ for _loop_def in _LOOP_DEFS:
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
 _ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
-_CONFLICTED_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
+_APPLIER_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
 
 
 def _detect_role(prompt: str) -> str:
@@ -446,27 +446,29 @@ def _roadmap_issue_apply_count(conn, now: int) -> int:
     return len(issues)
 
 
-def _conflicted_pr_apply_count(now: int) -> int:
-    if now - _CONFLICTED_PR_CACHE["at"] < 300:
-        return _CONFLICTED_PR_CACHE["count"]
+def _applier_pr_apply_count(now: int) -> int:
+    """Open applier PRs the applier will act on: repair, update, or merge."""
+    if now - _APPLIER_PR_CACHE["at"] < 300:
+        return _APPLIER_PR_CACHE["count"]
     try:
-        from .evolve_applier import _conflicted_applier_prs
+        from .evolve_applier import _applier_pr_queue
 
-        prs, err = _conflicted_applier_prs()
+        queue, err = _applier_pr_queue()
     except Exception:
-        return _CONFLICTED_PR_CACHE["count"]
+        return _APPLIER_PR_CACHE["count"]
     if err:
-        return _CONFLICTED_PR_CACHE["count"]
-    _CONFLICTED_PR_CACHE["at"] = int(now)
-    _CONFLICTED_PR_CACHE["count"] = len(prs)
-    return len(prs)
+        return _APPLIER_PR_CACHE["count"]
+    count = sum(1 for action, _pr in queue if action != "wait")
+    _APPLIER_PR_CACHE["at"] = int(now)
+    _APPLIER_PR_CACHE["count"] = count
+    return count
 
 
 def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
     if loop.get("backlog_metric") == "evolve_apply":
-        return _conflicted_pr_apply_count(now) + _scalar(
+        return _applier_pr_apply_count(now) + _scalar(
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",
