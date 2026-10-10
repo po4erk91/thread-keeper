@@ -123,8 +123,9 @@ def evolve_apply_conflicted_pr(pr_number: int = 0) -> str:
     """Repair an already-open applier PR that currently has merge conflicts.
 
     With `pr_number=0`, picks the oldest open same-repo applier PR (`roadmap/…`
-    or `evolve/…` head branch) whose GitHub merge state is conflicted. With a
-    number, validates that specific PR is open, applier-owned, and conflicted.
+    or `evolve/…` head branch) authored by the account `gh` acts as whose
+    GitHub merge state is conflicted. With a number, validates that specific
+    PR is open, applier-owned, and conflicted.
     The child resolves conflicts, runs the suite, and pushes the SAME PR branch;
     it never merges, opens a new PR, or marks a roadmap issue applied. The
     daemon's landing sweep merges the PR once GitHub reports it green."""
@@ -245,7 +246,7 @@ def evolve_apply_status() -> str:
         lines.append(f"conflicted_pr_fetch_error={pr_err}")
     if pr_queue:
         lines.append("")
-        lines.append("applier PRs (oldest first):")
+        lines.append("own PRs (oldest first):")
         for action, pr in pr_queue[:10]:
             title = str(pr.get("title") or "")[:90].replace("\n", " ")
             state = str(pr.get("mergeStateStatus") or "?").upper()

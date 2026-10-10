@@ -130,12 +130,15 @@ Mitigations:
   pattern remains after redaction, the wrapper refuses the command.
 - Parent-authored public claim/dead-letter comments use the same scrubber before
   spawning `gh`.
-- Only the parent merges, never a child. The landing sweep squash-merges an
-  applier PR only when it comes from a same-repository `roadmap/…` or
-  `evolve/…` branch and GitHub reports it `CLEAN` (up to date, required checks
-  green). The merge call pins the head SHA that was read green, so a later push
-  is refused, and branch protection still decides. Fork PRs are never merged.
-  `THREADKEEPER_EVOLVE_AUTOLAND=0` leaves every merge to a human.
+- Only the parent merges, never a child. The landing sweep squash-merges a PR
+  only when the account `gh` acts as authored it, it is not a draft, and GitHub
+  reports it `CLEAN` (up to date, required checks green). A PR from any other
+  account (collaborator, bot, or fork) is never updated, repaired, or merged,
+  and an unreadable `gh` account fails closed. The merge call pins the head SHA
+  that was read green, so a later push is refused, and branch protection still
+  decides. The privileged repair child only takes same-repository `roadmap/…`
+  or `evolve/…` branches. `THREADKEEPER_EVOLVE_AUTOLAND=0` leaves every merge
+  to a human.
 
 ### Learning-loop synthesis (observed dialog → auto-loaded artifacts)
 

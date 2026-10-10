@@ -285,7 +285,8 @@ def test_agent_status_evolve_applier_ready_when_applier_pr_work_exists(
 
     status_mod._APPLIER_PR_CACHE.update({"at": 0, "count": 0})
     status_mod._ISSUE_BACKLOG_CACHE.update({"at": 0, "count": 0})
-    def _pr(number, state, mergeable="MERGEABLE"):
+
+    def _pr(number, state, mergeable="MERGEABLE", author="po4erk91"):
         return {
             "number": number,
             "title": f"PR {number}",
@@ -294,6 +295,7 @@ def test_agent_status_evolve_applier_ready_when_applier_pr_work_exists(
             "baseRefName": "main",
             "mergeStateStatus": state,
             "mergeable": mergeable,
+            "author": {"login": author},
         }
 
     monkeypatch.setattr(
@@ -301,13 +303,19 @@ def test_agent_status_evolve_applier_ready_when_applier_pr_work_exists(
         lambda repo_root=None: (
             [
                 _pr(44, "DIRTY", "CONFLICTING"),
-                # Landing work counts too; a PR waiting on CI does not.
+                # Landing work counts too; a PR waiting on CI does not, and
+                # neither does another account's PR.
                 _pr(45, "BEHIND"),
                 _pr(46, "CLEAN"),
                 _pr(47, "BLOCKED"),
+                _pr(48, "CLEAN", author="collaborator"),
             ],
             "",
         ),
+    )
+    monkeypatch.setattr(
+        applier_mod, "_gh_viewer_login",
+        lambda repo_root=None: ("po4erk91", ""),
     )
     monkeypatch.setattr(
         applier_mod, "_fetch_open_issues",

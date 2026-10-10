@@ -655,19 +655,23 @@ moving the high-water forward; `force=True` bypasses this due gate.
   pass row directly, so accumulated skip rows can never bury it.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
-  `gh pr list --json mergeStateStatus,mergeable,headRefOid,...` and classifies
-  each same-repo applier PR (`_pr_landing_action`): `repair` for a conflicted
-  merge state (`DIRTY` / `CONFLICTING`), `update` for `BEHIND`, `merge` for
-  `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or red checks,
-  drafts, `UNKNOWN`, another base, or `EVOLVE_AUTOLAND=0`). This sweep is a hard
-  preflight before new work: if PR state cannot be read, the pass records
+  `gh pr list --json mergeStateStatus,mergeable,headRefOid,author,...` and
+  keeps only PRs authored by the account `gh` acts as (`gh api user`, cached
+  per auth context for an hour); another account's PR is never updated,
+  repaired, or merged. Each kept PR is classified (`_pr_landing_action`):
+  `repair` for a conflicted merge state (`DIRTY` / `CONFLICTING`) on a
+  same-repository `roadmap/…` or `evolve/…` head branch, `update` for `BEHIND`,
+  `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or
+  red checks, drafts, `UNKNOWN`, another base, a hand-made PR with conflicts,
+  or `EVOLVE_AUTOLAND=0`). This sweep is a hard preflight before new work: if
+  PR state or the `gh` account cannot be read, the pass records
   `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
-  report, or promoted evolve suggestion. Only same-repository `roadmap/…` and
-  `evolve/…` head branches are eligible; fork PRs are never fed to the
-  privileged repair child or merged. **Landing** (`_land_applier_prs`, parent
-  only, no child): squash-merge the oldest `merge` PR through
-  `PUT /pulls/{n}/merge` with `sha=<headRefOid>`, so a head pushed after the
-  green read is refused, then delete its branch; then call
+  report, or promoted evolve suggestion. Fork PRs are never fed to the
+  privileged repair child. **Landing** (`_land_applier_prs`, parent only, no
+  child): squash-merge the oldest `merge` PR through `PUT /pulls/{n}/merge`
+  with `sha=<headRefOid>`, so a head pushed after the green read is refused,
+  then delete its same-repository head branch (never a fork's, never the
+  base); then call
   `PUT /pulls/{n}/update-branch` with `expected_head_sha` on the oldest PR that
   is behind (including green PRs that the merge just made behind). Strict branch
   protection allows one merge per base commit, so one merge and one update per

@@ -473,9 +473,10 @@ class Settings(BaseSettings):
     # Periodically picks the top promoted+unapplied evolve suggestion and fires
     # evolve_apply (spawns a child that implements it + opens a PR). 0 = off.
     evolve_apply_interval_s: float = 0.0
-    # Land the applier's own PRs: the parent squash-merges a same-repo
-    # roadmap/evolve PR once GitHub reports it up to date with required checks
-    # green, and updates one that fell behind. 0 = a human merges every PR.
+    # Land your own PRs: the parent squash-merges an open non-draft PR authored
+    # by the account `gh` acts as once GitHub reports it up to date with
+    # required checks green, and updates one that fell behind. Other accounts'
+    # PRs are never touched. 0 = a human merges every PR.
     evolve_autoland: bool = True
     # Absolute path to the thread-keeper git checkout the evolve reviewer and
     # applier operate on (branch, run tests, open PRs against). Empty => resolve

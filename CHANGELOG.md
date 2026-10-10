@@ -7,18 +7,19 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
-- **Changed: the Evolve applier lands its own green PRs.** Before, only the
+- **Changed: the Evolve applier lands your green PRs.** Before, only the
   conflict-repair child merged, and the sweep only acted on conflicted (`DIRTY`)
   PRs. With strict branch protection every merge leaves the other open PRs
   `BEHIND`, so applier PRs without conflicts, or whose post-repair merge was
   refused, were never updated or merged and waited for a human click. The
   parent now runs a landing sweep on each pass and every 15 minutes between
-  passes. It squash-merges the oldest same-repo `roadmap/…`/`evolve/…` PR that
-  GitHub reports `CLEAN` (pinned to the head SHA it saw green), and asks GitHub
-  to update the oldest `BEHIND` one. Repair children now push and stop; the
-  sweep merges them once green. Red or blocked PRs still wait for a human.
-  `THREADKEEPER_EVOLVE_AUTOLAND=0` restores human-only merging, and
-  `evolve_apply_status()` lists every applier PR with its next action.
+  passes. It squash-merges the oldest non-draft PR authored by the account
+  `gh` acts as that GitHub reports `CLEAN` (pinned to the head SHA it saw
+  green), and asks GitHub to update the oldest `BEHIND` one. PRs from any other
+  account are never touched. Repair children now push and stop; the sweep
+  merges them once green. Red or blocked PRs still wait for a human, and so do
+  drafts. `THREADKEEPER_EVOLVE_AUTOLAND=0` restores human-only merging, and
+  `evolve_apply_status()` lists each of your PRs with its next action.
 
 - **Fixed: Evolve children branch from the fetched base tip, not the
   provisioning pin.** Since the managed-clone pin landed (#132), applier,

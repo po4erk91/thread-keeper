@@ -14,12 +14,13 @@ Primary path:
   validates, and pushes the PR branch; it never merges.
 
   Landing sweep: each full pass, and every EVOLVE_LANDING_POLL_S between
-  passes, the parent squash-merges the oldest green same-repo applier PR
-  (GitHub `CLEAN`: up to date, required checks passing) through the protected
-  merge API, pinned to the head SHA it saw green, then asks GitHub to update
-  the oldest `BEHIND` one. Strict branch protection lets only one PR merge per
-  base commit, so PRs land one at a time. `THREADKEEPER_EVOLVE_AUTOLAND=0`
-  leaves every merge to a human.
+  passes, the parent squash-merges the oldest green non-draft PR authored by
+  the account `gh` acts as (GitHub `CLEAN`: up to date, required checks
+  passing) through the protected merge API, pinned to the head SHA it saw
+  green, then asks GitHub to update the oldest `BEHIND` one. PRs from any
+  other account are never touched. Strict branch protection lets only one PR
+  merge per base commit, so PRs land one at a time.
+  `THREADKEEPER_EVOLVE_AUTOLAND=0` leaves every merge to a human.
 
   Poison-issue guard: each spawn records a `roadmap_issue_attempt` event. An
   escalating backoff (base * 2^(attempts-1), default base 2 days) defers
@@ -41,8 +42,8 @@ Fallback paths:
 
 All code-changing paths are PR-gated. Children never commit to main, merge, or
 mark work applied without a real PR URL; only the parent's landing sweep
-merges, and only same-repo applier PRs GitHub reports up to date with required
-checks green. Before any git-writing child is spawned,
+merges, and only PRs authored by the account `gh` acts as that GitHub reports
+up to date with required checks green. Before any git-writing child is spawned,
 the parent refuses dirty tracked files and refuses to overlap reviewer/applier
 git writers in the shared checkout. A stale interrupted merge in the dedicated
 managed checkout is recovered only after GitHub proves its applier PR is
@@ -94,6 +95,7 @@ from .curator import CURATOR_REPORT_PROVENANCE_KIND, curator_report_sha256
 from .db import get_db
 from .github_budget import (
     GITHUB_RATE_COOLDOWN_EXIT,
+    github_account_key,
     run_gh,
     split_gh_api_output,
     strip_gh_api_headers,
@@ -268,6 +270,10 @@ PR_LANDING_KIND = "evolve_pr_landing"
 # sweep on this cadence, so a green PR lands minutes after its checks finish
 # instead of a whole EVOLVE_APPLY_INTERVAL_S later.
 EVOLVE_LANDING_POLL_S = 15 * 60
+# The account `gh` acts as rarely changes; re-read it hourly so an auth switch
+# on this host is picked up without a restart.
+GH_VIEWER_LOGIN_TTL_S = 60 * 60
+_gh_viewer_login_cache: dict[str, tuple[str, float]] = {}
 STALE_MERGE_BACKUP_MAX_BYTES = 10 * 1024 * 1024
 
 
@@ -2579,21 +2585,65 @@ def _pr_merge_state(pr: dict) -> str:
     return str(pr.get("mergeStateStatus") or "").strip().upper()
 
 
-def _pr_landing_action(pr: dict) -> str:
+def _pr_author_login(pr: dict) -> str:
+    author = pr.get("author")
+    login = author.get("login") if isinstance(author, dict) else ""
+    return str(login or "").strip().lower()
+
+
+def _gh_viewer_login(repo_root: Optional[Path] = None) -> tuple[str, str]:
+    """Login of the GitHub account this host's `gh` acts as: the owner whose
+    PRs the sweep may land. Cached per auth context for GH_VIEWER_LOGIN_TTL_S.
+    Returns (login, '') or ('', error)."""
+    key = github_account_key()
+    now = time.time()
+    cached = _gh_viewer_login_cache.get(key)
+    if cached and now - cached[1] < GH_VIEWER_LOGIN_TTL_S:
+        return cached[0], ""
+    repo = str(repo_root or _repo_root())
+    try:
+        proc = _run_gh(
+            ["gh", "api", "user", "--jq", ".login"], cwd=repo, timeout=30
+        )
+    except FileNotFoundError:
+        return "", "gh_not_found"
+    except subprocess.TimeoutExpired:
+        return "", "gh_viewer_timeout"
+    except OSError as e:
+        return "", f"gh_viewer_error: {e}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"exit={proc.returncode}"
+        return "", f"gh_viewer_failed: {msg[:180]}"
+    login = (proc.stdout or "").strip().lower()
+    if not login or any(ch.isspace() for ch in login):
+        return "", "gh_viewer_bad_login"
+    _gh_viewer_login_cache[key] = (login, now)
+    return login, ""
+
+
+def _pr_landing_action(pr: dict, owner_login: str) -> str:
     """Next step for one open PR on its way into the base branch.
 
-    'repair' — conflicted; the repair child merges the base, resolves, tests,
-               and pushes.
+    Only PRs authored by `owner_login` (the account `gh` acts as) are ever
+    touched; a PR from any other account — a collaborator, a bot, a fork —
+    gets ''.
+
+    'repair' — an applier branch with conflicts; the repair child merges the
+               base, resolves, tests, and pushes.
     'update' — behind the base; GitHub merges the base in server-side.
     'merge'  — up to date with required checks green; land it now.
-    'wait'   — checks pending or red, draft, GitHub still computing, or
-               autoland off; a human handles red or blocked PRs.
-    ''       — not an applier PR; never touched.
+    'wait'   — checks pending or red, draft, GitHub still computing, a
+               hand-made PR with conflicts, or autoland off.
+    ''       — another account's PR; never touched.
     """
-    if not _pr_is_applier_owned(pr):
+    owner = str(owner_login or "").strip().lower()
+    if not owner or _pr_author_login(pr) != owner:
         return ""
     if _pr_has_merge_conflicts(pr):
-        return "repair"
+        # The privileged repair child only ever works on the applier's own
+        # branches; a hand-made PR with conflicts waits for its author.
+        return "repair" if _pr_is_applier_owned(pr) else "wait"
     if not EVOLVE_AUTOLAND or bool(pr.get("isDraft")) or not _pr_head_sha(pr):
         return "wait"
     if str(pr.get("baseRefName") or "").strip() != _base_branch_name():
@@ -2609,13 +2659,22 @@ def _pr_landing_action(pr: dict) -> str:
 def _applier_pr_queue(
     repo_root: Optional[Path] = None,
 ) -> tuple[list[tuple[str, dict]], str]:
-    """Open same-repo applier PRs with their landing action, oldest first."""
+    """This account's open PRs with their landing action, oldest first.
+
+    PRs from other accounts are left out entirely. An unknown `gh` account
+    is an error, so the caller fails closed instead of guessing an owner.
+    """
     prs, err = _fetch_open_prs(repo_root)
+    if err:
+        return [], err
+    if not prs:
+        return [], ""
+    owner, err = _gh_viewer_login(repo_root)
     if err:
         return [], err
     queue = [
         (action, pr) for pr in prs
-        if (action := _pr_landing_action(pr))
+        if (action := _pr_landing_action(pr, owner))
     ]
     queue.sort(key=lambda item: int(item[1].get("number") or 0))
     return queue, ""
@@ -2624,7 +2683,7 @@ def _applier_pr_queue(
 def _conflicted_applier_prs(
     repo_root: Optional[Path] = None,
 ) -> tuple[list[dict], str]:
-    """Open same-repo applier PRs that GitHub reports as merge-conflicted."""
+    """This account's open applier PRs that GitHub reports as conflicted."""
     queue, err = _applier_pr_queue(repo_root)
     if err:
         return [], err
@@ -2657,7 +2716,7 @@ def _run_landing_gh(cmd: list[str], repo_root: Path, what: str) -> str:
 
 
 def _merge_applier_pr(pr: dict, repo_root: Path) -> str:
-    """Squash-merge one green applier PR through GitHub's protected merge API.
+    """Squash-merge one green own PR through GitHub's protected merge API.
 
     `sha` pins the head GitHub reported green, so a push that lands after the
     state read is never merged unchecked; branch protection and required checks
@@ -2684,6 +2743,14 @@ def _merge_applier_pr(pr: dict, repo_root: Path) -> str:
     if err:
         return err
     branch = _pr_head_branch(pr)
+    # A fork's head branch is not ours to delete, and a same-named branch in
+    # this repo is unrelated; never touch the base branch either.
+    if (
+        not branch
+        or bool(pr.get("isCrossRepository"))
+        or branch == _base_branch_name()
+    ):
+        return ""
     delete_err = _run_landing_gh(
         [
             "gh", "api", "-X", "DELETE",
@@ -2701,7 +2768,7 @@ def _merge_applier_pr(pr: dict, repo_root: Path) -> str:
 
 
 def _update_applier_pr_branch(pr: dict, repo_root: Path) -> str:
-    """Merge the base into one behind applier PR on GitHub's side — the API
+    """Merge the base into one behind own PR on GitHub's side — the API
     behind the "Update branch" button. CI reruns on the new head and a later
     sweep merges it once green. `expected_head_sha` refuses a head that moved
     since the state read. Returns '' once GitHub accepted the update and
@@ -2747,7 +2814,7 @@ def _land_applier_prs(
     queue: list[tuple[str, dict]],
     repo_root: Path,
 ) -> str:
-    """Merge the oldest green applier PR, then update the oldest behind one.
+    """Merge the oldest green own PR, then update the oldest behind one.
 
     Strict branch protection lets only one PR merge per base commit: after a
     merge every other green PR is behind. Updating more than one per sweep
@@ -2806,7 +2873,7 @@ def run_evolve_landing_pass() -> str:
     """Parent-only landing sweep that runs between full apply passes.
 
     No child and no checkout refresh: it reads open PR merge states and asks
-    GitHub to merge a green applier PR or update a behind one. Conflicted PRs
+    GitHub to merge a green own PR or update a behind one. Conflicted PRs
     wait for a full pass, because their repair needs a child. Skips while any
     git-writing reviewer/applier child runs, so it never races a repair that
     is mid-push.
@@ -3994,8 +4061,8 @@ def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
 
 
 def run_evolve_apply_pass(force: bool = False) -> str:
-    """One apply pass: land a green applier PR and update a behind one, repair
-    one conflicted open PR, then pick one open roadmap issue, then fall back to
+    """One apply pass: land a green own PR and update a behind one, repair one
+    conflicted applier PR, then pick one open roadmap issue, then fall back to
     Curator reports and finally promoted+unapplied evolve suggestions.
 
     Status strings:

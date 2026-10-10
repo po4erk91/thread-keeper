@@ -70,12 +70,18 @@ def _bootstrap(
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
         "_git_worktree_precondition": evolve_applier._git_worktree_precondition,
         "_run_landing_gh": evolve_applier._run_landing_gh,
+        "_gh_viewer_login": evolve_applier._gh_viewer_login,
     }
     # PR landing writes (merge / update-branch / branch delete) never reach a
     # real gh in unit tests; landing tests install capturing fakes instead.
     monkeypatch.setattr(
         evolve_applier, "_run_landing_gh",
         lambda cmd, repo_root, what: "gh_disabled_in_tests",
+    )
+    # The account `gh` acts as: the owner of the `_pr()` fixtures below.
+    monkeypatch.setattr(
+        evolve_applier, "_gh_viewer_login",
+        lambda repo_root=None: ("po4erk91", ""),
     )
     monkeypatch.setattr(
         evolve_applier, "_fetch_open_issues",
@@ -245,7 +251,8 @@ def _rest_issue(number, title=None, labels=("roadmap",),
 
 
 def _pr(number, title=None, head=None, merge_state="DIRTY",
-        mergeable="CONFLICTING", cross_repo=False, draft=False, base="main"):
+        mergeable="CONFLICTING", cross_repo=False, draft=False, base="main",
+        author="po4erk91"):
     return {
         "number": number,
         "title": title or f"PR {number}",
@@ -259,7 +266,7 @@ def _pr(number, title=None, head=None, merge_state="DIRTY",
         "isCrossRepository": cross_repo,
         "headRepository": {"nameWithOwner": "o/r"},
         "headRepositoryOwner": {"login": "o"},
-        "author": {"login": "po4erk91"},
+        "author": {"login": author},
     }
 
 
@@ -1224,9 +1231,11 @@ def _fake_landing_gh(monkeypatch, pkg, results=None):
     return calls
 
 
-def test_pr_landing_action_classifies_applier_prs(tmp_path, monkeypatch):
+def test_pr_landing_action_lands_only_the_owners_prs(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    action = pkg["ea"]._pr_landing_action
+
+    def action(pr, owner="po4erk91"):
+        return pkg["ea"]._pr_landing_action(pr, owner)
 
     assert action(_pr(1)) == "repair"
     assert action(_behind(2)) == "update"
@@ -1244,14 +1253,68 @@ def test_pr_landing_action_classifies_applier_prs(tmp_path, monkeypatch):
     headless = _green(8)
     headless["headRefOid"] = ""
     assert action(headless) == "wait"
-    # Human branches and forks are never touched.
-    assert action(_green(9, head="feature/manual-fix")) == ""
-    assert action(_green(10, cross_repo=True)) == ""
+    # Any green own PR lands, not only applier branches; but the privileged
+    # repair child never takes a hand-made branch.
+    assert action(_green(9, head="docs/roadmap-audit-2026-10-10")) == "merge"
+    assert action(_green(10, head="fix/manual", cross_repo=True)) == "merge"
+    assert action(_pr(11, head="fix/manual")) == "wait"
+    assert action(_pr(12, cross_repo=True)) == "wait"
+    # Another account's PR is never touched, whatever its branch or state.
+    assert action(_green(13, author="collaborator")) == ""
+    assert action(_pr(14, author="collaborator")) == ""
+    assert action(_behind(15, author="app/dependabot")) == ""
+    assert action(_green(16, author="PO4ERK91")) == "merge"
+    assert action(_green(17), owner="") == ""
 
     monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTOLAND", False)
     assert action(_green(3)) == "wait"
     assert action(_behind(2)) == "wait"
     assert action(_pr(1)) == "repair"
+
+
+def test_applier_pr_queue_fails_closed_without_the_owner_login(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(
+        ea, "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_green(2), _pr(1), _green(3, author="collaborator")], "",
+        ),
+    )
+
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert [(a, int(pr["number"])) for a, pr in queue] == [
+        ("repair", 1), ("merge", 2),
+    ]
+
+    monkeypatch.setattr(
+        ea, "_gh_viewer_login",
+        lambda repo_root=None: ("", "gh_viewer_failed: HTTP 401"),
+    )
+    assert ea._applier_pr_queue() == ([], "gh_viewer_failed: HTTP 401")
+
+
+def test_gh_viewer_login_reads_and_caches_the_gh_account(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Po4erk91\n", "")
+
+    monkeypatch.setattr(ea.subprocess, "run", _run)
+    viewer = pkg["orig"]["_gh_viewer_login"]
+
+    assert viewer(tmp_path) == ("po4erk91", "")
+    assert viewer(tmp_path) == ("po4erk91", "")
+    gh_calls = [cmd for cmd in calls if cmd[:2] == ["gh", "api"]]
+    assert gh_calls == [["gh", "api", "user", "--jq", ".login"]]
 
 
 def test_land_applier_prs_merges_oldest_green_then_updates_next(
@@ -1324,6 +1387,18 @@ def test_land_applier_prs_falls_through_refused_merge_and_current_branch(
     # A refused merge does not starve the next green PR, and an update that
     # finds the branch already current moves on to the next candidate.
     assert out == "merge_failed=#20 merged=#21 updated=#22"
+
+
+def test_merge_never_deletes_a_fork_or_base_branch(tmp_path, monkeypatch):
+    """A fork's head branch is not ours: deleting `heads/<name>` here would
+    hit an unrelated same-named branch of this repository."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    merge = pkg["ea"]._merge_applier_pr
+
+    assert merge(_green(80, head="fix/x", cross_repo=True), tmp_path) == ""
+    assert merge(_green(81, head="main"), tmp_path) == ""
+    assert [what for what, _cmd in calls] == ["merge", "merge"]
 
 
 def test_land_applier_prs_stops_on_github_cooldown(tmp_path, monkeypatch):
@@ -3666,7 +3741,7 @@ def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
     assert "autoland=on" in out
     assert "conflicted_prs=1" in out
     assert "landing_prs=0" in out
-    assert "applier PRs (oldest first):" in out
+    assert "own PRs (oldest first):" in out
     assert "#44  repair  DIRTY  roadmap/issue-44-conflict-aaaaaa" in out
 
 
