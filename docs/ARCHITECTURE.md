@@ -828,9 +828,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   while preserving unfinished work. Ignored runtime files and explicit operator
   checkouts are untouched. Applier prompts fetch the base and
   prepare or resume their deterministic local/remote feature branch before any
-  reading or editing, then rebase it on the immutable
-  `EVOLVE_REPO_COMMIT`. This makes retries validate previous branch work
-  instead of colliding with a stale local branch after editing the base.
+  reading or editing, then rebase it on the freshly fetched
+  `origin/<EVOLVE_REPO_BRANCH>` tip and re-sync the managed venv to that
+  branch's dependencies. `EVOLVE_REPO_COMMIT` gates only provisioning and the
+  parked checkout, never the branch base: a frozen base cut every applier PR
+  from one stale commit, so each was born conflicted with `main`. This makes
+  retries validate previous branch work instead of colliding with a stale local
+  branch after editing the base.
   Reviewer roadmap-doc prompts additionally reuse the daily
   `docs/roadmap-audit-YYYY-MM-DD` branch or an existing open roadmap-doc PR
   branch so repeated audits do not collide. The running-writer check precedes

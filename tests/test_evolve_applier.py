@@ -1240,6 +1240,35 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     )
 
 
+def test_children_branch_from_fetched_tip_not_provisioning_pin(
+    tmp_path, monkeypatch,
+):
+    """The provisioning pin is not a branch base. Branching from it cut every
+    applier PR from one months-old commit, so each PR was born conflicted with
+    main and implemented against stale code."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    pin = "3580726833b6a3d7ed872aa2bc5512552ca94532"
+    monkeypatch.setattr(ea, "EVOLVE_REPO_COMMIT", pin)
+    sync = ".venv/bin/python -m pip install -q -e '.[semantic,dev]'"
+
+    assert ea._base_ref() == "origin/main"
+    assert ea._pinned_commit() == pin
+    prompts = [
+        ea.build_roadmap_issue_apply_prompt(_issue(9, "Thing"), tmp_path),
+        ea.build_apply_prompt(3, "suggestion", None, tmp_path),
+    ]
+    for prompt in prompts:
+        assert "git rebase origin/main" in prompt
+        assert pin not in prompt
+        assert sync in prompt
+    repair = ea.build_pr_conflict_repair_prompt(
+        _pr(44, head="roadmap/issue-44-fix"), tmp_path
+    )
+    assert repair.index("git merge --no-edit origin/main") < repair.index(sync)
+    assert repair.index(sync) < repair.index("Run the full suite")
+
+
 def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
     tmp_path, monkeypatch,
 ):

@@ -1014,9 +1014,13 @@ task’s tree. This prevents unrelated unfinished tests from blocking every PR
 repair. Ignored files (including `.venv`) and explicit operator checkouts stay
 in place; live writers prevent recovery, and backup failures block dispatch.
 Each managed-checkout child fetches the
-configured branch only to retrieve the configured immutable commit, then
-prepares or resumes its deterministic local/remote feature branch from
-`THREADKEEPER_EVOLVE_REPO_COMMIT`, never from the branch's moving tip. Retries
+configured branch, prepares or resumes its deterministic local/remote feature
+branch from the freshly fetched `origin/<THREADKEEPER_EVOLVE_REPO_BRANCH>` tip,
+rebases onto it, and re-syncs the managed venv to that branch's declared
+dependencies. `THREADKEEPER_EVOLVE_REPO_COMMIT` bounds only what the parent
+provisions and parks the checkout at; it is never a branch base, because a base
+that never moves cut every applier PR from one stale commit and each PR was
+born conflicted with `main`. Retries
 therefore validate prior branch work instead of discovering a branch-name
 collision after changing the base checkout. A shared git-writer running-task
 check prevents the privileged reviewer audit and code/PR applier from

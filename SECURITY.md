@@ -97,6 +97,11 @@ Mitigations:
   checkout is detached at that commit and its `HEAD` is verified before a new
   or existing managed virtualenv can be used. A mismatch returns an `ERR` and
   neither installs nor tests checkout code.
+- The pin bounds what the parent provisions and where it parks the checkout
+  between passes. Spawned children then fetch the configured branch from the
+  clone's own `origin` and branch from its tip, so roadmap work starts from
+  current code (a conflict-repair child already merged that tip). The URL
+  allowlist and restart-only reload keep that source fixed.
 - `THREADKEEPER_EVOLVE_REPO_URL`, `THREADKEEPER_EVOLVE_REPO_BRANCH`, and
   `THREADKEEPER_EVOLVE_REPO_COMMIT` are restart-only. Hot-config reload logs
   and ignores edits, so a running server cannot silently redirect its clone.

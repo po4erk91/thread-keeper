@@ -154,8 +154,9 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   audit or code/PR applier child can spawn, the parent rejects tracked-file WIP
   with `skipped_dirty_worktree` (untracked scratch files do not block), refuses
   overlapping reviewer/applier git writers in the shared checkout, and prompts
-  children to fetch the configured branch but branch only from the configured
-  immutable managed-checkout pin instead of arbitrary current `HEAD`.
+  children to fetch the configured branch and branch from its fresh
+  `origin/<branch>` tip instead of arbitrary current `HEAD` (the immutable
+  managed-checkout pin bounds provisioning only).
 - Evolve managed-checkout interrupted-merge recovery: a killed conflict-repair
   child no longer blocks the entire backlog whether its exact PR remains open
   or was merged elsewhere. The parent first excludes live git writers, requires

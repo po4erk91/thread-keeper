@@ -132,6 +132,10 @@ DO, strictly in order:
    If the branch already contains a previous implementation attempt, inspect
    and validate that work instead of recreating it. If it cannot be resumed
    safely, stop before editing and report the blocker.
+   Then sync the project venv with this branch's declared dependencies (the
+   venv was built once and the base branch may have changed pyproject.toml):
+       .venv/bin/python -m pip install -q -e '.[semantic,dev]'
+   If that install fails, stop and report the blocker.
 
 2. READ threadkeeper/brief.py — specifically render_brief() — and understand the
    sections it emits (core_memory, style, verbatim, open/idle/closed threads,
@@ -382,6 +386,10 @@ the blocker/status so a later agent has enough context.
    If the branch already contains a previous implementation attempt, inspect
    and validate it instead of recreating it. If the branch cannot be resumed
    safely, comment with the blocker and stop before editing.
+   Then sync the project venv with this branch's declared dependencies (the
+   venv was built once and the base branch may have changed pyproject.toml):
+     .venv/bin/python -m pip install -q -e '.[semantic,dev]'
+   If that install fails, comment with the blocker and stop.
 
 3. Read the relevant code and docs before editing. Also read docs/ROADMAP.md,
    CONTRIBUTING.md's Releases section, and the issue body so the implementation
@@ -414,7 +422,7 @@ the blocker/status so a later agent has enough context.
      gh pr create --title "<type>: <short>" --body "<body incl. Closes #{issue_number}>"
    Use an allowed Conventional Commit type (`feat`, `fix`, `docs`, `test`,
    etc.). The PR body MUST include `Closes #{issue_number}` so GitHub closes
-   the issue after human merge.
+   the issue when the PR merges.
    A thread-keeper `gh` safety wrapper is prepended to PATH for this privileged
    child. It mechanically redacts home-directory paths and common token shapes
    from `gh issue create`, `gh issue comment`, and `gh pr create` bodies before
@@ -479,7 +487,9 @@ DO, strictly in order:
    Resolve any conflicts surgically, preserving the PR's original intent. Do
    not implement a new roadmap issue or unrelated cleanup. If Git reports no
    conflicts and no changes remain, re-check `gh pr view`; if the PR is now
-   clean, stop successfully without committing.
+   clean, stop successfully without committing. Then sync the project venv
+   with the merged branch's declared dependencies:
+     .venv/bin/python -m pip install -q -e '.[semantic,dev]'
 
 4. Run the full suite from the repo root and read the FINAL summary line:
      env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
@@ -672,7 +682,17 @@ def _base_branch_name() -> str:
 
 
 def _base_ref() -> str:
-    """The immutable base every managed child branches from."""
+    """The freshly fetched branch tip every child branches and rebases from.
+
+    Children must start from current code. Branching from the provisioning pin
+    instead cut every applier PR from one months-old commit, so each new PR was
+    born conflicted with main and implemented against stale code.
+    """
+    return f"origin/{_base_branch_name()}"
+
+
+def _pinned_commit() -> str:
+    """The immutable commit the parent provisions and parks the checkout at."""
     return str(EVOLVE_REPO_COMMIT or "").strip().lower()
 
 
@@ -682,7 +702,7 @@ _FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 def _expected_managed_commit() -> tuple[str, str]:
     """Return the configured immutable commit or a clear fail-closed error."""
-    commit = _base_ref()
+    commit = _pinned_commit()
     if not _FULL_COMMIT_SHA.fullmatch(commit):
         return "", (
             "ERR evolve_repo_pin_invalid (THREADKEEPER_EVOLVE_REPO_COMMIT "
@@ -1159,7 +1179,7 @@ def _recover_stale_managed_merge(
     checkout_err = _run(
         [
             "git", "checkout", "-f", "-B", _base_branch_name(),
-            _base_ref(),
+            _pinned_commit(),
         ],
         timeout=30,
         cwd=repo_root,
@@ -1241,7 +1261,7 @@ def _recover_abandoned_managed_wip(
     checkout_err = _run(
         [
             "git", "checkout", "-f", "-B", _base_branch_name(),
-            _base_ref(),
+            _pinned_commit(),
         ],
         timeout=30,
         cwd=repo_root,

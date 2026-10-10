@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Evolve children branch from the fetched base tip, not the
+  provisioning pin.** Since the managed-clone pin landed (#132), applier,
+  conflict-repair, and reviewer children cut every feature branch from
+  `THREADKEEPER_EVOLVE_REPO_COMMIT`, a commit no release ever bumped. Each
+  applier PR was therefore implemented against months-old code and born
+  conflicted with `main` (stale version bumps in `pyproject.toml`,
+  `server.json`, the Dockerfile, and CHANGELOG). Children now branch and rebase
+  from the freshly fetched `origin/<EVOLVE_REPO_BRANCH>` tip and re-sync the
+  managed venv to that branch's dependencies; the pin still gates provisioning
+  and the parked checkout.
+
 - **Fixed: advertised read-only MCP tools and memory resources are now
   observationally pure (#348).** Read surfaces run against SQLite query-only
   connections and never create sessions, presence/cursor rows, daemon work, or
