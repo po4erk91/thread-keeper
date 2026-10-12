@@ -89,7 +89,11 @@ $EDITOR server.json
 # 4. Add a matching CHANGELOG section: ## v0.4.1 — YYYY-MM-DD
 $EDITOR CHANGELOG.md
 
-# 5. Commit, open a PR, and merge it to main after tests pass
+# 5. Review the draft MCP standards watchlist. Open each upstream tracker link
+#    in docs/ARCHITECTURE.md; if any entry is accepted/final, open a separate
+#    scoped compatibility-review issue. Do not copy a draft wire format here.
+
+# 6. Commit, open a PR, and merge it to main after tests pass
 git commit -am "release: 0.4.1"
 ```
 
@@ -151,9 +155,10 @@ Semantic versioning, conservative bumps:
   ones, no breaking config changes.
 - **MINOR** (`0.4.0` → `0.5.0`) — new MCP tools, new env knobs, new
   daemons, new adapters, new prompt variants. Backwards compatible.
-- **MAJOR** (`0.4.0` → `1.0.0`) — breaking changes to MCP tool
-  signatures, removed tools, schema migrations that require manual
-  intervention, removed env knobs. Bump only when truly necessary.
+- **MAJOR** (`0.4.0` → `1.0.0`) — a ground-up replacement or breaking
+  new implementation: incompatible MCP tool signatures, removed tools,
+  schema migrations that require manual intervention, or removed env knobs.
+  Major means the next major even while the project is in 0.x.
 
 ## Yank / re-release
 

@@ -22,7 +22,6 @@ from .config import (
     PICKUP_CLAIM_TTL_S,
 )
 from .helpers import fmt_age, q
-from .db import run_write
 from .task_spool import append_spool_text
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
@@ -35,13 +34,31 @@ from .retrieval import retrieve_notes
 from .i18n import SPAWN_CUE_RE as _SPAWN_CUE_RE  # noqa: E402
 
 
+# Lesson bodies use inline code for concrete commands, flags, and practices.
+# Restricting reconciliation to those exact references keeps the brief cue
+# useful without treating broad, loosely related prose as a contradiction.
+_LESSON_CODE_RE = re.compile(r"`([^`\n]+)`")
+_LESSON_DEBUNK_RE = re.compile(
+    r"\b(?:never|do not|don't|must not|should not|avoid|no longer|"
+    r"not (?:a |an )?(?:reliable|valid|fresh|safe)|"
+    r"does not (?:prove|verify|validate|confirm)|"
+    r"(?:is|are) cached)\b",
+    re.IGNORECASE,
+)
+_LESSON_RECOMMEND_RE = re.compile(
+    r"\b(?:use|run|invoke|execute|check|verify|validate|gate(?:\s+\w+){0,2}"
+    r"\s+on|rely on|prefer|always|must|should)\b",
+    re.IGNORECASE,
+)
+
+
 def _log_hint_event(render_conn: sqlite3.Connection, kind: str, target: str,
                     summary: str, now: int) -> None:
     """Best-effort hint telemetry without mutating a query-only renderer.
 
-    Direct low-level callers historically pass a writable connection and expect
-    the event to be visible there. The MCP tool passes ``read_db()`` instead,
-    so its telemetry gets a separate bounded write transaction.
+    Direct low-level callers can still record the event through their writable
+    connection. Observational MCP calls use a query-only connection, so the
+    telemetry is skipped for those calls.
     """
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -55,10 +72,63 @@ def _log_hint_event(render_conn: sqlite3.Connection, kind: str, target: str,
         if not query_only:
             _write(render_conn)
             render_conn.commit()
-        else:
-            run_write("brief-hint-event", _write, deadline_s=0.25)
     except sqlite3.OperationalError:
         pass
+
+
+def _lesson_reconciliation_candidates() -> list[tuple[str, str, str]]:
+    """Return newer debunks paired with older lessons still recommending them.
+
+    Lessons are append-ordered, but an in-place lesson patch keeps its file
+    position. The timestamp is therefore primary, with file order as the
+    same-second tie-breaker.
+    """
+    try:
+        from .lessons import iter_lessons
+        lesson_rows = list(iter_lessons())
+    except (OSError, UnicodeError):
+        return []
+
+    def references(body: str) -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        for match in _LESSON_CODE_RE.finditer(body):
+            reference = " ".join(match.group(1).split())
+            if not reference:
+                continue
+            line_start = body.rfind("\n", 0, match.start()) + 1
+            line_end = body.find("\n", match.end())
+            if line_end < 0:
+                line_end = len(body)
+            found.setdefault(reference, []).append(body[line_start:line_end])
+        return found
+
+    rows = sorted(
+        (
+            (int(item.get("ts") or 0), index, item,
+             references(str(item.get("body") or "")))
+            for index, item in enumerate(lesson_rows)
+        ),
+        key=lambda row: (row[0], row[1]),
+    )
+    candidates: list[tuple[str, str, str]] = []
+    recommended_by: dict[str, list[str]] = {}
+    for _, _, newer, newer_refs in rows:
+        debunked = {
+            reference for reference, contexts in newer_refs.items()
+            if any(_LESSON_DEBUNK_RE.search(context) for context in contexts)
+        }
+        newer_slug = str(newer.get("slug") or "?")
+        for reference in debunked:
+            for older_slug in recommended_by.get(reference, []):
+                candidates.append((newer_slug, older_slug, reference))
+        for reference, contexts in newer_refs.items():
+            if any(
+                _LESSON_RECOMMEND_RE.search(context)
+                and not _LESSON_DEBUNK_RE.search(context)
+                for context in contexts
+            ):
+                recommended_by.setdefault(reference, []).append(newer_slug)
+    return candidates
 
 
 def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
@@ -179,15 +249,10 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                 )
 
     # ── tasks_running ─────────────────────────────────────────────────────
-    # Only my own spawned children that are still alive. Refresh first so
-    # zombies (parent died, child orphaned and reaped) get marked ended
-    # instead of lingering as "running" forever.
+    # Only my own spawned children that are still alive. This is deliberately
+    # a cached view: reconciling task lifecycle belongs to tasks_refresh(), not
+    # to a read-only brief render.
     if self_cid:
-        try:
-            from .tools.spawn import _refresh_tasks
-            _refresh_tasks(conn)
-        except (sqlite3.OperationalError, NameError, ImportError):
-            pass  # tolerate at startup before tools.spawn is imported
         running = conn.execute(
             "SELECT id, pid, prompt, started_at, spawned_cid FROM tasks "
             "WHERE parent_cid=? AND ended_at IS NULL "
@@ -528,6 +593,19 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         out.append("")
         out.append(sk_nudge)
 
+    # ── lesson_patch ──────────────────────────────────────────────────────
+    # Lesson bodies often need a narrow correction (for example, a stale
+    # cross-link). Surface the atomic operation in the startup brief so an
+    # agent does not reserialize a long, otherwise-correct lesson with
+    # lesson_append just to change one line.
+    if not eff_lean:
+        out.append("")
+        out.append("lesson_patch")
+        out.append(
+            "  lesson_patch(slug, old_string, new_string): replace one "
+            "unique lesson-body substring without rewriting the full lesson"
+        )
+
     # ── consulted_skills (this session) ───────────────────────────────────
     # Surface which skills the agent actually invoked / viewed in the
     # current session, plus any user-judgment outcomes ('helped' /
@@ -817,6 +895,26 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             f"extract_pending n={ex_pending} (review_candidates / "
             f"accept_candidate to materialize)"
         )
+
+    # ── lesson_reconciliation ─────────────────────────────────────────────
+    # Dedup finds overlapping lessons, but cannot tell when a newer lesson
+    # disproves a concrete recommendation in an older one. Surface those
+    # exact inline-code references so the older lesson can be patched or
+    # cross-linked before it keeps steering future sessions the wrong way.
+    if not eff_lean:
+        reconciliation = _lesson_reconciliation_candidates()
+        if reconciliation:
+            out.append("")
+            out.append("lesson_reconciliation")
+            for newer, older, reference in reconciliation[:3]:
+                out.append(
+                    f"  `{reference}` debunked_by={newer} "
+                    f"still_recommended_by={older}"
+                )
+            out.append(
+                "  → reconcile each older lesson: patch its recommendation "
+                "or cross-link the correcting lesson"
+            )
 
     # ── pickup_top ────────────────────────────────────────────────────────
     # Surface the single oldest unclaimed unresolved thread as a hint that

@@ -65,14 +65,19 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from .._mcp import read_tool, write_tool
 from ..config import WRITE_ORIGIN
+from ..authority import (
+    authority_for_origin, derive, record_origin_root, source_is_direct,
+    source_is_live, source_parent,
+)
 from ..db import get_db
 from ..elicitation import elicit_confirm_reject
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..memory_compat import memory_provenance
 
 
 VALID_KINDS = ("support", "contradict")
@@ -342,13 +347,19 @@ def recompute_all_tiers() -> int:
 
 def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
                      quote: str, source: str, base_weight: float,
-                     cid: Optional[str], now_t: int) -> int:
+                     cid: Optional[str], now_t: int) -> int | None:
     """Write evidence row and bump the claim's counter. Caller commits.
 
     The stored weight is `base_weight × origin_discount(WRITE_ORIGIN)`.
     The kind-counter (support_count / contradict_count) increments by 1
     regardless of weight — counters are for observability; the weighted
     sums in dialectic_evidence drive confidence + tier."""
+    parent = source_parent(source)
+    if parent is not None:
+        if not source_is_live(conn, parent):
+            return None
+    elif not source_is_direct(source) or authority_for_origin(WRITE_ORIGIN) is None:
+        return None
     eff_w = _evidence_weight(WRITE_ORIGIN, base_weight)
     cur = conn.execute(
         "INSERT INTO dialectic_evidence (claim_id, kind, source, quote, "
@@ -356,6 +367,17 @@ def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
         (claim_id, kind, source or None, quote or None, eff_w,
          cid, now_t),
     )
+    evidence_id = str(cur.lastrowid)
+    stamped = (
+        derive(conn, "evidence", evidence_id, [parent])
+        if parent is not None
+        else record_origin_root(
+            conn, "evidence", evidence_id, write_origin=WRITE_ORIGIN,
+            principal=cid or "unknown-principal", channel="mcp:dialectic",
+        )
+    )
+    if not stamped:
+        raise RuntimeError("authority_stamp_failed")
     col = "support_count" if kind == "support" else "contradict_count"
     conn.execute(
         f"UPDATE user_dialectic SET {col}={col}+1, last_evidence_at=? "
@@ -367,11 +389,12 @@ def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
 
 @write_tool()
 def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
-                    evidence_kind: str = "support") -> str:
+                    evidence_kind: str = "support", source: str = "") -> str:
     """Register a new claim about the user. Optionally seed with first
     piece of evidence — pass the supporting (or contradicting) quote in
-    `evidence` and set `evidence_kind` to 'support' (default) or
-    'contradict'.
+    `evidence`, set `evidence_kind` to 'support' (default) or
+    'contradict', and supply its immutable `source` reference (for example
+    `dialog:<uuid>`). Empty/`manual` means direct input from this session.
 
     `domain` is free-text; recommended values:
       'style','workflow','values','context','skills','other'.
@@ -394,6 +417,10 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     cid_db = cid
     pid = gen_dialectic_id(conn)
     now_t = int(time.time())
+    # A claim without supplied evidence is direct user input.  A seeded claim
+    # derives from its evidence below and therefore cannot launder authority.
+    if authority_for_origin(WRITE_ORIGIN) is None:
+        return "ERR authority_unknown_origin"
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
         "created_at, valid_from, tier, tier_changed_at) "
@@ -402,8 +429,25 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     )
     seed_quote = evidence.strip()
     if seed_quote:
-        _insert_evidence(conn, pid, evidence_kind, seed_quote,
-                         "manual", 1.0, cid_short, now_t)
+        evidence_id = _insert_evidence(conn, pid, evidence_kind, seed_quote,
+                                       source.strip() or "manual", 1.0,
+                                       cid_short, now_t)
+        if evidence_id is None:
+            conn.rollback()
+            return "ERR authority_source_unknown"
+        if not derive(conn, "claim", pid, [("evidence", str(evidence_id))]):
+            conn.rollback()
+            return "ERR authority_derivation_failed"
+    elif not record_origin_root(
+        conn, "claim", pid, write_origin=WRITE_ORIGIN,
+        principal=cid or "unknown-principal", channel="mcp:dialectic",
+    ):
+        conn.rollback()
+        return "ERR authority_unknown_origin"
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_claim",
+        source_event_id=source.strip() or "manual",
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     _emit(conn, "dialectic_claim", target=pid, summary=claim[:140])
@@ -448,6 +492,8 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
     now_t = int(time.time())
     eid = _insert_evidence(conn, claim_id, kind, quote.strip(),
                            source.strip(), w, cid, now_t)
+    if eid is None:
+        return "ERR authority_source_unknown"
     new_conf = _recompute_confidence(conn, claim_id)
     _, new_tier = _recompute_tier(conn, claim_id, now_t)
     _emit(conn, f"dialectic_evidence:{kind}", target=claim_id,
@@ -506,6 +552,11 @@ def dialectic_review(min_confidence: str = "low",
             "AND (valid_to IS NULL OR valid_to > ?)"
         )
         params.extend([as_of_ts, as_of_ts])
+    sql += (
+        " AND NOT EXISTS (SELECT 1 FROM memory_authority ma "
+        "WHERE ma.artifact_kind='claim' AND ma.artifact_id=user_dialectic.id "
+        "AND ma.invalidated_at IS NOT NULL)"
+    )
     dom_filter = domain.strip()
     if dom_filter:
         sql += " AND domain=?"
@@ -587,6 +638,11 @@ def dialectic_synthesis(domain: str = "",
         sql += "AND state!='retired' "
     else:
         sql += "AND state='active' "
+    sql += (
+        "AND NOT EXISTS (SELECT 1 FROM memory_authority ma "
+        "WHERE ma.artifact_kind='claim' AND ma.artifact_id=user_dialectic.id "
+        "AND ma.invalidated_at IS NOT NULL) "
+    )
     dom_filter = domain.strip()
     if dom_filter:
         sql += " AND domain=?"
@@ -710,6 +766,9 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
     cid = _detect_self_cid()
     pid = gen_dialectic_id(conn)
     now_t = int(time.time())
+    # Supersession is a derived promotion, never a new trusted root.
+    if authority_for_origin(WRITE_ORIGIN) is None:
+        return "ERR authority_unknown_origin"
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
         "created_at, valid_from, tier, tier_changed_at) "
@@ -718,8 +777,21 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
     )
     seed_quote = quote.strip()
     if seed_quote:
-        _insert_evidence(conn, pid, "support", seed_quote,
-                         f"supersede:{old_id}", 1.0, cid, now_t)
+        evidence_id = _insert_evidence(conn, pid, "support", seed_quote,
+                                       f"claim:{old_id}", 1.0, cid, now_t)
+        if evidence_id is None:
+            conn.rollback()
+            return "ERR authority_source_unknown"
+        if not derive(conn, "claim", pid, [("evidence", str(evidence_id)), ("claim", old_id)]):
+            conn.rollback()
+            return "ERR authority_derivation_failed"
+    elif not derive(conn, "claim", pid, [("claim", old_id)]):
+        conn.rollback()
+        return "ERR authority_derivation_failed"
+    memory_provenance(
+        conn, "dialectic_claim", pid, source_event_kind="dialectic_supersede",
+        source_event_id=old_id,
+    )
     new_conf = _recompute_confidence(conn, pid)
     _, new_tier = _recompute_tier(conn, pid, now_t)
     conn.execute(

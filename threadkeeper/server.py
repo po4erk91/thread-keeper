@@ -1,7 +1,7 @@
 """threadkeeper.server — package entry point.
 
 Importing each tools module triggers its @mcp.tool() decorators against the
-shared FastMCP singleton in threadkeeper._mcp. After all imports, the
+shared MCPServer singleton in threadkeeper._mcp. After all imports, the
 runtime is fully assembled; mcp.run() starts the stdio MCP loop.
 
 To launch:
@@ -53,6 +53,7 @@ from .tools import shadow_review  # noqa: F401
 from .tools import lessons  # noqa: F401
 from .tools import curator  # noqa: F401
 from .tools import candidate_reviewer  # noqa: F401
+from .tools import evolve_research  # noqa: F401
 from .tools import evolve_applier  # noqa: F401
 from .tools import dialectic_feed  # noqa: F401
 from .tools import dashboard  # noqa: F401
@@ -60,6 +61,7 @@ from .tools import agent_status  # noqa: F401
 from .tools import config_watch  # noqa: F401
 from .tools import db_maintenance  # noqa: F401
 from .tools import forget  # noqa: F401
+from .tools import authority  # noqa: F401
 
 # MCP Resources & Prompts (roadmap #78) — the other two MCP server primitives.
 # Importing these registers @mcp.resource / @mcp.prompt entries (NOT tools) on

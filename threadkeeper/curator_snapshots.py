@@ -107,7 +107,7 @@ def _snapshot_has_live_recovery(
         return False
     try:
         row = conn.execute(
-            "SELECT state FROM curator_passes WHERE pass_id=?", (pass_id,)
+            "SELECT 1 FROM curator_passes WHERE pass_id=?", (pass_id,)
         ).fetchone()
         if row is None:
             return False

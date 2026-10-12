@@ -129,7 +129,8 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
 @write_tool()
 def ingest(max_msgs: int = 5000) -> str:
     """Ingest new transcripts. Initial and periodic passes run asynchronously
-    in the daemon host; call manually for backfill or after a long absence."""
+    in the daemon host; call manually for backfill or after a long absence.
+    `max_msgs` bounds the new messages taken from each CLI."""
     conn = get_db()
     _ensure_session(conn)
     new_msgs, files = _ingest_all(conn, max_msgs=max_msgs)

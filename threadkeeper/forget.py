@@ -50,6 +50,7 @@ class ForgetPlan:
     presence_ids: list[str] = field(default_factory=list)
     lesson_refs: list[ReviewRef] = field(default_factory=list)
     skill_refs: list[ReviewRef] = field(default_factory=list)
+    authority_roots: list[tuple[str, str]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -652,7 +653,7 @@ def _populate_counts(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
         counts["workflow_artifacts"] = selective_erase_count(
             conn, plan.selector,
         )
-    except Exception:
+    except sqlite3.Error:
         counts["workflow_artifacts"] = 0
     plan.counts = counts
 
@@ -673,6 +674,13 @@ def build_forget_plan(
     plan.task_ids = _task_ids(conn, clean_selector, resolved)
     plan.task_spool_paths = _task_spool_paths(plan.task_ids)
     _dialectic_targets(conn, plan)
+    plan.authority_roots = [
+        *( ("dialog", uuid) for uuid in plan.dialog_uuids ),
+        *( ("note", note_id) for note_id in plan.note_ids ),
+        *( ("verbatim", verbatim_id) for verbatim_id in plan.verbatim_ids ),
+        *( ("evidence", evidence_id) for evidence_id in plan.evidence_ids ),
+        *( ("claim", claim_id) for claim_id in plan.claim_ids ),
+    ]
     plan.extract_candidate_ids = _extract_candidate_ids(conn, plan)
     plan.signal_ids = _signal_ids(conn, plan)
     _session_sidecar_ids(conn, plan)
@@ -784,6 +792,10 @@ def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
 
         deleted["workflow_artifacts"] = selectively_erase_bodies(
             conn, plan.selector,
+        )
+        from .authority import invalidate_descendants
+        deleted["memory_authority_invalidated"] = invalidate_descendants(
+            conn, plan.authority_roots,
         )
         deleted["task_spool_paths"] = sum(
             1 for path in plan.task_spool_paths if _unlink_spool_path(path)

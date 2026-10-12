@@ -101,3 +101,38 @@ def test_wrapped_gh_honors_shared_budget_cooldown(
 
     assert rc == gb.GITHUB_RATE_COOLDOWN_EXIT
     assert not capture.exists()
+
+
+def _exe(path, body):
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o700)
+    return path
+
+
+def test_real_gh_resolution_skips_the_safety_wrapper(tmp_path, monkeypatch):
+    """A Codex child's MCP server gets the wrapper-first PATH without the
+    wrapper variables. Resolving `gh` must not find the wrapper itself, which
+    used to re-run itself until the dedup gate timed out."""
+    from threadkeeper import github_safety
+
+    wrapper_dir = tmp_path / "gh-safe-tk_x"
+    real_dir = tmp_path / "bin"
+    wrapper_dir.mkdir()
+    real_dir.mkdir()
+    wrapper = _exe(
+        wrapper_dir / "gh",
+        "#!/bin/sh\nexec python -m threadkeeper.github_safety \"$@\"\n",
+    )
+    real = _exe(real_dir / "gh", "#!/bin/sh\necho real\n")
+    monkeypatch.delenv("THREADKEEPER_GH_WRAPPER_DIR", raising=False)
+    monkeypatch.setenv("PATH", f"{wrapper_dir}:{real_dir}")
+
+    monkeypatch.delenv("THREADKEEPER_REAL_GH", raising=False)
+    assert github_safety._resolve_real_gh() == str(real)
+
+    monkeypatch.setenv("THREADKEEPER_REAL_GH", str(wrapper))
+    assert github_safety._resolve_real_gh() == str(real)
+
+    monkeypatch.setenv("PATH", str(wrapper_dir))
+    assert github_safety._resolve_real_gh() == ""
+
