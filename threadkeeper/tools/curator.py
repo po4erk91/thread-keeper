@@ -47,6 +47,7 @@ from ..curator_snapshots import (
 )
 from ..permissions import chmod_private_file
 from ..skill_audit import build_skill_audit
+from ..workflow_artifacts import record_curator_report
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
@@ -344,6 +345,15 @@ def curator_report_write(
     except Exception as exc:
         logger.warning("curator report provenance record failed", exc_info=True)
         return f"ERR report_provenance_failed={exc}"
+    record_curator_report(
+        conn,
+        pass_id=clean_id,
+        batch_index=batch_index or 1,
+        batch_total=batch_total or 1,
+        report_path=target,
+        report_text=persisted,
+        terminal="CURATOR_PASS_COMPLETE" in persisted,
+    )
     return f"ok path={target} chars={len(content)}"
 
 

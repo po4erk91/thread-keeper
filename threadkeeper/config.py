@@ -387,6 +387,11 @@ class Settings(BaseSettings):
     # one curator pass. 0 disables curator lesson/skill deletes for that pass;
     # foreground deletes are never subject to this limit.
     curator_max_destructive_per_pass: int = 10
+    # Terminal Curator/Evolve workflow output can include frozen memory bodies.
+    # The retention daemon keeps the newest count and age window; zero disables
+    # the respective protection (both zero disables workflow pruning).
+    workflow_retention_days: float = 30.0
+    workflow_retention_count: int = 100
 
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
@@ -865,6 +870,8 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_MAX_DESTRUCTIVE_PER_PASS": (
             s.curator_max_destructive_per_pass
         ),
+        "WORKFLOW_RETENTION_DAYS": s.workflow_retention_days,
+        "WORKFLOW_RETENTION_COUNT": s.workflow_retention_count,
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,

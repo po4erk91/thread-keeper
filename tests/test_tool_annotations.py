@@ -36,6 +36,7 @@ READ_TOOLS = {
     "skill_list", "skill_validate", "spawn_budget_status", "spawn_status",
     "sync_peers", "sync_status", "task_logs",
     "task_thread", "tasks", "weak_spots", "whoami",
+    "workflow_retention_preview",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------

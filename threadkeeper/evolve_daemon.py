@@ -56,6 +56,10 @@ from .evolve_applier import (
 from .github_budget import run_gh, split_gh_api_output, strip_gh_api_headers
 from .helpers import daemon_sleep, single_flight_lock
 from . import identity
+from .workflow_artifacts import (
+    complete_research_handoff,
+    register_research_started,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1120,11 +1124,20 @@ def _fence_untrusted_data(tag: str, text: str, limit: int = 12000) -> str:
     return f"<{tag}>\n{safe[:limit]}\n</{tag}>"
 
 
-def _spawn_research(repo_root: Path, now_t: int) -> str:
+def _spawn_research(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    now_t: int,
+) -> str:
     """Phase 1: read-only web-research child. NO bypassPermissions, NO shell, NO
     GitHub — WebSearch/WebFetch + read-only repo reads + a single digest Write.
     With no Bash/gh/network-write tool it has no exfiltration channel."""
     research_file = _new_research_path(now_t)
+    register_research_started(
+        conn,
+        research_path=research_file,
+        created_at=now_t,
+    )
     prompt = EVOLVE_RESEARCH_PROMPT.format(research_file=str(research_file))
     from .tools.spawn import spawn  # late import — avoids import cycle
     result = spawn(
@@ -1258,10 +1271,17 @@ def run_evolve_pass(force: bool = False) -> str:
                 if guard:
                     _record_transient_evolve_pass(conn, guard)
                     return guard
-                _, research_text = _latest_research(now_t)
+                research_path, research_text = _latest_research(now_t)
                 out = _spawn_audit(repo_root, pending, research_text)
+                if out.startswith("spawned audit") and research_path is not None:
+                    complete_research_handoff(
+                        conn,
+                        research_path=research_path,
+                        research_body=research_text,
+                        now=now_t,
+                    )
             else:
-                out = _spawn_research(repo_root, now_t)
+                out = _spawn_research(conn, repo_root, now_t)
         except Exception as e:  # noqa: BLE001 — never crash the daemon
             out = f"spawn_error: {e}"
             _record_transient_evolve_pass(conn, out)

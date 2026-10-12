@@ -98,8 +98,33 @@ def _iter_skill_dirs() -> list[tuple[Path, list[Path]]]:
     return out
 
 
+def _snapshot_has_live_recovery(
+    conn: sqlite3.Connection | None,
+    pass_id: str,
+) -> bool:
+    """Keep active and unapplied workflow recovery material regardless of count."""
+    if conn is None:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT state FROM curator_passes WHERE pass_id=?", (pass_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        # A lifecycle-ledger row makes this snapshot part of the coordinated
+        # workflow policy. Its own retention pass, not this legacy snapshot
+        # count cap, owns eventual deletion so reports/manifests/snapshots do
+        # not age out on different schedules.
+        return True
+    except sqlite3.Error:
+        # Fail closed: if the workflow ledger cannot be read, do not delete a
+        # recovery archive merely to satisfy the older count cap.
+        return True
+
+
 def _prune_old_snapshots(retention: int,
-                         reports_dir: Path | None = None) -> None:
+                         reports_dir: Path | None = None,
+                         conn: sqlite3.Connection | None = None) -> None:
     keep = max(1, int(retention))
     root = snapshots_root(reports_dir)
     if not root.exists():
@@ -107,7 +132,23 @@ def _prune_old_snapshots(retention: int,
     dirs = [p for p in root.iterdir() if p.is_dir()]
     dirs.sort(key=lambda p: (p.name, p.stat().st_mtime), reverse=True)
     for old in dirs[keep:]:
-        shutil.rmtree(old, ignore_errors=True)
+        if _snapshot_has_live_recovery(conn, old.name):
+            continue
+        if conn is None:
+            # Legacy direct callers do not have a durable operation journal;
+            # still refuse links rather than recursively following one.
+            if old.is_symlink():
+                continue
+            shutil.rmtree(old, ignore_errors=True)
+            continue
+        from .workflow_artifacts import _journal_delete
+
+        _journal_delete(
+            conn,
+            path=str(old),
+            root=root,
+            now=int(time.time()),
+        )
 
 
 def create_curator_snapshot(
@@ -160,7 +201,7 @@ def create_curator_snapshot(
         "skill_roots": skill_roots,
     }
     _write_json(snap / "manifest.json", manifest)
-    _prune_old_snapshots(retention, reports_dir)
+    _prune_old_snapshots(retention, reports_dir, conn)
 
     if conn is not None:
         _ensure_session(conn)

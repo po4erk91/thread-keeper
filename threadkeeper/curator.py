@@ -82,6 +82,11 @@ from .skill_audit import (
     format_skill_checklist,
     write_skill_audit_manifest,
 )
+from .workflow_artifacts import (
+    mark_curator_retryable,
+    register_curator_batch,
+    register_curator_pass,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1144,6 +1149,14 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             CURATOR_REPORTS_DIR / f"AUDIT-{pass_id}.json",
         )
         snapshot_dir = None
+        register_curator_pass(
+            conn,
+            pass_id=pass_id,
+            batch_count=len(batches),
+            created_at=now,
+            manifest_path=manifest_path,
+        )
+        conn.commit()
 
         if CURATOR_DESTRUCTIVE:
             try:
@@ -1152,7 +1165,17 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     conn=conn,
                     retention=CURATOR_SNAPSHOT_RETENTION,
                 )
+                register_curator_pass(
+                    conn,
+                    pass_id=pass_id,
+                    batch_count=len(batches),
+                    created_at=now,
+                    manifest_path=manifest_path,
+                    snapshot_path=snapshot_dir,
+                )
+                conn.commit()
             except Exception as e:
+                mark_curator_retryable(conn, pass_id)
                 out = f"snapshot_error: {e}"
                 _record_curator_pass(conn, now, out)
                 return out
@@ -1260,6 +1283,16 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     _authorize_curator_report(
                         conn, now, pass_id, report_name,
                     )
+                    register_curator_batch(
+                        conn,
+                        pass_id=pass_id,
+                        batch_index=batch.index,
+                        batch_total=batch.total,
+                        batch_text=batch.text,
+                        report_path=CURATOR_REPORTS_DIR / report_name,
+                        created_at=now,
+                    )
+                    conn.commit()
                     full_prompt = (
                         CURATOR_PROMPT.replace(
                             "{DESTRUCTIVE_CLAUSE}",
@@ -1289,6 +1322,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                     )
                     result_s = str(result)
                     if result_s.startswith("ERR "):
+                        mark_curator_retryable(conn, pass_id)
                         out = (
                             f"spawn_error batch={batch.index}/{batch.total}: "
                             f"{result_s}"
@@ -1306,6 +1340,7 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 else:
                     os.environ[SNAPSHOT_DIR_ENV] = old_snap
         except Exception as e:
+            mark_curator_retryable(conn, pass_id)
             _record_curator_pass(conn, now, f"spawn_error: {e}")
             return f"spawn_error: {e}"
 

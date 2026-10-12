@@ -2826,6 +2826,15 @@ def mark_curator_report_applied(
         return f"ERR report_unprovenanced={path.name}"
     key = _report_key(path)
     if _curator_report_applied(conn, path):
+        try:
+            conn.execute(
+                "UPDATE curator_batches SET report_applied_at=COALESCE("
+                "report_applied_at, ?) WHERE report_path=? AND report_sha256=?",
+                (int(time.time()), key, expected),
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
         return f"ok report={path.name} already_applied=1"
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
@@ -2838,6 +2847,18 @@ def mark_curator_report_applied(
             int(time.time()),
         ),
     )
+    # The workflow retention ledger keeps application status independent of
+    # the prunable events stream. Older databases may not have the additive
+    # table yet, so this is best-effort and the provenance event remains the
+    # compatibility source of truth.
+    try:
+        conn.execute(
+            "UPDATE curator_batches SET report_applied_at=? WHERE report_path=? "
+            "AND report_sha256=?",
+            (int(time.time()), key, expected),
+        )
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return f"ok report={path.name} applied=1"
 

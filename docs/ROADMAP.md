@@ -139,6 +139,12 @@ remains a live question.
   completed `tasks`, handled/ephemeral `signals`, old `events`, and old
   `probe_results`; optional WAL checkpoint and VACUUM maintenance are wired,
   and `mp_dashboard()` reports DB size plus high-volume row counts.
+- Durable Curator/Evolve workflow retention (#349): terminal Curator batches,
+  manifests, reports, snapshots, and consumed Evolve research digests now have
+  shared age/count retention. Active/retryable work and unapplied endorsed
+  reports are protected; expired bodies compact to hashes plus bounded summaries
+  before no-follow, root-contained file cleanup. Preview and dashboard output
+  show candidates, bytes, oldest terminal pass, and the last outcome.
 - Data-lifecycle backup/restore safety (#102): `tk-backup create` uses
   SQLite `VACUUM INTO` to produce an integrity-checked single-file snapshot of
   the live WAL store while writer loops continue, and `tk-backup restore --yes`

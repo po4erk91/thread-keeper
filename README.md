@@ -695,7 +695,11 @@ a recoverable snapshot under
 `~/.threadkeeper/curator/snapshots/<pass-id>/`). The snapshot contains
 `lessons.md`, copied in-scope skill dirs, a `manifest.json`, and per-action
 tombstones for curator prunes/deletes. Retention is bounded by
-`THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` (default 10, current pass always kept).
+`THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` (default 10) for legacy/direct
+snapshots. Daemon-owned snapshots instead follow the coordinated workflow
+retention policy, so their pass, report, manifest, and recovery archive cannot
+age out on different schedules; active work and an endorsed report that has not
+been applied always keep recovery material.
 Use `curator_restore(pass_id, lesson_slug="...")` or
 `curator_restore(pass_id, skill_name="...")` to restore an item from a snapshot.
 As a prevention layer before recovery is needed, a destructive Curator pass
@@ -1102,6 +1106,8 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_PROBE_RESULT_RETENTION_DAYS` | 0 | prune old `probe_results` and refresh reliability aggregates; 0 keeps forever |
 | `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
 | `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after a pass deletes at least this many rows; 0 disables VACUUM |
+| `THREADKEEPER_WORKFLOW_RETENTION_DAYS` | 30 | age protection for terminal Curator passes and consumed Evolve research handoffs; `0` disables the age bound |
+| `THREADKEEPER_WORKFLOW_RETENTION_COUNT` | 100 | newest terminal Curator passes and research handoffs protected by count; `0` disables the count bound |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | cross-provider scope for personal-class memory (verbatim quotes + dialectic user-model) in `brief()`. `all` = current behavior, egress to whichever vendor backs the consuming CLI. `same-vendor` = personal renders only for Claude/Anthropic, omitted for OpenAI/Google/Microsoft CLIs. `work-only` = personal never rendered, any vendor. See [Memory egress](#memory-egress-cross-provider-privacy) |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
@@ -1442,6 +1448,19 @@ keeps `dialog_fts`, `dialog_vec`, and `dialog_vec_map` consistent with
 the high-volume tables (`dialog_messages`, `dialog_fts`, `dialog_vec`,
 `signals`, `events`, `tasks`, `probe_results`) so growth is visible before it
 becomes a problem.
+
+Terminal Curator passes own their frozen batch text, `REPORT-*`, `AUDIT-*`, and
+destructive snapshot; Evolve handoffs own their `RESEARCH-*` digest. The
+retention daemon keeps active/retryable work, recovery material, and endorsed
+but unapplied reports. After both enabled workflow bounds expire, it first
+compacts batch/research bodies to a SHA-256 plus a 512-character summary and
+removes only owned files. A later pass removes the compacted rows. File removal
+is path-contained to the configured Curator or Evolve directory, rejects
+symlinks, and is journaled so an interrupted delete retries safely. Use
+`workflow_retention_preview()` for the dry-run counts/bytes and oldest terminal
+pass; `mp_dashboard()` shows its latest outcome. A selective `forget()` that
+matches a frozen workflow body compacts it immediately, including active work;
+the normal report/lesson review guidance still applies to generalized content.
 
 `db_compact()` is the opt-in disk-reclaim tool: `VACUUM` + a mandatory
 `dialog_fts` rebuild (schema v2 keys the FTS index on `dialog_messages`

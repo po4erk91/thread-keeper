@@ -659,6 +659,65 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
 );
+
+-- Workflow artifacts can contain frozen derived memory. They are kept out of
+-- the append-only events stream so retention can compact their bodies without
+-- weakening normal audit telemetry.
+CREATE TABLE IF NOT EXISTS curator_passes (
+    pass_id       TEXT PRIMARY KEY,
+    state         TEXT NOT NULL CHECK(state IN ('active','retryable','terminal')),
+    batch_count   INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL,
+    terminal_at   INTEGER,
+    manifest_path TEXT,
+    snapshot_path TEXT,
+    compacted_at  INTEGER
+);
+CREATE TABLE IF NOT EXISTS curator_batches (
+    pass_id       TEXT NOT NULL,
+    batch_index   INTEGER NOT NULL,
+    batch_total   INTEGER NOT NULL,
+    state         TEXT NOT NULL CHECK(state IN ('active','terminal')),
+    batch_text    TEXT NOT NULL DEFAULT '',
+    batch_sha256  TEXT NOT NULL,
+    batch_summary TEXT NOT NULL DEFAULT '',
+    report_path   TEXT,
+    report_sha256 TEXT,
+    report_applied_at INTEGER,
+    created_at    INTEGER NOT NULL,
+    terminal_at   INTEGER,
+    compacted_at  INTEGER,
+    PRIMARY KEY (pass_id, batch_index)
+);
+CREATE TABLE IF NOT EXISTS evolve_research_handoffs (
+    research_path         TEXT PRIMARY KEY,
+    state                 TEXT NOT NULL CHECK(state IN ('active','retryable','terminal')),
+    created_at            INTEGER NOT NULL,
+    terminal_at           INTEGER,
+    research_body         TEXT NOT NULL DEFAULT '',
+    research_sha256       TEXT,
+    research_summary      TEXT NOT NULL DEFAULT '',
+    compacted_at          INTEGER,
+    research_path_deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS workflow_artifact_deletions (
+    path        TEXT PRIMARY KEY,
+    root_path   TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK(state IN ('pending','failed','deleted')),
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_retention_state (
+    name         TEXT PRIMARY KEY,
+    last_at      INTEGER NOT NULL,
+    last_outcome TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_curator_passes_terminal
+    ON curator_passes(state, terminal_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_handoffs_terminal
+    ON evolve_research_handoffs(state, terminal_at DESC);
 """
 
 # Historical column migrations layered on top of the baseline SCHEMA.

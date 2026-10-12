@@ -6,6 +6,16 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-12
+- **Added: bounded durable workflow artifacts (#349).** Terminal Curator
+  batches and consumed Evolve research handoffs now follow configurable
+  age/count retention, compact frozen bodies to hashes plus summaries, preserve
+  active/retryable and unapplied report recovery material, and remove owned
+  files through path-contained no-follow deletion journals. Dashboard and the
+  dry-run `workflow_retention_preview()` surface candidates, bytes, oldest
+  terminal pass, and the last pruning outcome. Selective erasure immediately
+  compacts matching frozen workflow bodies.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

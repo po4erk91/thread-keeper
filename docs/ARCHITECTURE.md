@@ -260,8 +260,11 @@ Steady-state access is split by intent:
    curator child is spawned. Each snapshot contains `lessons.md`, copied
    in-scope skill dirs, `manifest.json`, and tombstones emitted by curator
    prune/delete tool calls. `curator_restore` restores a lesson or skill from
-   that archive. Retention is bounded by
-   `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION`.
+   that archive. The workflow ledger owns the snapshot together with its pass
+   manifest, frozen batch, and report: active/retryable passes and unapplied
+   endorsed reports retain recovery material. Terminal, applied artifacts use
+   the workflow age/count policy; body text compacts to hash + bounded summary
+   before its ledger row is removed.
 
 8. **dialectic_claims + dialectic_evidence** — Honcho-style discrete user
    model. Claim with a domain, evidence support/contradict/clarifying, sm-ratio
@@ -337,7 +340,14 @@ observability only: the supervisor restarts dead threads, never a live child.
   shadow/miner/extract rowid cursors are first rebased to created_at form
   (translated back to rowids on next read), then after the VACUUM the
   external-content `dialog_fts`/`notes_fts` indexes are rebuilt. The manual
-  `db_compact` tool runs the same protocol.
+  `db_compact` tool runs the same protocol. The same pass also owns terminal
+  Curator/Evolve artifacts: it preserves active/retryable work, snapshots, and
+  unapplied endorsed reports; bounds completed work by
+  `WORKFLOW_RETENTION_DAYS` (30) and `WORKFLOW_RETENTION_COUNT` (100); then
+  compacts full prompt/research bodies before removing owned files and rows.
+  Every delete is a no-follow, configured-root-only operation recorded in a
+  pending/done journal, so partial failures are retried without a false success
+  record. `workflow_retention_preview()` exposes the dry run.
 - **search_proxy** — serves `search_via_parent` from slim children via
   signals (see below).
 - **spawn_budget** — in foreground parent processes only, once per
@@ -1708,6 +1718,8 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_PROBE_RESULT_RETENTION_DAYS` | 0 | prune old `probe_results` and refresh reliability aggregates; 0 keeps forever |
 | `THREADKEEPER_RETENTION_WAL_CHECKPOINT` | false | run `PRAGMA wal_checkpoint(TRUNCATE)` during retention passes |
 | `THREADKEEPER_RETENTION_VACUUM_AFTER_ROWS` | 0 | run `VACUUM` after at least this many deleted rows; 0 disables |
+| `THREADKEEPER_WORKFLOW_RETENTION_DAYS` | 30 | terminal Curator/Evolve workflow age protection; `0` disables it |
+| `THREADKEEPER_WORKFLOW_RETENTION_COUNT` | 100 | newest terminal workflow artifacts protected by count; `0` disables it |
 | `THREADKEEPER_MEMORY_EGRESS` | `all` | personal-class memory egress scope: `all` / `same-vendor` / `work-only` (see Spawn → Cross-provider memory egress) |
 | `THREADKEEPER_EMBED_MODEL` | paraphrase-multilingual-MiniLM-L12-v2 | 384-dim, RU+EN |
 | `THREADKEEPER_EMBED_BACKEND` | `onnx` | `onnx` (fastembed, no PyTorch) or `sentence-transformers` (fallback) |

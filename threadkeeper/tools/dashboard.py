@@ -361,6 +361,12 @@ def mp_dashboard(window_days: int = 7) -> str:
         f"tasks={_scalar(conn, 'SELECT COUNT(*) FROM tasks')} "
         f"probe_results={_scalar(conn, 'SELECT COUNT(*) FROM probe_results')}"
     )
+    try:
+        from ..workflow_artifacts import workflow_retention_status
+
+        out.append(f"  {workflow_retention_status(conn)}")
+    except sqlite3.Error:
+        out.append("  workflow_retention unavailable")
     from ..embeddings import embedding_index_health
     emb_health = embedding_index_health(conn)
     out.append(
