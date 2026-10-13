@@ -1100,6 +1100,32 @@ CREATE TABLE IF NOT EXISTS workflow_retention_state (
     last_at      INTEGER NOT NULL,
     last_outcome TEXT NOT NULL
 );
+
+-- Model router: one row per routing decision. The latest row per role is the
+-- current route; older rows are the history the next pass reads. Local only:
+-- catalogs differ per machine, so these tables are not synced.
+CREATE TABLE IF NOT EXISTS model_routes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    role        TEXT NOT NULL,
+    cli         TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    effort      TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL,
+    pass_id     TEXT NOT NULL,
+    decided_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_routes_role
+    ON model_routes(role, decided_at DESC);
+CREATE TABLE IF NOT EXISTS model_router_passes (
+    pass_id     TEXT PRIMARY KEY,
+    roles_json  TEXT NOT NULL,
+    attempt     TEXT NOT NULL CHECK(attempt IN ('primary','fallback')),
+    task_id     TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'running'
+                CHECK(status IN ('running','complete','failed')),
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER
+);
 """
 
 # These columns are independently additive: current databases deliberately do

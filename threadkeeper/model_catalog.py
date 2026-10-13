@@ -165,6 +165,12 @@ def _read_cache() -> dict[str, Any]:
         return {}
 
 
+def read_cached_clis() -> dict[str, Any]:
+    """Per-CLI entries from the on-disk catalog cache, without discovery."""
+    clis = _read_cache().get("clis")
+    return dict(clis) if isinstance(clis, dict) else {}
+
+
 def _write_cache(payload: dict[str, Any]) -> None:
     path = _cache_path()
     try:
