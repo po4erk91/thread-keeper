@@ -638,10 +638,15 @@ ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The child reads every
-complete skill and relevant support file, performs current web research against
-official docs and comparable
-public skills, then writes numbered per-skill verdicts to
+rows with no real `SKILL.md` remain explicit orphans. The evaluator reads every
+complete skill and relevant support file, but it has no web tools. External
+research is off by default: foreground, private, and unclassified entries use
+the offline `HUMAN_REVIEW` path. With explicit
+`THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a separate Claude-only web researcher
+receives a fixed public brief and only `WebSearch`, `WebFetch`, and one
+path-scoped handoff writer; it cannot read local memory or the repository. The
+evaluator may consume that handoff as fenced external data, then writes numbered
+per-skill verdicts to
 `~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
 `REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
 UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
@@ -1131,6 +1136,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | age-flush: an undersized pending queue is still reviewed once its oldest candidate is this old (0 = threshold only) |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
+| `THREADKEEPER_CURATOR_WEB_RESEARCH` | 0 (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, while private/foreground/unclassified inventory stays offline/HUMAN_REVIEW |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |

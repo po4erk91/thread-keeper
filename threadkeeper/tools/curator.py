@@ -31,11 +31,15 @@ from ..identity import _ensure_session
 from ..curator import (
     CURATOR_PROMPT,
     CURATOR_REPORT_PROVENANCE_KIND,
+    CURATOR_RESEARCH_HANDOFF_PROVENANCE_KIND,
     _collect_inventory,
+    _build_research_plan,
     _curator_report_is_authorized,
+    _curator_research_handoff_is_authorized,
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
+    _research_handoff_name,
     curator_report_sha256,
     run_curator_pass,
 )
@@ -60,6 +64,7 @@ from ..config import (
 
 _PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MAX_REPORT_CHARS = 2_000_000
+_MAX_RESEARCH_HANDOFF_CHARS = 100_000
 logger = logging.getLogger(__name__)
 
 
@@ -119,6 +124,8 @@ def curator_review_status() -> str:
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
     ]
+    research_plan = _build_research_plan(conn)
+    lines.append(f"web_research_status={research_plan.status_summary}")
     if last_fingerprint:
         lines.append(
             f"inventory_sha256={last_fingerprint} "
@@ -345,6 +352,62 @@ def curator_report_write(
         logger.warning("curator report provenance record failed", exc_info=True)
         return f"ERR report_provenance_failed={exc}"
     return f"ok path={target} chars={len(content)}"
+
+
+@write_tool(idempotent=True)
+def curator_research_handoff_write(content: str) -> str:
+    """Persist the one parent-authorized public Curator research handoff.
+
+    The web researcher does not receive a pass ID or a destination path. Both
+    come from its spawned context and are checked against a parent authorization
+    before this tool writes. Provenance stores only a content digest, never the
+    handoff body.
+    """
+    if len(content) > _MAX_RESEARCH_HANDOFF_CHARS:
+        return f"ERR handoff_too_large max_chars={_MAX_RESEARCH_HANDOFF_CHARS}"
+    if not content.strip():
+        return "ERR empty_handoff"
+    if WRITE_ORIGIN != "curator_research" or not SPAWNED_CHILD:
+        return "ERR research_handoff_not_authorized"
+    pass_id = current_pass_id()
+    if not pass_id or not _PASS_ID_RE.fullmatch(pass_id):
+        return "ERR research_handoff_not_authorized"
+    conn = get_db()
+    _ensure_session(conn)
+    if not _curator_research_handoff_is_authorized(conn, pass_id):
+        return "ERR research_handoff_not_authorized"
+    CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    target = CURATOR_REPORTS_DIR / _research_handoff_name(pass_id)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    persisted = content.rstrip() + "\n"
+    try:
+        temporary.write_text(persisted, encoding="utf-8")
+        temporary.replace(target)
+        chmod_private_file(target)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return f"ERR research_handoff_write_failed={exc}"
+    digest = curator_report_sha256(persisted)
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                _ensure_session(conn),
+                CURATOR_RESEARCH_HANDOFF_PROVENANCE_KIND,
+                str(target.resolve()),
+                f"pass_id={pass_id} sha256={digest}",
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("curator research handoff provenance failed", exc_info=True)
+        return f"ERR research_handoff_provenance_failed={exc}"
+    return f"ok public_handoff_saved chars={len(content)}"
 
 
 @write_tool(destructive=True, idempotent=True)

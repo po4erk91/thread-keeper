@@ -406,6 +406,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 model: str = "", effort: str = "",
                 permission_mode: str = "auto",
                 extra_allowed_tools: str = "",
+                base_allowed_tools: str | None = None,
                 capture_output: bool = True,
                 visible: bool = True,
                 role: str = "",
@@ -659,9 +660,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     else:
         if permission_mode:
             cmd += ["--permission-mode", permission_mode]
-        # Default allowlist: thread-keeper tools so the child can actually
+        # Default allowlist: thread-keeper tools so ordinary children can
         # report back via broadcast/whisper without auto-mode classifier
-        # blocking. Users extend via extra_allowed_tools.
+        # blocking. Security-sensitive callers can replace it with a narrow
+        # base list rather than merely adding to this broad default.
         _claude_default_allow = [
         "mcp__thread-keeper__broadcast",
         "mcp__thread-keeper__whisper",
@@ -715,8 +717,12 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         "mcp__thread-keeper__curator_run",
             "mcp__thread-keeper__search_via_parent",
         ]
+        base_list = (
+            _claude_default_allow if base_allowed_tools is None else
+            [t.strip() for t in base_allowed_tools.split(",") if t.strip()]
+        )
         extra_list = [t.strip() for t in extra_allowed_tools.split(",") if t.strip()]
-        allow = _claude_default_allow + extra_list
+        allow = base_list + extra_list
         cmd += ["--allowedTools"] + allow
         if chosen_model:
             cmd += ["--model", chosen_model]
@@ -966,6 +972,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
           model: str = "", effort: str = "",
           permission_mode: str = "auto",
           extra_allowed_tools: str = "",
+          base_allowed_tools: str | None = None,
           capture_output: bool = True,
           visible: bool = True,
           role: str = "",
@@ -985,6 +992,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         effort=effort,
         permission_mode=permission_mode,
         extra_allowed_tools=extra_allowed_tools,
+        base_allowed_tools=base_allowed_tools,
         capture_output=capture_output,
         visible=visible,
         role=role,

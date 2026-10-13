@@ -98,6 +98,18 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-13
+
+### Added
+
+- **Curator web research is now privacy-bounded (#355).** The Curator
+  evaluator keeps full local audit coverage but has no web tools. External
+  lookup is off by default; explicit operator consent starts a separate
+  Claude-only researcher with fixed public compatibility queries, no local
+  memory or repository reads, and one parent-authorized handoff writer.
+  Foreground, private, and unclassified entries stay offline with aggregate
+  `HUMAN_REVIEW` fallback telemetry that contains no entry content.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

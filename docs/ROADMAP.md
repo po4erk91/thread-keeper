@@ -404,6 +404,14 @@ foreground/unknown provenance, and non-foreground children cannot escalate with
 a dump of what would be archived" this item asked for already exists: set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only.
 
+✅ DONE (#355): Curator web research now fails closed behind a privacy
+boundary. The normal evaluator retains its complete local inventory but has no
+web tools. Web lookup requires `THREADKEEPER_CURATOR_WEB_RESEARCH=1` and runs
+in a separate Claude-only researcher with a fixed public query brief and a
+single parent-authorized handoff writer; it has no local-memory or repository
+read tools. Foreground, private, and unclassified entries fall back to offline
+`HUMAN_REVIEW`, with aggregate reason counts in pass status rather than content.
+
 Open follow-ups (issue-backed): broader recovery/UX paths outside the snapshot
 plus trash safety net (#52); bounding the candidate_reviewer prompt payload so
 its full queue dump cannot hit `E2BIG` — the Curator side is done in #105.

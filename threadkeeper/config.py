@@ -375,6 +375,10 @@ class Settings(BaseSettings):
     # merge, or delete foreground-authored skills. Off by default globally;
     # users who want full autonomous consolidation opt in deliberately.
     curator_manage_foreground_skills: bool = False
+    # External web research never receives Curator inventory by default. Set
+    # this explicit operator consent to allow a separate, brief-only web
+    # researcher to look up the fixed public compatibility topics.
+    curator_web_research: bool = False
     # Keep the last N destructive curator snapshots under
     # CURATOR_REPORTS_DIR/snapshots. The current pass is always retained, so
     # values below 1 behave as 1.
@@ -859,6 +863,7 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
         "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
+        "CURATOR_WEB_RESEARCH": s.curator_web_research,
         "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
         "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,

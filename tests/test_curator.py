@@ -54,6 +54,7 @@ def _bootstrap(
     destructive=None,
     retention=None,
     max_destructive=None,
+    web_research=None,
     write_origin="foreground",
     spawned_child="0",
 ):
@@ -84,6 +85,8 @@ def _bootstrap(
         env["THREADKEEPER_CURATOR_SNAPSHOT_RETENTION"] = retention
     if max_destructive is not None:
         env["THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS"] = max_destructive
+    if web_research is not None:
+        env["THREADKEEPER_CURATOR_WEB_RESEARCH"] = web_research
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Path(env["CLAUDE_PROJECTS_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -304,8 +307,8 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Read" in allowed
     assert "curator_report_write" in allowed
     assert "Write" not in allowed
-    assert "WebSearch" in allowed
-    assert "WebFetch" in allowed
+    assert "WebSearch" not in allowed
+    assert "WebFetch" not in allowed
     assert "skill_validate" in allowed
     assert "curator_restore" in allowed
     assert "Bash" not in allowed
@@ -317,6 +320,55 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+
+
+def test_web_research_receives_only_public_brief_and_narrow_tools(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", web_research="1",
+    )
+    private_body = (
+        "TOP_SECRET_ALPHA /Users/alice/private-project token=not-for-web"
+    )
+    pkg["lessons"].append_lesson(
+        title="local deployment lesson", body=private_body, source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="another local lesson", body="also private", source="shadow",
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "spawn",
+        lambda **kwargs: captured.append(kwargs) or "spawn task_id=fake pid=0",
+    )
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    researcher = next(c for c in captured if c["role"] == "curator_researcher")
+    evaluator = next(c for c in captured if c["role"] == "curator")
+    assert private_body not in researcher["prompt"]
+    assert str(tmp_path) not in researcher["prompt"]
+    assert researcher["extra_allowed_tools"] == "WebSearch,WebFetch"
+    assert researcher["base_allowed_tools"] == (
+        "mcp__thread-keeper__curator_research_handoff_write"
+    )
+    assert "Read" not in researcher["base_allowed_tools"]
+    assert "lesson_get" not in researcher["base_allowed_tools"]
+    assert "expand_concept" not in researcher["base_allowed_tools"]
+    assert "WebSearch" not in evaluator["extra_allowed_tools"]
+    assert private_body in evaluator["prompt"]
+
+    conn = pkg["db"].get_db()
+    event_text = "\n".join(
+        f"{row['target'] or ''} {row['summary'] or ''}"
+        for row in conn.execute("SELECT target, summary FROM events").fetchall()
+    )
+    assert private_body not in event_text
+    assert "offline_operator_consent_required" not in event_text
+    assert "research=privacy_human_review" in event_text
 
 
 def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
@@ -855,6 +907,39 @@ def test_curator_report_write_requires_parent_pass_authorization(
     ) == "ERR report_write_not_authorized"
 
 
+def test_research_handoff_is_parent_authorized_and_metadata_is_content_free(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator_research", spawned_child="1",
+    )
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_snapshots import PASS_ID_ENV
+
+    pass_id = "20260719T120000"
+    monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    write_handoff = mcp._tool_manager._tools[
+        "curator_research_handoff_write"
+    ].fn
+    assert write_handoff(content="public finding") == (
+        "ERR research_handoff_not_authorized"
+    )
+
+    conn = pkg["db"].get_db()
+    pkg["curator"]._authorize_curator_research_handoff(conn, pass_id)
+    secret = "TOP_SECRET_ALPHA"
+    assert write_handoff(content=f"Public URL with no {secret}").startswith(
+        "ok public_handoff_saved"
+    )
+    rows = conn.execute(
+        "SELECT target, summary FROM events "
+        "WHERE kind='curator_research_handoff'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert secret not in rows[0]["target"]
+    assert secret not in rows[0]["summary"]
+
+
 def test_skill_validator_resolves_namespaced_external_plugin_skill(
     tmp_path, monkeypatch,
 ):
@@ -1002,6 +1087,7 @@ def test_mcp_curator_review_status_reports(tmp_path, monkeypatch):
     assert "inventory_sha256=" + ("a" * 64) in out
     assert "current_inventory_sha256=" in out
     assert "latest_report=(none yet)" in out
+    assert "web_research_status=research=offline_operator_consent_required" in out
     # Default mode is now destructive (CURATOR_DESTRUCTIVE defaults to 1)
     assert "mode=destructive" in out
 

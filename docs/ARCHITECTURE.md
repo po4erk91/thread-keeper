@@ -482,10 +482,19 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The child reads each full
-  skill, researches current official docs and comparable public skills, writes
-  a numbered verdict, applies safe repairs/merges/deletes after the report, and
-  revalidates each changed skill. The stable fingerprint includes skill bytes
+  exact duplicates, and lexical semantic candidates. The web-free evaluator
+  reads each full skill, writes a numbered verdict, applies safe
+  repairs/merges/deletes after the report, and revalidates each changed skill.
+  External research is a separate opt-in capability: when
+  `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a Claude-only `curator_researcher`
+  receives a deterministic public brief containing only fixed compatibility
+  queries. Its narrow allowlist has `WebSearch`, `WebFetch`, and the one
+  parent-authorized handoff writer — no local `Read`, lesson/concept/transcript
+  tools, repository access, or general memory reads. The evaluator has no web
+  tools and treats a verified handoff as fenced untrusted external data.
+  Foreground, private, and unclassified entries remain offline and are counted
+  by reason in `curator_pass` status telemetry without exposing their contents.
+  The stable fingerprint includes skill bytes
   and mirrors. Identical manual calls debounce as `unchanged_inventory`, while
   scheduled passes still run because external relevance can change without a
   local-byte change. Each batch prompt carries an explicit entry range and
