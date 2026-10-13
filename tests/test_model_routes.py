@@ -166,3 +166,18 @@ def test_routing_summary_lists_only_changes():
         "routed 1/2: curator: codex gpt-5.6-terra xhigh → codex gpt-5.6-luna high"
     )
     assert routing_summary(routes[1:], previous) == "routed 0/1 (all kept)"
+
+
+def test_settings_catalog_marks_routed_roles(fresh_mp, monkeypatch):
+    from threadkeeper import model_catalog, model_routes
+
+    monkeypatch.setitem(fresh_mp["config"].settings.spawn.loop, "curator", "auto")
+    route = model_routes.Route("curator", "codex", "gpt-5.6-luna", "high", "r", "mr-1", 1234)
+    monkeypatch.setattr(model_routes, "active_route",
+                        lambda role: route if role == "curator" else None)
+    monkeypatch.setattr(model_catalog, "cli_catalog", lambda refresh=False: [])
+
+    roles = {r["role"]: r for r in model_catalog.settings_catalog()["agent_roles"]}
+    assert (roles["curator"]["routed"], roles["curator"]["routed_at"]) == (True, 1234)
+    assert (roles["curator"]["cli"], roles["curator"]["cli_dynamic"]) == ("codex", False)
+    assert (roles["shadow_observer"]["routed"], roles["shadow_observer"]["routed_at"]) == (False, 0)
