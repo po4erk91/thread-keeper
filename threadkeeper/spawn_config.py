@@ -16,6 +16,10 @@ Agent resolution per role (highest first):
 Model and effort resolution: role override -> role default (same CLI only)
 -> CLI default -> "".
 
+A role whose loop value is `auto` first uses the model router's latest valid
+decision (`model_routes.active_route`); all three values then come from that
+decision. Without one, `auto` keeps the active-CLI meaning.
+
 Roles map to LLM-backed spawn() call-sites: shadow_observer, archivist,
 candidate_reviewer, curator, dialectic_validator, probe_runner,
 evolve_researcher, evolve_reviewer, and evolve_applier. Mechanical extract and
@@ -132,6 +136,26 @@ def roles_on_auto() -> list[str]:
     ]
 
 
+def route_for(role: str):
+    """The model router's decision for a role set to `auto`, or None."""
+    role_key = _norm(role)
+    if role_key == ROUTER_ROLE or _norm(_spawn().loop.get(role_key)) != "auto":
+        return None
+    from .model_routes import active_route
+
+    return active_route(role_key)
+
+
+def _routed_details(role_key: str, route) -> dict[str, str]:
+    source = "model router"
+    return {
+        "role": role_key,
+        "cli": route.cli, "cli_source": source, "cli_source_key": "",
+        "model": route.model, "model_source": source, "model_source_key": "",
+        "effort": route.effort, "effort_source": source, "effort_source_key": "",
+    }
+
+
 def _top_level_spawn_overrides(
     environ: Optional[dict[str, str]] = None,
 ) -> dict[str, str]:
@@ -211,8 +235,12 @@ def _process_override_key(*keys: str) -> str:
 
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Which CLI runs the spawned child for this role. Priority:
-    spawn.loop[role] -> role default -> spawn.default -> active CLI -> 'claude'.
-    'auto' in loop/default defers to the active CLI."""
+    model-router route (role on auto) -> spawn.loop[role] -> role default
+    -> spawn.default -> active CLI -> 'claude'.
+    'auto' without a route defers to the active CLI."""
+    route = route_for(role)
+    if route is not None:
+        return route.cli
     sp = _spawn()
     role_key = _norm(role)
     cli = _norm_cli(sp.loop.get(role_key))
@@ -233,6 +261,8 @@ def agent_cli_is_dynamic(role: str, active_cli: Optional[str] = None) -> bool:
     """Whether routing still depends on the host CLI selected at spawn time."""
     if _norm_cli(active_cli) in SUPPORTED_CLIS:
         return False
+    if route_for(role) is not None:
+        return False
     sp = _spawn()
     role_key = _norm(role)
     if _norm_cli(sp.loop.get(role_key)) in SUPPORTED_CLIS:
@@ -248,6 +278,9 @@ def resolve_model(cli: str, role: str = "") -> str:
     legacy positional callers — resolve_model("claude") — keep working."""
     models = _spawn().model
     if role:
+        route = route_for(role)
+        if route is not None and route.cli == _norm_cli(cli):
+            return route.model
         v = models.get(role.lower())
         if isinstance(v, str) and v.strip():
             return v.strip()
@@ -275,6 +308,9 @@ def resolve_effort(cli: str, role: str = "") -> str:
     """
     efforts = _spawn().effort
     if role:
+        route = route_for(role)
+        if route is not None and route.cli == _norm_cli(cli):
+            return route.effort
         value = efforts.get(role.lower())
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
@@ -295,8 +331,11 @@ def resolve_effort(cli: str, role: str = "") -> str:
 
 def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str, str]:
     """Effective role settings plus the inheritance source for each value."""
-    sp = _spawn()
     role_key = _norm(role)
+    route = route_for(role_key)
+    if route is not None:
+        return _routed_details(role_key, route)
+    sp = _spawn()
     cli = resolve_agent(role_key, active_cli)
     role_cli = _norm_cli(sp.loop.get(role_key))
     role_cli_key = _env_suffix("THREADKEEPER_SPAWN__LOOP__", role_key)
@@ -393,6 +432,44 @@ def _env_suffix(prefix: str, key: str) -> str:
     return f"{prefix}{str(key).upper()}"
 
 
+def _pinned_sections(sp, role: str) -> list[str]:
+    return [
+        section for section, values in (("MODEL", sp.model), ("EFFORT", sp.effort))
+        if _norm(values.get(role))
+    ]
+
+
+def _stale_route_warning(role: str) -> list[str]:
+    from .model_routes import stale_route
+
+    route = stale_route(role)
+    if route is None:
+        return []
+    return [
+        "  warning: model router decision for "
+        f"{role} ({route.cli} {route.model} {route.effort}) is no longer in the "
+        "model catalog; the role follows the active CLI until the next pass"
+    ]
+
+
+def _routed_role_warnings(sp) -> tuple[list[str], set[str]]:
+    """Warnings for pins a route overrides, plus the set of routed roles."""
+    warnings: list[str] = []
+    routed: set[str] = set()
+    for role in roles_on_auto():
+        if route_for(role) is None:
+            warnings.extend(_stale_route_warning(role))
+            continue
+        routed.add(role)
+        warnings.extend(
+            "  warning: "
+            f"{_env_suffix(f'THREADKEEPER_SPAWN__{section}__', role)} is ignored "
+            "while the role is on auto and routed by the model router"
+            for section in _pinned_sections(sp, role)
+        )
+    return warnings, routed
+
+
 def _spawn_warnings(
     active_cli: Optional[str],
     advertised_models: Optional[dict[str, list[str]]] = None,
@@ -400,6 +477,8 @@ def _spawn_warnings(
     """Warnings for configured spawn values that summary_table would ignore."""
     sp = _spawn()
     warnings = []
+    routed_warnings, routed_roles = _routed_role_warnings(sp)
+    warnings.extend(routed_warnings)
     default_raw = _norm(sp.default)
     default = _norm_cli(sp.default)
     if default_raw and default_raw != "auto" and default not in SUPPORTED_CLIS:
@@ -427,6 +506,8 @@ def _spawn_warnings(
     for key, model in sorted(sp.model.items()):
         model_key = _norm_cli(key)
         role_key = _norm(key)
+        if role_key in routed_roles:
+            continue
         if (
             role_key
             and model_key not in KNOWN_MODEL_KEYS
@@ -475,6 +556,8 @@ def _spawn_warnings(
     for key, raw_effort in sorted(sp.effort.items()):
         model_key = _norm_cli(key)
         role_key = _norm(key)
+        if role_key in routed_roles:
+            continue
         if model_key not in KNOWN_EFFORT_KEYS and role_key not in KNOWN_EFFORT_KEYS:
             warnings.append(
                 "  warning: "
