@@ -99,3 +99,42 @@ def test_unparseable_or_unknown_input(fresh_mp, monkeypatch):
 def test_pass_id_reaches_child_mcp_env():
     from threadkeeper.adapters.base import CHILD_MCP_ENV_KEYS
     assert "THREADKEEPER_MODEL_ROUTER_PASS_ID" in CHILD_MCP_ENV_KEYS
+
+
+def test_status_without_auto_roles(fresh_mp):
+    from threadkeeper.tools.model_router import model_router_status
+    text = model_router_status()
+    assert "interval_s=0 fallback=codex/gpt-6.1-sol/xhigh" in text
+    assert "last pass: none" in text
+    assert "auto roles: (none)" in text
+
+
+def test_status_lists_routes_and_missing_decisions(fresh_mp, monkeypatch):
+    from threadkeeper import model_routes
+    from threadkeeper.tools.model_router import model_router_status
+    conn = fresh_mp["db"].get_db()
+    monkeypatch.setattr(fresh_mp["config"], "MODEL_ROUTER_INTERVAL_S", 604800.0)
+    monkeypatch.setitem(fresh_mp["config"].settings.spawn.loop, "curator", "auto")
+    monkeypatch.setitem(fresh_mp["config"].settings.spawn.loop, "probe_runner", "auto")
+    monkeypatch.setattr(model_routes, "cached_options",
+                        lambda: model_routes.options_from_catalog(CATALOG))
+    router_pass = model_routes.open_pass(conn, ["curator", "probe_runner"], 1000)
+    model_routes.insert_routes(conn, [DECISIONS[0]], router_pass.pass_id, 1000)
+    conn.commit()
+
+    text = model_router_status()
+    assert f"last pass: {router_pass.pass_id} status=running attempt=primary" in text
+    assert "auto roles: curator, probe_runner" in text
+    assert "curator: codex gpt-5.6-luna high since" in text
+    assert "luna matches terra outcomes at lower cost" in text
+    assert "probe_runner: no decision yet — follows active CLI" in text
+
+
+def test_run_tool_forces_a_tick(fresh_mp, monkeypatch):
+    from threadkeeper import model_router
+    from threadkeeper.tools.model_router import model_router_run
+    seen = {}
+    monkeypatch.setattr(model_router, "run_router_pass",
+                        lambda force=False, scheduled=False: seen.setdefault("force", force) and "ok")
+    assert model_router_run() == "ok"
+    assert seen == {"force": True}

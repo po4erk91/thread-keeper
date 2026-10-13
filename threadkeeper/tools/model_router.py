@@ -1,6 +1,8 @@
 """Model router MCP tools.
 
   model_route_write(pass_id, decisions) — the router child records its decisions
+  model_router_run(force=True)          — run one router tick now
+  model_router_status()                 — config, last pass, current routes
 """
 from __future__ import annotations
 
@@ -12,9 +14,10 @@ from typing import Any
 
 from .. import config
 from .. import model_routes as routes
-from .._mcp import write_tool
+from .._mcp import read_tool, write_tool
 from ..agent_metadata import ROUTER_ROLE
 from ..db import get_db
+from ..helpers import fmt_age
 from ..identity import _emit, _ensure_session
 
 
@@ -90,3 +93,56 @@ def model_route_write(pass_id: str, decisions: list[dict] | str) -> str:
     if errors:
         return "ERR invalid_decisions\n" + "\n".join(f"- {e}" for e in errors)
     return f"ok {_record(conn, router_pass, decision_list)}"
+
+
+def _config_line() -> str:
+    return (
+        f"interval_s={float(config.MODEL_ROUTER_INTERVAL_S):.0f} "
+        f"fallback={config.MODEL_ROUTER_FALLBACK_CLI}/"
+        f"{config.MODEL_ROUTER_FALLBACK_MODEL}/{config.MODEL_ROUTER_FALLBACK_EFFORT}"
+    )
+
+
+def _last_pass_line(router_pass: routes.RouterPass | None, now: int) -> str:
+    if router_pass is None:
+        return "last pass: none"
+    return (
+        f"last pass: {router_pass.pass_id} status={router_pass.status} "
+        f"attempt={router_pass.attempt} "
+        f"started={fmt_age(max(0, now - router_pass.started_at))} ago"
+    )
+
+
+def _route_line(role: str, now: int) -> str:
+    route = routes.active_route(role)
+    if route is None:
+        return f"  {role}: no decision yet — follows active CLI"
+    return (
+        f"  {role}: {routes.triple(route.cli, route.model, route.effort)} "
+        f"since {fmt_age(max(0, now - route.decided_at))} ago — {route.reason}"
+    )
+
+
+@write_tool()
+def model_router_run(force: bool = True) -> str:
+    """Run one model-router tick now. force=True starts a pass even when
+    none is due (a pass that is already running is never duplicated)."""
+    from ..model_router import run_router_pass
+
+    return run_router_pass(force=force)
+
+
+@read_tool()
+def model_router_status() -> str:
+    """Model-router config, last pass, and the current route of each auto role."""
+    from ..spawn_config import roles_on_auto
+
+    now = int(time.time())
+    roles = roles_on_auto()
+    lines = [
+        _config_line(),
+        _last_pass_line(routes.latest_pass(get_db()), now),
+        "auto roles: " + (", ".join(roles) if roles else "(none)"),
+    ]
+    lines.extend(_route_line(role, now) for role in roles)
+    return "\n".join(lines)

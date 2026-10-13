@@ -1889,7 +1889,7 @@ below).
 | skills | skill_manage, skill_record, skill_list, curator_run, review_thread |
 | dialectic | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
 | dialectic_feed | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
-| model_router | model_route_write |
+| model_router | model_route_write, model_router_run, model_router_status |
 | probes | register_probe, run_probe, record_attempt, reliability_for, weak_spots |
 | core_memory | core_set, core_get, core_list, core_remove |
 | extract | extract_recent, review_candidates, accept_candidate, reject_candidate |
