@@ -44,6 +44,7 @@ _DAEMON_STARTERS = [
     ("thread_janitor", "start_thread_janitor"),
     ("dialectic_miner", "start_dialectic_miner_daemon"),
     ("dialectic_validator", "start_dialectic_validator_daemon"),
+    ("model_router", "start_model_router_daemon"),
     # Must start after the monitored loops so its first observation is a
     # health snapshot, not a burst of startup retries.
     ("daemon_supervisor", "start_daemon_supervisor"),
