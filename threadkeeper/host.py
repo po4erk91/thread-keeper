@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from . import config
@@ -236,29 +237,52 @@ def ensure_host_running() -> bool:
             # survived SIGKILL): a spawn could not win the election anyway.
             return False
         log = open(config.HOST_LOCK_PATH.parent / "host.log", "ab", buffering=0)
-        # Sanitize the env for the detached host. If a spawned review child
-        # (THREADKEEPER_SPAWNED_CHILD=1, non-foreground THREADKEEPER_WRITE_ORIGIN)
-        # is the first process to call ensure_host_running(), a bare env
-        # inheritance would carry those markers into the host. Since
-        # config.BACKGROUND_DAEMONS_ALLOWED = not SPAWNED_CHILD and
-        # WRITE_ORIGIN=="foreground" and not DISABLE_BG_DAEMONS, that would make
-        # ~13 of the 18 daemon starters self-gate off in the host process — it
-        # would still bind the embed socket and heartbeat (looks alive, holds
-        # the election lock) while running almost none of its loops. Force a
-        # clean foreground-equivalent env instead, regardless of who spawned it.
-        env = os.environ.copy()
-        env.pop("THREADKEEPER_SPAWNED_CHILD", None)
-        env["THREADKEEPER_WRITE_ORIGIN"] = "foreground"
-        env.pop("THREADKEEPER_DISABLE_BG_DAEMONS", None)
-        env.pop("THREADKEEPER_NO_EMBEDDINGS", None)
-        env["THREADKEEPER_ROLE"] = "host"  # belt-and-suspenders; main() also sets this
         subprocess.Popen(
             [sys.executable, "-m", "threadkeeper.host"],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True,
-            env=env,
+            env=_host_env(),
         )
         return True
+
+
+# If a spawned review child (THREADKEEPER_SPAWNED_CHILD=1, non-foreground
+# THREADKEEPER_WRITE_ORIGIN) is the first process to call ensure_host_running(),
+# a bare env inheritance would carry those markers into the host. Since
+# config.BACKGROUND_DAEMONS_ALLOWED = not SPAWNED_CHILD and
+# WRITE_ORIGIN=="foreground" and not DISABLE_BG_DAEMONS, ~13 of the 18 daemon
+# starters would self-gate off in the host — it would still bind the embed
+# socket and heartbeat (looks alive, holds the election lock) while running
+# almost none of its loops.
+_DAEMON_GATE_ENV = (
+    "THREADKEEPER_SPAWNED_CHILD",
+    "THREADKEEPER_DISABLE_BG_DAEMONS",
+    "THREADKEEPER_NO_EMBEDDINGS",
+)
+# Per-child identity of whichever child's MCP server spawned the host. Inherited,
+# a stale pass id would become the host's default for every later child (the
+# curator restores its pass env var to the inherited value after each launch).
+_CHILD_IDENTITY_ENV = (
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_MODEL_ROUTER_PASS_ID",
+    "THREADKEEPER_EGRESS_CONSUMER",
+)
+
+
+def _host_env() -> dict[str, str]:
+    """Clean foreground-equivalent env for the detached host, regardless of
+    which process spawns it."""
+    env = os.environ.copy()
+    for key in _DAEMON_GATE_ENV + _CHILD_IDENTITY_ENV:
+        env.pop(key, None)
+    env["THREADKEEPER_WRITE_ORIGIN"] = "foreground"
+    env["THREADKEEPER_ROLE"] = "host"  # belt-and-suspenders; main() also sets this
+    # The host is nobody's conversation: its own cid keeps it from borrowing
+    # the spawning child's cid (or, without one, a ppid/mtime guess) as the
+    # parent identity of every child it launches.
+    env["THREADKEEPER_FORCE_CID"] = str(uuid.uuid4())
+    return env
 
 
 def _host_alive() -> bool:

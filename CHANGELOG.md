@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: the daemon host no longer inherits a child's identity.** When a
+  curator or model-router child's MCP server happened to spawn the host, the
+  host kept that child's pass id, egress consumer and conversation id. The
+  curator then restored the stale pass id after every batch, so later children
+  of every loop inherited it, and all host-spawned children named the dead
+  child as their parent. The host now drops per-child identity variables and
+  gets its own conversation id on every spawn.
+
 - **Added: model router for `auto` roles.** A new weekly loop reviews spawn
   telemetry for every role whose CLI is set to `auto` and picks its CLI, model
   and effort, with a reason per decision. The router runs on Claude Opus at
