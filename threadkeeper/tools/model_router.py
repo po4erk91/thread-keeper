@@ -135,13 +135,17 @@ def model_router_run(force: bool = True) -> str:
 @read_tool()
 def model_router_status() -> str:
     """Model-router config, last pass, and the current route of each auto role."""
+    from ..model_router import describe_next_pass, read_state
     from ..spawn_config import roles_on_auto
 
     now = int(time.time())
+    conn = get_db()
     roles = roles_on_auto()
+    state = read_state(conn, now, float(config.MODEL_ROUTER_INTERVAL_S))
     lines = [
         _config_line(),
-        _last_pass_line(routes.latest_pass(get_db()), now),
+        _last_pass_line(routes.latest_pass(conn), now),
+        f"next pass: {describe_next_pass(state)}",
         "auto roles: " + (", ".join(roles) if roles else "(none)"),
     ]
     lines.extend(_route_line(role, now) for role in roles)

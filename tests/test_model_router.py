@@ -19,6 +19,8 @@ def _setup(pkg, monkeypatch, auto_roles=("curator",)):
         monkeypatch.setitem(config.settings.spawn.loop, role, "auto")
     monkeypatch.setattr(model_routes, "cached_options",
                         lambda: model_routes.options_from_catalog(CATALOG))
+    from threadkeeper import model_catalog
+    monkeypatch.setattr(model_catalog, "cli_catalog", lambda refresh=False: [])
     conn = pkg["db"].get_db()
     calls = []
 
@@ -200,3 +202,43 @@ def test_loop_is_registered(fresh_mp):
     assert ("model_router", "start_model_router_daemon") in host._DAEMON_STARTERS
     assert "model_router_pass" in _LOOP_PASS_KINDS
     assert _LOOP_TASK_PREFIXES["model_router"] == "You are a MODEL ROUTER"
+
+
+def test_empty_catalog_skips_without_opening_a_pass(fresh_mp, monkeypatch):
+    from threadkeeper import model_catalog
+    router, routes, conn, calls = _setup(fresh_mp, monkeypatch)
+    refreshed = []
+    monkeypatch.setattr(model_catalog, "cli_catalog",
+                        lambda refresh=False: refreshed.append(refresh) or [])
+    monkeypatch.setattr(routes, "cached_options", lambda: {})
+
+    assert router.run_router_pass() == "skip catalog_unavailable"
+    assert refreshed == [False]
+    assert calls == []
+    assert routes.latest_pass(conn) is None
+
+
+def test_start_refreshes_catalog_before_building_the_prompt(fresh_mp, monkeypatch):
+    from threadkeeper import model_catalog
+    router, _, _, calls = _setup(fresh_mp, monkeypatch)
+    refreshed = []
+    monkeypatch.setattr(model_catalog, "cli_catalog",
+                        lambda refresh=False: refreshed.append(refresh) or [])
+
+    assert router.run_router_pass().startswith("spawned attempt=primary")
+    assert refreshed == [False]
+    assert "codex / gpt-6.1-sol: low, medium, high, xhigh" in calls[0]["prompt"]
+
+
+def test_router_child_may_only_call_route_write(fresh_mp, monkeypatch):
+    from threadkeeper import model_router
+    import threadkeeper.tools.spawn as spawn_mod
+    seen = {}
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
+                        lambda **kwargs: seen.update(kwargs) or "ok task=tk_x pid=1")
+
+    model_router._spawn_child("prompt", cli="codex", model="gpt-6.1-sol", effort="xhigh")
+    assert seen["allowed_tools_override"] == (model_router.ROUTER_TOOL,)
+    assert seen.get("extra_allowed_tools", "") == ""
+    assert (seen["role"], seen["write_origin"]) == ("model_router", "model_router")
+    assert (seen["cli"], seen["model"], seen["effort"]) == ("codex", "gpt-6.1-sol", "xhigh")

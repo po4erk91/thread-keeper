@@ -479,3 +479,35 @@ def test_watchdog_continuation_inherits_curator_pass_identity(
 
     assert seen == ["20260927T101010"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
+
+
+def test_watchdog_leaves_model_router_retry_to_its_loop(mp_with_cid, monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "2")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    killed: list[int] = []
+    calls: list[dict] = []
+    monkeypatch.setattr(sb, "_terminate_tree", lambda pid, grace: killed.append(pid))
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", lambda **kwargs: calls.append(kwargs))
+
+    conn = _insert_running(pkg, "tk_router_hung", os.getpid(), int(time.time()) - 200,
+                           prompt="You are a MODEL ROUTER")
+    pkg["identity"]._ensure_session(conn)
+    conn.execute("UPDATE tasks SET role='model_router' WHERE id='tk_router_hung'")
+    conn.commit()
+
+    sb._refresh_all_running(conn)
+
+    assert killed == [os.getpid()]
+    assert calls == []
+    event = conn.execute(
+        "SELECT summary FROM events WHERE kind='spawn_timeout_retry_skipped' "
+        "AND target='tk_router_hung'").fetchone()
+    assert event is not None
+    assert "model_router" in event["summary"]
+

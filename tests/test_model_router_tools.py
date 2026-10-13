@@ -107,6 +107,7 @@ def test_status_without_auto_roles(fresh_mp):
     assert "interval_s=0 fallback=codex/gpt-6.1-sol/xhigh" in text
     assert "last pass: none" in text
     assert "auto roles: (none)" in text
+    assert "next pass: disabled" in text
 
 
 def test_status_lists_routes_and_missing_decisions(fresh_mp, monkeypatch):
@@ -128,6 +129,7 @@ def test_status_lists_routes_and_missing_decisions(fresh_mp, monkeypatch):
     assert "curator: codex gpt-5.6-luna high since" in text
     assert "luna matches terra outcomes at lower cost" in text
     assert "probe_runner: no decision yet — follows active CLI" in text
+    assert "next pass: running (attempt primary)" in text
 
 
 def test_run_tool_forces_a_tick(fresh_mp, monkeypatch):
@@ -138,3 +140,55 @@ def test_run_tool_forces_a_tick(fresh_mp, monkeypatch):
                         lambda force=False, scheduled=False: seen.setdefault("force", force) and "ok")
     assert model_router_run() == "ok"
     assert seen == {"force": True}
+
+
+def _enable(pkg, monkeypatch, roles=("curator",)):
+    from threadkeeper import model_routes
+    monkeypatch.setattr(pkg["config"], "MODEL_ROUTER_INTERVAL_S", 604800.0)
+    for role in roles:
+        monkeypatch.setitem(pkg["config"].settings.spawn.loop, role, "auto")
+    monkeypatch.setattr(model_routes, "cached_options",
+                        lambda: model_routes.options_from_catalog(CATALOG))
+    return pkg["db"].get_db()
+
+
+def _next_pass_line(text):
+    return next(line for line in text.splitlines() if line.startswith("next pass:"))
+
+
+def test_status_next_pass_without_auto_roles(fresh_mp, monkeypatch):
+    from threadkeeper.tools.model_router import model_router_status
+    _enable(fresh_mp, monkeypatch, roles=())
+    assert _next_pass_line(model_router_status()) == "next pass: none (no auto roles)"
+
+
+def test_status_next_pass_due_now_without_decision(fresh_mp, monkeypatch):
+    from threadkeeper.tools.model_router import model_router_status
+    _enable(fresh_mp, monkeypatch)
+    assert _next_pass_line(model_router_status()) == "next pass: due now"
+
+
+def test_status_next_pass_after_completed_pass(fresh_mp, monkeypatch):
+    import time
+    from threadkeeper import model_routes
+    from threadkeeper.tools.model_router import model_router_status
+    conn = _enable(fresh_mp, monkeypatch)
+    now = int(time.time())
+    router_pass = model_routes.open_pass(conn, ["curator"], now - 86400)
+    model_routes.insert_routes(conn, [DECISIONS[0]], router_pass.pass_id, now - 86400)
+    model_routes.finish_pass(conn, router_pass.pass_id, "complete", now - 86400)
+    conn.commit()
+    assert _next_pass_line(model_router_status()) == "next pass: in 6d"
+
+
+def test_status_next_pass_in_backoff(fresh_mp, monkeypatch):
+    import time
+    from threadkeeper import model_routes
+    from threadkeeper.tools.model_router import model_router_status
+    conn = _enable(fresh_mp, monkeypatch)
+    now = int(time.time())
+    router_pass = model_routes.open_pass(conn, ["curator"], now - 3600)
+    model_routes.finish_pass(conn, router_pass.pass_id, "failed", now - 3600)
+    conn.commit()
+    assert _next_pass_line(model_router_status()) == "next pass: backoff, retry in 5h"
+

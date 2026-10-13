@@ -272,61 +272,52 @@ def agent_cli_is_dynamic(role: str, active_cli: Optional[str] = None) -> bool:
     return _norm_cli(sp.default) not in SUPPORTED_CLIS
 
 
+def _cli_value_keys(cli: str) -> list[str]:
+    keys = [_norm_cli(cli), _norm(cli)]
+    if _norm_cli(cli) == "antigravity":
+        keys.append("agy")
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def _role_value(values: dict, cli: str, role: str, field: str) -> str:
+    """Route (role on auto, same CLI) -> role pin -> role default."""
+    route = route_for(role)
+    if route is not None and route.cli == _norm_cli(cli):
+        return getattr(route, field)
+    pinned = values.get(role.lower())
+    if isinstance(pinned, str) and pinned.strip():
+        return pinned.strip()
+    return _role_default(role, cli, field)
+
+
+def _configured_value(values: dict, cli: str, role: str, field: str) -> str:
+    if role:
+        role_value = _role_value(values, cli, role, field)
+        if role_value:
+            return role_value
+    for key in _cli_value_keys(cli):
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def resolve_model(cli: str, role: str = "") -> str:
     """Configured model for this spawn, or "" (let the CLI use its default).
-    Priority: spawn.model[role] -> spawn.model[cli] -> "". `role` is optional so
-    legacy positional callers — resolve_model("claude") — keep working."""
-    models = _spawn().model
-    if role:
-        route = route_for(role)
-        if route is not None and route.cli == _norm_cli(cli):
-            return route.model
-        v = models.get(role.lower())
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        default = _role_default(role, cli, "model")
-        if default:
-            return default
-    keys = [_norm_cli(cli), _norm(cli)]
-    for key in dict.fromkeys(k for k in keys if k):
-        v = models.get(key)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    if _norm_cli(cli) == "antigravity":
-        v = models.get("agy")
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return ""
+    Priority: route (role on auto) -> spawn.model[role] -> role default ->
+    spawn.model[cli] -> "". `role` is optional so legacy positional callers —
+    resolve_model("claude") — keep working."""
+    return _configured_value(_spawn().model, cli, role, "model")
 
 
 def resolve_effort(cli: str, role: str = "") -> str:
     """Configured effort for a spawn, or empty for the CLI-native default.
 
-    Priority mirrors model resolution: role override, then CLI default.  Agy's
-    ``AGY`` alias is accepted, but Antigravity does not support an independent
-    effort flag; validation warns and adapters intentionally ignore it.
+    Priority mirrors model resolution. Agy's ``AGY`` alias is accepted, but
+    Antigravity does not support an independent effort flag; validation warns
+    and adapters intentionally ignore it.
     """
-    efforts = _spawn().effort
-    if role:
-        route = route_for(role)
-        if route is not None and route.cli == _norm_cli(cli):
-            return route.effort
-        value = efforts.get(role.lower())
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-        default = _role_default(role, cli, "effort")
-        if default:
-            return default
-    keys = [_norm_cli(cli), _norm(cli)]
-    for key in dict.fromkeys(k for k in keys if k):
-        value = efforts.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    if _norm_cli(cli) == "antigravity":
-        value = efforts.get("agy")
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    return ""
+    return _configured_value(_spawn().effort, cli, role, "effort").lower()
 
 
 def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str, str]:

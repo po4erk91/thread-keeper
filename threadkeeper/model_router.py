@@ -8,6 +8,7 @@ fails both ways backs off before the primary is tried again.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 import os
 import sqlite3
@@ -19,7 +20,7 @@ from . import config, daemon_state, identity
 from . import model_routes as routes
 from .agent_metadata import ROUTER_ROLE
 from .db import get_db
-from .helpers import alive, daemon_sleep, single_flight_lock
+from .helpers import alive, daemon_sleep, fmt_age, single_flight_lock
 from .identity import _ensure_session
 from .spawn_result import parse_spawn_result
 
@@ -97,6 +98,15 @@ def _due(state: TickState) -> bool:
     return state.now - state.last_complete_at >= state.interval_s
 
 
+def _retry_in(state: TickState) -> int:
+    return max(0, int(state.last_pass.ended_at or 0) + _BACKOFF_S - state.now)
+
+
+def _due_in(state: TickState) -> int:
+    next_due = int(state.last_complete_at or state.now) + int(state.interval_s)
+    return max(0, next_due - state.now)
+
+
 def decide(state: TickState) -> str:
     """Name the single action this tick takes."""
     if not state.roles:
@@ -129,23 +139,48 @@ def _child_running(conn: sqlite3.Connection, task_id: str, now: int) -> bool:
     return False
 
 
-def _tick_state(conn: sqlite3.Connection, now: int, interval_s: float,
-                force: bool) -> TickState:
+def read_state(conn: sqlite3.Connection, now: int, interval_s: float,
+               force: bool = False) -> TickState:
+    """Tick inputs without probing (or reaping) the pass's child process."""
     from .spawn_config import roles_on_auto
 
     roles = tuple(roles_on_auto())
-    last_pass = routes.latest_pass(conn)
-    pending_task = last_pass.task_id if last_pass and last_pass.status == "running" else ""
     return TickState(
         roles=roles,
-        last_pass=last_pass,
-        child_running=_child_running(conn, pending_task, now),
+        last_pass=routes.latest_pass(conn),
+        child_running=False,
         last_complete_at=routes.last_complete_at(conn),
         missing_route=any(routes.active_route(role) is None for role in roles),
         now=now,
         interval_s=interval_s,
         force=force,
     )
+
+
+def _tick_state(conn: sqlite3.Connection, now: int, interval_s: float,
+                force: bool) -> TickState:
+    state = read_state(conn, now, interval_s, force)
+    last = state.last_pass
+    pending_task = last.task_id if last and last.status == "running" else ""
+    return dataclasses.replace(
+        state, child_running=_child_running(conn, pending_task, now)
+    )
+
+
+def describe_next_pass(state: TickState) -> str:
+    """Operator wording for when the next pass runs."""
+    if state.interval_s <= 0:
+        return "disabled"
+    if not state.roles:
+        return "none (no auto roles)"
+    last = state.last_pass
+    if last is not None and last.status == "running":
+        return f"running (attempt {last.attempt})"
+    if _in_backoff(state):
+        return f"backoff, retry in {fmt_age(_retry_in(state))}"
+    if _due(state):
+        return "due now"
+    return f"in {fmt_age(_due_in(state))}"
 
 
 def build_prompt(conn: sqlite3.Connection, router_pass: routes.RouterPass) -> str:
@@ -179,7 +214,7 @@ def _spawn_child(prompt: str, cli: str = "", model: str = "", effort: str = "") 
         role=ROUTER_ROLE,
         write_origin=ROUTER_ROLE,
         slim=True,
-        extra_allowed_tools=ROUTER_TOOL,
+        allowed_tools_override=(ROUTER_TOOL,),
         cli=cli,
         model=model,
         effort=effort,
@@ -243,17 +278,29 @@ def _fail(conn: sqlite3.Connection, state: TickState) -> str:
 
 
 def _backoff(conn: sqlite3.Connection, state: TickState) -> str:
-    retry_in = int(state.last_pass.ended_at or 0) + _BACKOFF_S - state.now
-    return f"backoff pass={state.last_pass.pass_id} retry_in={max(0, retry_in)}s"
+    return f"backoff pass={state.last_pass.pass_id} retry_in={_retry_in(state)}s"
+
+
+def _refreshed_options() -> dict[str, routes.CliOptions]:
+    """Refresh the TTL-bounded catalog cache, then read it: nothing else in a
+    headless host writes the cache the router validates against."""
+    from . import model_catalog
+
+    try:
+        model_catalog.cli_catalog(refresh=False)
+    except Exception:
+        logger.warning("model_router: catalog refresh failed", exc_info=True)
+    return routes.cached_options()
 
 
 def _start(conn: sqlite3.Connection, state: TickState) -> str:
+    if not _refreshed_options():
+        return "skip catalog_unavailable"
     return _launch(conn, routes.open_pass(conn, list(state.roles), state.now), "primary")
 
 
 def _idle(conn: sqlite3.Connection, state: TickState) -> str:
-    next_due = int(state.last_complete_at or state.now) + int(state.interval_s)
-    return f"idle next_due_in={max(0, next_due - state.now)}s"
+    return f"idle next_due_in={_due_in(state)}s"
 
 
 _ACTIONS: dict[str, Callable[[sqlite3.Connection, TickState], str]] = {

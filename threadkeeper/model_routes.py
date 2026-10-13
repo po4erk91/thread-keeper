@@ -168,15 +168,6 @@ def decision_errors(decisions: list[Any], expected_roles: set[str],
 
 # ── routes ──────────────────────────────────────────────────────────────────
 
-def latest_route(conn: sqlite3.Connection, role: str) -> Optional[Route]:
-    row = conn.execute(
-        f"SELECT {_ROUTE_COLUMNS} FROM model_routes WHERE role=? "
-        "ORDER BY decided_at DESC, id DESC LIMIT 1",
-        (role,),
-    ).fetchone()
-    return Route(*row) if row else None
-
-
 def recent_routes(conn: sqlite3.Connection, role: str, limit: int = 3) -> list[Route]:
     rows = conn.execute(
         f"SELECT {_ROUTE_COLUMNS} FROM model_routes WHERE role=? "
@@ -184,6 +175,10 @@ def recent_routes(conn: sqlite3.Connection, role: str, limit: int = 3) -> list[R
         (role, limit),
     ).fetchall()
     return [Route(*row) for row in rows]
+
+
+def latest_route(conn: sqlite3.Connection, role: str) -> Optional[Route]:
+    return next(iter(recent_routes(conn, role, 1)), None)
 
 
 def _normalized(decision: dict[str, str]) -> dict[str, str]:
