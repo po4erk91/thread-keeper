@@ -13,7 +13,7 @@ The data needed to re-check already exists. The `tasks` table records `role`, `c
 
 1. A new weekly loop, the **model router**, reviews every role whose CLI is set to `auto` and records one CLI + model + effort per role, with a reason.
 2. A role on `auto` spawns with the router's latest valid decision. With no decision yet, `auto` keeps today's meaning (follow the active CLI).
-3. The router itself runs on `claude` · `claude-opus-5-5` · `max` by default. When that run fails, the same pass reruns on `codex` · `gpt-6.1-sol` · `xhigh`. A provider capacity error never costs the week.
+3. The router itself runs on `claude` · `opus` (Opus 5.5) · `max` by default. When that run fails, the same pass reruns on `codex` · `gpt-6.1-sol` · `xhigh`. A provider capacity error never costs the week.
 4. The router can only record options that exist in the local model catalog. It can never route itself.
 5. Nothing changes for roles with an explicit CLI, or when the router is disabled.
 
@@ -49,7 +49,7 @@ New settings in `config.py`:
 | `THREADKEEPER_MODEL_ROUTER_FALLBACK_MODEL` | `gpt-6.1-sol` | Model for the fallback attempt |
 | `THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT` | `xhigh` | Effort for the fallback attempt |
 
-The primary attempt uses the normal role keys (`THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER`, `…__MODEL__MODEL_ROUTER`, `…__EFFORT__MODEL_ROUTER`). When those are unset, a new code-level `ROLE_DEFAULTS` entry in `spawn_config.py` supplies `claude` / `claude-opus-5-5` / `max`:
+The primary attempt uses the normal role keys (`THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER`, `…__MODEL__MODEL_ROUTER`, `…__EFFORT__MODEL_ROUTER`). When those are unset, a new code-level `ROLE_DEFAULTS` entry in `spawn_config.py` supplies `claude` / `opus` / `max`. The `opus` alias is used because the installed Claude Code (2.1.278) reports `unrecognized_model` for the full `claude-opus-5-5` ID and accepts the alias, which currently points to Opus 5.5:
 
 - CLI: `spawn.loop[role]` → `ROLE_DEFAULTS[role].cli` → `spawn.default` → active CLI → `claude`.
 - Model and effort: `spawn.model[role]` / `spawn.effort[role]` → `ROLE_DEFAULTS[role]`, **only when the resolved CLI equals the default's CLI** (so `LOOP__MODEL_ROUTER=codex` never inherits a Claude model) → CLI default → CLI native default.
@@ -93,17 +93,31 @@ CREATE INDEX IF NOT EXISTS idx_model_routes_role
 
 The latest row per role is the current route. Older rows are the history the router reads next week. A "keep" decision is still a row, so every pass leaves a complete record for each role it reviewed.
 
+Pass state lives in a second additive table, because `daemon_state` only stores one timestamp per loop:
+
+```sql
+CREATE TABLE IF NOT EXISTS model_router_passes (
+    pass_id     TEXT PRIMARY KEY,
+    roles_json  TEXT NOT NULL,
+    attempt     TEXT NOT NULL CHECK(attempt IN ('primary','fallback')),
+    task_id     TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'running'
+                CHECK(status IN ('running','complete','failed')),
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER
+);
+```
+
 ### 4. The loop (`threadkeeper/model_router.py`)
 
-The daemon follows the existing pattern: `start_model_router_daemon` → `_serve_loop` → `run_router_pass(force=False, scheduled=True)`, with an hourly tick (`_TICK_S = 3600`). It is registered in `host.py`, in `agent_status._LOOP_DEFS` and `_DAEMON_BINDINGS` (event `model_router_pass`), and in `agent_status._ROLE_HINTS` so its children are attributed to the role. A `daemon_state.claim_pass` single-flight claim prevents two hosts from starting the same pass.
+The daemon follows the existing pattern: `start_model_router_daemon` → `_serve_loop` → `run_router_pass(force=False, scheduled=True)`, with an hourly tick (`_TICK_S = 3600`). It is registered in `host.py`, in `agent_status._LOOP_DEFS` and `_DAEMON_BINDINGS` (event `model_router_pass`), and in `agent_status._ROLE_HINTS` so its children are attributed to the role. A `daemon_state.claim_pass` cadence claim plus `helpers.single_flight_lock` prevent two processes from ticking at once.
 
-Pass state (pass id, the snapshot of `auto` roles the pass covers, attempt `primary`|`fallback`, task id, failed-at) is stored in `daemon_state`. Each tick resolves to exactly one action:
+Pass state (pass id, the snapshot of `auto` roles the pass covers, attempt `primary`|`fallback`, task id, status) is stored in `model_router_passes`. Each tick resolves to exactly one action:
 
 | condition | action |
 |---|---|
 | interval `<= 0`, or no role on `auto` | record `skip` |
 | a router child for the current pass is still running | record `running` |
-| current pass's child exited and `model_routes` has rows for every role in the pass | mark the pass complete, record `decided changed=N kept=M` |
 | primary child exited without a complete decision (non-zero exit, or exit 0 without writing) | spawn the fallback attempt for the same pass |
 | fallback child exited without a complete decision | mark the pass failed at `now`, record `failed` |
 | last pass failed less than 6 h ago | record `backoff` |
@@ -140,7 +154,7 @@ A `write_tool(idempotent=True)` in `threadkeeper/tools/model_router.py`. `decisi
   - The model must be listed for that CLI.
   - The effort must be allowed for that model, or empty for Antigravity.
   - The reason must be non-empty and at most 500 characters.
-- **Write:** one transaction inserts all rows, emits a `model_router_pass` event with a summary such as `routed 1/4: shadow_observer codex gpt-5.6-terra xhigh → codex gpt-5.6-luna high`, and returns `ok` with the same summary.
+- **Write:** one transaction inserts all rows, marks the pass `complete`, emits a `model_router_pass` event with a summary such as `routed 1/4: shadow_observer codex gpt-5.6-terra xhigh → codex gpt-5.6-luna high`, and returns `ok` with the same summary.
 
 ### 7. Operator surfaces
 
