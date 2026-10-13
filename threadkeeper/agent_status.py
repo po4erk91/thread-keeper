@@ -908,7 +908,7 @@ def _is_result_line(line: str) -> bool:
     return False
 
 
-def _extract_useful_result(task_id: str) -> str:
+def extract_useful_result(task_id: str) -> str:
     sample = _read_log_sample(task_id)
     if not sample:
         return ""
@@ -981,7 +981,7 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
         loop = role_loop.get(role)
         if not loop:
             continue
-        summary = _extract_useful_result(row["id"])
+        summary = extract_useful_result(row["id"])
         if not summary:
             continue
         ended_at = int(row["ended_at"] or now)
