@@ -521,3 +521,77 @@ def test_cross_provider_advertised_claude_models_are_not_rejected(
     })
     out = sc.summary_table(None)
     assert "Claude-family model" not in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# model_router role defaults
+# ──────────────────────────────────────────────────────────────────────
+
+def test_model_router_settings_defaults():
+    from threadkeeper.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["model_router_interval_s"].default == 604800.0
+    assert fields["model_router_fallback_cli"].default == "codex"
+    assert fields["model_router_fallback_model"].default == "gpt-6.1-sol"
+    assert fields["model_router_fallback_effort"].default == "xhigh"
+
+
+def test_model_router_derived_constants(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_MODEL_ROUTER_INTERVAL_S": "3600",
+        "THREADKEEPER_MODEL_ROUTER_FALLBACK_CLI": " Codex ",
+        "THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT": "HIGH",
+    })
+    import threadkeeper.config as c
+
+    assert c.MODEL_ROUTER_INTERVAL_S == 3600.0
+    assert c.MODEL_ROUTER_FALLBACK_CLI == "codex"
+    assert c.MODEL_ROUTER_FALLBACK_MODEL == "gpt-6.1-sol"
+    assert c.MODEL_ROUTER_FALLBACK_EFFORT == "high"
+
+
+def test_model_router_defaults_to_claude_opus_max(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_agent("model_router", "codex") == "claude"
+    assert sc.resolve_model("claude", "model_router") == "opus"
+    assert sc.resolve_effort("claude", "model_router") == "max"
+    details = sc.resolution_details("model_router", "codex")
+    assert (
+        details["cli_source"], details["model_source"], details["effort_source"]
+    ) == ("role default", "role default", "role default")
+    assert sc.agent_cli_is_dynamic("model_router", None) is False
+
+
+def test_router_role_default_model_needs_matching_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "codex",
+    })
+    assert sc.resolve_agent("model_router", None) == "codex"
+    assert sc.resolve_model("codex", "model_router") == ""
+    assert sc.resolve_effort("codex", "model_router") == ""
+
+
+def test_router_role_pins_beat_role_default(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__MODEL__MODEL_ROUTER": "sonnet",
+        "THREADKEEPER_SPAWN__EFFORT__MODEL_ROUTER": "high",
+    })
+    assert sc.resolve_model("claude", "model_router") == "sonnet"
+    assert sc.resolve_effort("claude", "model_router") == "high"
+
+
+def test_router_role_on_auto_follows_active_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "auto",
+    })
+    assert sc.resolve_agent("model_router", "codex") == "codex"
+
+
+def test_roles_on_auto_normalizes_case_and_space(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": " Auto ",
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "auto",
+        "THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER": "codex",
+    })
+    assert sc.roles_on_auto() == ["curator"]

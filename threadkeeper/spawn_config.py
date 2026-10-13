@@ -10,10 +10,11 @@ keys (double-underscore), dict keys lowercased:
     THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet            # cli or role -> model
 
 Agent resolution per role (highest first):
-    spawn.loop[role] -> spawn.default -> active CLI -> "claude"
+    spawn.loop[role] -> ROLE_DEFAULTS[role] -> spawn.default -> active CLI -> "claude"
 `"auto"` in loop/default explicitly defers to the active CLI.
 
-Model and effort resolution: role override -> CLI default -> "".
+Model and effort resolution: role override -> role default (same CLI only)
+-> CLI default -> "".
 
 Roles map to LLM-backed spawn() call-sites: shadow_observer, archivist,
 candidate_reviewer, curator, dialectic_validator, probe_runner,
@@ -29,7 +30,7 @@ import re
 from typing import Optional
 
 from . import config
-from .agent_metadata import AGENT_ROLE_NAMES
+from .agent_metadata import AGENT_ROLE_NAMES, ROUTER_ROLE
 
 # A model name that clearly belongs to Anthropic's Claude family. Used only to
 # warn when such a model is routed to a non-Claude CLI (e.g. `opus` on codex),
@@ -88,6 +89,13 @@ EFFORT_OPTIONS = {
     "antigravity": (),
 }
 
+# Code-level defaults for roles whose right model differs from the CLI default.
+# Model and effort apply only while the role still resolves to `cli`, so
+# pinning another CLI never inherits a model that CLI would reject.
+ROLE_DEFAULTS: dict[str, dict[str, str]] = {
+    ROUTER_ROLE: {"cli": "claude", "model": "opus", "effort": "max"},
+}
+
 
 def _spawn():
     """Live read of spawn settings (re-read each call so tests that reload
@@ -102,6 +110,26 @@ def _norm(v) -> str:
 def _norm_cli(v) -> str:
     cli = _norm(v)
     return CLI_ALIASES.get(cli, cli)
+
+
+def _role_cli_unset(role: str) -> bool:
+    return not _norm(_spawn().loop.get(_norm(role)))
+
+
+def _role_default(role: str, cli: str, field: str) -> str:
+    default = ROLE_DEFAULTS.get(_norm(role))
+    if default is None or default["cli"] != _norm_cli(cli):
+        return ""
+    return default[field]
+
+
+def roles_on_auto() -> list[str]:
+    """Agent roles whose CLI is set to `auto`, excluding the router itself."""
+    loop = _spawn().loop
+    return [
+        role for role in SUMMARY_ROLES
+        if role != ROUTER_ROLE and _norm(loop.get(role)) == "auto"
+    ]
 
 
 def _top_level_spawn_overrides(
@@ -183,12 +211,15 @@ def _process_override_key(*keys: str) -> str:
 
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Which CLI runs the spawned child for this role. Priority:
-    spawn.loop[role] -> spawn.default -> active CLI -> 'claude'.
+    spawn.loop[role] -> role default -> spawn.default -> active CLI -> 'claude'.
     'auto' in loop/default defers to the active CLI."""
     sp = _spawn()
-    cli = _norm_cli(sp.loop.get((role or "").lower()))
+    role_key = _norm(role)
+    cli = _norm_cli(sp.loop.get(role_key))
     if cli and cli != "auto" and cli in SUPPORTED_CLIS:
         return cli
+    if _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        return ROLE_DEFAULTS[role_key]["cli"]
     default = _norm_cli(sp.default)
     if default and default != "auto" and default in SUPPORTED_CLIS:
         return default
@@ -203,11 +234,12 @@ def agent_cli_is_dynamic(role: str, active_cli: Optional[str] = None) -> bool:
     if _norm_cli(active_cli) in SUPPORTED_CLIS:
         return False
     sp = _spawn()
-    role_cli = _norm_cli(sp.loop.get(_norm(role)))
-    if role_cli in SUPPORTED_CLIS:
+    role_key = _norm(role)
+    if _norm_cli(sp.loop.get(role_key)) in SUPPORTED_CLIS:
         return False
-    default = _norm_cli(sp.default)
-    return default not in SUPPORTED_CLIS
+    if _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        return False
+    return _norm_cli(sp.default) not in SUPPORTED_CLIS
 
 
 def resolve_model(cli: str, role: str = "") -> str:
@@ -219,6 +251,9 @@ def resolve_model(cli: str, role: str = "") -> str:
         v = models.get(role.lower())
         if isinstance(v, str) and v.strip():
             return v.strip()
+        default = _role_default(role, cli, "model")
+        if default:
+            return default
     keys = [_norm_cli(cli), _norm(cli)]
     for key in dict.fromkeys(k for k in keys if k):
         v = models.get(key)
@@ -243,6 +278,9 @@ def resolve_effort(cli: str, role: str = "") -> str:
         value = efforts.get(role.lower())
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
+        default = _role_default(role, cli, "effort")
+        if default:
+            return default
     keys = [_norm_cli(cli), _norm(cli)]
     for key in dict.fromkeys(k for k in keys if k):
         value = efforts.get(key)
@@ -271,6 +309,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     elif role_cli in SUPPORTED_CLIS:
         cli_source_key = ""
         cli_source = "role override"
+    elif _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        cli_source_key = ""
+        cli_source = "role default"
     elif default_process_key:
         cli_source_key = default_process_key
         cli_source = "process environment"
@@ -295,6 +336,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     if role_key in sp.model and _norm(sp.model.get(role_key)):
         model_source_key = _process_override_key(role_model_key)
         model_source = "process environment" if model_source_key else "role override"
+    elif _role_default(role_key, cli, "model"):
+        model_source_key = ""
+        model_source = "role default"
     elif any(_norm(sp.model.get(key)) for key in (_norm_cli(cli), _norm(cli))):
         model_source_key = _process_override_key(*cli_model_keys)
         model_source = "process environment" if model_source_key else "CLI default"
@@ -316,6 +360,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     if role_key in sp.effort and _norm(sp.effort.get(role_key)):
         effort_source_key = _process_override_key(role_effort_key)
         effort_source = "process environment" if effort_source_key else "role override"
+    elif _role_default(role_key, cli, "effort"):
+        effort_source_key = ""
+        effort_source = "role default"
     elif any(_norm(sp.effort.get(key)) for key in (_norm_cli(cli), _norm(cli))):
         effort_source_key = _process_override_key(*cli_effort_keys)
         effort_source = "process environment" if effort_source_key else "CLI default"

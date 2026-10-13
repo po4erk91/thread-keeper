@@ -591,6 +591,14 @@ class Settings(BaseSettings):
     # 0 disables the cap (pre-cap behavior: unlimited respawns).
     dialectic_obs_max_requeues: int = 3
 
+    # ── Model router daemon ──────────────────────────────────────────────────
+    # Weekly CLI/model/effort routing for roles set to `auto`. 0 disables the
+    # loop, and `auto` then keeps its pre-router meaning (follow active CLI).
+    model_router_interval_s: float = 604800.0
+    model_router_fallback_cli: str = "codex"
+    model_router_fallback_model: str = "gpt-6.1-sol"
+    model_router_fallback_effort: str = "xhigh"
+
     # ── Cross-machine sync (feature-gated; off until re-id migration ran) ──────
     # Symmetric P2P anti-entropy replication of the memory tables across a
     # user's machines. All default OFF: sync stays dormant until the operator
@@ -1021,6 +1029,12 @@ def _derive_constants(s: "Settings") -> dict:
         "DIALECTIC_VALIDATE_BATCH_SIZE": s.dialectic_validate_batch_size,
         "DIALECTIC_MAX_NEW_CLAIMS": s.dialectic_max_new_claims,
         "DIALECTIC_OBS_MAX_REQUEUES": s.dialectic_obs_max_requeues,
+        "MODEL_ROUTER_INTERVAL_S": float(s.model_router_interval_s),
+        "MODEL_ROUTER_FALLBACK_CLI": s.model_router_fallback_cli.strip().lower(),
+        "MODEL_ROUTER_FALLBACK_MODEL": s.model_router_fallback_model.strip(),
+        "MODEL_ROUTER_FALLBACK_EFFORT": (
+            s.model_router_fallback_effort.strip().lower()
+        ),
         "SYNC_INTERVAL_S": s.sync_interval_s,
         "SYNC_PEERS": s.sync_peers,
         "SYNC_LISTEN": s.sync_listen,
