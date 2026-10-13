@@ -212,8 +212,8 @@ Same change set:
 - `apps/macos-agent-status/README.md`.
 - CHANGELOG entry, including the `auto` behaviour change.
 
-## Open checks for the plan
+## Open checks (resolved during planning)
 
-- Confirm `claude --model claude-opus-5-5 --effort max` is accepted by the installed Claude Code. If the full ID is rejected, fall back to the `opus` alias and record why.
-- Confirm a Codex child can call `model_route_write` with the existing `~/.codex/config.toml` MCP wiring (already used by the Codex-routed loops).
-- Confirm the Swift app tolerates the new `config_write` impact value, or map it to an existing label.
+- Claude Code 2.1.278 reports `unrecognized_model` for `claude-opus-5-5` and accepts `opus`, so the router default is `opus`.
+- Codex children already call thread-keeper write tools from the existing Codex-routed loops; the new tool only needs to be in `extra_allowed_tools`.
+- The Swift `ImpactBadge` shows unknown values verbatim; a `config_write` case is added anyway.

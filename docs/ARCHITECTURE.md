@@ -605,6 +605,15 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` (default 3, 0 = uncapped) the row is
   terminally skipped as poison (`poison_skip` pass event) instead of respawning
   a fresh child against the same unresolvable batch every interval.
+- **model_router** — ticks hourly; starts a pass once per
+  `MODEL_ROUTER_INTERVAL_S` (default 604800, weekly) or as soon as a role set to
+  `auto` has no valid decision. The parent builds a fenced telemetry digest
+  (`model_router_digest.py`) and spawns the router (`claude`/`opus`/`max` by
+  default). The child can only call `model_route_write`, which validates every
+  decision against the model catalog and writes `model_routes` atomically. A
+  child that exits without a decision triggers one fallback run
+  (`MODEL_ROUTER_FALLBACK_*`, default `codex`/`gpt-6.1-sol`/`xhigh`); two failures
+  back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
   audits lessons, concepts, and every tracked/materialized skill through
   bounded slim-child batches. A deterministic parent phase writes
@@ -1086,6 +1095,12 @@ session via the configured CLI adapter (`claude -p`, `codex exec`, etc.).
 only thread-keeper with full state and embeddings) plans and makes decisions;
 spawned children are light-executors. Trigger: **N≥2 modular independent units,
 ≥5 min each**.
+
+`spawn_config.resolve_*` checks `route_for(role)` first: a role whose loop value
+is `auto` takes CLI, model and effort from its latest `model_routes` row when the
+cached model catalog still offers it. Otherwise resolution is unchanged:
+`SPAWN__LOOP__<role>` → `ROLE_DEFAULTS` → `SPAWN__DEFAULT` → active CLI →
+`claude`.
 
 For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
@@ -2283,6 +2298,10 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |
 | `THREADKEEPER_CANDIDATE_REVIEW_FLUSH_AGE_S` | 259200 | review an undersized queue once its oldest candidate is this old (0 = threshold only) |
+| `THREADKEEPER_MODEL_ROUTER_INTERVAL_S` | 604800 | model-router pass interval; 0 disables it and `auto` follows the active CLI |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_CLI` | codex | CLI for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_MODEL` | gpt-6.1-sol | model for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT` | xhigh | effort for the router's fallback run |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` | 3 | dense same-subtopic lessons required before the curator proposes a skill promotion |

@@ -1522,6 +1522,10 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
+| `THREADKEEPER_MODEL_ROUTER_INTERVAL_S` | 604800 (weekly) | model-router pass interval (s); 0 disables it and `auto` follows the active CLI |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_CLI` | codex | CLI for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_MODEL` | gpt-6.1-sol | model for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT` | xhigh | effort for the router's fallback run |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
 | `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` | 259200 | age-flush: an undersized observation buffer is still validated once its oldest eligible row is this old (0 = threshold only) |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
@@ -1588,7 +1592,7 @@ THREADKEEPER_SPAWN__DEFAULT=claude
 # supported CLI keys: claude, codex, antigravity (agy executable), copilot
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=claude   # heaviest reasoning → keep on Claude
 THREADKEEPER_SPAWN__LOOP__CURATOR=codex            # weekly audit → Codex is fine
-THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = follow active CLI
+THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = model router decides (active CLI until it has)
 # model pin per CLI or per role:  THREADKEEPER_SPAWN__MODEL__<KEY>=<model>
 THREADKEEPER_SPAWN__MODEL__CLAUDE=opus
 THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.5
@@ -1601,13 +1605,36 @@ THREADKEEPER_SPAWN__EFFORT__CURATOR=xhigh
 ```
 
 Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI →
-`claude`; `"auto"` (or unset) defers to the active CLI. Real environment
+`claude`; unset defers to the active CLI, and `"auto"` does too until the model
+router (below) has decided for that role. Real environment
 variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
 `copilot`). `agy` is normalized to `antigravity`. See `.env.example`
 for the full knob list. `spawn_status()` includes warnings when a configured
 spawn CLI is unsupported or a model key does not match a supported CLI/startup
 role, while keeping the same fallback resolution.
+
+### Model router (`auto` roles)
+
+Set a role's CLI to `auto` to let the weekly **model router** choose its CLI,
+model and effort:
+
+```bash
+THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=auto
+```
+
+The router reviews the last 30 days of that role's spawns (success rate,
+failures such as provider capacity errors, run time, tokens, recent outcomes)
+plus the local model catalog, and records one decision per `auto` role with a
+reason. Until it has decided, `auto` keeps its old meaning and follows the
+active CLI. While a role is routed, its `SPAWN__MODEL__<ROLE>` and
+`SPAWN__EFFORT__<ROLE>` pins are ignored and `spawn_status()` warns about them.
+
+The router runs on `claude` / `opus` / `max` (override with the usual
+`SPAWN__LOOP|MODEL|EFFORT__MODEL_ROUTER` keys). If that run fails, the same pass
+reruns on the fallback below; a pass that fails twice retries after 6 hours.
+`model_router_status()` shows current decisions and `model_router_run()` runs a
+pass now. Set `THREADKEEPER_MODEL_ROUTER_INTERVAL_S=0` to disable the router.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any

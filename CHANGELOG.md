@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: model router for `auto` roles.** A new weekly loop reviews spawn
+  telemetry for every role whose CLI is set to `auto` and picks its CLI, model
+  and effort, with a reason per decision. The router runs on Claude Opus at
+  `max` effort and reruns on `gpt-6.1-sol` at `xhigh` when that run fails.
+  New tools: `model_route_write`, `model_router_run`, `model_router_status`.
+  **Behaviour change:** roles already set to `SPAWN__LOOP__<ROLE>=auto` are
+  routed once the router records a decision (the first pass runs soon after
+  upgrade). Set `THREADKEEPER_MODEL_ROUTER_INTERVAL_S=0` to keep the old
+  meaning (follow the active CLI).
+
 - **Fixed: tables added after schema v5 now reach existing databases.**
   Durable Curator passes, staged embedding upgrades, and memory authority added
   tables to the baseline schema without a version bump. Databases already at v5

@@ -99,6 +99,11 @@ When an agent-specific model is not advertised by its newly selected CLI, the
 value remains editable as custom but the card shows an explicit provider-
 compatibility warning.
 
+Each Learning Loop agent's CLI picker also offers **Auto (model router)**. With
+Auto selected, the model and effort pickers are hidden and the card shows the
+router's current decision and its date, or "No decision yet — follows active
+CLI".
+
 ## Build
 
 ```sh
