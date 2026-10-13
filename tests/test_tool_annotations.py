@@ -68,7 +68,7 @@ WRITE_TOOLS = {
     "export_distillates", "extract_recent",
     "idle_thread", "inbox", "ingest", "lesson_append", "lesson_violation", "lesson_restore",
     "link", "live_status", "lesson_get", "lesson_list", "mark_skill_materialized",
-    "memory_guard_reclaim", "note",
+    "memory_guard_reclaim", "model_route_write", "note",
     "open_dialog_window", "open_thread", "presence", "record_attempt",
     "register_concept", "register_probe", "reject_candidate", "release_pickup",
     "respond", "review_thread", "search_via_parent", "session_end",
