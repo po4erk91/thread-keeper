@@ -657,13 +657,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the running-child check and shadow/extract exclusion cover both; dispatch is
   serialized by `evolve-reviewer.lock`. A full research → audit cycle spans two
-  due passes. Only a real spawn consumes the review slot: no-spawn outcomes
-  (dirty checkout, running child, repo/spawn errors) keep the previous cursor in
-  `events.target`, collapse consecutive same-class rows janitor-style, and the
-  daemon retries them on a short (~1h) cadence — a transient blocker no longer
-  costs a full `EVOLVE_REVIEW_INTERVAL_S` of reviewer availability. The
-  research/audit alternation state is read from the latest actually-`spawned`
-  pass row directly, so accumulated skip rows can never bury it.
+  due passes. Only a parsed successful task launch consumes the review slot:
+  returned or raised research/audit launch failures, plus other no-spawn
+  outcomes (dirty checkout, running child, repo errors), keep the previous
+  cursor in `events.target`, collapse consecutive same-class rows janitor-style,
+  and retry on a short (~1h) cadence. A research handoff authorized before an
+  unsuccessful launch is terminally marked failed, so the audit cannot consume
+  it. The research/audit alternation state is read from the latest actually
+  `spawned` pass row directly, so accumulated skip rows can never bury it.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,headRefOid,author,...` and

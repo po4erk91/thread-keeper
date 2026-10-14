@@ -1328,10 +1328,12 @@ guidance, Curator research privacy, and Evolve review cadence:
   Give it only a bounded, redacted, public-safe research brief; keep the full
   local inventory on the web-free evaluator side and fall back to offline or
   human review for private/unknown-sensitivity entries.
-- **Evolve research spawn retry (#356).** A returned research admission error
-  currently advances the review high-water even though no child launched, so a
-  transient refusal can suppress the weekly audit. Apply the same transient
-  cursor-preservation contract already tested for audit-phase spawn failures.
+- **Evolve research spawn retry (done, #356).** Only a parsed successful
+  research or audit task launch advances the review cursor and alternation
+  state. Returned or raised launch failures preserve both, collapse repeated
+  review telemetry, and retry on the short cadence. An authorized research
+  handoff that never gets a child is terminally failed and cannot become audit
+  input.
 
 The mechanical dedup gate also linked the Evolve researcher's extra
 `broadcast` capability back to completed confinement issue #263 rather than

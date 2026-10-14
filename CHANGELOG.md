@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.19.1 — 2026-10-14
+
+### Fixed
+
+- **Evolve research launch failures no longer consume the review interval
+  (#356).** The shared launcher finalizer advances the review cursor and phase
+  only after a parsed task launch. Returned or raised research/audit failures
+  preserve both, retry on the transient cadence, and collapse repeated review
+  telemetry. A research handoff authorized before a failed launch is terminally
+  marked and cannot be consumed by a later audit.
+
 - **Added: privacy-bounded Curator web research (#355).** Curator evaluators
   retain their local audit coverage but have no web tools. External lookup is
   disabled by default; explicit operator consent starts a separate Claude-only

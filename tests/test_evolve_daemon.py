@@ -540,6 +540,169 @@ def test_returned_spawn_error_preserves_evolve_audit_cursor_and_phase(
     assert pkg["ed"]._last_spawn_phase(conn) == "research"
 
 
+def test_returned_research_failure_retries_without_consuming_review_slot(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    responses = iter([
+        "ERR spawn_reservation_failed=busy",
+        "ERR spawn_reservation_failed=busy",
+        "ok task=tk_research pid=1",
+    ])
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", lambda **kw: next(responses))
+
+    first = pkg["ed"].run_evolve_pass()
+    second = pkg["ed"].run_evolve_pass()
+
+    assert first.startswith("research_handoff_failed")
+    assert second.startswith("research_handoff_failed")
+    assert pkg["ed"]._last_evolve_ts(conn) == 0
+    assert pkg["ed"]._last_spawn_phase(conn) == ""
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass' "
+        "AND summary LIKE 'research_handoff_failed%'"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM evolve_research_handoffs "
+        "WHERE status='failed' AND failure='spawn_reservation_failed=busy'"
+    ).fetchone()[0] == 2
+
+    recovered = pkg["ed"].run_evolve_pass()
+
+    assert recovered.startswith("spawned research")
+    assert pkg["ed"]._last_spawn_phase(conn) == "research"
+    assert pkg["ed"]._last_evolve_ts(conn) > 0
+
+
+def test_raised_research_spawn_failure_marks_handoff_terminal(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    pkg["ed"]._record_evolve_pass(conn, 1000, "spawned audit pending=0 ok")
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def raise_spawn(**kwargs):
+        raise RuntimeError("launcher unavailable")
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", raise_spawn)
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "spawn_error: launcher unavailable"
+    assert pkg["ed"]._last_evolve_ts(conn) == 1000
+    assert pkg["ed"]._last_spawn_phase(conn) == "audit"
+    handoff = conn.execute(
+        "SELECT status, failure FROM evolve_research_handoffs"
+    ).fetchone()
+    assert dict(handoff) == {"status": "failed", "failure": "spawn_exception"}
+
+
+def test_raised_audit_spawn_failure_preserves_review_slot(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _seed_research(pkg, conn)
+    before = pkg["ed"]._last_evolve_ts(conn)
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def raise_spawn(**kwargs):
+        raise RuntimeError("launcher unavailable")
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", raise_spawn)
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "spawn_error: launcher unavailable"
+    assert pkg["ed"]._last_evolve_ts(conn) == before
+    assert pkg["ed"]._last_spawn_phase(conn) == "research"
+
+
+def test_research_handoff_authorization_failure_preserves_review_slot(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    pkg["ed"]._record_evolve_pass(conn, 1000, "spawned audit pending=0 ok")
+
+    def fail_authorization(conn, now_t, child_cid):
+        raise RuntimeError("handoff store unavailable")
+
+    monkeypatch.setattr(pkg["ed"], "_authorize_research_handoff", fail_authorization)
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "spawn_error: handoff store unavailable"
+    assert pkg["ed"]._last_evolve_ts(conn) == 1000
+    assert pkg["ed"]._last_spawn_phase(conn) == "audit"
+
+
+def test_audit_spawn_failure_retries_without_consuming_review_slot(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    _seed_research(pkg, conn)
+    previous = int(time.time()) - 604801
+    conn.execute(
+        "UPDATE events SET target=? WHERE kind='evolve_review_pass'",
+        (str(previous),),
+    )
+    conn.commit()
+    responses = iter([
+        "ERR spawn_reservation_failed=busy",
+        "ok task=tk_audit pid=1",
+    ])
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", lambda **kw: next(responses))
+
+    failed = pkg["ed"].run_evolve_pass()
+
+    assert failed == "spawn_error: spawn_reservation_failed=busy"
+    assert pkg["ed"]._last_evolve_ts(conn) == previous
+    assert pkg["ed"]._last_spawn_phase(conn) == "research"
+
+    recovered = pkg["ed"].run_evolve_pass()
+
+    assert recovered.startswith("spawned audit")
+    assert pkg["ed"]._last_evolve_ts(conn) > previous
+
+
+def test_successful_evolve_launches_advance_review_cursor_once(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod,
+        "_spawn_impl",
+        lambda **kw: "ok task=tk_evolve pid=1",
+    )
+
+    before = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+    research = pkg["ed"].run_evolve_pass(force=True)
+    after_research = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+    audit = pkg["ed"].run_evolve_pass(force=True)
+    after_audit = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_review_pass'"
+    ).fetchone()[0]
+
+    assert research.startswith("spawned research")
+    assert audit.startswith("spawned audit")
+    assert after_research == before + 1
+    assert after_audit == after_research + 1
+
+
 def test_run_evolve_pass_skips_empty_until_interval(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
     conn = pkg["db"].get_db()
