@@ -8,6 +8,36 @@ remains a live question.
 
 ---
 
+## 2026-10-14 reviewer audit
+
+This pass reconciled the full issue history, current implementation, legacy
+Evolve suggestions, and the October research digest. Four distinct gaps remain:
+
+- **Official MCP conformance release gate (#379).** Run pinned official
+  conformance requirement sets for both supported protocol versions through a
+  test-only transport backed by the production handler registry. Retain focused
+  stdio tests for ThreadKeeper-specific discovery, metadata, and replay rules.
+- **Privacy-safe action/outcome memory (#380).** Evaluate a bounded operational
+  event stream that records normalized actions, coarse outcomes, stable error
+  fingerprints, and recovery links without retaining raw arguments or tool
+  output. Live ingestion stays gated on an offline comparison with the current
+  dialogue-only pipeline.
+- **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
+  fixtures an explicit lifecycle that remains available to validators but is
+  excluded from normal discovery, routing, and Curator production-health
+  counts.
+- **Skill validator coverage (#382).** Detect missing relative resources named
+  in path-like inline code and repeated normalized paragraphs within one skill,
+  with conservative exclusions for URLs, commands, examples, and boilerplate.
+
+The standard Tasks facade remains tracked in #370. General validity,
+supersession, and obsolete-evidence evaluation map to #371 and #372 on top of
+the completed authority lifecycle in #338. The mechanical issue gate treated
+the Evolve web-research data boundary as existing #355 work and the unified
+runtime process inventory as part of #364, so this pass did not file parallel
+issues. Legacy Curator report-write suggestions consolidate into #366; Codex
+child identity forwarding and the Task/Agent/Workflow gate are already present.
+
 ## 2026-10-10 reviewer audit
 
 The resource-subscription (#345), privacy-safe tracing (#346), and
@@ -1292,23 +1322,21 @@ retention:
   flows now run through real-stdio conformance tests and one normalized request
   context; caller-bound sealed continuations and a replay ledger make modern
   mutations once-only or reject uncertain re-entry.
-- **Live private memory resources (#345).** Add capability-gated subscriptions,
-  commit-aware/coalesced invalidation, and honest private-cache metadata for
-  the four `memory://` resources while retaining the pull-only fallback.
-- **Privacy-safe workflow tracing (#346).** Offer an opt-in OTLP exporter that
-  correlates parent, child, MCP/tool, retry, and terminal events without
-  exporting prompts, payloads, memory bodies, credentials, or private paths.
-- **Outcome- and action-based memory evaluation (#347).** Score evidence recall
-  separately from final-answer quality, then add sandboxed multi-session cases
-  where remembered constraints must change the tool/action plan. Run ablations
-  across memory-off, retrieval-only, and full brief/skills paths, including
-  adversarial bundle-level authority/poisoning cases.
-- **Observationally pure read surfaces (#348).** Stop tools and resources marked
-  read-only from bootstrapping sessions/daemons or reconciling task/RSS state;
-  move persistence to daemon-owned or explicitly write-annotated paths.
-- **Autonomous-workflow retention (#349).** Bound terminal Curator manifests,
-  frozen batch bodies, reports, Evolve research handoffs, and owned files while
-  preserving active, retryable, unapplied, and recoverable work.
+- ✅ DONE (#345). **Live private memory resources.** Capability-gated
+  subscriptions now provide commit-aware, coalesced invalidation and private
+  cache metadata while preserving the pull-only fallback.
+- ✅ DONE (#346). **Privacy-safe workflow tracing.** The default-off OTLP
+  exporter correlates bounded lifecycle events without exporting prompts,
+  payloads, memory bodies, credentials, or private paths.
+- ✅ DONE (#347). **Outcome-based memory evaluation.** Replay reports
+  evidence recall separately from final-answer quality and covers dynamic
+  state, workflow, premise-awareness, abstention, stale memory, and privacy.
+- ✅ DONE (#348). **Observationally pure read surfaces.** Read-only tools and
+  resources run in a query-only scope; explicit writers own reconciliation and
+  other persistence.
+- ✅ DONE (#349). **Autonomous-workflow retention.** Terminal Curator and
+  Evolve artifacts now use shared age/count retention while protecting active,
+  retryable, unapplied, and recoverable work.
 
 **2026-10-01 reviewer additions (issue-backed).**
 The current audit added four concrete gaps around tool discovery, portable MCP
@@ -1323,11 +1351,9 @@ guidance, Curator research privacy, and Evolve review cadence:
   guidance for brief/context loading, thread lifecycle, read-only resources,
   and destructive-operation confirmation. Generate it from the same source as
   the setup-managed CLI block so the two paths cannot drift.
-- **Curator web-research privacy boundary (#355).** The web researcher currently
-  combines full lesson/skill/concept and repository reads with external search.
-  Give it only a bounded, redacted, public-safe research brief; keep the full
-  local inventory on the web-free evaluator side and fall back to offline or
-  human review for private/unknown-sensitivity entries.
+- ✅ DONE (#355). **Curator web-research privacy boundary.** The web-enabled
+  child receives a bounded public-safe research brief and narrow tools; the
+  full local inventory remains on the web-free evaluator side.
 - **Evolve research spawn retry (done, #356).** Only a parsed successful
   research or audit task launch advances the review cursor and alternation
   state. Returned or raised launch failures preserve both, collapse repeated
@@ -1382,14 +1408,14 @@ and Curator child-capability isolation:
   strip stale values from ordinary spawns, and bind report/research writers to
   the owning task, role, and batch.
 
-The mechanical issue gate linked the protocol-native Tasks/MRTR proposal to
-completed conformance issue #344 instead of opening a parallel issue. The code
-still uses custom task polling and `elicitation/create`, so any further native
-Tasks lifecycle work should be re-scoped against #344 rather than duplicated.
-It likewise linked automatic authority enforcement and compositional poisoning
-evaluation to open outcome-quality issue #347; that roadmap item now calls out
-the missing action-use and adversarial bundle coverage explicitly. Tool-profile
-disclosure and project namespaces remain tracked in #353 and #359.
+The earlier mechanical issue gate linked the protocol-native Tasks/MRTR
+proposal to completed conformance issue #344. A later audit established the
+remaining lifecycle gap separately as open issue #370; #344 continues to cover
+dual-era request compatibility and replay-safe writes, not standard Tasks.
+The outcome-quality evaluator in #347 is complete. The remaining bounded
+action/recovery-memory experiment is #380, while obsolete-evidence mutation
+coverage remains #371. Tool-profile disclosure and project namespaces remain
+tracked in #353 and #359.
 
 ---
 
