@@ -6,6 +6,7 @@ from .._mcp import write_tool
 from ..db import run_write
 from .. import identity
 from ..identity import _emit
+from ..project_scope import resolve_write_scope
 
 
 @write_tool()
@@ -17,10 +18,21 @@ def verbatim_user(content: str, thread_id: str = "") -> str:
     tid = thread_id.strip() or None
 
     def _write(conn: sqlite3.Connection) -> str:
+        thread = None
+        if tid:
+            thread = conn.execute(
+                "SELECT project_id, memory_scope FROM threads WHERE id=?", (tid,)
+            ).fetchone()
+            if thread is None:
+                return f"ERR thread_not_found={tid}"
+        scope, project_id = (
+            (thread["memory_scope"], thread["project_id"])
+            if thread else resolve_write_scope()
+        )
         conn.execute(
             "INSERT INTO verbatim (speaker, content, thread_id, created_at, "
-            "session_id) VALUES (?,?,?,?,?)",
-            ("user", content, tid, now, identity._session_id),
+            "session_id, project_id, memory_scope) VALUES (?,?,?,?,?,?,?)",
+            ("user", content, tid, now, identity._session_id, project_id, scope),
         )
         _emit(conn, "verbatim_user", target=tid, summary=content)
         return "ok"

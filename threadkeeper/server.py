@@ -34,6 +34,7 @@ from .tools import probes  # noqa: F401
 from .tools import concepts  # noqa: F401
 from .tools import distill  # noqa: F401
 from .tools import core_memory  # noqa: F401
+from .tools import project_scope  # noqa: F401
 from .tools import graph  # noqa: F401
 from .tools import correlation  # noqa: F401
 from .tools import extract  # noqa: F401

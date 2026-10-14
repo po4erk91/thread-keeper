@@ -6,6 +6,17 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-14
+
+### Added
+
+- **Project namespaces and default-deny cross-project recall (#359).** Memory
+  now carries an explicit project/global/shared scope and a path-free Git
+  namespace. Briefs, retrieval, resources, and learning inputs stay within the
+  current project unless global/shared memory is explicit; cross-project search
+  is opt-in, provenance-marked, and audited. Ambiguous legacy rows are
+  quarantined from automatic recall with per-table migration accounting.
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

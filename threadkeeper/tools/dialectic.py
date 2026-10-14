@@ -73,6 +73,7 @@ from ..db import get_db
 from ..elicitation import elicit_confirm_reject
 from ..helpers import fmt_age, q, gen_dialectic_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..project_scope import recall_where, resolve_write_scope
 
 
 VALID_KINDS = ("support", "contradict")
@@ -320,8 +321,10 @@ def recompute_all_tiers() -> int:
         conn = get_db()
         _ensure_session(conn)
         now_t = int(time.time())
+        claim_filter, claim_params = recall_where("user_dialectic")
         rows = conn.execute(
-            "SELECT id, tier FROM user_dialectic WHERE state='active'"
+            f"SELECT id, tier FROM user_dialectic WHERE state='active' AND {claim_filter}",
+            claim_params,
         ).fetchall()
         changed = 0
         for r in rows:
@@ -350,11 +353,17 @@ def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
     regardless of weight — counters are for observability; the weighted
     sums in dialectic_evidence drive confidence + tier."""
     eff_w = _evidence_weight(WRITE_ORIGIN, base_weight)
+    claim_scope = conn.execute(
+        "SELECT project_id, memory_scope FROM user_dialectic WHERE id=?", (claim_id,)
+    ).fetchone()
+    if claim_scope is None:
+        raise ValueError(f"claim_not_found={claim_id}")
     cur = conn.execute(
         "INSERT INTO dialectic_evidence (claim_id, kind, source, quote, "
-        "weight, created_by_cid, created_at) VALUES (?,?,?,?,?,?,?)",
+        "weight, created_by_cid, created_at, project_id, memory_scope) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (claim_id, kind, source or None, quote or None, eff_w,
-         cid, now_t),
+         cid, now_t, claim_scope["project_id"], claim_scope["memory_scope"]),
     )
     col = "support_count" if kind == "support" else "contradict_count"
     conn.execute(
@@ -367,7 +376,8 @@ def _insert_evidence(conn: sqlite3.Connection, claim_id: str, kind: str,
 
 @write_tool()
 def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
-                    evidence_kind: str = "support") -> str:
+                    evidence_kind: str = "support",
+                    memory_scope: str = "project") -> str:
     """Register a new claim about the user. Optionally seed with first
     piece of evidence — pass the supporting (or contradicting) quote in
     `evidence` and set `evidence_kind` to 'support' (default) or
@@ -389,6 +399,10 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
         return f"ERR bad_kind={evidence_kind} valid={'/'.join(VALID_KINDS)}"
     conn = get_db()
     _ensure_session(conn)
+    try:
+        scope, project_id = resolve_write_scope(memory_scope)
+    except ValueError as exc:
+        return f"ERR {exc}"
     cid = _detect_self_cid()
     cid_short = cid
     cid_db = cid
@@ -396,9 +410,10 @@ def dialectic_claim(claim: str, domain: str = "", evidence: str = "",
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at, valid_from, tier, tier_changed_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (pid, claim, dom, cid_db, now_t, now_t, "hypothesis", now_t),
+        "created_at, valid_from, tier, tier_changed_at, project_id, memory_scope) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (pid, claim, dom, cid_db, now_t, now_t, "hypothesis", now_t,
+         project_id, scope),
     )
     seed_quote = evidence.strip()
     if seed_quote:
@@ -437,8 +452,10 @@ def dialectic_evidence(claim_id: str, kind: str = "support",
         return f"ERR weight_out_of_range value={w} valid=0..1"
     conn = get_db()
     _ensure_session(conn)
+    claim_filter, claim_params = recall_where("user_dialectic")
     row = conn.execute(
-        "SELECT state FROM user_dialectic WHERE id=?", (claim_id,)
+        f"SELECT state FROM user_dialectic WHERE id=? AND {claim_filter}",
+        (claim_id, *claim_params),
     ).fetchone()
     if not row:
         return f"ERR claim_not_found={claim_id}"
@@ -491,6 +508,7 @@ def dialectic_review(min_confidence: str = "low",
     except ValueError:
         return f"ERR bad_as_of={as_of}"
     conn = get_db()
+    claim_filter, claim_params = recall_where("user_dialectic")
     sql = (
         "SELECT id, claim, domain, support_count, contradict_count, "
         "confidence, tier, state, last_evidence_at, created_at, "
@@ -510,6 +528,8 @@ def dialectic_review(min_confidence: str = "low",
     if dom_filter:
         sql += " AND domain=?"
         params.append(dom_filter)
+    sql += f" AND {claim_filter}"
+    params.extend(claim_params)
     sql += " ORDER BY last_evidence_at DESC, created_at DESC"
     rows = conn.execute(sql, tuple(params)).fetchall()
     out: list[str] = []
@@ -569,6 +589,7 @@ def dialectic_synthesis(domain: str = "",
     except ValueError:
         return f"ERR bad_as_of={as_of}"
     conn = get_db()
+    claim_filter, claim_params = recall_where("user_dialectic")
     sql = (
         "SELECT id, claim, domain, confidence, tier, "
         "  support_count, contradict_count, state, valid_from, valid_to "
@@ -591,6 +612,8 @@ def dialectic_synthesis(domain: str = "",
     if dom_filter:
         sql += " AND domain=?"
         params.append(dom_filter)
+    sql += f" AND {claim_filter}"
+    params.extend(claim_params)
     # validated before observed; within each, more evidence first
     sql += (
         " ORDER BY "
@@ -682,9 +705,11 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
         return "ERR new_claim_too_long max=1000"
     conn = get_db()
     _ensure_session(conn)
+    claim_filter, claim_params = recall_where("user_dialectic")
     old = conn.execute(
-        "SELECT id, claim, domain, state FROM user_dialectic WHERE id=?",
-        (old_id,)
+        f"SELECT id, claim, domain, state, project_id, memory_scope "
+        f"FROM user_dialectic WHERE id=? AND {claim_filter}",
+        (old_id, *claim_params),
     ).fetchone()
     if not old:
         return f"ERR old_claim_not_found={old_id}"
@@ -712,9 +737,10 @@ async def dialectic_supersede(old_claim_id: str, new_claim: str,
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO user_dialectic (id, claim, domain, created_by_cid, "
-        "created_at, valid_from, tier, tier_changed_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (pid, new_claim, dom, cid, now_t, now_t, "hypothesis", now_t),
+        "created_at, valid_from, tier, tier_changed_at, project_id, memory_scope) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (pid, new_claim, dom, cid, now_t, now_t, "hypothesis", now_t,
+         old["project_id"], old["memory_scope"]),
     )
     seed_quote = quote.strip()
     if seed_quote:

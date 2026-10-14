@@ -46,6 +46,7 @@ from .config import (
     CANDIDATE_REVIEW_MIN,
 )
 from .db import get_db
+from .project_scope import recall_where
 from .helpers import daemon_sleep, single_flight_lock
 from . import daemon_state, identity
 
@@ -237,14 +238,15 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     """
     now = int(time.time())
     stale_cutoff = now - 30 * 86400
+    candidate_scope, candidate_params = recall_where("extract_candidates")
     try:
         rows = conn.execute(
             "SELECT id, kind, source_uuid, source_cid, content, "
             "       rationale, created_at "
             "FROM extract_candidates "
-            "WHERE status='pending' AND created_at > ? "
+            f"WHERE status='pending' AND created_at > ? AND {candidate_scope} "
             "ORDER BY created_at DESC",
-            (stale_cutoff,),
+            (stale_cutoff, *candidate_params),
         ).fetchall()
     except sqlite3.OperationalError:
         return ("", 0)
@@ -258,11 +260,12 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
 def _oldest_pending_ts(conn: sqlite3.Connection) -> int:
     """created_at of the oldest surfaced (non-stale) pending candidate, or 0."""
     stale_cutoff = int(time.time()) - 30 * 86400
+    candidate_scope, candidate_params = recall_where("extract_candidates")
     try:
         row = conn.execute(
             "SELECT MIN(created_at) FROM extract_candidates "
-            "WHERE status='pending' AND created_at > ?",
-            (stale_cutoff,),
+            f"WHERE status='pending' AND created_at > ? AND {candidate_scope}",
+            (stale_cutoff, *candidate_params),
         ).fetchone()
     except sqlite3.OperationalError:
         return 0

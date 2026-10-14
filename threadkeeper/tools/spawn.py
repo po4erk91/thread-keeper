@@ -21,6 +21,7 @@ from typing import Optional
 
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db
+from ..project_scope import resolve_project_namespace
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
 from ..task_spool import (
     TASK_SPOOL_EXEC_MODE,
@@ -756,6 +757,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     now_t = int(time.time())
     conn = get_db()
     _ensure_session(conn)
+    namespace = resolve_project_namespace(cwd)
+    task_scope = "project" if namespace.project_id else "unresolved"
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ok, _reason = check_budget(conn, _new_kb)
@@ -767,8 +770,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "retry_attempt, project_id, memory_scope) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -776,6 +779,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 1 if visible else 0, 1 if slim else 0, chosen_model, chosen_effort,
                 append_system, chosen_cli, retry_of or None,
                 retry_root or None, int(retry_attempt or 0),
+                namespace.project_id, task_scope,
             ),
         )
     except sqlite3.Error as e:

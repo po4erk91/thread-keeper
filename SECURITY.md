@@ -34,6 +34,17 @@ is skipped on platforms without POSIX mode bits and never blocks startup.
 
 ## Trust boundaries
 
+### Project-memory recall (repository A → repository B)
+
+Repository namespacing is a local access-control boundary. Project-scoped
+threads, notes, dialogs, tasks, and derived records are recalled only in their
+own path-free Git namespace by default; global/shared memory is the explicit
+portable exception. Ambiguous pre-namespace rows are quarantined as
+`unresolved`, not silently global. Cross-project recall requires an explicit
+tool option, includes result provenance, and is audited. This control limits
+local recall; it is independent of the cross-provider egress policy below,
+which decides whether recalled personal data can be sent to a model vendor.
+
 ### Auto-update (future maintainer code → local execution)
 
 The foreground MCP server starts a daily auto-update daemon by default

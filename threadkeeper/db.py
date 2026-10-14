@@ -35,7 +35,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -95,7 +95,10 @@ CREATE TABLE IF NOT EXISTS threads (
     last_move       TEXT,
     depth           INTEGER NOT NULL DEFAULT 0,
     opened_at       INTEGER NOT NULL,
-    last_touched_at INTEGER NOT NULL
+    last_touched_at INTEGER NOT NULL,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -106,7 +109,10 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at  INTEGER NOT NULL,
     session_id  TEXT,
     embedding   BLOB,
-    embed_backend TEXT           -- generation fingerprint; NULL = legacy
+    embed_backend TEXT,          -- generation fingerprint; NULL = legacy
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS verbatim (
@@ -115,7 +121,10 @@ CREATE TABLE IF NOT EXISTS verbatim (
     content     TEXT NOT NULL,
     thread_id   TEXT REFERENCES threads(id),
     created_at  INTEGER NOT NULL,
-    session_id  TEXT
+    session_id  TEXT,
+    project_id  TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -123,7 +132,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at    INTEGER NOT NULL,
     ended_at      INTEGER,
     client        TEXT,
-    write_origin  TEXT NOT NULL DEFAULT 'foreground'
+    write_origin  TEXT NOT NULL DEFAULT 'foreground',
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS style (
@@ -178,7 +190,10 @@ CREATE TABLE IF NOT EXISTS dialog_messages (
     model        TEXT,
     created_at   INTEGER NOT NULL,
     embedding    BLOB,
-    embed_backend TEXT           -- generation fingerprint; NULL = legacy
+    embed_backend TEXT,          -- generation fingerprint; NULL = legacy
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS ingest_state (
@@ -252,7 +267,10 @@ CREATE TABLE IF NOT EXISTS concepts (
     source_thread       TEXT REFERENCES threads(id),
     registered_by_cid   TEXT,
     registered_at       INTEGER NOT NULL,
-    last_evidence_at    INTEGER
+    last_evidence_at    INTEGER,
+    project_id          TEXT,
+    memory_scope        TEXT NOT NULL DEFAULT 'project'
+                        CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Distillation channel: explicitly-curated insights worth carrying forward.
@@ -271,7 +289,10 @@ CREATE TABLE IF NOT EXISTS distill (
     vote_sum        REAL NOT NULL DEFAULT 0,
     vote_count      INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
-    exported_at     INTEGER
+    exported_at     INTEGER,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS distill_votes (
@@ -287,9 +308,13 @@ CREATE TABLE IF NOT EXISTS distill_votes (
 -- new-claude must know" surface, not a general note store.
 CREATE TABLE IF NOT EXISTS core_memory (
     key         TEXT PRIMARY KEY,
+    key_name    TEXT,
     content     TEXT NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 50,    -- higher = shown first
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    project_id  TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Dialectic user model. Each claim is a discrete proposition about the
@@ -311,7 +336,10 @@ CREATE TABLE IF NOT EXISTS user_dialectic (
     created_at        INTEGER NOT NULL,
     valid_from        INTEGER,
     valid_to          INTEGER,
-    last_evidence_at  INTEGER
+    last_evidence_at  INTEGER,
+    project_id        TEXT,
+    memory_scope      TEXT NOT NULL DEFAULT 'project'
+                      CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS dialectic_evidence (
@@ -323,7 +351,10 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
     weight         REAL NOT NULL DEFAULT 1.0
                    CHECK(weight >= 0 AND weight <= 1),
     created_by_cid TEXT,
-    created_at     INTEGER NOT NULL
+    created_at     INTEGER NOT NULL,
+    project_id     TEXT,
+    memory_scope   TEXT NOT NULL DEFAULT 'project'
+                   CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Knowledge graph: typed edges between any pair of entities. Lets us run
@@ -339,7 +370,10 @@ CREATE TABLE IF NOT EXISTS edges (
     relation        TEXT NOT NULL,   -- 'refines','contradicts','exemplifies','depends_on','mentions','elaborates'
     weight          REAL NOT NULL DEFAULT 1.0,
     created_by_cid  TEXT,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Skill usage telemetry. One row per skill that the curator can manage.
@@ -360,7 +394,10 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     patch_count       INTEGER NOT NULL DEFAULT 0,
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
-                      CHECK(state IN ('active','stale','archived'))
+                      CHECK(state IN ('active','stale','archived')),
+    project_id        TEXT,
+    memory_scope      TEXT NOT NULL DEFAULT 'project'
+                      CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Lesson usage telemetry. One row per lessons.md slug so the curator can
@@ -391,7 +428,10 @@ CREATE TABLE IF NOT EXISTS extract_candidates (
     status       TEXT NOT NULL DEFAULT 'pending'
                  CHECK(status IN ('pending','accepted','rejected')),
     created_at   INTEGER NOT NULL,
-    decided_at   INTEGER
+    decided_at   INTEGER,
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Dialectic capture buffer. dialectic_miner mechanically stores every user
@@ -410,8 +450,11 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
     processed_at INTEGER,
     claimed_at   INTEGER,
     claimed_by_task TEXT,
-    requeue_count INTEGER NOT NULL DEFAULT 0  -- claim released by a child that
+    requeue_count INTEGER NOT NULL DEFAULT 0, -- claim released by a child that
                                               -- exited without resolving
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Reciprocal-rank-fusion-friendly FTS over dialog content. External-content
@@ -477,7 +520,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     retry_of      TEXT,
     retry_root    TEXT,
     retry_attempt INTEGER NOT NULL DEFAULT 0,
-    timeout_respawned_as TEXT
+    timeout_respawned_as TEXT,
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved'))
+);
+
+-- Durable audit trail for the one-way legacy namespace migration. A row per
+-- table makes it explicit which legacy records remain quarantined.
+CREATE TABLE IF NOT EXISTS project_scope_migration_report (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    migrated_at     INTEGER NOT NULL,
+    table_name      TEXT NOT NULL,
+    project_rows    INTEGER NOT NULL DEFAULT 0,
+    global_rows     INTEGER NOT NULL DEFAULT 0,
+    shared_rows     INTEGER NOT NULL DEFAULT 0,
+    unresolved_rows INTEGER NOT NULL DEFAULT 0
 );
 
 -- Cross-process resource-control requests. The memory guard uses this as a
@@ -665,6 +723,39 @@ CREATE TABLE IF NOT EXISTS daemon_health (
 # Some columns are already present in new-table definitions; duplicate column
 # errors are the only expected no-op.
 LEGACY_COLUMN_MIGRATIONS = (
+    # Project namespace v5. Existing rows are deliberately unresolved until
+    # their provenance is known; never silently promote legacy memory global.
+    "ALTER TABLE threads ADD COLUMN project_id TEXT",
+    "ALTER TABLE threads ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE notes ADD COLUMN project_id TEXT",
+    "ALTER TABLE notes ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE verbatim ADD COLUMN project_id TEXT",
+    "ALTER TABLE verbatim ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE sessions ADD COLUMN project_id TEXT",
+    "ALTER TABLE sessions ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialog_messages ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialog_messages ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE core_memory ADD COLUMN key_name TEXT",
+    "ALTER TABLE core_memory ADD COLUMN project_id TEXT",
+    "ALTER TABLE core_memory ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE tasks ADD COLUMN project_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE concepts ADD COLUMN project_id TEXT",
+    "ALTER TABLE concepts ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE distill ADD COLUMN project_id TEXT",
+    "ALTER TABLE distill ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE user_dialectic ADD COLUMN project_id TEXT",
+    "ALTER TABLE user_dialectic ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialectic_evidence ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialectic_evidence ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialectic_observations ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialectic_observations ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE extract_candidates ADD COLUMN project_id TEXT",
+    "ALTER TABLE extract_candidates ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE edges ADD COLUMN project_id TEXT",
+    "ALTER TABLE edges ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE skill_usage ADD COLUMN project_id TEXT",
+    "ALTER TABLE skill_usage ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
     "ALTER TABLE threads ADD COLUMN claimed_at INTEGER",
     "ALTER TABLE threads ADD COLUMN claimed_by_cid TEXT",
     "ALTER TABLE signals ADD COLUMN task_id TEXT",
@@ -724,6 +815,10 @@ LEGACY_COLUMN_MIGRATIONS = (
 )
 
 POST_SCHEMA_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_threads_scope ON threads(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_scope ON notes(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dialog_scope ON dialog_messages(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_core_scope ON core_memory(memory_scope, project_id)",
     "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
     "ON user_dialectic(tier)",
     "CREATE INDEX IF NOT EXISTS idx_dialectic_validity "
@@ -822,6 +917,66 @@ def _backfill_schema_data(conn: sqlite3.Connection) -> None:
     )
 
 
+_PROJECT_SCOPED_TABLES = (
+    "threads", "notes", "verbatim", "sessions", "dialog_messages",
+    "core_memory", "tasks", "concepts", "distill", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "extract_candidates",
+    "edges", "skill_usage",
+)
+
+
+def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
+    """Quarantine legacy memory and record an auditable migration report.
+
+    Old rows do not carry trustworthy repository provenance.  Tasks are the
+    exception: their persisted working directory can still be resolved while
+    it exists, so they are safely backfilled. Everything else is explicitly
+    unresolved rather than treated as global.  This report is intentionally
+    retained for operators deciding how to classify old data.
+    """
+    from .project_scope import resolve_project_namespace
+
+    conn.execute("UPDATE core_memory SET key_name=key WHERE key_name IS NULL")
+    # Legacy adapter labels can encode an absolute local path. Preserve only
+    # the semantic subagent sentinel needed by internal-loop filters.
+    conn.execute(
+        "UPDATE dialog_messages SET project=NULL "
+        "WHERE project IS NOT NULL AND project != 'subagents'"
+    )
+    task_rows = conn.execute(
+        "SELECT id, cwd FROM tasks WHERE memory_scope='unresolved'"
+    ).fetchall()
+    for row in task_rows:
+        namespace = resolve_project_namespace(row["cwd"])
+        if namespace.project_id:
+            conn.execute(
+                "UPDATE tasks SET project_id=?, memory_scope='project' WHERE id=?",
+                (namespace.project_id, row["id"]),
+            )
+    now = int(time.time())
+    for table in _PROJECT_SCOPED_TABLES:
+        counts = dict(conn.execute(
+            f"SELECT memory_scope, COUNT(*) AS n FROM {table} GROUP BY memory_scope"
+        ).fetchall())
+        conn.execute(
+            "INSERT INTO project_scope_migration_report "
+            "(migrated_at, table_name, project_rows, global_rows, shared_rows, unresolved_rows) "
+            "VALUES (?,?,?,?,?,?)",
+            (now, table, int(counts.get("project", 0)), int(counts.get("global", 0)),
+             int(counts.get("shared", 0)), int(counts.get("unresolved", 0))),
+        )
+
+
+def project_scope_migration_report(conn: sqlite3.Connection) -> list[dict[str, int | str]]:
+    """Return the most recent per-table v5 migration accounting."""
+    rows = conn.execute(
+        "SELECT table_name, project_rows, global_rows, shared_rows, unresolved_rows "
+        "FROM project_scope_migration_report WHERE migrated_at=("
+        "SELECT MAX(migrated_at) FROM project_scope_migration_report) ORDER BY table_name"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _drop_legacy_dialog_fts(conn: sqlite3.Connection) -> None:
     """v1→v2: dialog_fts was a content-storing FTS5 mirror (uuid UNINDEXED,
     content) whose shadow table duplicated ~465MB of dialog_messages.content.
@@ -897,7 +1052,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3):
+    if from_version not in (0, 1, 2, 3, 4):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -929,6 +1084,8 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
         for coldef in _SYNC_COLUMN_DEFS:
             _apply_column_migration(conn, f"ALTER TABLE {tbl} {coldef}")
     _backfill_schema_data(conn)
+    if from_version < 5:
+        _backfill_project_scopes(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
     if from_version < 2:

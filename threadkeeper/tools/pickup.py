@@ -103,7 +103,7 @@ def claim_pickup(thread_id: str, plan: str = "",
     tid = thread_id.strip()
     now_t = int(time.time())
     t = conn.execute(
-        "SELECT id, question, state, claimed_at, claimed_by_cid "
+        "SELECT id, question, state, claimed_at, claimed_by_cid, project_id, memory_scope "
         "FROM threads WHERE id=?",
         (tid,),
     ).fetchone()
@@ -125,9 +125,10 @@ def claim_pickup(thread_id: str, plan: str = "",
         emb = _embed(plan)
         conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, "
-            "session_id, embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            "session_id, embedding, embed_backend, project_id, memory_scope) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (tid, f"PICKUP plan: {plan}", "move", now_t, identity._session_id,
-             emb, embed_tag(emb)),
+             emb, embed_tag(emb), t["project_id"], t["memory_scope"]),
         )
     _emit(conn, "claim_pickup", target=tid,
           summary=plan[:140] if plan else (t["question"] or ""))

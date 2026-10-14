@@ -241,6 +241,28 @@ override wins over `.env`):
 THREADKEEPER_MEMORY_EGRESS=same-vendor
 ```
 
+### Project memory boundaries
+
+Memory is also isolated by repository. thread-keeper derives a path-free
+`prj_…` namespace from the repository remote (or, when no remote exists, its
+Git history), so ordinary moves and Git worktrees retain one identity without
+storing a local path. New project memory is scoped to that namespace; portable
+memory must be explicitly written as `global` or `shared`.
+
+`brief()`, `search()`, `dialog_search()`, resources, and learning-loop inputs
+read the current project plus explicit global/shared rows. Set
+`cross_project=True` on `search` or `dialog_search` only for deliberate
+cross-project recall. Those results show `scope=`/`project=` provenance and
+write a `cross_project_recall` audit event. The `memory_scope_status()` tool
+shows the current namespace and the migration accounting.
+
+Existing databases are migrated conservatively: rows without reliable
+repository provenance are marked `unresolved`, excluded from automatic recall,
+and listed in the migration report until an operator classifies them. This
+boundary controls *which local memory is recalled*; it is separate from
+`THREADKEEPER_MEMORY_EGRESS`, which controls whether personal memory may be
+sent to another model provider.
+
 ---
 
 ## Core systems

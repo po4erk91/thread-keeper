@@ -10,6 +10,13 @@ remains a live question.
 
 ## Closed
 
+- Project namespaces and default-deny cross-project recall (#359): path-free
+  repository fingerprints are stable across worktrees and moves; project,
+  global, shared, and unresolved scopes now flow through memory, retrieval,
+  resources, and learning inputs. Legacy rows without safe provenance are
+  quarantined with a migration report, and deliberate cross-project searches
+  carry provenance plus audit telemetry.
+
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
