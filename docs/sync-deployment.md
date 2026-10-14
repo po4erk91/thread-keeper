@@ -60,10 +60,11 @@ Upgrade by install type:
 | editable git checkout | `git pull && "$TKPY" -m pip install -e '.[semantic]'` |
 
 > ⚠️ **Do not use `"$TKPY" -m pip …` on a pipx install** — pipx venvs have no
-> `pip` inside them (`No module named pip`). This also means the built-in
-> auto-updater (which shells out to `pip install --upgrade`) **silently fails**
-> on pipx installs, so such a machine can sit on a very old version without any
-> visible error. Use `pipx install --force` / `pipx upgrade`.
+> `pip` inside them (`No module named pip`). The built-in auto-updater falls
+> back to `uv pip install --python "$TKPY"` when `uv` is installed; without
+> `uv` it **silently fails** on pipx installs, so such a machine can sit on a
+> very old version without any visible error. Use `pipx install --force` /
+> `pipx upgrade`.
 
 Confirm the version matches on **all** machines before continuing.
 

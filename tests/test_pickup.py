@@ -145,3 +145,21 @@ def test_auto_spawn_child_can_release_parent_pickup_claim(
     row = _claim_row(pkg, tid)
     assert row["claimed_at"] is None
     assert row["claimed_by_cid"] is None
+
+
+def test_auto_spawn_returned_error_retracts_pickup_claim(mp_with_cid, monkeypatch):
+    pkg = mp_with_cid(_PARENT_CID)
+    from threadkeeper.tools import pickup
+
+    tid = "Tpickup_spawn_error"
+    _insert_thread(pkg, tid, last_touched_at=int(time.time()) - 4 * 86400)
+    monkeypatch.setattr(
+        pickup, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = _tool(pkg, "claim_pickup")(thread_id=tid, auto_spawn=True)
+
+    assert out == "ERR spawn_error: spawn_reservation_failed=busy"
+    row = _claim_row(pkg, tid)
+    assert row["claimed_at"] is None
+    assert row["claimed_by_cid"] is None

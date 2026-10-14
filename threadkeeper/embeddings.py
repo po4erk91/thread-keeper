@@ -76,6 +76,7 @@ def _vec_dim_ok(emb_blob: bytes) -> bool:
 _model = None
 _model_lock = threading.RLock()
 _last_used_at = 0.0
+_generation_models: dict[str, object] = {}
 
 _FASTEMBED_HUB_ALLOW_PATTERNS = (
     "config.json",
@@ -87,7 +88,10 @@ _FASTEMBED_HUB_ALLOW_PATTERNS = (
 )
 
 
-def _fastembed_snapshot_path() -> str:
+def _fastembed_snapshot_path(
+    model_id: str | None = None,
+    revision: str | None = None,
+) -> str:
     """Return the pinned FastEmbed artifact snapshot for the active model.
 
     FastEmbed 0.8's public ``TextEmbedding`` constructor accepts arbitrary
@@ -104,18 +108,19 @@ def _fastembed_snapshot_path() -> str:
         (
             model.get("sources", {}).get("hf")
             for model in TextEmbedding.list_supported_models()
-            if model.get("model", "").lower() == FASTEMBED_MODEL_ID.lower()
+            if model.get("model", "").lower()
+            == (model_id or FASTEMBED_MODEL_ID).lower()
         ),
         None,
     )
     if not source:
         raise ValueError(
-            f"FastEmbed model {FASTEMBED_MODEL_ID!r} has no Hugging Face source; "
+            f"FastEmbed model {(model_id or FASTEMBED_MODEL_ID)!r} has no Hugging Face source; "
             "choose a supported model with an HF source to use a pinned revision."
         )
     return str(snapshot_download(
         repo_id=source,
-        revision=EMBED_REVISION,
+        revision=revision or EMBED_REVISION,
         cache_dir=str(EMBED_CACHE_DIR),
         allow_patterns=list(_FASTEMBED_HUB_ALLOW_PATTERNS),
         local_files_only=EMBED_LOCAL_FILES_ONLY,
@@ -203,17 +208,19 @@ def unload_model() -> bool:
     """
     global _model
     with _model_lock:
-        if _model is None:
+        if _model is None and not _generation_models:
             return False
         model = _model
         _model = None
+        older = list(_generation_models.values())
+        _generation_models.clear()
     try:
         to = getattr(model, "to", None)
         if callable(to):
             to("cpu")
     except Exception:
         pass
-    del model
+    del model, older
     return True
 
 def _encode(texts: list[str]):
@@ -270,6 +277,66 @@ def encode_many(texts: list[str]):
     return _encode(texts)
 
 
+def _generation_parts(generation: str) -> tuple[str, str, str, int]:
+    """Parse our stable fingerprint without treating it as executable config."""
+    parts = generation.split(":")
+    if len(parts) < 2:
+        raise ValueError(f"invalid embedding generation: {generation!r}")
+    values: dict[str, str] = {}
+    for part in parts[2:]:
+        key, sep, value = part.partition("=")
+        if sep:
+            values[key] = value
+    return (
+        parts[0], parts[1], values.get("revision", ""),
+        int(values.get("dim", EMBED_DIM)),
+    )
+
+
+def _encode_for_generation(texts: list[str], generation: str):
+    """Encode a query in the durable active space, not merely today's config.
+
+    During an upgrade the active pointer can intentionally name an older model
+    revision. The process loads that pinned artifact locally until activation;
+    a thin server's current-generation host socket is therefore never used for
+    this path. Missing legacy runtime support degrades to lexical search.
+    """
+    if generation == embedding_fingerprint():
+        return _encode(texts)
+    if not SEMANTIC_AVAILABLE:
+        return None
+    backend, model_name, revision, expected_dim = _generation_parts(generation)
+    with _model_lock:
+        model = _generation_models.get(generation)
+        if model is None:
+            if backend == "sentence-transformers":
+                from sentence_transformers import SentenceTransformer  # type: ignore
+                model = SentenceTransformer(
+                    model_name, cache_folder=str(EMBED_CACHE_DIR), revision=revision,
+                )
+            elif backend == "onnx":
+                from fastembed import TextEmbedding  # type: ignore
+                model = TextEmbedding(
+                    model_name=model_name,
+                    specific_model_path=_fastembed_snapshot_path(model_name, revision),
+                )
+            else:
+                raise ValueError(f"unsupported embedding backend {backend!r}")
+            _generation_models[generation] = model
+        import numpy as np  # type: ignore
+        if backend == "sentence-transformers":
+            arr = np.asarray(model.encode(list(texts)), dtype="float32")
+        else:
+            arr = np.asarray(list(model.embed(list(texts))), dtype="float32")
+    if arr.ndim != 2 or arr.shape[1] != expected_dim:
+        logger.warning("active embedding generation %s emitted an unexpected shape %s",
+                       generation, getattr(arr, "shape", None))
+        return None
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (arr / norms).astype("float32")
+
+
 def _runtime_major_minor(package: str) -> str:
     try:
         raw = importlib_metadata.version(package)
@@ -308,7 +375,12 @@ def embed_tag(blob: Optional[bytes]) -> Optional[str]:
 
 def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
     """Return current-generation coverage without mutating/backfilling rows."""
-    active = embedding_fingerprint()
+    from .memory_compat import active_generation, coverage, generation_state
+
+    configured = embedding_fingerprint()
+    active = active_generation(conn, configured, ensure=False)
+    state = generation_state(conn, configured, ensure=False)
+    staged = coverage(conn, active)
 
     def _count(sql: str, params: tuple = ()) -> int:
         try:
@@ -318,14 +390,22 @@ def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
 
     note_join, note_embedding = _note_embedding_parts(conn, "n")
     dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
+    notes_legacy = _count(
+        f"SELECT COUNT(*) FROM notes n {note_join} "
+        f"WHERE {note_embedding} IS NOT NULL AND n.embed_backend=?", (active,)
+    )
+    dialog_legacy = _count(
+        f"SELECT COUNT(*) FROM dialog_messages d {dialog_join} "
+        f"WHERE {dialog_embedding} IS NOT NULL AND d.embed_backend=?", (active,)
+    )
     return {
         "generation": active,
+        "configured_generation": configured,
+        "staging_generation": str(state["staging_generation"] or ""),
+        "migration_state": str(state["state"]),
         "notes_total": _count("SELECT COUNT(*) FROM notes"),
-        "notes_current": _count(
-            f"SELECT COUNT(*) FROM notes n {note_join} "
-            f"WHERE {note_embedding} IS NOT NULL AND n.embed_backend=?",
-            (active,),
-        ),
+        "notes_current": max(notes_legacy, int(staged["notes_valid"])),
+        "notes_staged": int(staged["notes_valid"]),
         # Post-migration notes_vec is keyed by rowid via notes_vec_map.gid;
         # pre-migration it is keyed directly by the integer note id.
         "notes_vec": _count(
@@ -338,11 +418,8 @@ def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
             "WHERE n.embed_backend=?", (active,),
         ),
         "dialog_total": _count("SELECT COUNT(*) FROM dialog_messages"),
-        "dialog_current": _count(
-            f"SELECT COUNT(*) FROM dialog_messages d {dialog_join} "
-            f"WHERE {dialog_embedding} IS NOT NULL AND d.embed_backend=?",
-            (active,),
-        ),
+        "dialog_current": max(dialog_legacy, int(staged["dialogs_valid"])),
+        "dialog_staged": int(staged["dialogs_valid"]),
         "dialog_vec": _count(
             "SELECT COUNT(*) FROM dialog_messages d "
             "JOIN dialog_vec_map m ON m.uuid=d.uuid "
@@ -362,12 +439,17 @@ def _embed(text: str) -> Optional[bytes]:
 def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     """Top-k cosine over notes. Uses vec0 ANN when available."""
     import numpy as np  # type: ignore
-    qa = _encode([query])
+    from .memory_compat import active_generation, active_vectors_present
+
+    active = active_generation(conn, embedding_fingerprint(), ensure=False)
+    qa = _encode_for_generation([query], active)
     if qa is None:
         return []
     qv = qa[0]
-    active = embedding_fingerprint()
-    if _vec_on():
+    # A generation built by the compatibility gate lives in its own staging
+    # store. It must be searched there rather than through the single vec0
+    # mirror, which can only hold one base-table vector per memory.
+    if _vec_on() and not active_vectors_present(conn, active):
         try:
             hits = _vec0_notes_search(
                 conn, qv.tobytes(), k, embed_backend=active
@@ -383,10 +465,17 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     join, effective_embedding = _note_embedding_parts(conn, "n")
     rows = conn.execute(
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
-        f"       {effective_embedding} AS embedding "
-        f"FROM notes n {join} "
-        f"WHERE {effective_embedding} IS NOT NULL AND n.embed_backend=?",
-        (active,),
+        "       g.embedding AS embedding "
+        "FROM notes n JOIN embedding_generation_vectors g ON "
+        "g.generation=? AND g.memory_kind='note' AND g.memory_id=CAST(n.id AS TEXT) "
+        "UNION ALL "
+        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+        f"       {effective_embedding} AS embedding FROM notes n {join} "
+        f"WHERE {effective_embedding} IS NOT NULL AND n.embed_backend=? "
+        "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
+        "WHERE g.generation=? AND g.memory_kind='note' "
+        "AND g.memory_id=CAST(n.id AS TEXT))",
+        (active, active, active),
     ).fetchall()
     if not rows:
         return []
@@ -452,12 +541,14 @@ def _dialog_cosine_search(conn, query: str, k: int,
                           role: str = "") -> list[dict]:
     """Top-k cosine over dialog_messages. Uses vec0 ANN when available."""
     import numpy as np  # type: ignore
-    qa = _encode([query])
+    from .memory_compat import active_generation, active_vectors_present
+
+    active = active_generation(conn, embedding_fingerprint(), ensure=False)
+    qa = _encode_for_generation([query], active)
     if qa is None:
         return []
     qv = qa[0]
-    active = embedding_fingerprint()
-    if _vec_on():
+    if _vec_on() and not active_vectors_present(conn, active):
         try:
             hits = _vec0_dialog_search(
                 conn, qv.tobytes(), k, role=role, embed_backend=active
@@ -469,14 +560,29 @@ def _dialog_cosine_search(conn, query: str, k: int,
     join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        f"       d.created_at, {effective_embedding} AS embedding "
-        f"FROM dialog_messages d {join} "
-        f"WHERE {effective_embedding} IS NOT NULL AND d.embed_backend=?"
+        "       d.created_at, g.embedding AS embedding "
+        "FROM dialog_messages d JOIN embedding_generation_vectors g ON "
+        "g.generation=? AND g.memory_kind='dialog' "
+        "AND g.memory_id=CAST(d.uuid AS TEXT)"
     )
-    params: tuple = (active,)
+    params: list = [active]
     if role:
         sql += " AND d.role=?"
-        params = (active, role)
+        params.append(role)
+    sql += " UNION ALL "
+    sql += (
+        "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
+        f"       d.created_at, {effective_embedding} AS embedding "
+        f"FROM dialog_messages d {join} "
+        f"WHERE {effective_embedding} IS NOT NULL AND d.embed_backend=? "
+        "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
+        "WHERE g.generation=? AND g.memory_kind='dialog' "
+        "AND g.memory_id=CAST(d.uuid AS TEXT))"
+    )
+    params.extend([active, active])
+    if role:
+        sql += " AND d.role=?"
+        params.append(role)
     rows = conn.execute(sql, params).fetchall()
     if not rows:
         return []

@@ -50,7 +50,7 @@ You are given (a) the CURRENT MODEL -- every active claim with its domain, tier
 and confidence -- and (b) PENDING OBSERVATIONS. For each observation (or a
 coherent cluster of them) choose exactly one action:
 
-  1. dialectic_evidence(claim_id=..., kind='support', quote=..., source='dialog',
+  1. dialectic_evidence(claim_id=..., kind='support', quote=..., source='dialog:<uuid>',
      weight=W) -- the observation corroborates an EXISTING claim. PREFER THIS
      over creating a near-duplicate claim.
   2. dialectic_evidence(claim_id=..., kind='contradict', quote=..., weight=W) --
@@ -58,7 +58,8 @@ coherent cluster of them) choose exactly one action:
      opposite). This is how the model self-corrects.
   3. dialectic_supersede(old_claim_id=..., new_claim=..., quote=...) -- an
      existing claim is right in spirit but needs refining/replacing.
-  4. dialectic_claim(claim=..., domain=..., evidence=..., evidence_kind='support')
+  4. dialectic_claim(claim=..., domain=..., evidence=..., evidence_kind='support',
+     source='dialog:<uuid>')
      -- genuinely NEW territory not covered by any existing claim.
   5. (write nothing) -- the observation is chit-chat / noise / a one-off with no
      durable signal about who the user is.
@@ -413,7 +414,7 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int, int, list[int]
     limit = max(1, int(DIALECTIC_VALIDATE_BATCH_SIZE or 1))
     try:
         rows = conn.execute(
-            "SELECT id, user_quote, context, source_cid, created_at "
+            "SELECT id, dialog_uuid, user_quote, context, source_cid, created_at "
             "FROM dialectic_observations "
             "WHERE status='pending' AND claimed_at IS NULL AND created_at > ? "
             "ORDER BY created_at DESC",
@@ -467,7 +468,7 @@ def _format_observation_rows(
         quote = (r["user_quote"] or "")[:400].replace("\n", " ")
         ctx = (r["context"] or "")[:200].replace("\n", " ")
         parts.append(
-            f"  #{r['id']} cid={(r['source_cid'] or '-')[:8]} score={score}\n"
+            f"  #{r['id']} dialog={(r['dialog_uuid'] or '-')[:20]} cid={(r['source_cid'] or '-')[:8]} score={score}\n"
             f"    context: {ctx}\n"
             f"    user: {quote}"
         )
@@ -486,7 +487,7 @@ def _claimed_inventory(
     placeholders = ",".join("?" for _ in ids)
     try:
         rows = conn.execute(
-            "SELECT id, user_quote, context, source_cid, created_at "
+            "SELECT id, dialog_uuid, user_quote, context, source_cid, created_at "
             "FROM dialectic_observations "
             f"WHERE id IN ({placeholders}) AND status='pending' "
             "AND claimed_by_task=?",

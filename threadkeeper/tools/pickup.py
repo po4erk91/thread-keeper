@@ -16,6 +16,8 @@ from ..helpers import fmt_age, q
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, embed_tag
+from ..memory_compat import memory_provenance
+from ..spawn_result import parse_spawn_result
 from .spawn import spawn
 
 
@@ -123,11 +125,15 @@ def claim_pickup(thread_id: str, plan: str = "",
     )
     if plan:
         emb = _embed(plan)
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, "
             "session_id, embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
             (tid, f"PICKUP plan: {plan}", "move", now_t, identity._session_id,
              emb, embed_tag(emb)),
+        )
+        memory_provenance(
+            conn, "note", cur.lastrowid, source_event_kind="claim_pickup",
+            source_event_id=tid, source_thread_id=tid,
         )
     _emit(conn, "claim_pickup", target=tid,
           summary=plan[:140] if plan else (t["question"] or ""))
@@ -154,14 +160,31 @@ def claim_pickup(thread_id: str, plan: str = "",
             f"Final step: call mcp__thread-keeper__release_pickup "
             f"with thread_id={tid} so this pickup claim is cleared."
         )
-        result = spawn(
-            prompt=child_prompt,
-            visible=False,
-            permission_mode="auto",
-            role=spawn_role or "executor",
-            extra_allowed_tools="Read,Bash,Grep,Glob",
-        )
-        spawn_info = f" | spawn: {result}"
+        try:
+            result = spawn(
+                prompt=child_prompt,
+                visible=False,
+                permission_mode="auto",
+                role=spawn_role or "executor",
+                extra_allowed_tools="Read,Bash,Grep,Glob",
+            )
+        except Exception as exc:  # noqa: BLE001 — leave no orphaned claim
+            spawn_result = None
+            spawn_error = str(exc)
+        else:
+            spawn_result = parse_spawn_result(result)
+            spawn_error = spawn_result.reason if not spawn_result.ok else ""
+        if spawn_error:
+            # The claim exists only to be worked by this child. A failed
+            # admission or launch must make it eligible immediately again.
+            conn.execute(
+                "UPDATE threads SET claimed_at=NULL, claimed_by_cid=NULL "
+                "WHERE id=? AND claimed_by_cid=?",
+                (tid, self_cid),
+            )
+            conn.commit()
+            return f"ERR spawn_error: {spawn_error}"
+        spawn_info = f" | spawn: {spawn_result.text}"
     return f"ok claimed thread={tid}{spawn_info}"
 
 

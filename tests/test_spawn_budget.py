@@ -6,6 +6,7 @@ status logic exercises the budget module directly against a temp DB.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -325,6 +326,94 @@ def test_spawn_reservation_rolls_back_when_popen_fails(mp_with_cid, monkeypatch)
     conn = pkg["db"].get_db()
     tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     assert tasks == 0
+
+
+def _configure_claude_spawn(pkg, monkeypatch):
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    monkeypatch.setattr(
+        spawn_config, "resolve_agent", lambda role, active_cli=None: "claude"
+    )
+    monkeypatch.setattr(spawn_config, "resolve_model", lambda cli, role="": "")
+    return spawn_mod
+
+
+def test_spawn_commits_its_reservation_and_frees_the_writer_before_popen(
+    mp_with_cid, monkeypatch,
+):
+    """#293: the reservation is visible to other processes, and no write
+    transaction is held while the child launches."""
+    pkg = mp_with_cid(_FAKE_CID)
+    spawn_mod = _configure_claude_spawn(pkg, monkeypatch)
+    seen: dict = {}
+
+    class _CheckingPopen:
+        def __init__(self, args, **kwargs):
+            other = sqlite3.connect(str(pkg["db"].DB_PATH), timeout=0)
+            try:
+                seen["rows"] = other.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE pid=0"
+                ).fetchone()[0]
+                other.execute("BEGIN IMMEDIATE")  # raises if the lock is held
+                other.rollback()
+                seen["writer_free"] = True
+            finally:
+                other.close()
+            self.pid = 4242
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _CheckingPopen)
+
+    out = spawn_mod.spawn(
+        prompt="lock-free launch", cwd=str(pkg["tmp"]), visible=False,
+        capture_output=False, slim=True,
+    )
+
+    assert out.startswith("ok task="), out
+    assert seen == {"rows": 1, "writer_free": True}
+    conn = pkg["db"].get_db()
+    try:
+        assert conn.execute("SELECT pid FROM tasks").fetchone()[0] == 4242
+    finally:
+        conn.close()
+
+
+def test_spawn_reports_a_launched_child_even_when_the_pid_stamp_fails(
+    mp_with_cid, monkeypatch,
+):
+    """Once Popen succeeded the child is running: an ERR would make a loop
+    retry and start a duplicate, so the result stays ok."""
+    pkg = mp_with_cid(_FAKE_CID)
+    spawn_mod = _configure_claude_spawn(pkg, monkeypatch)
+    real_run_write = spawn_mod.run_write
+
+    def flaky_run_write(op, fn, **kwargs):
+        if op == "spawn_record":
+            raise sqlite3.OperationalError("database is locked")
+        return real_run_write(op, fn, **kwargs)
+
+    class _Popen:
+        def __init__(self, args, **kwargs):
+            self.pid = 4343
+
+    monkeypatch.setattr(spawn_mod, "run_write", flaky_run_write)
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _Popen)
+
+    out = spawn_mod.spawn(
+        prompt="stamp fails", cwd=str(pkg["tmp"]), visible=False,
+        capture_output=False, slim=True,
+    )
+
+    assert out.startswith("ok task=") and out.endswith("pid_recorded=0"), out
+    conn = pkg["db"].get_db()
+    try:
+        row = conn.execute("SELECT pid, ended_at FROM tasks").fetchone()
+    finally:
+        conn.close()
+    assert (row["pid"], row["ended_at"]) == (0, None)
 
 
 # ─────────────────────────────────────────────────────────────────────
