@@ -24,6 +24,7 @@ from typing import Optional
 from ..spawn_result import parse_spawn_result
 from .._mcp import mcp, read_tool, write_tool, structured_result
 from ..db import get_db, read_db, run_write
+from ..project_scope import resolve_project_namespace
 from ..config import TASK_LOG_DIR, CLAUDE_PROJECTS_DIR, DB_PATH
 from ..permissions import chmod_private_dir
 from ..task_spool import (
@@ -996,6 +997,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         log_path = task_log_dir / f"{task_id}.log"
     proc_pid = 0
     now_t = int(time.time())
+    namespace = resolve_project_namespace(cwd)
+    task_scope = "project" if namespace.project_id else "unresolved"
     now_ns = time.time_ns()
     trace_queue_wait_ms = (
         max(0, (now_ns - child_trace.started_ns) // 1_000_000)
@@ -1016,9 +1019,9 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt, traceparent, trace_workflow_span_id, "
+            "retry_attempt, project_id, memory_scope, traceparent, trace_workflow_span_id, "
             "trace_parent_span_id, trace_started_ns, trace_queue_wait_ms) "
-            "VALUES (" + ",".join("?" for _ in range(28)) + ")",
+            "VALUES (" + ",".join("?" for _ in range(30)) + ")",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -1026,6 +1029,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 1 if visible else 0, 1 if slim else 0, chosen_model, chosen_effort,
                 append_system, chosen_cli, retry_of or None,
                 retry_root or None, int(retry_attempt or 0),
+                namespace.project_id, task_scope,
                 child_trace.traceparent if child_trace else None,
                 child_trace.workflow_span_id if child_trace else None,
                 child_trace.parent_span_id if child_trace else None,

@@ -25,6 +25,8 @@ from ..task_spool import (
 )
 from ..retrieval import retrieve_dialogs
 from ..ingest import _ingest_all
+from ..project_scope import format_provenance, recall_where
+from .threads import _audit_cross_project_recall
 
 
 @write_tool()
@@ -68,27 +70,35 @@ def open_dialog_window() -> str:
 
 @read_tool()
 def dialog_search(query: str, k: int = 5, role: str = "",
-                  mode: str = "hybrid") -> str:
+                  mode: str = "hybrid", cross_project: bool = False) -> str:
     """Search ingested Claude Code transcripts.
 
     mode='hybrid' (default) combines semantic and FTS5 keyword via RRF.
     mode='semantic' is pure cosine. mode='fts' is pure FTS5 keyword."""
     identity.ensure_session_started()
     with read_db() as conn:
-        return _dialog_search_conn(conn, query=query, k=k, role=role, mode=mode)
+        result = _dialog_search_conn(
+            conn, query=query, k=k, role=role, mode=mode,
+            cross_project=cross_project,
+        )
+    if cross_project:
+        _audit_cross_project_recall("dialog_search", query)
+    return result
 
 
 def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
-                        role: str, mode: str) -> str:
+                        role: str, mode: str,
+                        cross_project: bool = False) -> str:
     """Connection-scoped implementation used by the read-only MCP wrapper."""
     role = role.strip().lower()
     mode = mode.strip().lower()
     if mode not in ("hybrid", "semantic", "fts"):
         return f"ERR bad_mode={mode} (use hybrid|semantic|fts)"
-    hits = retrieve_dialogs(conn, query, k=k, role=role, mode=mode)
+    hits = retrieve_dialogs(conn, query, k=k, role=role, mode=mode,
+                            cross_project=cross_project)
     if not hits:
         if not SEMANTIC_AVAILABLE and mode != "semantic":
-            return _legacy_like_fallback(conn, query, k, role)
+            return _legacy_like_fallback(conn, query, k, role, cross_project)
         return f"no_matches (mode={mode})"
     now = int(time.time())
     lines = []
@@ -98,18 +108,24 @@ def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
         sess = (hit.session_id or "-")[:8]
         score = hit.display_score
         score_part = f"s={score:.2f} " if score is not None else ""
-        lines.append(f"{hit.role}@{sess} {score_part}{ago}_ago {q(snip)}")
+        lines.append(
+            f"{hit.role}@{sess} {score_part}{ago}_ago "
+            f"{format_provenance(hit.memory_scope, hit.project_id)} {q(snip)}"
+        )
     return "\n".join(lines)
 
 
 def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
-                          k: int, role: str) -> str:
+                          k: int, role: str, cross_project: bool = False) -> str:
     pattern = f"%{query}%"
     where = "content LIKE ?"
     params: list = [pattern]
     if role:
         where += " AND role = ?"
         params.append(role)
+    scope_where, scope_params = recall_where("dialog_messages", cross_project=cross_project)
+    where += f" AND {scope_where}"
+    params.extend(scope_params)
     params.append(k)
     rows = conn.execute(
         f"SELECT * FROM dialog_messages WHERE {where} "
@@ -121,6 +137,7 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
     return "\n".join(
         f"{r['role']}@{(r['session_id'] or '-')[:8]} "
         f"{fmt_age(now - r['created_at'])}_ago "
+        f"{format_provenance(r['memory_scope'], r['project_id'])} "
         f"{q(r['content'][:240].replace(chr(10), ' '))}"
         for r in rows
     )

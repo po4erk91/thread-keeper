@@ -29,11 +29,16 @@ def session_end(summary: str = "") -> str:
     def _write(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE sessions SET ended_at=? WHERE id=?", (now, sid))
         if summary:
+            session = conn.execute(
+                "SELECT project_id, memory_scope FROM sessions WHERE id=?", (sid,)
+            ).fetchone()
             cur = conn.execute(
                 "INSERT INTO notes (thread_id, content, kind, created_at, "
-                "session_id, embedding, embed_backend) "
-                "VALUES (NULL,?,?,?,?,?,?)",
-                (summary, "session_summary", now, sid, emb, embed_tag(emb)),
+                "session_id, embedding, embed_backend, project_id, memory_scope) "
+                "VALUES (NULL,?,?,?,?,?,?,?,?)",
+                (summary, "session_summary", now, sid, emb, embed_tag(emb),
+                 session["project_id"] if session else None,
+                 session["memory_scope"] if session else "unresolved"),
             )
             if not record_origin_root(
                 conn, "note", str(cur.lastrowid), write_origin=WRITE_ORIGIN,

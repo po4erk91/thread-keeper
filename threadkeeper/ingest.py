@@ -470,6 +470,20 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
     if adapter is None:
         from .adapters import _CLAUDE_CODE as _claude_default  # type: ignore
         adapter = _claude_default
+    # Adapter labels are often lossy. Only an exact match with the active
+    # repository is safe enough to classify; all other transcript memory is
+    # stored unresolved and cannot be recalled automatically.
+    from .project_scope import namespace_for_transcript_label
+    legacy_project = adapter.project_label(fp)
+    namespace = namespace_for_transcript_label(legacy_project)
+    memory_scope = "project" if namespace.project_id else "unresolved"
+    # Preserve adapter sentinels used by loop filters and old readers, but
+    # never persist a path-derived label for an ordinary repository.
+    stored_project = (
+        legacy_project
+        if legacy_project in {"subagents", "antigravity"}
+        else namespace.project_id
+    )
     try:
         mtime_f, size = _transcript_stat(adapter, fp)
     except OSError:
@@ -547,11 +561,13 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
         if text:
             cur = conn.execute(
                 "INSERT INTO dialog_messages (uuid, source, project, session_id, "
-                "role, content, model, created_at, embedding, embed_backend) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO NOTHING",
-                (nm.uuid, adapter.name, adapter.project_label(fp),
+                "role, content, model, created_at, embedding, embed_backend, "
+                "project_id, memory_scope) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO NOTHING",
+                (nm.uuid, adapter.name, stored_project,
                  nm.session_id, nm.role, text,
-                 nm.model, nm.created_at, emb, embed_tag(emb))
+                 nm.model, nm.created_at, emb, embed_tag(emb),
+                 namespace.project_id, memory_scope)
             )
             inserted = cur.rowcount > 0
             if inserted and emb is not None:

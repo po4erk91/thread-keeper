@@ -186,6 +186,30 @@ runtime is fully on the package.
 
 ## Storage layers
 
+### Project namespaces and scopes
+
+Every memory-bearing row has a `memory_scope` and, for project memory, a
+path-free `project_id`. `project_scope.resolve_project_namespace()` fingerprints
+the normalized Git remote, falling back to the repository's root commit; this
+makes worktrees and ordinary directory moves resolve to the same namespace
+without persisting a raw local path. `project`, `global`, and `shared` are
+recallable scopes. `unresolved` is the migration quarantine and is never
+automatically recalled.
+
+Default retrieval predicates admit only the current `project` plus `global` and
+`shared`. `search(cross_project=True)` and `dialog_search(cross_project=True)`
+are visible overrides: each hit carries scope provenance and each call records
+an audit event. Brief resources and the extraction/dialectic learning inputs
+use the same default predicate, so a background loop cannot synthesize one
+project's private dialogs into another project's memory. The v5 migration
+records per-table project/global/shared/unresolved counts in
+`project_scope_migration_report`; only task rows with still-resolvable working
+directories are automatically backfilled, while ambiguous legacy rows fail
+closed. `memory_scope_status()` exposes that report.
+
+This is local recall isolation, not the provider-egress policy: the latter
+decides whether personal data may enter a vendor prompt after retrieval.
+
 The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config startup
 and `bootstrap_db()` best-effort harden the default store:
 `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
@@ -1833,6 +1857,7 @@ below).
 | dashboard | mp_dashboard |
 | agent_status | agent_status, agent_status_refresh, agent_memory_cleanup |
 | memory_guard | memory_guard_status, memory_guard_check, memory_guard_reclaim |
+| project_scope | memory_scope_status |
 | correlation | tag_signal, task_thread |
 | consolidate | consolidate |
 | validate | validate_threads |

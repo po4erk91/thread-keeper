@@ -64,6 +64,13 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
 
+- Project namespaces and default-deny cross-project recall (#359): path-free
+  repository fingerprints are stable across worktrees and moves; project,
+  global, shared, and unresolved scopes now flow through memory, retrieval,
+  resources, and learning inputs. Legacy rows without safe provenance are
+  quarantined with a migration report, and deliberate cross-project searches
+  carry provenance plus audit telemetry.
+
 - Read-only MCP purity (#348): every `readOnlyHint=True` tool and static memory
   resource now runs in a query-only scope. Automatic discovery/polling cannot
   bootstrap sessions, presence/cursors, daemons, task reaping/linking, or RSS
