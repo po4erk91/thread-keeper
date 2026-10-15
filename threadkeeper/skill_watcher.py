@@ -12,6 +12,7 @@ minimal. Reads only — never writes to SKILL.md.
 """
 
 from __future__ import annotations
+import hashlib
 import logging
 import os
 import threading
@@ -21,6 +22,16 @@ from typing import Optional
 from .config import BACKGROUND_DAEMONS_ALLOWED, CLAUDE_SKILLS_DIR
 from .db import get_db
 from .helpers import daemon_sleep
+from .review_prompts import _INJECTION_MARKERS, screen_injection_markers
+
+# Loop-authored skill bodies are re-screened for injection markers after the
+# write-time gate (#268). Screening is keyed by (mtime_ns, size, marker set),
+# so an unchanged file is not re-read every tick, while an edit — or a new
+# marker pattern — triggers a fresh screen.
+SKILL_INJECTION_FLAG_KIND = "skill_injection_flag"
+_MARKERS_VERSION = hashlib.sha256(repr(_INJECTION_MARKERS).encode()).hexdigest()[:16]
+_SCREEN_MAX_BYTES = 256 * 1024
+_screened: dict[str, tuple[int, int, str]] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +90,61 @@ def _scan_once(conn) -> int:
                 (mtime, name),
             )
             updates += 1
-    if updates:
-        conn.commit()
+        _rescreen_if_loop_authored(conn, name, md, stat_result)
+    # Always end the implicit write transaction the upsert above opened, even
+    # when nothing changed: a legacy get_db() connection left mid-transaction
+    # holds SQLite's single writer lock (#293).
+    conn.commit()
     return updates
+
+
+def _rescreen_if_loop_authored(conn, name: str, md, stat_result) -> None:
+    """Flag a loop-authored SKILL.md whose current body carries injection
+    markers. The file is never edited or deleted; a human reviews the flag.
+
+    Foreground-authored skills are exempt, like the write-time gate.
+    """
+    key = (stat_result.st_mtime_ns, stat_result.st_size, _MARKERS_VERSION)
+    if _screened.get(name) == key:
+        return
+    row = conn.execute(
+        "SELECT created_by_origin FROM skill_usage WHERE name=?", (name,),
+    ).fetchone()
+    origin = (row["created_by_origin"] if row else "") or "foreground"
+    if origin == "foreground":
+        _screened[name] = key
+        return
+    try:
+        with md.open("rb") as stream:
+            body = stream.read(_SCREEN_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return
+    hits = screen_injection_markers(body)
+    if hits:
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        seen = conn.execute(
+            "SELECT 1 FROM events WHERE kind=? AND target=? AND summary LIKE ?",
+            (SKILL_INJECTION_FLAG_KIND, name, f"%sha256={digest}%"),
+        ).fetchone()
+        if seen is None:
+            from . import identity
+            conn.execute(
+                "INSERT INTO events (session_id, kind, target, summary, "
+                "created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    identity._session_id or "", SKILL_INJECTION_FLAG_KIND,
+                    name,
+                    f"markers={','.join(hits)} origin={origin} "
+                    f"sha256={digest} path={md}",
+                    int(time.time()),
+                ),
+            )
+            conn.commit()
+            logger.warning(
+                "skill_watcher: loop-authored skill %s carries injection "
+                "markers %s; flagged for human review", name, hits,
+            )
+    _screened[name] = key
 
 
 def _watch_loop() -> None:

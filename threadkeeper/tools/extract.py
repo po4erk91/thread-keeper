@@ -17,6 +17,7 @@ from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, embed_tag, _dialog_embedding_parts
 from ..project_scope import recall_where, resolve_write_scope
+from ..memory_compat import memory_provenance
 
 
 # Locale-aware heuristic matchers — patterns live in i18n.py so this
@@ -430,6 +431,10 @@ def accept_candidate(id: int, target_kind: str = "",
             "VALUES (?,?,?,?,?,?,?,?,?)",
             (tid, content, "insight", now, identity._session_id, emb, embed_tag(emb),
              r["project_id"], r["memory_scope"]),
+        )
+        memory_provenance(
+            conn, "note", cur.lastrowid, source_event_kind="extract_accept",
+            source_event_id=str(id), source_thread_id=tid or "",
         )
         placed = f"note id={cur.lastrowid} thread={tid or '-'}"
     elif kind == "concept":

@@ -21,6 +21,11 @@ PROMPT_CASES = (
         ("CURATOR_PROMPT",),
     ),
     PromptCase(
+        "threadkeeper.curator",
+        "CURATOR_RESEARCH_PROMPT_PREFIX",
+        ("CURATOR_RESEARCH_PROMPT",),
+    ),
+    PromptCase(
         "threadkeeper.shadow_review",
         "SHADOW_REVIEW_PROMPT_PREFIX",
         ("SHADOW_REVIEW_PROMPT",),
@@ -102,6 +107,11 @@ DETECTOR_CASES = (
     DetectorCase(
         "threadkeeper.curator",
         "CURATOR_PROMPT_PREFIX",
+        "_running_curator_children",
+    ),
+    DetectorCase(
+        "threadkeeper.curator",
+        "CURATOR_RESEARCH_PROMPT_PREFIX",
         "_running_curator_children",
     ),
     DetectorCase(

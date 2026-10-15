@@ -15,7 +15,7 @@ Quick map of the project so new patches land cleanly.
 ```
 threadkeeper/            # the package
 ├── server.py            # MCP entry: python -m threadkeeper.server
-├── _mcp.py              # FastMCP singleton (shared @mcp.tool registry)
+├── _mcp.py              # MCPServer singleton (shared @mcp.tool registry)
 ├── _setup.py            # `thread-keeper-setup` installer
 ├── config.py            # pydantic-settings Settings ← ~/.threadkeeper/.env
 ├── db.py                # SQLite schema + sqlite-vec loader
@@ -54,7 +54,20 @@ python -m pytest -m "not slow"   # fast inner loop — skips the embedding-warmu
 
 CI runs the full suite under `--forked` (each test in its own process; the
 per-test package re-import otherwise piles up native ONNX/tokenizer thread
-pools that can deadlock sqlite finalize in one long-lived interpreter).
+pools that can deadlock sqlite finalize in one long-lived interpreter). To run
+in parallel without giving that up, CI splits the suite into three shard jobs:
+`THREADKEEPER_TEST_SHARD=k/3` keeps only the tests whose id hashes to shard
+`k` (see `tests/conftest.py`). A per-Python `pytest (py3.x)` job passes only
+when every shard passed, so the branch-protection check names stay stable.
+Reproduce one CI shard locally with:
+
+```bash
+THREADKEEPER_TEST_SHARD=2/3 python -m pytest -q --forked
+```
+
+CI also runs a blocking `pip-audit` job against the fully resolved
+`.[semantic,dev]` environment. It fails for known dependency vulnerabilities;
+see [Security scanning](#security-scanning) before adding an exception.
 
 Test isolation uses a tempdir DB per test, all daemons disabled via env
 (`THREADKEEPER_*_INTERVAL_S=0`). See `tests/conftest.py`.
@@ -133,7 +146,7 @@ To add a language:
 4. Add a row per family to the parametrized samples in
    `tests/test_i18n_multilang.py`.
 
-Currently shipped: en, zh, hi, es, pt, fr, de, ar, ru, ja
+Currently shipped: en, zh, hi, es, pt (Brazilian and European), fr, de, ar, ru, ja, ko, bn
 (~82% of the world's speakers).
 
 ## Style
@@ -157,6 +170,25 @@ python -m threadkeeper._setup --dry-run           # setup is idempotent
 
 If any of these report something unexpected on a clean checkout, that's
 a bug — please open an issue or a PR.
+
+## Security scanning
+
+GitHub Actions runs CodeQL's default Python query suite on every PR and push to
+`main`, plus weekly, and uploads findings to the repository Security tab.
+`pip-audit` runs on every PR and push against CI's resolved runtime, semantic,
+and development dependencies, and fails on known vulnerabilities.
+
+The baseline currently has no dependency-audit exceptions. If an advisory is
+demonstrably inapplicable or cannot yet be safely upgraded, add one reviewed
+line to `.github/pip-audit-ignores.txt` in this format:
+
+```
+ADVISORY-ID | tracking issue or PR | rationale | next review date (YYYY-MM-DD)
+```
+
+Keep the exception narrowly scoped to the advisory ID, link its remediation
+work, and remove it as soon as a safe fix is available. The workflow rejects
+malformed entries; it does not suppress the `pip-audit` exit status globally.
 
 ## Pull request workflow
 
@@ -299,7 +331,7 @@ friction) out.
 |---|---|---|
 | `feat:` | minor | 0.6.0 |
 | `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`, `build:`, `deps:`, `revert:` | patch | 0.5.4 |
-| `BREAKING CHANGE:` footer | minor while in 0.x (manual promotion to 1.0.0 when API is stable) | 0.6.0 |
+| Ground-up replacement, `!` marker, or `BREAKING CHANGE:` footer | major, including while in 0.x | 1.0.0 |
 
 If a single commit touches multiple concerns (rare — squash-merge
 typically prevents this), pick the highest bump that applies.
@@ -326,9 +358,8 @@ mcp-publisher login github
 mcp-publisher publish
 ```
 
-### Promoting to 1.0.0
+### Major releases
 
-Once the API is stable and the next BREAKING CHANGE should land 1.0.0:
-bump `pyproject.toml` to `1.0.0` directly in that release PR; the same
-auto-tag flow releases it. No config flip needed — manual control by
-design.
+A ground-up replacement or breaking new implementation bumps the major version
+directly, including from 0.x to 1.0.0. The same auto-tag flow releases it; no
+config flip is needed.

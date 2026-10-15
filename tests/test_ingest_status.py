@@ -28,7 +28,7 @@ def test_ingest_pass_event_recorded_for_status_ui(mp_with_cid):
 
     assert row["kind"] == "ingest_pass"
     assert row["target"]
-    assert row["summary"] == "ok mode=recent new=2 files=5"
+    assert row["summary"] == "ok mode=recent new=2 files=5 skipped=0"
 
 
 def test_start_background_ingester_respects_disable_bg_daemons(mp_with_cid, monkeypatch):
