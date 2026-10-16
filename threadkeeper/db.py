@@ -2,18 +2,23 @@
 Imported by every tool module that needs DB access."""
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import logging
+import os
 import random
 import sqlite3
+import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TypeVar
 
 from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
 from .permissions import harden_storage_paths
+from .read_context import is_read_only_call
 from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -51,6 +56,105 @@ _BOOTSTRAP_LOCK = threading.RLock()
 _BOOTSTRAPPED = False
 
 _T = TypeVar("_T")
+
+
+class _LegacyConnection(sqlite3.Connection):
+    """A get_db() connection the leak guard can observe (#293).
+
+    The base sqlite3.Connection type cannot be weakly referenced, so legacy
+    connections use this subclass to sit in a WeakKeyDictionary without the
+    registry keeping them alive.
+    """
+
+    def close(self) -> None:
+        with _LEGACY_LOCK:
+            _LEGACY_CONNS.pop(self, None)
+        super().close()
+
+
+# get_db() hands out non-autocommit connections: any INSERT/UPDATE opens a
+# write transaction that holds SQLite's single writer lock for every process
+# until the caller commits, rolls back, or drops the connection. The registry
+# only observes: another thread may read `in_transaction` (it is not
+# thread-checked) but never touches the connection otherwise.
+_LEGACY_LOCK = threading.RLock()
+_LEGACY_CONNS: "weakref.WeakKeyDictionary[_LegacyConnection, list]" = (
+    weakref.WeakKeyDictionary()
+)
+_LEGACY_WARN_AT = [32]
+
+
+def _caller_site(depth: int) -> str:
+    try:
+        frame = sys._getframe(depth)
+    except ValueError:
+        return "?"
+    code = frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{frame.f_lineno} {code.co_name}"
+
+
+def _track_legacy_connection(conn: _LegacyConnection, site: str) -> None:
+    with _LEGACY_LOCK:
+        # [opened_at, call site, first sampled inside a write transaction]
+        _LEGACY_CONNS[conn] = [time.monotonic(), site, None]
+        live = len(_LEGACY_CONNS)
+        warn = live >= _LEGACY_WARN_AT[0]
+        if warn:
+            _LEGACY_WARN_AT[0] *= 2
+            sites = Counter(info[1] for info in _LEGACY_CONNS.values())
+    if warn:
+        logger.warning(
+            "db: %d legacy get_db() connections are open in this process; "
+            "top call sites: %s",
+            live,
+            ", ".join(f"{s} x{n}" for s, n in sites.most_common(5)),
+        )
+
+
+def legacy_connection_stats(now: float | None = None) -> dict:
+    """Sample this process's legacy connections (#293).
+
+    Returns ``open`` (live get_db() connections) and ``write_holders``: those
+    inside a write transaction, each with its call site and how long it has
+    been seen holding one. A holder's age starts at the first sample that
+    finds it in a transaction, so callers sample periodically (the daemon host
+    does, every heartbeat) and a long age means the writer lock is leaked.
+    """
+    now = time.monotonic() if now is None else now
+    holders: list[dict] = []
+    with _LEGACY_LOCK:
+        items = list(_LEGACY_CONNS.items())
+    open_count = 0
+    for conn, info in items:
+        try:
+            in_txn = conn.in_transaction
+        except sqlite3.ProgrammingError:
+            continue  # closed without close() bookkeeping (e.g. by SQLite)
+        open_count += 1
+        if not in_txn:
+            info[2] = None
+            continue
+        if info[2] is None:
+            info[2] = now
+        holders.append({
+            "site": info[1],
+            "held_s": round(now - info[2], 1),
+            "open_s": round(now - info[0], 1),
+        })
+    holders.sort(key=lambda h: h["held_s"], reverse=True)
+    return {"open": open_count, "write_holders": holders}
+
+
+def _describe_write_holders(stats: dict) -> str:
+    holders = stats["write_holders"]
+    if not holders:
+        return f"legacy_open={stats['open']} write_holders=0"
+    shown = ", ".join(
+        f"{h['site']} held={h['held_s']:.0f}s" for h in holders[:3]
+    )
+    return (
+        f"legacy_open={stats['open']} write_holders={len(holders)} ({shown})"
+    )
 
 
 def _try_load_vec(conn: sqlite3.Connection) -> bool:
@@ -95,7 +199,10 @@ CREATE TABLE IF NOT EXISTS threads (
     last_move       TEXT,
     depth           INTEGER NOT NULL DEFAULT 0,
     opened_at       INTEGER NOT NULL,
-    last_touched_at INTEGER NOT NULL
+    last_touched_at INTEGER NOT NULL,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -106,7 +213,10 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at  INTEGER NOT NULL,
     session_id  TEXT,
     embedding   BLOB,
-    embed_backend TEXT           -- generation fingerprint; NULL = legacy
+    embed_backend TEXT,          -- generation fingerprint; NULL = legacy
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS verbatim (
@@ -115,7 +225,10 @@ CREATE TABLE IF NOT EXISTS verbatim (
     content     TEXT NOT NULL,
     thread_id   TEXT REFERENCES threads(id),
     created_at  INTEGER NOT NULL,
-    session_id  TEXT
+    session_id  TEXT,
+    project_id  TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -123,7 +236,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at    INTEGER NOT NULL,
     ended_at      INTEGER,
     client        TEXT,
-    write_origin  TEXT NOT NULL DEFAULT 'foreground'
+    write_origin  TEXT NOT NULL DEFAULT 'foreground',
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS style (
@@ -178,7 +294,10 @@ CREATE TABLE IF NOT EXISTS dialog_messages (
     model        TEXT,
     created_at   INTEGER NOT NULL,
     embedding    BLOB,
-    embed_backend TEXT           -- generation fingerprint; NULL = legacy
+    embed_backend TEXT,          -- generation fingerprint; NULL = legacy
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS ingest_state (
@@ -252,7 +371,10 @@ CREATE TABLE IF NOT EXISTS concepts (
     source_thread       TEXT REFERENCES threads(id),
     registered_by_cid   TEXT,
     registered_at       INTEGER NOT NULL,
-    last_evidence_at    INTEGER
+    last_evidence_at    INTEGER,
+    project_id          TEXT,
+    memory_scope        TEXT NOT NULL DEFAULT 'project'
+                        CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Distillation channel: explicitly-curated insights worth carrying forward.
@@ -271,7 +393,10 @@ CREATE TABLE IF NOT EXISTS distill (
     vote_sum        REAL NOT NULL DEFAULT 0,
     vote_count      INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
-    exported_at     INTEGER
+    exported_at     INTEGER,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS distill_votes (
@@ -287,9 +412,13 @@ CREATE TABLE IF NOT EXISTS distill_votes (
 -- new-claude must know" surface, not a general note store.
 CREATE TABLE IF NOT EXISTS core_memory (
     key         TEXT PRIMARY KEY,
+    key_name    TEXT,
     content     TEXT NOT NULL,
     priority    INTEGER NOT NULL DEFAULT 50,    -- higher = shown first
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    project_id  TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Dialectic user model. Each claim is a discrete proposition about the
@@ -311,7 +440,10 @@ CREATE TABLE IF NOT EXISTS user_dialectic (
     created_at        INTEGER NOT NULL,
     valid_from        INTEGER,
     valid_to          INTEGER,
-    last_evidence_at  INTEGER
+    last_evidence_at  INTEGER,
+    project_id        TEXT,
+    memory_scope      TEXT NOT NULL DEFAULT 'project'
+                      CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 CREATE TABLE IF NOT EXISTS dialectic_evidence (
@@ -323,8 +455,51 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
     weight         REAL NOT NULL DEFAULT 1.0
                    CHECK(weight >= 0 AND weight <= 1),
     created_by_cid TEXT,
-    created_at     INTEGER NOT NULL
+    created_at     INTEGER NOT NULL,
+    project_id     TEXT,
+    memory_scope   TEXT NOT NULL DEFAULT 'project'
+                   CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
+
+-- Immutable write-time authority.  It is separate from evidence weight,
+-- confidence and tier so a later trusted writer cannot upgrade old input.
+CREATE TABLE IF NOT EXISTS memory_authority (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    source_principal TEXT NOT NULL,
+    source_channel TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    invalidated_at INTEGER,
+    invalidation_reason TEXT,
+    PRIMARY KEY (artifact_kind, artifact_id)
+);
+CREATE TABLE IF NOT EXISTS memory_authority_roots (
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    authority_class TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (artifact_kind, artifact_id, principal, channel, authority_class)
+);
+CREATE TABLE IF NOT EXISTS memory_derivations (
+    parent_kind TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    child_kind TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (parent_kind, parent_id, child_kind, child_id)
+);
+CREATE TRIGGER IF NOT EXISTS memory_authority_immutable
+BEFORE UPDATE OF artifact_kind, artifact_id, authority_class, source_principal, source_channel
+ON memory_authority BEGIN
+    SELECT RAISE(ABORT, 'memory authority is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS memory_authority_root_immutable
+BEFORE UPDATE ON memory_authority_roots BEGIN
+    SELECT RAISE(ABORT, 'memory authority root is immutable');
+END;
 
 -- Knowledge graph: typed edges between any pair of entities. Lets us run
 -- traversal queries ("what concepts refine this thread", "what threads
@@ -339,7 +514,10 @@ CREATE TABLE IF NOT EXISTS edges (
     relation        TEXT NOT NULL,   -- 'refines','contradicts','exemplifies','depends_on','mentions','elaborates'
     weight          REAL NOT NULL DEFAULT 1.0,
     created_by_cid  TEXT,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    project_id      TEXT,
+    memory_scope    TEXT NOT NULL DEFAULT 'project'
+                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Skill usage telemetry. One row per skill that the curator can manage.
@@ -360,7 +538,10 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     patch_count       INTEGER NOT NULL DEFAULT 0,
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
-                      CHECK(state IN ('active','stale','archived'))
+                      CHECK(state IN ('active','stale','archived')),
+    project_id        TEXT,
+    memory_scope      TEXT NOT NULL DEFAULT 'project'
+                      CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Lesson usage telemetry. One row per lessons.md slug so the curator can
@@ -379,6 +560,20 @@ CREATE TABLE IF NOT EXISTS lesson_usage (
                    CHECK(tier IN ('hypothesis','observed','validated'))
 );
 
+-- Curator decisions to retain deliberately adjacent lesson pairs.  The pair
+-- is normalized alphabetically by the writer so it has one durable identity
+-- regardless of which lesson the curator considered first.
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+
 -- Auto-extraction queue: heuristic candidates for note/concept/distill that
 -- a session can review in batch and accept/reject — saves manual scanning.
 CREATE TABLE IF NOT EXISTS extract_candidates (
@@ -391,7 +586,10 @@ CREATE TABLE IF NOT EXISTS extract_candidates (
     status       TEXT NOT NULL DEFAULT 'pending'
                  CHECK(status IN ('pending','accepted','rejected')),
     created_at   INTEGER NOT NULL,
-    decided_at   INTEGER
+    decided_at   INTEGER,
+    project_id   TEXT,
+    memory_scope TEXT NOT NULL DEFAULT 'project'
+                 CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Dialectic capture buffer. dialectic_miner mechanically stores every user
@@ -410,8 +608,11 @@ CREATE TABLE IF NOT EXISTS dialectic_observations (
     processed_at INTEGER,
     claimed_at   INTEGER,
     claimed_by_task TEXT,
-    requeue_count INTEGER NOT NULL DEFAULT 0  -- claim released by a child that
+    requeue_count INTEGER NOT NULL DEFAULT 0, -- claim released by a child that
                                               -- exited without resolving
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
 -- Reciprocal-rank-fusion-friendly FTS over dialog content. External-content
@@ -477,7 +678,82 @@ CREATE TABLE IF NOT EXISTS tasks (
     retry_of      TEXT,
     retry_root    TEXT,
     retry_attempt INTEGER NOT NULL DEFAULT 0,
-    timeout_respawned_as TEXT
+    timeout_respawned_as TEXT,
+    project_id    TEXT,
+    memory_scope  TEXT NOT NULL DEFAULT 'project'
+                  CHECK(memory_scope IN ('project','global','shared','unresolved')),
+    traceparent TEXT,
+    trace_workflow_span_id TEXT,
+    trace_parent_span_id TEXT,
+    trace_started_ns INTEGER,
+    trace_queue_wait_ms INTEGER,
+    trace_exported_at INTEGER
+);
+
+-- Curator passes are durable work manifests. The event log remains useful
+-- human telemetry, but it cannot distinguish dispatch from a child that
+-- later failed or timed out. A fingerprint is endorsed only after every
+-- expected batch has a completed, provenanced report.
+CREATE TABLE IF NOT EXISTS curator_passes (
+    pass_id               TEXT PRIMARY KEY,
+    inventory_fingerprint TEXT NOT NULL,
+    expected_batches      INTEGER NOT NULL CHECK(expected_batches > 0),
+    mode                  TEXT NOT NULL CHECK(mode IN ('advisory','destructive')),
+    audit_manifest_path   TEXT NOT NULL,
+    snapshot_path         TEXT,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    completed_at          INTEGER,
+    endorsed_at           INTEGER,
+    -- A pass that outlived its window or exhausted a batch's attempts is
+    -- abandoned rather than resumed forever; the next due tick starts fresh.
+    abandoned_at          INTEGER,
+    abandon_reason        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS curator_batches (
+    pass_id               TEXT NOT NULL REFERENCES curator_passes(pass_id),
+    batch_index           INTEGER NOT NULL CHECK(batch_index > 0),
+    report_name           TEXT NOT NULL,
+    -- The rendered batch is frozen with the pass, so retries and later ticks
+    -- review exactly the entries the pass was created for even after the
+    -- live inventory (and therefore every batch boundary) has moved on.
+    batch_text            TEXT NOT NULL DEFAULT '',
+    -- Phase one (#289): a read-only web research child writes a
+    -- destination-scoped handoff before the web-free evaluator may run.
+    research_state        TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(research_state IN
+                                ('pending','running','failed','complete')),
+    research_task_id      TEXT,
+    research_attempts     INTEGER NOT NULL DEFAULT 0,
+    research_failure      TEXT,
+    state                 TEXT NOT NULL DEFAULT 'pending'
+                          CHECK(state IN ('pending','running','failed','complete')),
+    task_id               TEXT,
+    dispatch_count        INTEGER NOT NULL DEFAULT 0,
+    dispatched_at         INTEGER,
+    completed_at          INTEGER,
+    failed_at             INTEGER,
+    failure_reason        TEXT,
+    provenance_sha256     TEXT,
+    report_written_at     INTEGER,
+    apply_state           TEXT NOT NULL DEFAULT 'unapplied'
+                          CHECK(apply_state IN ('unapplied','applied')),
+    applied_at            INTEGER,
+    PRIMARY KEY (pass_id, batch_index),
+    UNIQUE (pass_id, report_name)
+);
+
+-- Durable audit trail for the one-way legacy namespace migration. A row per
+-- table makes it explicit which legacy records remain quarantined.
+CREATE TABLE IF NOT EXISTS project_scope_migration_report (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    migrated_at     INTEGER NOT NULL,
+    table_name      TEXT NOT NULL,
+    project_rows    INTEGER NOT NULL DEFAULT 0,
+    global_rows     INTEGER NOT NULL DEFAULT 0,
+    shared_rows     INTEGER NOT NULL DEFAULT 0,
+    unresolved_rows INTEGER NOT NULL DEFAULT 0
 );
 
 -- Cross-process resource-control requests. The memory guard uses this as a
@@ -542,6 +818,25 @@ CREATE TABLE IF NOT EXISTS evolve_issues (
     created_at    INTEGER NOT NULL
 );
 
+-- Parent-authorized handoffs from an unprivileged Evolve web-research child.
+-- The child never chooses a path: it can only submit content for the exact
+-- pass row created before it was spawned.  The audit phase accepts only a
+-- completed row whose final on-disk SHA-256 still matches this record.
+CREATE TABLE IF NOT EXISTS evolve_research_handoffs (
+    pass_id        TEXT PRIMARY KEY,
+    target_path    TEXT NOT NULL UNIQUE,
+    owner_cid      TEXT NOT NULL,
+    authorized_at  INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    status         TEXT NOT NULL CHECK(status IN (
+        'pending', 'writing', 'accepted', 'failed', 'tampered', 'expired'
+    )),
+    content_sha256 TEXT,
+    content_chars  INTEGER,
+    completed_at   INTEGER,
+    failure        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_thread   ON notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_notes_created  ON notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_state  ON threads(state);
@@ -568,6 +863,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_evolve_issues_fingerprint
     ON evolve_issues(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_hash
     ON evolve_issues(content_hash);
+CREATE INDEX IF NOT EXISTS idx_evolve_research_handoffs_ready
+    ON evolve_research_handoffs(status, completed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_evolve_issues_number
     ON evolve_issues(issue_number);
 CREATE INDEX IF NOT EXISTS idx_probes_category    ON probes(category);
@@ -590,10 +887,74 @@ CREATE INDEX IF NOT EXISTS idx_edges_to            ON edges(to_kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_relation      ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_extract_status      ON extract_candidates(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dialectic_obs_status ON dialectic_observations(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_derivations_parent ON memory_derivations(parent_kind, parent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_authority_visible ON memory_authority(artifact_kind, invalidated_at);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_state   ON skill_usage(state);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_origin  ON skill_usage(created_by_origin);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_tier   ON lesson_usage(tier);
 CREATE INDEX IF NOT EXISTS idx_lesson_usage_access ON lesson_usage(last_used_at, last_viewed_at);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
+
+-- A vector-space switch is a data migration, not a configuration flip.  The
+-- singleton keeps the one generation readers may query while a second one is
+-- built in the side table below.  It deliberately has no foreign keys: note
+-- ids can become TEXT during the optional sync migration and dialog ids are
+-- already TEXT.
+CREATE TABLE IF NOT EXISTS embedding_generation_state (
+    id                 INTEGER PRIMARY KEY CHECK(id = 1),
+    active_generation  TEXT,
+    staging_generation TEXT,
+    previous_generation TEXT,
+    state              TEXT NOT NULL DEFAULT 'ready'
+                       CHECK(state IN ('ready','staging','validated')),
+    started_at         INTEGER,
+    validated_at       INTEGER,
+    activated_at       INTEGER
+);
+
+-- Staged vectors are keyed by generation and source identity, never by a
+-- mutable base-table embedding slot. source_hash lets a resumed migration
+-- detect a source edit without retaining another copy of private text.
+CREATE TABLE IF NOT EXISTS embedding_generation_vectors (
+    generation   TEXT NOT NULL,
+    memory_kind  TEXT NOT NULL CHECK(memory_kind IN ('note','dialog')),
+    memory_id    TEXT NOT NULL,
+    source_hash  TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY(generation, memory_kind, memory_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_generation_vectors_lookup
+    ON embedding_generation_vectors(generation, memory_kind, memory_id);
+
+-- Provenance is a pointer-only audit record. It records the writer identity
+-- and source event/thread references without duplicating transcript text.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    memory_kind         TEXT NOT NULL,
+    memory_id           TEXT NOT NULL,
+    writer_provider     TEXT NOT NULL,
+    writer_model        TEXT NOT NULL,
+    writer_revision     TEXT NOT NULL,
+    source_event_kind   TEXT,
+    source_event_id     TEXT,
+    source_thread_id    TEXT,
+    recorded_at         INTEGER NOT NULL,
+    PRIMARY KEY(memory_kind, memory_id)
+);
+
+-- Durable operator audit of the fixed-corpus upgrade gate. Details are
+-- metrics only; fixtures remain bundled and anonymized rather than copied
+-- into the user's memory store.
+CREATE TABLE IF NOT EXISTS memory_upgrade_replays (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction           TEXT NOT NULL,
+    writer_generation   TEXT NOT NULL,
+    embedding_generation TEXT NOT NULL,
+    passed              INTEGER NOT NULL CHECK(passed IN (0,1)),
+    report_json         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL
+);
 
 -- ── Cross-machine sync bookkeeping (see threadkeeper/sync/) ──────────────
 -- Node identity + Hybrid Logical Clock singleton.
@@ -659,12 +1020,115 @@ CREATE TABLE IF NOT EXISTS daemon_health (
     thread_started_at INTEGER,
     observed_at       INTEGER NOT NULL
 );
+
+-- The 2026 MCP protocol is stateless. Keep the first terminal response for a
+-- caller's JSON-RPC request id so a reconnect/re-entry cannot re-run a write.
+-- A claimed row deliberately has no expiry: after a process dies in the small
+-- interval after a business write, rejecting the ambiguous replay is safer
+-- than risking a duplicate mutation.
+CREATE TABLE IF NOT EXISTS mcp_replay_ledger (
+    caller_id       TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    arguments_hash  TEXT NOT NULL,
+    response_json   TEXT,
+    created_at      INTEGER NOT NULL,
+    completed_at    INTEGER,
+    PRIMARY KEY (caller_id, request_id)
+);
+CREATE TABLE IF NOT EXISTS curator_merge_verdicts (
+    left_slug   TEXT NOT NULL,
+    right_slug  TEXT NOT NULL,
+    decision    TEXT NOT NULL CHECK(decision = 'keep_both'),
+    reason      TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (left_slug, right_slug),
+    CHECK(left_slug < right_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_curator_merge_verdicts_updated
+    ON curator_merge_verdicts(updated_at DESC);
+
+-- Retention state is intentionally separate from the active Curator and
+-- Evolve manifests.  Those manifests remain the source of truth while work
+-- is live; these small rows only record that a terminal artifact has been
+-- compacted and can be removed on a later pass.
+CREATE TABLE IF NOT EXISTS workflow_retention_passes (
+    pass_id      TEXT PRIMARY KEY,
+    compacted_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_artifact_deletions (
+    path        TEXT PRIMARY KEY,
+    root_path   TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK(state IN ('pending','failed','deleted')),
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_retention_state (
+    name         TEXT PRIMARY KEY,
+    last_at      INTEGER NOT NULL,
+    last_outcome TEXT NOT NULL
+);
 """
+
+# These columns are independently additive: current databases deliberately do
+# not bump PRAGMA user_version for safe telemetry-only extensions.
+ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
+    "ALTER TABLE tasks ADD COLUMN traceparent TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_workflow_span_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_parent_span_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_started_ns INTEGER",
+    "ALTER TABLE tasks ADD COLUMN trace_queue_wait_ms INTEGER",
+    "ALTER TABLE tasks ADD COLUMN trace_exported_at INTEGER",
+    "ALTER TABLE curator_batches ADD COLUMN workflow_batch_sha256 TEXT",
+    "ALTER TABLE curator_batches ADD COLUMN workflow_batch_summary TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE curator_batches ADD COLUMN workflow_compacted_at INTEGER",
+    "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_at INTEGER",
+    "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_body TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_summary TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_compacted_at INTEGER",
+    "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_path_deleted INTEGER NOT NULL DEFAULT 0",
+)
 
 # Historical column migrations layered on top of the baseline SCHEMA.
 # Some columns are already present in new-table definitions; duplicate column
 # errors are the only expected no-op.
 LEGACY_COLUMN_MIGRATIONS = (
+    # Project namespace v5. Existing rows are deliberately unresolved until
+    # their provenance is known; never silently promote legacy memory global.
+    "ALTER TABLE threads ADD COLUMN project_id TEXT",
+    "ALTER TABLE threads ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE notes ADD COLUMN project_id TEXT",
+    "ALTER TABLE notes ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE verbatim ADD COLUMN project_id TEXT",
+    "ALTER TABLE verbatim ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE sessions ADD COLUMN project_id TEXT",
+    "ALTER TABLE sessions ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialog_messages ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialog_messages ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE core_memory ADD COLUMN key_name TEXT",
+    "ALTER TABLE core_memory ADD COLUMN project_id TEXT",
+    "ALTER TABLE core_memory ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE tasks ADD COLUMN project_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE concepts ADD COLUMN project_id TEXT",
+    "ALTER TABLE concepts ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE distill ADD COLUMN project_id TEXT",
+    "ALTER TABLE distill ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE user_dialectic ADD COLUMN project_id TEXT",
+    "ALTER TABLE user_dialectic ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialectic_evidence ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialectic_evidence ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE dialectic_observations ADD COLUMN project_id TEXT",
+    "ALTER TABLE dialectic_observations ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE extract_candidates ADD COLUMN project_id TEXT",
+    "ALTER TABLE extract_candidates ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE edges ADD COLUMN project_id TEXT",
+    "ALTER TABLE edges ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
+    "ALTER TABLE skill_usage ADD COLUMN project_id TEXT",
+    "ALTER TABLE skill_usage ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'unresolved'",
     "ALTER TABLE threads ADD COLUMN claimed_at INTEGER",
     "ALTER TABLE threads ADD COLUMN claimed_by_cid TEXT",
     "ALTER TABLE signals ADD COLUMN task_id TEXT",
@@ -724,6 +1188,10 @@ LEGACY_COLUMN_MIGRATIONS = (
 )
 
 POST_SCHEMA_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_threads_scope ON threads(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_scope ON notes(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dialog_scope ON dialog_messages(memory_scope, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_core_scope ON core_memory(memory_scope, project_id)",
     "CREATE INDEX IF NOT EXISTS idx_dialectic_tier "
     "ON user_dialectic(tier)",
     "CREATE INDEX IF NOT EXISTS idx_dialectic_validity "
@@ -822,6 +1290,66 @@ def _backfill_schema_data(conn: sqlite3.Connection) -> None:
     )
 
 
+_PROJECT_SCOPED_TABLES = (
+    "threads", "notes", "verbatim", "sessions", "dialog_messages",
+    "core_memory", "tasks", "concepts", "distill", "user_dialectic",
+    "dialectic_evidence", "dialectic_observations", "extract_candidates",
+    "edges", "skill_usage",
+)
+
+
+def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
+    """Quarantine legacy memory and record an auditable migration report.
+
+    Old rows do not carry trustworthy repository provenance.  Tasks are the
+    exception: their persisted working directory can still be resolved while
+    it exists, so they are safely backfilled. Everything else is explicitly
+    unresolved rather than treated as global.  This report is intentionally
+    retained for operators deciding how to classify old data.
+    """
+    from .project_scope import resolve_project_namespace
+
+    conn.execute("UPDATE core_memory SET key_name=key WHERE key_name IS NULL")
+    # Legacy adapter labels can encode an absolute local path. Preserve only
+    # the semantic subagent sentinel needed by internal-loop filters.
+    conn.execute(
+        "UPDATE dialog_messages SET project=NULL "
+        "WHERE project IS NOT NULL AND project != 'subagents'"
+    )
+    task_rows = conn.execute(
+        "SELECT id, cwd FROM tasks WHERE memory_scope='unresolved'"
+    ).fetchall()
+    for row in task_rows:
+        namespace = resolve_project_namespace(row["cwd"])
+        if namespace.project_id:
+            conn.execute(
+                "UPDATE tasks SET project_id=?, memory_scope='project' WHERE id=?",
+                (namespace.project_id, row["id"]),
+            )
+    now = int(time.time())
+    for table in _PROJECT_SCOPED_TABLES:
+        counts = dict(conn.execute(
+            f"SELECT memory_scope, COUNT(*) AS n FROM {table} GROUP BY memory_scope"
+        ).fetchall())
+        conn.execute(
+            "INSERT INTO project_scope_migration_report "
+            "(migrated_at, table_name, project_rows, global_rows, shared_rows, unresolved_rows) "
+            "VALUES (?,?,?,?,?,?)",
+            (now, table, int(counts.get("project", 0)), int(counts.get("global", 0)),
+             int(counts.get("shared", 0)), int(counts.get("unresolved", 0))),
+        )
+
+
+def project_scope_migration_report(conn: sqlite3.Connection) -> list[dict[str, int | str]]:
+    """Return the most recent per-table v5 migration accounting."""
+    rows = conn.execute(
+        "SELECT table_name, project_rows, global_rows, shared_rows, unresolved_rows "
+        "FROM project_scope_migration_report WHERE migrated_at=("
+        "SELECT MAX(migrated_at) FROM project_scope_migration_report) ORDER BY table_name"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _drop_legacy_dialog_fts(conn: sqlite3.Connection) -> None:
     """v1→v2: dialog_fts was a content-storing FTS5 mirror (uuid UNINDEXED,
     content) whose shadow table duplicated ~465MB of dialog_messages.content.
@@ -897,7 +1425,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3):
+    if from_version not in (0, 1, 2, 3, 4):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -929,6 +1457,8 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
         for coldef in _SYNC_COLUMN_DEFS:
             _apply_column_migration(conn, f"ALTER TABLE {tbl} {coldef}")
     _backfill_schema_data(conn)
+    if from_version < 5:
+        _backfill_project_scopes(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
     if from_version < 2:
@@ -940,6 +1470,8 @@ def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
     """Materialize backward-compatible tables without a version migration."""
     for statement in _iter_sql_statements(ADDITIVE_RUNTIME_SCHEMA):
         conn.execute(statement)
+    for ddl in ADDITIVE_RUNTIME_COLUMN_MIGRATIONS:
+        _apply_column_migration(conn, ddl)
 
 
 def _guard_managed_checkout_live_db() -> None:
@@ -1035,20 +1567,32 @@ def _execute_startup_pragma(
 
 
 def _open_connection(*, autocommit: bool = False,
-                     busy_timeout_ms: int = 10_000) -> tuple[sqlite3.Connection, bool]:
-    """Open and configure one connection without schema/DDL side effects."""
+                     busy_timeout_ms: int = 10_000,
+                     factory: type[sqlite3.Connection] = sqlite3.Connection,
+                     ) -> tuple[sqlite3.Connection, bool]:
+    """Open and configure one connection without schema/DDL side effects.
+
+    Setup statements can still hit a lock (SQLite may need the WAL index
+    while another process checkpoints), so a failed setup closes the
+    connection and raises; ``run_write`` retries that like any lock error.
+    """
     global _VEC_AVAILABLE
     kwargs = {
         "timeout": max(0.001, busy_timeout_ms / 1000.0),
+        "factory": factory,
     }
     if autocommit:
         kwargs["isolation_level"] = None
     conn = sqlite3.connect(str(DB_PATH), **kwargs)
-    conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
-    # synchronous is per-connection. Unlike journal_mode, setting it does not
-    # rewrite the database header or compete for the writer slot.
-    conn.execute("PRAGMA synchronous=NORMAL")
-    vec_loaded = _try_load_vec(conn)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+        # synchronous is per-connection. Unlike journal_mode, setting it does
+        # not rewrite the database header or compete for the writer slot.
+        conn.execute("PRAGMA synchronous=NORMAL")
+        vec_loaded = _try_load_vec(conn)
+    except BaseException:
+        conn.close()
+        raise
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
     conn.row_factory = sqlite3.Row
@@ -1181,6 +1725,13 @@ def bootstrap_db(force: bool = False) -> None:
             _execute_startup_pragma(conn, "PRAGMA journal_mode=WAL")
             _ensure_schema(conn)
             _ensure_additive_runtime_schema(conn)
+            # Seed the single durable embedding-generation pointer while this
+            # bootstrap connection already owns the writer slot. Read-only
+            # retrieval/dashboard connections must never need to initialize it
+            # themselves (and therefore never contend with a staged migration).
+            from .embeddings import embedding_fingerprint
+            from .memory_compat import generation_state
+            generation_state(conn, embedding_fingerprint())
             _ensure_vec_tables(conn, vec_loaded=vec_loaded)
             _ensure_sync_capture(conn)
             conn.commit()
@@ -1203,7 +1754,14 @@ def get_db() -> sqlite3.Connection:
     are migrated, but no longer performs DDL after process bootstrap.
     """
     bootstrap_db()
-    conn, _ = _open_connection()
+    query_only = is_read_only_call()
+    conn, _ = _open_connection(
+        autocommit=query_only,
+        factory=_LegacyConnection,
+    )
+    if query_only:
+        conn.execute("PRAGMA query_only=ON")
+    _track_legacy_connection(conn, _caller_site(2))
     return conn
 
 
@@ -1248,33 +1806,42 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
         # Keep each SQLite busy wait short enough that the outer transaction
         # boundary can roll back and retry with jitter instead of one 10s stall.
         busy_ms = max(1, min(250, int(remaining * 1000) or 1))
-        conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+        conn: sqlite3.Connection | None = None
         try:
+            # Opening is inside the retry: connection setup can hit the same
+            # transient lock as BEGIN IMMEDIATE.
+            conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
             conn.execute("BEGIN IMMEDIATE")
             result = fn(conn)
             conn.commit()
             return result
         except sqlite3.OperationalError as exc:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             if not _is_lock_error(exc) or time.monotonic() >= deadline:
                 if _is_lock_error(exc):
+                    # Name any in-process holder: a leaked legacy write
+                    # transaction here is what wedges the host (#293).
                     logger.warning(
-                        "SQLite write deadline exhausted op=%s attempts=%d",
+                        "SQLite write deadline exhausted op=%s attempts=%d %s",
                         op,
                         attempt,
+                        _describe_write_holders(legacy_connection_stats()),
                     )
                 raise
         except Exception:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             # The next attempt is allowed to raise SQLite's original lock error;

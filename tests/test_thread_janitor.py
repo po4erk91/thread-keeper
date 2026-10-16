@@ -197,6 +197,26 @@ def test_no_stale_events_collapse_to_one(tmp_path, monkeypatch):
     assert n == 1, n
 
 
+def test_quiet_ticks_keep_the_success_clock_moving(tmp_path, monkeypatch):
+    """The single no_stale row is refreshed on every quiet tick, so
+    agent_status does not call an hourly janitor stale after three hours."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    assert pkg["thread_janitor"].run_janitor_pass(force=True) == "no_stale"
+    conn.execute(
+        "UPDATE events SET created_at=created_at-86400 WHERE kind='janitor_pass'"
+    )
+    conn.commit()
+
+    assert pkg["thread_janitor"].run_janitor_pass(force=True) == "no_stale"
+
+    rows = conn.execute(
+        "SELECT created_at FROM events WHERE kind='janitor_pass'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["created_at"] >= int(time.time()) - 60
+
+
 def test_no_stale_records_again_after_activity(tmp_path, monkeypatch):
     """A close transitions the loop out of quiet, so the next no_stale is a
     real state change and IS recorded — collapse, not permanent suppression."""

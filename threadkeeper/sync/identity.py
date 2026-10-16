@@ -54,6 +54,12 @@ def get_node_id(conn: sqlite3.Connection) -> str:
     return node_id
 
 
+def read_node_id(conn: sqlite3.Connection) -> str | None:
+    """Return the cached node id without bootstrapping sync state or its file."""
+    row = conn.execute("SELECT node_id FROM sync_state WHERE id=1").fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 def _fmt(phys: int, ctr: int, node_id: str) -> str:
     return f"{phys:0{_PHYS_WIDTH}d}:{ctr:0{_CTR_WIDTH}d}:{node_id}"
 

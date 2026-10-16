@@ -2,7 +2,7 @@
 on bad input rather than raising Python exceptions.
 
 A future error-boundary refactor (a `@safe_tool` decorator, schema validation,
-or a top-level FastMCP wrapper) must keep these tests green.
+or a top-level MCPServer wrapper) must keep these tests green.
 """
 from __future__ import annotations
 

@@ -8,10 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-try:  # MCP 1.x
-    from mcp.server.fastmcp import Context
-except ModuleNotFoundError:  # MCP 2.x
-    from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import Context
 from pydantic import BaseModel, Field
 
 
@@ -85,6 +82,9 @@ def supports_form_elicitation(ctx: Context | None) -> bool:
         return _capabilities_support_form_elicitation(meta_caps)
 
     session = getattr(request_context, "session", None)
+    session_caps = getattr(session, "client_capabilities", None)
+    if session_caps is not None:
+        return _capabilities_support_form_elicitation(session_caps)
     client_params = getattr(session, "_client_params", None)
     return _capabilities_support_form_elicitation(
         getattr(client_params, "capabilities", None)
