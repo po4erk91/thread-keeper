@@ -1518,6 +1518,17 @@ which calls warrant a prompt (substrate for #26). The five status tools
 the legacy human-readable text block for backward compatibility. The contract
 is enforced by `tests/test_tool_annotations.py`.
 
+### MCP server instructions (#354)
+
+The MCP initialize result has a bounded, static `instructions` value. It tells
+connected clients to load brief/context, maintain the open/note/close lifecycle,
+prefer read-only resources for host-attached memory, and use dry-run plus user
+confirmation before destructive maintenance. The text is generated from the
+same lifecycle fragments as the setup-managed instruction block, with a drift
+test. It contains no rendered memory, local paths, identifiers, credentials, or
+transcript content. Hooks and per-client managed instruction files remain the
+fallback and reinforcement for hosts that ignore server instructions.
+
 ### MCP resources & prompts (#78)
 
 Tools are only one of MCP's three server primitives. thread-keeper also adopts

@@ -18,7 +18,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel
 
-mcp = FastMCP("thread-keeper")
+from .instructions import SERVER_INSTRUCTIONS
+
+mcp = FastMCP("thread-keeper", instructions=SERVER_INSTRUCTIONS)
 
 
 def read_tool(**kwargs):

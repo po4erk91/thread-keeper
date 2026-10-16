@@ -101,6 +101,12 @@ managed instructions block and call `brief()` / `context()` before answering, or
 `memory://brief` resource the host attaches automatically (see
 [MCP primitives](#mcp-primitives-tools-resources-prompts)).
 
+The MCP initialization response also carries concise, static lifecycle guidance:
+load the brief/context, open/note/close substantive threads, prefer read-only
+resources for host-attached context, and use dry-run plus confirmation before
+destructive maintenance. Hooks and the managed files remain reinforcement for
+clients that do not surface server instructions.
+
 ### Alternative installs
 
 If you don't have `pipx` and don't want to install it:

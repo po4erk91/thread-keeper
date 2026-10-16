@@ -6,6 +6,18 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-16
+
+### Added
+
+- **MCP lifecycle instructions (#354).** Server initialization now publishes
+  concise, static guidance for loading brief/context, maintaining thread
+  lifecycle, choosing read-only resources, and confirming destructive
+  maintenance. Setup-managed instruction files render the same lifecycle
+  fragments, while hooks and managed files remain compatibility reinforcement
+  for clients that do not surface server instructions.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

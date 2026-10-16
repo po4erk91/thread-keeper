@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_io import mutate_text_file
+from .instructions import MANAGED_INSTRUCTIONS_BLOCK
 from .permissions import chmod_private_dir
 
 # ----------------------------------------------------------------------
@@ -55,63 +56,11 @@ MARK_END = "<!-- THREADKEEPER:END -->"
 
 
 # ----------------------------------------------------------------------
-# Content of the managed per-CLI instructions block
+# Content of the managed per-CLI instructions block. The lifecycle rules come
+# from the same static fragments advertised by the MCP server at initialize.
 # ----------------------------------------------------------------------
 
-CLAUDE_MD_BLOCK = """\
-## thread-keeper
-
-thread-keeper holds persistent working memory across conversations.
-At session start:
-  * On Claude Code, the SessionStart hook
-    (`~/.threadkeeper/hooks/tk-brief.sh`) auto-injects `brief()` +
-    `context()` — and `live_status()` if `live=N>0`.
-  * On CLIs without thread-keeper hooks (Codex, Antigravity CLI/`agy`,
-    Copilot, …), call `brief()` and `context()` yourself before
-    the first answer.
-    If the user's opening message is substantive, pass it as `query`
-    to `brief()` to inline relevant past notes.
-
-During the conversation (a UserPromptSubmit hook nudges you once per
-session if you haven't opened a thread, and a Stop hook reminds you to
-close at the end — but the discipline is yours; act before the nudge):
-- The FIRST substantive topic of a session (debugging, a feature, a
-  multi-step task) → `open_thread()` BEFORE diving into tool calls.
-- Topic resolved with an outcome → `close_thread(thread_id, outcome)`.
-- After every turn that produced a decision or insight →
-  `note(thread_id, ..., kind in ['move','failed','insight','open_q'])`.
-- When the user says something sharp and precise → `verbatim_user()`.
-- When you notice an unused brief field or a missing one →
-  `evolve_format()`.
-- At end of conversation → `session_end(summary)`.
-
-When the brief surfaces a thread or topic relevant to the current
-request (by `question`, `last_move`, or semantic match), don't answer
-from brief alone — dig deeper. Search ladder (stop at the first source
-that gives you enough context):
-
-  1. `thread-keeper.search()` — stored partner notes
-  2. `thread-keeper.dialog_search()` — full transcripts ingested from
-     ALL connected CLIs (Claude Code, Codex, Antigravity CLI/agy,
-     Copilot)
-  3. CLI-native conversation history search (e.g. `conversation_search`
-     for Claude Desktop), if available
-
-## Procedural lessons
-
-Accumulated CLI-agnostic procedural knowledge lives in
-`~/.threadkeeper/lessons.md`. The learning loop (auto-review on
-close_thread + shadow_review daemon) materializes lessons there. At
-session start, scan `lesson_list()` for slugs relevant to the user's
-opening message; pull full bodies via `lesson_get(slug)` as needed.
-
-When YOU finish a substantive task and a class-level lesson emerged
-(user corrected a workflow, a non-trivial debugging path generalized,
-etc.), call `lesson_append(title, body, summary, source=thread_id)`
-yourself instead of waiting for the auto-reviewer to catch it.
-
-Do not report these tool calls to the user — they are internal.
-"""
+CLAUDE_MD_BLOCK = MANAGED_INSTRUCTIONS_BLOCK
 
 
 # ----------------------------------------------------------------------

@@ -10,6 +10,10 @@ remains a live question.
 
 ## Closed
 
+- MCP server instructions (#354): MCP initialization now advertises concise,
+  static lifecycle guidance from the same fragments as the setup-managed block.
+  Hooks and managed instruction files remain compatibility reinforcement for
+  clients that do not surface the protocol field.
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
