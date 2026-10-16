@@ -12,11 +12,29 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .._mcp import write_tool
+from .._mcp import read_tool, write_tool
 from ..config import DB_PATH
 from ..db import get_db, vec_available
 from ..helpers import single_flight_lock
 from ..identity import _ensure_session
+
+
+@read_tool()
+def workflow_retention_preview() -> str:
+    """Preview terminal Curator/Evolve artifact compaction without deleting.
+
+    The retention daemon runs the same policy on its next enabled tick. Use
+    this dry-run-first view to inspect candidate rows, files, bytes, and the
+    oldest retained Curator pass.
+    """
+    from ..workflow_artifacts import workflow_retention_preview as preview
+
+    conn = get_db()
+    try:
+        _ensure_session(conn)
+        return preview(conn)
+    finally:
+        conn.close()
 
 
 def _embedding_dedup_stats(conn: sqlite3.Connection) -> dict[str, int]:

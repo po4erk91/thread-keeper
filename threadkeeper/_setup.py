@@ -77,7 +77,17 @@ def install_mcp_servers(dry_run: bool) -> list[str]:
     if venv_python.exists():
         python_bin = str(venv_python)
     args = ["-m", "threadkeeper.server"]
-    env = {"PYTHONPATH": str(REPO_ROOT)}
+    env = {
+        "PYTHONPATH": str(REPO_ROOT),
+        # MCP clients often launch the server from the agent's current
+        # checkout.  Without safe-path mode, ``python -m`` puts that checkout
+        # ahead of the configured install and can import unmerged Evolve code
+        # against the live DB.
+        "PYTHONSAFEPATH": "1",
+        # New registrations start with the daily-memory surface. Existing
+        # configurations without this key retain the full compatibility profile.
+        "THREADKEEPER_TOOL_PROFILE": "core",
+    }
 
     lines: list[str] = []
     adapters = installed_adapters()

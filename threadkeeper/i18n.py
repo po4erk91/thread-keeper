@@ -16,7 +16,8 @@ By keeping all multilingual vocabulary in one named bundle:
 
 Supported locales (in order of speaker count):
   English, Mandarin Chinese, Hindi, Spanish, French, Arabic, Russian,
-  Portuguese, German, Japanese.
+  Portuguese (Brazilian and European "tu" forms), German, Japanese, Korean,
+  Bengali.
 
 Notes on regex boundaries across scripts:
   * Latin and Cyrillic words use ASCII `\\b` cleanly.
@@ -56,9 +57,9 @@ _PARALLEL_WORDS_BOUNDED = (
     # Spanish
     r"|en\s+paralelo|simult[áa]neamente|mientras|al\s+mismo\s+tiempo|"
     r"en\s+segundo\s+plano"
-    # Portuguese
-    r"|em\s+paralelo|simultaneamente|enquanto|ao\s+mesmo\s+tempo|"
-    r"em\s+segundo\s+plano"
+    # Portuguese (pt-PT adds "em simultâneo")
+    r"|em\s+paralelo|simultaneamente|em\s+simult[âa]neo|enquanto|"
+    r"ao\s+mesmo\s+tempo|em\s+segundo\s+plano"
     # French
     r"|en\s+parall[èe]le|simultan[ée]ment|pendant\s+que|"
     r"en\s+m[êe]me\s+temps|en\s+arri[èe]re-plan"
@@ -72,7 +73,13 @@ _PARALLEL_WORDS_BOUNDED = (
     r"|समानांतर|एक\s+साथ|साथ\s+ही|पृष्ठभूमि\s+में"
     # Arabic
     r"|بالتوازي|في\s+نفس\s+الوقت|بالخلفية|متزامن\w*"
+    # Korean (Hangul, bounded works with re.UNICODE)
+    r"|병렬로|동시에|백그라운드에서"
 )
+# Bengali: trailing combining vowel signs are not \w, so \b after the
+# last syllable never fires. Match as bare literals instead (false
+# positives practically impossible — Bengali script is unambiguous).
+_PARALLEL_WORDS_BENGALI = 'সমান্তরালে|একসাথে|একই\\s+সাথে|ব্যাকগ্রাউন্ডে'
 # CJK family: Mandarin + Japanese share no-whitespace word boundaries
 # and need to be matched as bare literals (no \b).
 _PARALLEL_WORDS_CJK = (
@@ -93,6 +100,10 @@ _COUNT_WORDS = (
     r"|اثنان|اثنين|ثلاث\w*|أربع\w*|خمس\w*|عدة"
     r"|两|三|四|五|几|多个|多项"
     r"|二つ|三つ|四つ|五つ|複数の?|いくつかの?"
+    # Korean (native numerals)
+    r"|둘|셋|넷|다섯|여러"
+    # Bengali (classifier counting forms)
+    r"|দুটি|তিনটি|চারটি|পাঁচটি|কয়েক"
 )
 _PLURAL_NOUNS = (
     # English
@@ -101,8 +112,8 @@ _PLURAL_NOUNS = (
     # Spanish
     r"|cosas|tareas|preguntas|pasos|temas|problemas|razones|opciones"
     # Portuguese
-    r"|coisas|tarefas|perguntas|passos|etapas|t[óo]picos|pontos|"
-    r"problemas|raz[õo]es|op[çc][õo]es"
+    r"|coisas|tarefas|perguntas|quest[õo]es|passos|etapas|t[óo]picos|"
+    r"pontos|problemas|raz[õo]es|op[çc][õo]es"
     # French
     r"|choses|t[âa]ches|questions|[ée]tapes|sujets|probl[èe]mes|"
     r"raisons|options"
@@ -120,10 +131,15 @@ _PLURAL_NOUNS = (
     r"|件事|任务|问题|步骤|项目|方面|原因|选项"
     # Japanese
     r"|事|タスク|質問|ステップ|項目|問題|理由|選択肢"
+    # Korean
+    r"|일|작업|질문|항목|단계|주제|문제|이유|옵션"
+    # Bengali
+    r"|কাজ|প্রশ্ন|বিষয়|পদক্ষেপ|সমস্যা|কারণ|অপশন"
 )
 SPAWN_CUE_RE = re.compile(
     rf"\b(?:{_PARALLEL_WORDS_BOUNDED})\b"
     rf"|(?:{_PARALLEL_WORDS_CJK})"  # CJK: bare, no \b
+    rf"|(?:{_PARALLEL_WORDS_BENGALI})"  # Bengali: bare, \b unreliable after vowel signs
     rf"|\b(?:{_COUNT_WORDS})\s+(?:{_PLURAL_NOUNS})\b"
     rf"|(?:^|\n)\s*[2-9][\.\)\:]\s+",
     re.IGNORECASE | re.UNICODE,
@@ -148,6 +164,9 @@ _WANT_ES = (
 _WANT_PT = (
     r"\b(?:eu\s+quero\s+que|quero\s+que|eu\s+preciso\s+que|"
     r"voc[êe]\s+(?:deve|n[ãa]o\s+deve|precisa)|"
+    # pt-PT addresses the reader as "tu": deves / tens de / não faças.
+    r"tu\s+(?:deves|n[ãa]o\s+deves|precisas)|tens\s+(?:de|que)\s+|"
+    r"deves\s+|n[ãa]o\s+fa[çc]as|"
     r"nunca\s+|sempre\s+|a\s+partir\s+de\s+agora|de\s+agora\s+em\s+diante)\b"
 )
 _WANT_FR = (
@@ -167,6 +186,8 @@ _WANT_RU = (
 )
 _WANT_HI = r"\b(?:मैं\s+चाहता\s+हूँ|मुझे\s+चाहिए|आपको\s+करना\s+चाहिए|मत\s+करो|हमेशा\s+|कभी\s+नहीं)"
 _WANT_AR = r"\b(?:أريدك\s+أن|تحتاج\s+إلى|يجب\s+(?:أن|ألا)|لا\s+تفعل\s+أبد[اً]?|دائم[اً]?|من\s+الآن)"
+_WANT_KO = r"(?:하고\s+싶어|해야\s+해|하면\s+안\s+돼|절대|항상|앞으로는)"
+_WANT_BN = r"(?:আমি\s+চাই|অবশ্যই|কখনো?\s+না|সবসময়|এখন\s+থেকে)"
 # Mandarin and Japanese use literal CJK with no boundary anchor.
 _WANT_ZH = r"(?:我想要|我需要你|你应该|你不应该|你必须|不要再|永远不要|总是|从现在开始)"
 _WANT_JA = (
@@ -177,7 +198,7 @@ _WANT_JA = (
 WANT_RE = re.compile(
     f"(?:{_WANT_EN})|(?:{_WANT_ES})|(?:{_WANT_PT})|(?:{_WANT_FR})|"
     f"(?:{_WANT_DE})|(?:{_WANT_RU})|(?:{_WANT_HI})|(?:{_WANT_AR})|"
-    f"(?:{_WANT_ZH})|(?:{_WANT_JA})",
+    f"(?:{_WANT_ZH})|(?:{_WANT_JA})|(?:{_WANT_KO})|(?:{_WANT_BN})",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -197,7 +218,8 @@ _INSIGHT_ES = (
 )
 _INSIGHT_PT = (
     r"\b(?:a\s+conclus[ãa]o|o\s+ponto\s+(?:chave|principal)|"
-    r"em\s+resumo|o\s+importante\s+[ée]|no\s+fim\s+das\s+contas)"
+    r"em\s+resumo|em\s+suma|resumindo|o\s+importante\s+[ée]|"
+    r"o\s+essencial\s+[ée]|no\s+fim\s+das\s+contas)"
 )
 _INSIGHT_FR = (
     r"\b(?:la\s+conclusion|le\s+point\s+cl[ée]|en\s+r[ée]sum[ée]|"
@@ -215,12 +237,14 @@ _INSIGHT_HI = r"(?:मुख्य\s+बात|निष्कर्ष|खा�
 _INSIGHT_AR = r"(?:الخلاصة|النقطة\s+الأساسية|الأهم|باختصار)"
 _INSIGHT_ZH = r"(?:关键是|结论是|重点是|总的来说|总结一下)"
 _INSIGHT_JA = r"(?:結論は|要するに|重要なのは|ポイントは|要点は|まとめると)"
+_INSIGHT_KO = r"(?:핵심은|요약하면|결론은|정리하면)"
+_INSIGHT_BN = r"(?:মূল\s+কথা\s+হলো|সারসংক্ষেপে|উপসংহার\s+হলো|সংক্ষেপে)"
 
 INSIGHT_MARKERS_RE = re.compile(
     f"(?:{_INSIGHT_EN})|(?:{_INSIGHT_ES})|(?:{_INSIGHT_PT})|"
     f"(?:{_INSIGHT_FR})|(?:{_INSIGHT_DE})|(?:{_INSIGHT_RU})|"
     f"(?:{_INSIGHT_HI})|(?:{_INSIGHT_AR})|"
-    f"(?:{_INSIGHT_ZH})|(?:{_INSIGHT_JA})",
+    f"(?:{_INSIGHT_ZH})|(?:{_INSIGHT_JA})|(?:{_INSIGHT_KO})|(?:{_INSIGHT_BN})",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -231,7 +255,7 @@ INSIGHT_MARKERS_RE = re.compile(
 
 _EXAMPLE_EN = r"\b(?:for\s+example|e\.?g\.?|such\s+as|like\s+when)\b"
 _EXAMPLE_ES = r"\bpor\s+ejemplo\b"
-_EXAMPLE_PT = r"\bpor\s+exemplo\b"
+_EXAMPLE_PT = r"\b(?:por\s+exemplo|a\s+t[íi]tulo\s+de\s+exemplo)\b"
 _EXAMPLE_FR = r"\bpar\s+exemple\b"
 _EXAMPLE_DE = r"\b(?:zum\s+beispiel|z\.\s?b\.?)\b"
 _EXAMPLE_RU = r"\bнаприме[р]?\b"
@@ -239,12 +263,14 @@ _EXAMPLE_HI = r"(?:उदाहरण\s+के\s+लिए|जैसे\s+कि
 _EXAMPLE_AR = r"(?:على\s+سبيل\s+المثال|مثل)"
 _EXAMPLE_ZH = r"(?:例如|比如|举例来说)"
 _EXAMPLE_JA = r"(?:例えば|たとえば|例として)"
+_EXAMPLE_KO = r"(?:예를\s+들어|예컨대)"
+_EXAMPLE_BN = r"(?:যেমন|উদাহরণস্বরূপ|যেমন\s+কি)"
 
 EXAMPLE_RE = re.compile(
     f"(?:{_EXAMPLE_EN})|(?:{_EXAMPLE_ES})|(?:{_EXAMPLE_PT})|"
     f"(?:{_EXAMPLE_FR})|(?:{_EXAMPLE_DE})|(?:{_EXAMPLE_RU})|"
     f"(?:{_EXAMPLE_HI})|(?:{_EXAMPLE_AR})|"
-    f"(?:{_EXAMPLE_ZH})|(?:{_EXAMPLE_JA})",
+    f"(?:{_EXAMPLE_ZH})|(?:{_EXAMPLE_JA})|(?:{_EXAMPLE_KO})|(?:{_EXAMPLE_BN})",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -262,8 +288,8 @@ _FRAME_ES = (
     r"en\s+(?:estos|tales)\s+casos|cuando\s+\S+\s+entonces)"
 )
 _FRAME_PT = (
-    r"\b(?:padr[ãa]o|tipicamente|normalmente|geralmente|"
-    r"nesses\s+casos|sempre\s+que)"
+    r"\b(?:padr[ãa]o|tipicamente|normalmente|geralmente|habitualmente|"
+    r"nesses\s+casos|nestes\s+casos|em\s+tais\s+casos|sempre\s+que)"
 )
 _FRAME_FR = (
     r"\b(?:motif|typiquement|normalement|g[ée]n[ée]ralement|"
@@ -281,12 +307,14 @@ _FRAME_HI = r"(?:पैटर्न|आमतौर\s+पर|ऐसे\s+मा�
 _FRAME_AR = r"(?:عادة|في\s+مثل\s+هذه\s+الحالات|كلما)"
 _FRAME_ZH = r"(?:通常|一般来说|在这种情况下|每当)"
 _FRAME_JA = r"(?:パターン|通常|一般的に|通例|このような場合|〜するたびに)"
+_FRAME_KO = r"(?:패턴|보통|주로|이런\s+경우에는)"
+_FRAME_BN = r"(?:প্যাটার্ন|সাধারণত|এই\s+ধরনের\s+ক্ষেত্রে)"
 
 FRAME_RE = re.compile(
     f"(?:{_FRAME_EN})|(?:{_FRAME_ES})|(?:{_FRAME_PT})|"
     f"(?:{_FRAME_FR})|(?:{_FRAME_DE})|(?:{_FRAME_RU})|"
     f"(?:{_FRAME_HI})|(?:{_FRAME_AR})|"
-    f"(?:{_FRAME_ZH})|(?:{_FRAME_JA})",
+    f"(?:{_FRAME_ZH})|(?:{_FRAME_JA})|(?:{_FRAME_KO})|(?:{_FRAME_BN})",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -307,11 +335,14 @@ SHADOW_CLASS_SIGNAL_EXAMPLES = (
     '"इस तरह के काम में हमेशा X" (hi) / '
     '"في هذا النوع من المهام دائماً X" (ar) / '
     '"在这种任务中总是 X" (zh) / '
-    '"このような作業ではいつも X" (ja)\n'
+    '"このような作業ではいつも X" (ja) / '
+    '"이런 종류의 작업에서는 항상 X" (ko) / '
+    '"এই ধরনের কাজে সবসময় X" (bn)\n'
     '- "stop doing Y" / "не делай Y" / "deja de hacer Y" / '
     '"pare de fazer Y" / "arrête de faire Y" / "hör auf, Y zu tun" / '
     '"Y करना बंद करो" / "توقف عن فعل Y" / '
-    '"不要再做 Y" / "Y をするのをやめて"\n'
+    '"不要再做 Y" / "Y をするのをやめて" / '
+    '"Y는 하지 마" / "Y করা বন্ধ করো"\n'
     '- "we got burned by Z last time" / "обожглись на Z" / '
     '"nos quemamos con Z" / "nos queimamos com Z" / '
     '"on s\'est brûlés sur Z" / "wir sind mit Z auf die Nase gefallen" / '
@@ -329,7 +360,9 @@ SPAWN_TRIGGER_PHRASE_EXAMPLES = (
     '"एक साथ" / "बीच में" / '
     '"بالتوازي" / "في نفس الوقت" / '
     '"同时" / "并行" / '
-    '"同時に" / "並行で"'
+    '"同時に" / "並行で" / '
+    '"병렬로" / "동시에" / '
+    '"সমান্তরালে" / "একসাথে"'
 )
 
 
@@ -338,5 +371,5 @@ SPAWN_TRIGGER_PHRASE_EXAMPLES = (
 # ─────────────────────────────────────────────────────────────────────
 
 SUPPORTED_LOCALES: tuple[str, ...] = (
-    "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja",
+    "en", "zh", "hi", "es", "pt", "fr", "de", "ar", "ru", "ja", "ko", "bn",
 )

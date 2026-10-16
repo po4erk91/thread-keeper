@@ -16,7 +16,7 @@
 
   evolve_apply_conflicted_pr(pr_number=0)
     Repair merge conflicts in an already-open evolve-applier PR before new work
-    is picked up.
+    is picked up. The daemon's landing sweep then merges it once green.
 
   evolve_mark_applied(evolve_id, pr_url)
     Called BY the applier child after `gh pr create` succeeds. Sets applied=1
@@ -45,8 +45,9 @@ from ..db import get_db
 from ..github_budget import format_github_budget, github_budget_state
 from ..helpers import fmt_age
 from ..identity import _ensure_session
-from ..config import EVOLVE_APPLY_INTERVAL_S
+from ..config import EVOLVE_APPLY_INTERVAL_S, EVOLVE_AUTOLAND
 from ..evolve_applier import (
+    PR_LANDING_KIND,
     apply_conflicted_pr,
     apply_curator_report,
     apply_evolve,
@@ -56,7 +57,7 @@ from ..evolve_applier import (
     mark_roadmap_issue_applied,
     prune_managed_venv,
     roadmap_attempt_ledger,
-    _conflicted_applier_prs,
+    _applier_pr_queue,
     _format_label_skip,
     _open_roadmap_issue_candidates,
     _pending_curator_reports,
@@ -75,7 +76,9 @@ def evolve_apply(evolve_id: int) -> str:
     asserting the new behavior appears AND the existing brief still renders;
     runs the FULL suite (`.venv/bin/python -m pytest -q`) until green; then
     opens a PULL REQUEST on a feature branch via `gh` — it NEVER pushes or
-    commits to main (a human reviews + merges).
+    commits to main. The applier daemon's landing sweep squash-merges the PR
+    once GitHub reports it up to date with required checks green
+    (THREADKEEPER_EVOLVE_AUTOLAND=0 leaves the merge to a human).
 
     applied=1 is set ONLY when the child reports a real PR back via
     evolve_mark_applied — opening the PR is the autonomy gate.
@@ -120,11 +123,12 @@ def evolve_apply_conflicted_pr(pr_number: int = 0) -> str:
     """Repair an already-open applier PR that currently has merge conflicts.
 
     With `pr_number=0`, picks the oldest open same-repo applier PR (`roadmap/…`
-    or `evolve/…` head branch) whose GitHub merge state is conflicted. With a
-    number, validates that specific PR is open, applier-owned, and conflicted.
+    or `evolve/…` head branch) authored by the account `gh` acts as whose
+    GitHub merge state is conflicted. With a number, validates that specific
+    PR is open, applier-owned, and conflicted.
     The child resolves conflicts, runs the suite, and pushes the SAME PR branch;
-    it then lands that PR into main via GitHub's protected merge flow and does
-    not open a new PR or mark a roadmap issue applied."""
+    it never merges, opens a new PR, or marks a roadmap issue applied. The
+    daemon's landing sweep merges the PR once GitHub reports it green."""
     conn = get_db()
     _ensure_session(conn)
     return apply_conflicted_pr(int(pr_number or 0))
@@ -154,7 +158,7 @@ def evolve_mark_applied(evolve_id: int, pr_url: str) -> str:
     Sets applied=1 (so the suggestion drops out of the brief / evolve_review)
     and records the PR url. `pr_url` is REQUIRED and must be non-empty: this is
     the PR gate — never mark a suggestion applied without a real pull request.
-    A human still reviews + merges the PR."""
+    The PR still lands only through branch protection once its checks pass."""
     if not (pr_url or "").strip():
         return ("ERR pr_url_required (PR gate: only mark applied once a real "
                 "pull request exists)")
@@ -200,13 +204,18 @@ def evolve_mark_curator_report_applied(
 
 @read_tool()
 def evolve_apply_status() -> str:
-    """Show evolve-applier config + curator/evolve queues + running applier
-    + the last 5 apply/recovery passes."""
+    """Show evolve-applier config + open applier PRs with their landing action
+    + curator/evolve queues + running applier + the latest apply, landing, and
+    recovery events."""
     conn = get_db()
     _ensure_session(conn)
     reports = _pending_curator_reports(conn)
     pending = _promoted_unapplied(conn)
-    conflicted_prs, pr_err = _conflicted_applier_prs()
+    pr_queue, pr_err = _applier_pr_queue()
+    conflicted = sum(1 for action, _pr in pr_queue if action == "repair")
+    landing = sum(
+        1 for action, _pr in pr_queue if action in ("merge", "update")
+    )
     issues, issue_err, label_skipped = _open_roadmap_issue_candidates(conn)
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
@@ -217,7 +226,9 @@ def evolve_apply_status() -> str:
     age_s = (now - floor) if floor else None
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
-        f"conflicted_prs={len(conflicted_prs)} "
+        f"autoland={'on' if EVOLVE_AUTOLAND else 'off'} "
+        f"conflicted_prs={conflicted} "
+        f"landing_prs={landing} "
         f"roadmap_issues={len(issues)} "
         f"roadmap_label_skipped={len(label_skipped)} "
         f"roadmap_backoff={len(backoff)} "
@@ -233,14 +244,15 @@ def evolve_apply_status() -> str:
         lines.append(f"roadmap_issue_fetch_error={issue_err}")
     if pr_err:
         lines.append(f"conflicted_pr_fetch_error={pr_err}")
-    if conflicted_prs:
+    if pr_queue:
         lines.append("")
-        lines.append("conflicted PRs (next first):")
-        for pr in conflicted_prs[:10]:
+        lines.append("own PRs (oldest first):")
+        for action, pr in pr_queue[:10]:
             title = str(pr.get("title") or "")[:90].replace("\n", " ")
+            state = str(pr.get("mergeStateStatus") or "?").upper()
             lines.append(
-                f"  #{int(pr['number'])}  {pr.get('headRefName') or '?'}  "
-                f"{title}"
+                f"  #{int(pr['number'])}  {action}  {state}  "
+                f"{pr.get('headRefName') or '?'}  {title}"
             )
     if label_skipped:
         lines.append(f"roadmap_issue_label_skips={_format_label_skip(label_skipped)}")
@@ -281,10 +293,11 @@ def evolve_apply_status() -> str:
             "SELECT kind, created_at, summary FROM events "
             "WHERE kind IN ('evolve_apply_pass', 'curator_report_applied', "
             "'evolve_applied', 'roadmap_issue_applied', "
-            "'roadmap_issue_requeued', 'roadmap_issue_dead_letter') "
+            "'roadmap_issue_requeued', 'roadmap_issue_dead_letter', ?) "
             "OR (kind='evolve_git_safety' "
             "AND summary LIKE 'recovered_stale_merge%') "
-            "ORDER BY created_at DESC, id DESC LIMIT 5"
+            "ORDER BY created_at DESC, id DESC LIMIT 8",
+            (PR_LANDING_KIND,),
         ).fetchall()
     except Exception:
         rows = []

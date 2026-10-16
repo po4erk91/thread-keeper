@@ -125,18 +125,12 @@ def test_explicit_base_weight_still_multiplied_by_discount(
     assert row["weight"] == pytest.approx(0.4)
 
 
-def test_unknown_origin_no_discount(tmp_path, monkeypatch):
-    """Falls back to multiplier 1.0 for write_origins not in the table.
-    Tests don't break under custom origins; default behavior is no-op."""
+def test_unknown_origin_fails_closed(tmp_path, monkeypatch):
+    """An unrecognised writer cannot mint a durable authority record."""
     pkg = _bootstrap(tmp_path, monkeypatch, write_origin="random_unknown")
     t = _tools(pkg)
     out = t["dialectic_claim"].fn(claim="probe", domain="style")
-    cid = out.split()[1].split("=", 1)[1]
-    t["dialectic_evidence"].fn(claim_id=cid, kind="support")
-    row = pkg["db"].get_db().execute(
-        "SELECT weight FROM dialectic_evidence WHERE claim_id=?", (cid,)
-    ).fetchone()
-    assert row["weight"] == 1.0
+    assert out == "ERR authority_unknown_origin"
 
 
 # ── weighted confidence formula ─────────────────────────────────────────

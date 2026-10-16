@@ -75,16 +75,22 @@ def _secret_pattern_names(text: str) -> list[str]:
     return [name for name, pat in _SECRET_PATTERNS if pat.search(text)]
 
 
+def sanitize_presentation_text(value: str | None) -> str:
+    """Redact private paths and credential-shaped values for UI summaries."""
+    text = str(value or "")
+    text = _HOME_PATH_RE.sub("[REDACTED_HOME_PATH]", text)
+    for _name, pat in _SECRET_PATTERNS:
+        text = pat.sub("[REDACTED_SECRET]", text)
+    return text
+
+
 def sanitize_public_github_body(body: str) -> str:
     """Redact local home paths and common token shapes from a public body.
 
     The returned text is re-scanned; if any known secret shape survives, the
     caller gets a hard failure instead of an unsafe body.
     """
-    text = str(body or "")
-    text = _HOME_PATH_RE.sub("[REDACTED_HOME_PATH]", text)
-    for _name, pat in _SECRET_PATTERNS:
-        text = pat.sub("[REDACTED_SECRET]", text)
+    text = sanitize_presentation_text(body)
     remaining = _secret_pattern_names(text)
     if remaining:
         raise GithubBodySafetyError(
@@ -164,17 +170,34 @@ def sanitize_gh_body_args(args: Sequence[str]) -> tuple[list[str], list[Path]]:
     return out, cleanup
 
 
+def _is_safety_wrapper(path: str) -> bool:
+    """Whether `path` is one of spawn()'s gh wrapper scripts, not gh itself."""
+    try:
+        with open(path, "rb") as fh:
+            return b"threadkeeper.github_safety" in fh.read(512)
+    except OSError:
+        return False
+
+
 def _resolve_real_gh() -> str:
+    """The real gh binary, never a safety wrapper.
+
+    A child's MCP server can inherit the wrapper-first PATH without
+    THREADKEEPER_REAL_GH (Codex scrubs MCP server environments). Taking the
+    first `gh` on PATH then found the wrapper itself, which re-ran itself
+    until the caller's timeout, so every issue dedup check failed.
+    """
     env = os.environ.get("THREADKEEPER_REAL_GH", "").strip()
-    if env:
+    if env and not _is_safety_wrapper(env):
         return env
     wrapper_dir = os.environ.get("THREADKEEPER_GH_WRAPPER_DIR", "").strip()
-    path_parts = [
-        p for p in os.environ.get("PATH", "").split(os.pathsep)
-        if p and Path(p) != Path(wrapper_dir)
-    ]
-    found = shutil.which("gh", path=os.pathsep.join(path_parts))
-    return found or ""
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part or (wrapper_dir and Path(part) == Path(wrapper_dir)):
+            continue
+        found = shutil.which("gh", path=part)
+        if found and not _is_safety_wrapper(found):
+            return found
+    return ""
 
 
 def run_wrapped_gh(args: Sequence[str], real_gh: str | None = None) -> int:
