@@ -167,17 +167,44 @@ sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
 `0600`. Logically six levels:
 
 Backups use the `tk-backup` console command, not raw file copies. `tk-backup
-create <dest.sqlite>` opens the live store through SQLite and runs
-`VACUUM INTO` into a temporary database beside the requested destination, runs
-`PRAGMA integrity_check`, then atomically moves the single-file result into
-place. Because the source is a SQLite connection, committed WAL frames are part
-of the snapshot even while ingest, shadow-review, curator, dialectic, retention,
-or other writer loops keep running. `tk-backup restore <backup.sqlite> --yes`
+create <dest.sqlite>` uses `VACUUM INTO` for the ordinary SQLite profile and
+SQLCipher's online backup API for the encrypted profile, into a temporary
+database beside the requested destination. It runs `PRAGMA integrity_check`,
+then atomically moves the single-file result into place. Because the source is
+a database connection, committed WAL frames are part of the snapshot even while
+ingest, shadow-review, curator, dialectic, retention, or other writer loops
+keep running. `tk-backup restore <backup.sqlite> --yes`
 verifies the backup, copies it next to the target DB, removes stale target
 `-wal`/`-shm` sidecars, atomically replaces the main file, removes sidecars
 again, and re-runs integrity_check. Restore still requires stopping live
 thread-keeper servers first; replacing a database under an open SQLite
 connection can strand that process on the old unlinked file.
+
+### Encrypted storage profile
+
+`THREADKEEPER_STORAGE_PROFILE=sqlite` is the dependency-free default. The
+explicit `sqlcipher` profile is backed by `sqlcipher3-wheels` and uses the
+platform secret store through `keyring`; the profile selection is config, but
+the generated 256-bit database key is never configuration, environment, CLI
+input, event, telemetry, or logging data. The `db` connection factory opens
+SQLCipher only after retrieving and validating that key. A missing database is
+not auto-created in this profile, which prevents a wrong/missing key from
+creating a replacement store.
+
+SQLCipher encrypts the primary file, WAL/rollback journal, and encrypted
+backup/restore/migration staging files. Connections set `temp_store=MEMORY`
+and `cipher_memory_security=ON`, so SQLite temporary structures are not placed
+in plaintext files. `tk-storage init`, `integrity-check`, `rekey`,
+`recover-rekey`, and `migrate` own lifecycle actions. Rekey places a second,
+pending key only in the OS secret store before rotating; an interrupted rekey
+fails closed until `recover-rekey` validates the old or pending key and repairs
+the primary entry. Migration writes a separately validated destination and
+leaves the source intact.
+
+The boundary is deliberately narrow. Task logs, curator reports and trash,
+exports, skills/lessons, source transcripts, identity sidecars, and sync
+transport are outside this profile. Operators need full-disk encryption and
+the documented retention/transport controls for those artifacts.
 
 `bootstrap_db()` gates baseline schema setup and legacy column migrations with
 SQLite `PRAGMA user_version`, once per process. Databases at the current

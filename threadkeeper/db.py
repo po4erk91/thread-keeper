@@ -12,8 +12,19 @@ import time
 from pathlib import Path
 from typing import TypeVar
 
-from .config import CURATOR_REPORTS_DIR, DB_PATH, EMBED_DIM, _ENV_FILE
+from .config import (
+    CURATOR_REPORTS_DIR,
+    DB_PATH,
+    EMBED_DIM,
+    STORAGE_PROFILE,
+    _ENV_FILE,
+)
 from .permissions import harden_storage_paths
+from .storage import (
+    PROFILE_SQLCIPHER,
+    connect as open_storage_connection,
+    row_factory as storage_row_factory,
+)
 from .sync import SYNC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -786,14 +797,14 @@ def _set_user_version(conn: sqlite3.Connection, version: int) -> None:
     conn.execute(f"PRAGMA user_version = {int(version)}")
 
 
-def _is_duplicate_column_error(exc: sqlite3.OperationalError) -> bool:
+def _is_duplicate_column_error(exc: BaseException) -> bool:
     return "duplicate column name" in str(exc).lower()
 
 
 def _apply_column_migration(conn: sqlite3.Connection, ddl: str) -> None:
     try:
         conn.execute(ddl)
-    except sqlite3.OperationalError as exc:
+    except Exception as exc:
         if _is_duplicate_column_error(exc):
             return
         logger.warning("SQLite schema migration DDL failed: %s", ddl)
@@ -973,13 +984,14 @@ def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
             )
         try:
             conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError:
-            if time.monotonic() >= deadline:
-                logger.warning(
-                    "timed out after %.0fs waiting for a concurrent schema "
-                    "migration to finish",
-                    wait_s,
-                )
+        except Exception as exc:
+            if not _is_lock_error(exc) or time.monotonic() >= deadline:
+                if _is_lock_error(exc):
+                    logger.warning(
+                        "timed out after %.0fs waiting for a concurrent schema "
+                        "migration to finish",
+                        wait_s,
+                    )
                 raise
             time.sleep(0.5)  # another process is likely migrating; re-poll
             continue
@@ -997,15 +1009,12 @@ def _ensure_schema(conn: sqlite3.Connection, wait_s: float = 600.0) -> None:
                 f"thread-keeper build supports ({CURRENT_SCHEMA_VERSION})"
             )
         conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
         logger.warning(
             "SQLite schema migration failed; user_version remains below %s",
             CURRENT_SCHEMA_VERSION,
             exc_info=True,
         )
-        conn.rollback()
-        raise
-    except Exception:
         conn.rollback()
         raise
 
@@ -1028,7 +1037,7 @@ def _execute_startup_pragma(
         try:
             conn.execute(sql)
             return
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
                 raise
             time.sleep(0.1)
@@ -1043,7 +1052,15 @@ def _open_connection(*, autocommit: bool = False,
     }
     if autocommit:
         kwargs["isolation_level"] = None
-    conn = sqlite3.connect(str(DB_PATH), **kwargs)
+    conn = open_storage_connection(
+        DB_PATH,
+        profile=STORAGE_PROFILE,
+        # SQLCipher stores must be explicitly initialized through tk-storage;
+        # opening a missing/wrong-key file may never create a replacement.
+        create=False if STORAGE_PROFILE == PROFILE_SQLCIPHER else None,
+        timeout=kwargs["timeout"],
+        autocommit=autocommit,
+    )
     conn.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
     # synchronous is per-connection. Unlike journal_mode, setting it does not
     # rewrite the database header or compete for the writer slot.
@@ -1051,7 +1068,7 @@ def _open_connection(*, autocommit: bool = False,
     vec_loaded = _try_load_vec(conn)
     if _VEC_AVAILABLE is None:
         _VEC_AVAILABLE = vec_loaded
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = storage_row_factory(STORAGE_PROFILE)
     return conn, vec_loaded
 
 
@@ -1171,7 +1188,7 @@ def bootstrap_db(force: bool = False) -> None:
             DB_PATH,
             env_file=_ENV_FILE,
             curator_reports_dir=CURATOR_REPORTS_DIR,
-            create_db=True,
+            create_db=STORAGE_PROFILE != PROFILE_SQLCIPHER,
         )
         conn: sqlite3.Connection | None = None
         try:
@@ -1219,7 +1236,7 @@ def read_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _is_lock_error(exc: sqlite3.OperationalError) -> bool:
+def _is_lock_error(exc: BaseException) -> bool:
     code = getattr(exc, "sqlite_errorcode", None)
     if isinstance(code, int):
         # Extended SQLite result codes retain the primary code in the low byte.
@@ -1254,10 +1271,10 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
             result = fn(conn)
             conn.commit()
             return result
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             try:
                 conn.rollback()
-            except sqlite3.Error:
+            except Exception:
                 pass
             if not _is_lock_error(exc) or time.monotonic() >= deadline:
                 if _is_lock_error(exc):
@@ -1267,12 +1284,6 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
                         attempt,
                     )
                 raise
-        except Exception:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
-            raise
         finally:
             conn.close()
         remaining = deadline - time.monotonic()

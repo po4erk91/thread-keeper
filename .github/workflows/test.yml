@@ -72,3 +72,25 @@ jobs:
           # the suite for parallel runs is tracked separately; xdist is shipped
           # as an opt-in local accelerator (see CONTRIBUTING).
           python -m pytest -q --forked --tb=short
+
+  encrypted-storage:
+    name: SQLCipher storage (py3.12)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install encrypted storage extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[encrypted,dev]'
+
+      - name: Exercise SQLCipher sidecars and recovery
+        env:
+          THREADKEEPER_DISABLE_BG_DAEMONS: "1"
+        run: python -m pytest -q tests/test_storage.py --tb=short

@@ -1383,9 +1383,10 @@ best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
 `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
 files, and headless spawn logs are owner-only (`0600`).
 
-Use `tk-backup` for disaster recovery. It uses SQLite `VACUUM INTO`, so
-committed frames still living in the live `-wal` sidecar are included in a
-compacted snapshot without quiescing background writers:
+Use `tk-backup` for disaster recovery. In the default SQLite profile it uses
+`VACUUM INTO`; the encrypted profile uses SQLCipher's online backup API into a
+new encrypted destination. Both paths include committed frames still living in
+the live `-wal` sidecar without quiescing background writers:
 
 ```bash
 tk-backup create ~/threadkeeper-backup.sqlite
@@ -1407,6 +1408,73 @@ WAL mode because recent committed transactions may exist only in
 first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
+
+### Opt-in encrypted storage (experimental)
+
+The default `sqlite` profile is unchanged. For sensitive memory at rest, the
+optional `sqlcipher` profile encrypts the main database, WAL/rollback-journal
+pages, and profile-aware snapshots with SQLCipher. SQLCipher temporary
+structures are kept in memory with cipher memory security enabled. Install it
+explicitly and initialize a new store before starting any MCP server:
+
+```bash
+pip install 'threadkeeper[encrypted]'
+tk-storage init --db ~/.threadkeeper/secure.sqlite
+export THREADKEEPER_DB=~/.threadkeeper/secure.sqlite
+export THREADKEEPER_STORAGE_PROFILE=sqlcipher
+```
+
+The profile name may live in normal configuration; the encryption key never
+does. Thread-keeper generates a random key and retrieves it from the operating
+system secret store through `keyring`. It never accepts a key in an environment
+variable, config file, command argument, event, log, or telemetry. If the
+secret store, SQLCipher backend, or key is unavailable, opening the encrypted
+profile fails closed. A wrong key cannot initialize or replace an existing
+database.
+
+Use the normal backup command after enabling the profile; it recognizes the
+profile and creates an encrypted destination with its own OS-secret-store key:
+
+```bash
+tk-backup create ~/threadkeeper-secure-backup.sqlite
+tk-backup restore ~/threadkeeper-secure-backup.sqlite --yes
+tk-storage integrity-check --db ~/.threadkeeper/secure.sqlite
+tk-storage rekey --db ~/.threadkeeper/secure.sqlite
+```
+
+Stop all MCP servers, the daemon host, and CLI sessions before a restore or
+rekey. If a machine loses power during rekey, normal opens intentionally stop;
+run `tk-storage recover-rekey --db …` to have the OS secret store validate and
+finish the pending rotation without printing either key. Back up the operating
+system account and its secret store according to your platform's recovery
+procedure. Thread-keeper deliberately has no key-export command: exporting a
+raw database key into a shell history or ordinary file defeats this profile.
+
+Move an existing store through a separately validated output path. The source
+is never replaced, so it remains available until the new store has been
+verified:
+
+```bash
+tk-storage migrate ~/.threadkeeper/db.sqlite ~/.threadkeeper/secure.sqlite \
+  --from-profile sqlite --to-profile sqlcipher
+tk-storage migrate ~/.threadkeeper/secure.sqlite ~/.threadkeeper/plain.sqlite \
+  --from-profile sqlcipher --to-profile sqlite
+```
+
+Only switch `THREADKEEPER_DB` and `THREADKEEPER_STORAGE_PROFILE` after the
+destination passes `tk-storage integrity-check` (for SQLCipher) or
+`sqlite3 <path> 'PRAGMA integrity_check'` (for ordinary SQLite). The migration
+checks integrity plus table/index/trigger coverage before the destination is
+atomically published.
+
+This is an at-rest database profile, not full-device encryption. It does not
+encrypt task logs, curator reports/snapshots, exported briefs, source CLI
+transcripts, skills, `node.id`, or sync traffic. Put the whole state directory
+on full-disk encryption, use the existing owner-only permissions, set retention
+for logs/reports, and use TLS/private networking for sync. The profile is
+experimental: automated SQLCipher coverage currently runs on Linux; validate
+the OS keyring integration on macOS or Windows before relying on it for a
+recovery-sensitive deployment.
 
 ### Selective Erasure
 

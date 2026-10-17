@@ -31,6 +31,8 @@ no import side effects on every spawn. Pure stdlib only.
 """
 
 import json
+import os
+from pathlib import Path
 import re
 import signal
 import sqlite3
@@ -237,7 +239,18 @@ def _record(db_path: str, task_id: str, rc: int, usage_text: str = "") -> None:
     usage = parse_usage(usage_text)
     ended_at = int(time.time())
     try:
-        conn = sqlite3.connect(db_path, timeout=30)
+        if os.environ.get("THREADKEEPER_STORAGE_PROFILE", "sqlite").lower() == "sqlcipher":
+            # This wrapper normally avoids importing threadkeeper altogether.
+            # The encrypted profile is the exception: SQLCipher must retrieve
+            # the key from the OS secret store, never from this process argv.
+            package_root = str(Path(__file__).resolve().parents[1])
+            if package_root not in sys.path:
+                sys.path.insert(0, package_root)
+            from threadkeeper.storage import connect
+
+            conn = connect(db_path, profile="sqlcipher", create=False, timeout=30)
+        else:
+            conn = sqlite3.connect(db_path, timeout=30)
         try:
             conn.execute("PRAGMA busy_timeout=30000")
             try:

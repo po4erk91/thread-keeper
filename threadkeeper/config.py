@@ -23,6 +23,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .permissions import harden_storage_paths
+from .storage import normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class Settings(BaseSettings):
         default=Path("~/.threadkeeper/db.sqlite"),
         validation_alias=AliasChoices("THREADKEEPER_DB", "db"),
     )
+    # The default stays ordinary SQLite. SQLCipher is an explicit opt-in; its
+    # key is looked up by threadkeeper.storage in the OS secret store and is
+    # never read from this settings object, a config file, or process args.
+    storage_profile: str = "sqlite"
     # Unprefixed env names — bypass prefix via AliasChoices
     claude_skills_dir: Path = Field(
         default=Path("~/.claude/skills"),
@@ -545,6 +550,11 @@ class Settings(BaseSettings):
     def _expand_path(cls, p: Path) -> Path:
         return p.expanduser()
 
+    @field_validator("storage_profile")
+    @classmethod
+    def _normalize_storage_profile(cls, value: str) -> str:
+        return normalize_profile(value)
+
     @field_validator("curator_reports_dir", mode="before")
     @classmethod
     def _parse_curator_dir(cls, v):
@@ -757,6 +767,7 @@ def _derive_constants(s: "Settings") -> dict:
     )
     return {
         "DB_PATH": s.db,
+        "STORAGE_PROFILE": s.storage_profile,
         "EMBED_MODEL_NAME": s.embed_model,
         "EMBED_BACKEND": s.embed_backend,  # already normalized to lower
         "NO_EMBEDDINGS": s.no_embeddings,
@@ -1123,7 +1134,8 @@ def _migrate_legacy_db(legacy_db: Path, db_path: Path) -> None:
 
 
 if (
-    DB_PATH == _DEFAULT_DB
+    settings.storage_profile == "sqlite"
+    and DB_PATH == _DEFAULT_DB
     and not DB_PATH.exists()
     and _LEGACY_DB.exists()
 ):

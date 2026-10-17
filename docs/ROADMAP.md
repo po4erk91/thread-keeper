@@ -144,6 +144,11 @@ remains a live question.
   the live WAL store while writer loops continue, and `tk-backup restore --yes`
   verifies the snapshot, atomically swaps the DB, and clears stale
   `-wal`/`-shm` sidecars after the user stops thread-keeper.
+- Opt-in encrypted storage profile (#360): `threadkeeper[encrypted]` adds a
+  fail-closed SQLCipher profile whose generated database key lives only in the
+  operating-system secret store. `tk-storage` initializes, checks, rekeys, and
+  migrates stores; profile-aware backup/restore keeps SQLCipher snapshots and
+  staging files encrypted, while ordinary SQLite remains the default.
 - Privacy selective erasure (#104): `forget(selector, dry_run=True)` and the
   `tk-forget` console command provide dry-run-first targeted deletion for one
   session/cid/thread/dialog UUID. Applying removes dialog rows plus FTS/vector

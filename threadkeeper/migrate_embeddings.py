@@ -31,6 +31,7 @@ from typing import Callable
 
 from .config import SEMANTIC_AVAILABLE
 from .db import get_db
+from .storage import row_factory as storage_row_factory
 from . import embeddings as _emb
 
 
@@ -116,7 +117,9 @@ def run(*, do_notes: bool, do_dialog: bool, batch: int, dry_run: bool,
         return 1
     active = _emb.embedding_fingerprint()
     conn = get_db()
-    conn.row_factory = sqlite3.Row
+    from .config import STORAGE_PROFILE
+
+    conn.row_factory = storage_row_factory(STORAGE_PROFILE)
     log(f"active embedding generation = {active}"
         f"{'  (dry run)' if dry_run else ''}")
     # notes hold short text; the model caps at its own token limit, so no slice.

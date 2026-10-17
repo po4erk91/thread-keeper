@@ -98,6 +98,16 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-17
+
+### Added
+
+- **Opt-in SQLCipher storage profile (#360).** `threadkeeper[encrypted]` adds
+  an OS-secret-store-backed encrypted database mode without changing the
+  default SQLite installation. `tk-storage` initializes, validates, rekeys,
+  recovers interrupted rekeys, and migrates stores; profile-aware backup and
+  restore keep encrypted snapshots encrypted.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed
