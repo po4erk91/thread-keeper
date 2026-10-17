@@ -1696,6 +1696,10 @@ or blocking the workflow.
   automation) and `recent_results` for useful completed loop tasks, which the
   macOS menu-bar app uses for notifications. The `tk-agent-status` console
   command and macOS menu-bar app use the same underlying snapshot.
+  Stored task roles are canonical for running agents and completed/failed
+  task classification. Prompt hints are a compatibility fallback only for
+  legacy rows without a role; custom roles remain visible as child tasks
+  without being assigned to a built-in loop.
 
 ---
 

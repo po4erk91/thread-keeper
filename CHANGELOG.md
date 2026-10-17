@@ -34,6 +34,15 @@ version bumps follow semver per the policy in
   is opt-in, provenance-marked, and audited. Ambiguous legacy rows are
   quarantined from automatic recall with per-table migration accounting.
 
+## v0.19.2 — 2026-10-16
+
+### Fixed
+
+- **Agent status uses persisted task roles (#389).** Running agents, completed
+  task history, and child failure notifications use the stored role before
+  considering prompt hints. Custom roles remain visible as child tasks;
+  legacy rows without a role retain the prompt-based fallback.
+
 ## v0.19.1 — 2026-10-14
 
 ### Fixed
