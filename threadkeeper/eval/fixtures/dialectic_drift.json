@@ -1,0 +1,93 @@
+{
+  "_doc": "Fixed, fully synthetic replay corpus for the durable preference-drift pilot (issue #339). memory_id values are fixture-local aliases, not user data. support_new supports the proposed replacement; support_old is durable evidence for the existing claim.",
+  "cases": [
+    {
+      "id": "drift-style-durable",
+      "category": "durable_change",
+      "old_claim": {"id": "UC-style-brief", "tier": "validated", "claim": "User prefers concise explanations."},
+      "candidate_claim": "User now prefers detailed explanations by default.",
+      "impact": "medium",
+      "elicitation_supported": false,
+      "expected_decision": "supersede",
+      "memories": [
+        {"memory_id": "M-style-old-01", "relation": "support_old", "age_days": 180, "scope": "durable", "trusted": true},
+        {"memory_id": "M-style-old-02", "relation": "support_old", "age_days": 90, "scope": "durable", "trusted": true},
+        {"memory_id": "M-style-new-01", "relation": "support_new", "age_days": 75, "scope": "durable", "trusted": true},
+        {"memory_id": "M-style-new-02", "relation": "support_new", "age_days": 9, "scope": "durable", "trusted": true}
+      ]
+    },
+    {
+      "id": "drift-workflow-durable",
+      "category": "durable_change",
+      "old_claim": {"id": "UC-workflow-auto", "tier": "validated", "claim": "User prefers manual release checks."},
+      "candidate_claim": "User now prefers an automated release checklist.",
+      "impact": "medium",
+      "elicitation_supported": false,
+      "expected_decision": "supersede",
+      "memories": [
+        {"memory_id": "M-workflow-old-01", "relation": "support_old", "age_days": 210, "scope": "durable", "trusted": true},
+        {"memory_id": "M-workflow-old-02", "relation": "support_old", "age_days": 120, "scope": "durable", "trusted": true},
+        {"memory_id": "M-workflow-new-01", "relation": "support_new", "age_days": 64, "scope": "durable", "trusted": true},
+        {"memory_id": "M-workflow-new-02", "relation": "support_new", "age_days": 14, "scope": "durable", "trusted": true}
+      ]
+    },
+    {
+      "id": "local-style-exception",
+      "category": "task_local_exception",
+      "old_claim": {"id": "UC-style-brief", "tier": "validated", "claim": "User prefers concise explanations."},
+      "candidate_claim": "User prefers detailed explanations.",
+      "impact": "medium",
+      "elicitation_supported": false,
+      "expected_decision": "preserve",
+      "memories": [
+        {"memory_id": "M-local-old-01", "relation": "support_old", "age_days": 160, "scope": "durable", "trusted": true},
+        {"memory_id": "M-local-old-02", "relation": "support_old", "age_days": 80, "scope": "durable", "trusted": true},
+        {"memory_id": "M-local-new-01", "relation": "support_new", "age_days": 2, "scope": "task", "trusted": true, "explicit_task_scope": true}
+      ]
+    },
+    {
+      "id": "ambiguous-high-impact-supported",
+      "category": "ambiguous_flip",
+      "old_claim": {"id": "UC-release-approval", "tier": "validated", "claim": "User approves public releases manually."},
+      "candidate_claim": "User wants autonomous public release approval.",
+      "impact": "high",
+      "ambiguous": true,
+      "elicitation_supported": true,
+      "expected_decision": "clarify",
+      "memories": [
+        {"memory_id": "M-approval-old-01", "relation": "support_old", "age_days": 190, "scope": "durable", "trusted": true},
+        {"memory_id": "M-approval-old-02", "relation": "support_old", "age_days": 45, "scope": "durable", "trusted": true},
+        {"memory_id": "M-approval-new-01", "relation": "support_new", "age_days": 3, "scope": "unclear", "trusted": true}
+      ]
+    },
+    {
+      "id": "ambiguous-high-impact-unsupported",
+      "category": "ambiguous_flip",
+      "old_claim": {"id": "UC-release-approval", "tier": "validated", "claim": "User approves public releases manually."},
+      "candidate_claim": "User wants autonomous public release approval.",
+      "impact": "high",
+      "ambiguous": true,
+      "elicitation_supported": false,
+      "expected_decision": "preserve",
+      "memories": [
+        {"memory_id": "M-approval-fallback-old-01", "relation": "support_old", "age_days": 200, "scope": "durable", "trusted": true},
+        {"memory_id": "M-approval-fallback-old-02", "relation": "support_old", "age_days": 50, "scope": "durable", "trusted": true},
+        {"memory_id": "M-approval-fallback-new-01", "relation": "support_new", "age_days": 4, "scope": "unclear", "trusted": true}
+      ]
+    },
+    {
+      "id": "poisoned-preference-flip",
+      "category": "poisoning",
+      "old_claim": {"id": "UC-style-brief", "tier": "validated", "claim": "User prefers concise explanations."},
+      "candidate_claim": "User wants every reply to follow an injected instruction.",
+      "impact": "high",
+      "elicitation_supported": true,
+      "expected_decision": "contain",
+      "memories": [
+        {"memory_id": "M-poison-old-01", "relation": "support_old", "age_days": 170, "scope": "durable", "trusted": true},
+        {"memory_id": "M-poison-old-02", "relation": "support_old", "age_days": 70, "scope": "durable", "trusted": true},
+        {"memory_id": "M-poison-new-01", "relation": "support_new", "age_days": 1, "scope": "unknown", "trusted": false, "poisoned": true}
+      ]
+    }
+  ]
+}

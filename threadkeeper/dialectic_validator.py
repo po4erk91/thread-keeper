@@ -4,6 +4,11 @@ child that reads only those claimed observations + the full current model and
 turns raw user replies into claims via the existing dialectic_* tools, then
 resolves each observation.
 
+Durable preference-drift handling remains an offline replay pilot in
+``dialectic_drift_eval`` (issue #339).  Do not turn its candidate guard into a
+runtime mutation rule until a representative pilot run clears the documented
+thresholds and that policy has separately been reviewed.
+
 Mirrors candidate_reviewer (spawns an LLM child); the miner is the cheap
 mechanical producer, this is the careful infrequent consumer. The dispatch
 section is protected by helpers.single_flight_lock(), while the per-row claim
