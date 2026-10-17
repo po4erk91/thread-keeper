@@ -42,6 +42,24 @@ _CLAUDE_MODEL_RE = re.compile(r"^(?:opus|sonnet|haiku|claude)\b", re.IGNORECASE)
 def _looks_like_claude_model(model: str) -> bool:
     return bool(isinstance(model, str) and _CLAUDE_MODEL_RE.match(model.strip()))
 
+
+# OpenAI model names Codex serves. Narrow on purpose, like the Claude pattern.
+_OPENAI_MODEL_RE = re.compile(r"^(?:gpt-|o\d\b|codex-)", re.IGNORECASE)
+
+
+def model_home_cli(model: str) -> str:
+    """The CLI whose provider owns an explicitly requested model, or "".
+
+    `spawn(model="opus")` routed to Codex (or a GPT model routed to Claude)
+    launches a child the provider rejects at once, so an explicit model
+    decides between those two CLIs when the caller did not pick one.
+    """
+    if _looks_like_claude_model(model):
+        return "claude"
+    if isinstance(model, str) and _OPENAI_MODEL_RE.match(model.strip()):
+        return "codex"
+    return ""
+
 SUPPORTED_CLIS = ("claude", "codex", "antigravity", "copilot")
 CLI_ALIASES = {
     "agy": "antigravity",

@@ -1,5 +1,10 @@
 {
-  "_about": "Reproducible demo corpus + hand-labeled ground truth for the memory-quality eval harness (issue #71). A small fictional 'billing service' project told across three sessions over ~30 days, so the five LongMemEval axes \u2014 information extraction, multi-session reasoning, temporal reasoning, knowledge updates, and abstention \u2014 are all exercisable offline. The harness builds this into a throwaway SQLite DB and queries the real search()/dialog_search()/brief() tools. Replace with your own snapshot + labels via --db / --ground-truth for a real evaluation.",
+  "_about": "Versioned public synthetic corpus for the memory-quality eval harness (issues #71 and #347). It keeps retrieval evidence and deterministic final-answer replay separate across LongMemEval plus ThreadKeeper-specific outcome axes. The fixed matrix covers FTS/hybrid retrieval, baseline/retained/curated state, and personal-memory egress policies without recording raw contexts or answers.",
+  "version": 2,
+  "thresholds": {
+    "evidence_recall": 1.0,
+    "final_answer": 1.0
+  },
   "corpus": {
     "threads": [
       {
@@ -99,6 +104,34 @@
         "role": "assistant",
         "day_offset": -3,
         "content": "No GraphQL gateway and no mobile app for the billing service \u2014 the API stays REST-only."
+      },
+      {
+        "uuid": "d-delta-dynamic",
+        "session_id": "s_delta",
+        "role": "assistant",
+        "day_offset": -1,
+        "content": "Dynamic state: the invoice-export rollout is paused while the EU rate-limit incident is active."
+      },
+      {
+        "uuid": "d-delta-composed",
+        "session_id": "s_delta",
+        "role": "assistant",
+        "day_offset": -1,
+        "content": "For renewal payment failures, Stripe webhook errors go to Sentry and workers use exponential backoff."
+      },
+      {
+        "uuid": "d-delta-premise",
+        "session_id": "s_delta",
+        "role": "assistant",
+        "day_offset": -1,
+        "content": "We did not approve an enterprise reporting launch; the proposal is still only a draft."
+      },
+      {
+        "uuid": "d-retention-sundial",
+        "session_id": "s_legacy",
+        "role": "assistant",
+        "day_offset": -60,
+        "content": "Legacy test-only deployment was code-named Sundial. It has been retired."
       }
     ],
     "notes": [
@@ -119,8 +152,30 @@
         "kind": "insight",
         "day_offset": -3,
         "content": "Billing decisions: no Kubernetes (stay on ECS), no GraphQL gateway, no mobile app."
+      },
+      {
+        "thread_id": "Tdec",
+        "kind": "insight",
+        "day_offset": -2,
+        "content": "Workflow: run the billing schema checker before the production migration."
       }
-    ]
+    ],
+    "verbatim": [
+      {
+        "day_offset": -1,
+        "content": "Personal test phrase: blue lantern."
+      }
+    ],
+    "matrix": {
+      "states": {
+        "retained": {
+          "remove_dialog_messages": ["d-retention-sundial"]
+        },
+        "curated": {
+          "remove_notes": ["Workflow: run the billing schema checker before the production migration."]
+        }
+      }
+    }
   },
   "questions": [
     {
@@ -758,6 +813,77 @@
         "migrated to kubernetes",
         "moved to kubernetes"
       ]
+    },
+    {
+      "id": "dynamic_invoice_export",
+      "type": "dynamic_state",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "invoice export rollout status",
+      "question": "What is the current invoice-export rollout state?",
+      "gold_all": ["paused", "EU rate-limit incident"]
+    },
+    {
+      "id": "workflow_schema_check",
+      "type": "workflow_recall",
+      "system": "search",
+      "k": 5,
+      "query": "billing schema checker production migration",
+      "question": "What must happen before the billing production migration?",
+      "gold_all": ["schema checker"],
+      "removed_in": ["curated"]
+    },
+    {
+      "id": "premise_enterprise_reporting",
+      "type": "premise_awareness",
+      "system": "dialog_search",
+      "k": 5,
+      "abstain": true,
+      "query": "enterprise reporting launch",
+      "question": "What was the rollout date for the approved enterprise reporting launch?",
+      "abstain_evidence": ["did not approve", "only a draft"],
+      "trap_substrings": ["enterprise reporting launch was approved", "rollout date"]
+    },
+    {
+      "id": "composed_renewal_failure",
+      "type": "implicit_composed_request",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "renewal payment failure handling",
+      "question": "How should a renewal payment failure be handled?",
+      "gold_all": ["Stripe", "Sentry", "exponential backoff"]
+    },
+    {
+      "id": "retained_sundial",
+      "type": "workflow_recall",
+      "system": "dialog_search",
+      "k": 5,
+      "query": "legacy Sundial deployment",
+      "question": "What was the name of the legacy test deployment?",
+      "gold_all": ["Sundial"],
+      "removed_in": ["retained"]
+    },
+    {
+      "id": "egress_personal_codex",
+      "type": "premise_awareness",
+      "system": "brief",
+      "k": 5,
+      "consumer_cli": "codex",
+      "memory_class": "personal",
+      "query": "blue lantern",
+      "question": "What is the personal test phrase?",
+      "gold_all": ["blue lantern"]
+    },
+    {
+      "id": "egress_personal_claude",
+      "type": "premise_awareness",
+      "system": "brief",
+      "k": 5,
+      "consumer_cli": "claude",
+      "memory_class": "personal",
+      "query": "blue lantern",
+      "question": "What is the personal test phrase?",
+      "gold_all": ["blue lantern"]
     }
   ]
 }

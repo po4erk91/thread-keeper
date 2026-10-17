@@ -324,6 +324,9 @@ def run_retention_pass(force: bool = False, *, scheduled: bool = False) -> str:
             conn, _age_cutoff(now, PROBE_RESULT_RETENTION_DAYS)
         ),
     }
+    from .workflow_artifacts import run_workflow_retention
+
+    workflow = run_workflow_retention(conn, now=now)
     total = sum(counts.values())
     conn.commit()
 
@@ -338,7 +341,8 @@ def run_retention_pass(force: bool = False, *, scheduled: bool = False) -> str:
     summary = (
         "deleted "
         + " ".join(f"{name}={count}" for name, count in counts.items())
-        + f" total={total} vacuum={vacuum} wal_checkpoint={checkpoint}"
+        + f" total={total} workflow=({workflow}) "
+        + f"vacuum={vacuum} wal_checkpoint={checkpoint}"
     )
     _record_pass(conn, summary)
     return summary
