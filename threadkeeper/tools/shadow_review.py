@@ -6,11 +6,14 @@
     that WOULD be spawned (no actual spawn) — useful for inspecting
     candidate windows or building tests.
 
-  shadow_review_status(snapshot_path="")
+  shadow_review_status()
     Diagnostic snapshot: env config, cursor position, last 5 passes, and
     aggregated production telemetry (24h / 7d tick counts, outcome mix,
     MATERIALIZED-vs-SKIP hit rate, shadow-origin skill writes, spawn-time
-    cost). Pass `snapshot_path` to also dump a markdown report for humans.
+    cost).
+
+  shadow_review_snapshot(snapshot_path)
+    Explicitly write a markdown telemetry report for human review.
 """
 
 from __future__ import annotations
@@ -154,8 +157,8 @@ def shadow_review_status(snapshot_path: str = "") -> str:
     time spent — so you can tell whether the loop earns its Opus minutes or
     just emits SKIPs.
 
-    `snapshot_path`: when set, also writes a markdown report to that path
-    for human review (the side-channel snapshot)."""
+    Use ``shadow_review_snapshot(snapshot_path)`` to write a markdown report;
+    this read-only status call never writes it."""
     conn = get_db()
     _ensure_session(conn)
     floor = _last_shadow_rowid(conn)
@@ -200,11 +203,25 @@ def shadow_review_status(snapshot_path: str = "") -> str:
     lines += _telemetry_lines(tel)
 
     if snapshot_path:
-        try:
-            p = Path(snapshot_path).expanduser()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(_telemetry_markdown(tel, now), encoding="utf-8")
-            lines.append(f"\nwrote markdown snapshot to {p}")
-        except OSError as e:
-            lines.append(f"\nsnapshot write failed: {e}")
+        lines.append(
+            "\nsnapshot_path ignored: call shadow_review_snapshot(snapshot_path)"
+        )
     return "\n".join(lines)
+
+
+@write_tool(idempotent=True)
+def shadow_review_snapshot(snapshot_path: str) -> str:
+    """Write the current shadow-review telemetry as a markdown snapshot."""
+    if not snapshot_path.strip():
+        return "ERR snapshot_path_required"
+    conn = get_db()
+    _ensure_session(conn)
+    now = int(time.time())
+    try:
+        p = Path(snapshot_path).expanduser()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_telemetry_markdown(shadow_telemetry(conn, now=now), now),
+                     encoding="utf-8")
+    except OSError as e:
+        return f"ERR snapshot_write_failed={e}"
+    return f"ok wrote_markdown_snapshot={p}"

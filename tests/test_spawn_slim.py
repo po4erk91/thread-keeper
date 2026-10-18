@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 
 _FAKE_CID = "11112222-3333-4444-5555-666677778888"
@@ -59,6 +58,7 @@ def test_build_slim_mcp_config_from_claude_json(tmp_path, monkeypatch):
     assert mp["command"] == "/path/to/python"
     assert mp["args"] == ["-m", "threadkeeper.server"]
     assert mp["env"]["PYTHONPATH"] == "/path/to/repo"
+    assert mp["env"]["PYTHONSAFEPATH"] == "1"
     assert mp["env"]["THREADKEEPER_FORCE_CID"] == _FAKE_CID
     assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
     assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
@@ -92,6 +92,7 @@ def test_build_slim_mcp_config_synthesizes_when_no_claude_json(tmp_path, monkeyp
     assert mp["command"] == sys.executable
     assert "threadkeeper.server" in mp["args"]
     assert "PYTHONPATH" in mp["env"]
+    assert mp["env"]["PYTHONSAFEPATH"] == "1"
     assert mp["env"]["THREADKEEPER_SPAWNED_CHILD"] == "1"
     assert mp["env"]["THREADKEEPER_NO_EMBEDDINGS"] == "1"
 
@@ -142,6 +143,7 @@ def test_slim_config_is_owner_only_and_minimizes_env(tmp_path, monkeypatch):
     env = json.loads(slim_path.read_text())["mcpServers"]["thread-keeper"]["env"]
     # Needed keys survive: package discovery + thread-keeper knobs + overrides.
     assert env["PYTHONPATH"] == "/path/to/repo"
+    assert env["PYTHONSAFEPATH"] == "1"
     assert env["THREADKEEPER_TZ"] == "Europe/Kyiv"
     assert env["THREADKEEPER_FORCE_CID"] == _FAKE_CID
     assert env["THREADKEEPER_NO_EMBEDDINGS"] == "1"
@@ -171,7 +173,7 @@ def test_visible_command_script_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=True)
+    out = spawn_fn(prompt="do a thing", cwd=str(pkg["tmp"]), visible=True)
     assert out.startswith("ok task="), out
 
     cmd_files = list(spawn_mod.TASK_LOG_DIR.glob("*.command"))
@@ -197,7 +199,12 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
 
     spawn_fn = pkg["mcp"]._tool_manager._tools["spawn"].fn
-    out = spawn_fn(prompt="do a thing", visible=False, capture_output=True)
+    out = spawn_fn(
+        prompt="do a thing",
+        cwd=str(pkg["tmp"]),
+        visible=False,
+        capture_output=True,
+    )
     assert out.startswith("ok task="), out
 
     log_files = list(spawn_mod.TASK_LOG_DIR.glob("*.log"))
@@ -257,18 +264,39 @@ def test_claude_large_prompt_uses_stdin_file(mp_with_cid, monkeypatch):
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
 
 
-def test_spawn_slim_falls_back_to_full_config_when_unable(tmp_path, monkeypatch):
-    """If _build_slim_mcp_config returns None (e.g. write error), spawn()
-    must NOT crash — it just runs without slim flags."""
-    # We unit-test by patching _build_slim_mcp_config to return None and
-    # then checking spawn doesn't append --mcp-config to the cmd. But the
-    # whole flow runs subprocess.Popen which we don't want in tests. Skip
-    # full integration — the conditional branch in spawn() is plain
-    # if-statement, no need for deep coverage.
-    pytest.skip(
-        "spawn() invokes claude CLI; slim-fallback path is covered by "
-        "inspection of the conditional branch"
+def test_spawn_refuses_when_the_slim_config_cannot_be_written(
+    mp_with_cid, monkeypatch,
+):
+    """A slim child whose MCP file cannot be written must not silently run
+    with the user's full MCP config (every configured server)."""
+    pkg = mp_with_cid(_FAKE_CID)
+    import threadkeeper.identity as identity
+    import threadkeeper.spawn_config as spawn_config
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    monkeypatch.setattr(
+        spawn_config, "resolve_agent", lambda role, active_cli=None: "claude"
     )
+    monkeypatch.setattr(spawn_mod, "_build_slim_mcp_config", lambda *a, **k: None)
+    launched = []
+    monkeypatch.setattr(
+        spawn_mod.subprocess, "Popen", lambda *a, **k: launched.append(a),
+    )
+
+    out = spawn_mod.spawn(
+        prompt="x", cwd=str(pkg["tmp"]), slim=True, visible=False,
+        capture_output=False,
+    )
+
+    assert out == "ERR slim_mcp_config_failed"
+    assert launched == []
+    conn = pkg["db"].get_db()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_review_thread_uses_slim_by_default(mp_with_cid, monkeypatch):

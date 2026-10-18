@@ -1,8 +1,8 @@
-"""Memory-quality eval harness (scripts/memory_eval/run.py, issue #71).
+"""Memory-quality eval harness (scripts/memory_eval/run.py, issues #71/#347).
 
 Two layers:
-  • pure-function units — token estimate + the deterministic lexical judge
-    (recall hit, abstention clean, abstention leak), imported in-process
+  • pure-function units — token estimate + deterministic evidence and replay
+    judges (recall hit, abstention clean, protected-memory leak), imported in-process
     because run.py defers all threadkeeper imports into a helper.
   • an end-to-end smoke test — runs the actual command as a subprocess
     against the bundled demo corpus and asserts it emits the three headline
@@ -87,6 +87,47 @@ def test_judge_lexical_abstention_rejects_unrelated_candidates():
     assert run.judge_lexical(item, "no_matches")[0] is True
 
 
+def test_replay_keeps_evidence_and_final_answer_separate():
+    run = _load_run_module()
+    item = {"gold_all": ["Stripe", "Sentry"]}
+    evidence_ok, _ = run.judge_evidence(
+        item, "Stripe sends errors to Sentry", expected_abstention=False)
+    answer = run.replay_final_answer(
+        item, "Stripe sends errors to Sentry", expected_abstention=False)
+    answer_ok, _ = run.judge_final_answer(
+        item, answer, expected_abstention=False)
+    assert evidence_ok is True
+    assert answer_ok is True
+    assert "Stripe" in answer and "Sentry" in answer
+
+
+def test_protected_evidence_is_a_retrieval_failure_after_removal():
+    run = _load_run_module()
+    item = {"gold_all": ["Sundial"], "removed_in": ["retained"]}
+    evidence_ok, _ = run.judge_evidence(
+        item, "Sundial legacy deployment", expected_abstention=True)
+    answer = run.replay_final_answer(
+        item, "Sundial legacy deployment", expected_abstention=True)
+    outcome = run.classify_outcome(
+        item, "Sundial legacy deployment", answer,
+        evidence_correct=evidence_ok, answer_correct=True,
+        expected_abstention=True, egress_policy="all",
+    )
+    assert evidence_ok is False
+    assert outcome == "removed_memory_use"
+
+
+def test_stale_answer_is_classified_separately_from_retrieval_failure():
+    run = _load_run_module()
+    item = {"gold_any": ["eu-central-1"], "stale": ["us-east-1"]}
+    outcome = run.classify_outcome(
+        item, "eu-central-1", "Answer: us-east-1",
+        evidence_correct=True, answer_correct=False,
+        expected_abstention=False, egress_policy="all",
+    )
+    assert outcome == "stale_memory_use"
+
+
 # ── end-to-end smoke ──────────────────────────────────────────────────────
 @pytest.fixture(scope="module")
 def smoke_report():
@@ -106,15 +147,21 @@ def test_smoke_emits_headline_metrics(smoke_report):
     assert r["abstention"]["rate"] is not None
     assert r["tokens_per_retrieval"]["total"] > 0
     assert r["tokens_per_retrieval"]["mean"] > 0
+    assert r["tokens_per_final_answer"]["total"] > 0
     assert r["retrieval_latency_ms"]["p95"] > 0
     assert r["backend"] == "fts"  # default run is offline / no embeddings
+    assert r["evidence_recall"]["rate"] == 1.0
+    assert r["final_answer"]["rate"] == 1.0
+    assert r["thresholds_pass"] is True
 
 
-def test_smoke_covers_all_five_axes(smoke_report):
+def test_smoke_covers_every_versioned_axis(smoke_report):
     axes = set(smoke_report["per_type"])
     assert axes == {
         "information_extraction", "multi_session_reasoning",
         "temporal_reasoning", "knowledge_update", "abstention",
+        "dynamic_state", "workflow_recall", "premise_awareness",
+        "implicit_composed_request",
     }
 
 
@@ -124,8 +171,41 @@ def test_smoke_golden_baseline_is_perfect(smoke_report):
     search()/dialog_search() would drop this below 1.0."""
     r = smoke_report
     assert r["accuracy"] == 1.0, r["rows"]
+    assert r["final_answer"]["rate"] == 1.0, r["rows"]
     assert r["abstention"]["rate"] == 1.0
     assert r["abstention"]["n"] >= 10  # abstention is the high-payoff axis
+
+
+def test_fts_matrix_covers_state_and_egress_safety_variants():
+    """The fixed CI-safe matrix proves removed/disallowed memory stays absent.
+
+    Hybrid uses the same path when the optional semantic extra is installed;
+    this test pins the FTS half so it remains deterministic in a minimal venv.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable, str(RUN_PY), "--matrix", "--matrix-backends", "fts",
+            "--strict", "--json",
+        ],
+        cwd=str(REPO), capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0, f"runner failed: {proc.stderr}\n{proc.stdout}"
+    report = json.loads(proc.stdout)
+    assert report["thresholds_pass"] is True
+    assert len(report["matrix"]) == 9
+    assert all(cell["status"] == "ok" for cell in report["matrix"])
+    assert all(cell["safety_violations"] == 0 for cell in report["matrix"])
+
+
+def test_private_holdout_suppresses_case_output():
+    proc = subprocess.run(
+        [sys.executable, str(RUN_PY), "--private-holdout", "--json"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0, f"runner failed: {proc.stderr}\n{proc.stdout}"
+    report = json.loads(proc.stdout)
+    assert "rows" not in report
+    assert "egress_personal_codex" not in proc.stdout
 
 
 def test_semantic_smoke_uses_hybrid_and_keeps_golden_recall():

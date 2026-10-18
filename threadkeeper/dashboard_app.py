@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from pydantic import BaseModel, Field
 
 from ._mcp import mcp, read_tool, structured_result

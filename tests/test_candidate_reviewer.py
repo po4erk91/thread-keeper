@@ -203,6 +203,8 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "skill_manage" in allowed
     assert "accept_candidate" in allowed
     assert "reject_candidate" in allowed
+    assert "lesson_neighbors(title=<prospective>" in kw["prompt"]
+    assert "lesson_neighbors" in allowed
     assert "Bash" not in allowed
     # De-privileged (issue #76): no bare Read/Write/Edit — only the
     # path-scoped skill/lesson/candidate MCP tools.
@@ -210,6 +212,30 @@ def test_run_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Write" not in tool_list
     assert "Read" not in tool_list
     assert "Edit" not in tool_list
+
+
+def test_returned_spawn_error_does_not_advance_candidate_review_cursor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_n="1")
+    conn = pkg["db"].get_db()
+    _seed_pending(conn, "verbatim", "candidate to retry")
+    conn.commit()
+
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["candidate_reviewer"].run_review_pass(force=True)
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+    assert pkg["candidate_reviewer"]._last_review_ts(conn) == 0
+    event = conn.execute(
+        "SELECT summary FROM events WHERE kind='candidate_review_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert event["summary"].startswith("spawn_error:")
 
 
 def test_run_recent_high_water_is_not_due(tmp_path, monkeypatch):
@@ -476,3 +502,24 @@ def test_below_threshold_fresh_queue_stays_pending(tmp_path, monkeypatch):
     out = pkg["candidate_reviewer"].run_review_pass(force=True)
 
     assert out == "below_threshold n=1"
+
+
+def test_collect_pending_bounds_the_prompt_and_keeps_fifo_order(
+    tmp_path, monkeypatch,
+):
+    # A reviewer that is off for a while must not receive the whole 30-day
+    # backlog in one prompt (#24); the oldest candidates go first so they are
+    # reviewed before the stale window drops them.
+    monkeypatch.setenv("THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE", "3")
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    for i in range(7):
+        _seed_pending(conn, "verbatim", f"candidate number {i}", age_s=1000 - i * 10)
+    conn.commit()
+
+    dump, n = pkg["candidate_reviewer"]._collect_pending(conn)
+
+    assert n == 7
+    assert "PENDING CANDIDATES (n=3 of 7;" in dump
+    assert "candidate number 0" in dump and "candidate number 2" in dump
+    assert "candidate number 3" not in dump

@@ -22,7 +22,7 @@ def test_dashboard_app_is_discoverable_and_bound_to_its_open_tool(fresh_mp):
     resource = resources[DASHBOARD_URI]
     tool = _tool(pkg, "open_dashboard")
 
-    assert resource.mimeType == "text/html;profile=mcp-app"
+    assert resource.mime_type == "text/html;profile=mcp-app"
     assert resource.meta["ui"]["csp"] == {
         "connectDomains": [],
         "resourceDomains": [],
@@ -33,7 +33,7 @@ def test_dashboard_app_is_discoverable_and_bound_to_its_open_tool(fresh_mp):
         "resourceUri": DASHBOARD_URI,
         "visibility": ["model", "app"],
     }
-    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.read_only_hint is True
 
 
 def test_dashboard_app_html_is_sandboxed_and_validates_messages(fresh_mp):
@@ -54,7 +54,7 @@ def test_dashboard_tool_falls_back_when_the_host_has_no_app_capability(fresh_mp)
     text = result.content[0].text
 
     assert "does not advertise MCP Apps" in text
-    assert result.structuredContent["available"] is False
+    assert result.structured_content["available"] is False
 
 
 def test_dashboard_tool_uses_app_path_for_a_supporting_host(fresh_mp):
@@ -122,7 +122,7 @@ def test_dashboard_snapshot_omits_prompts_paths_and_child_identifiers(fresh_mp):
     conn.commit()
 
     result = _tool(pkg, "open_dashboard").fn()
-    payload = str(result.structuredContent)
+    payload = str(result.structured_content)
 
     assert "secret prompt" not in payload
     assert "/private/agent/worktree" not in payload

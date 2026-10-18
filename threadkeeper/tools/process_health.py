@@ -52,6 +52,11 @@ def mp_health() -> MpHealth:
             f"rss={rss_mb}MB  hb={hb_disp}  etime={p['etime']}  "
             f"[{flag}]  {p.get('orphan_reason','-')}"
         )
+    from ..db import _describe_write_holders, legacy_connection_stats
+    out.append(
+        "\nthis_process_db "
+        + _describe_write_holders(legacy_connection_stats())
+    )
     daemon_rows = daemon_liveness_statuses()
     out.append("\ndaemon_threads")
     for daemon in daemon_rows:
