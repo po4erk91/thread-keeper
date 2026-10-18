@@ -461,16 +461,28 @@ def _conflicted_pr_apply_count(now: int) -> int:
     return len(prs)
 
 
-def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
+def _backlog_count(
+    conn,
+    loop: dict[str, Any],
+    now: int,
+    *,
+    allow_external: bool = True,
+) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
     if loop.get("backlog_metric") == "evolve_apply":
-        return _conflicted_pr_apply_count(now) + _scalar(
+        local_backlog = _scalar(
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",
-        ) + _curator_report_apply_count(conn) + _roadmap_issue_apply_count(
-            conn, now
+        )
+        if not allow_external:
+            return local_backlog
+        return (
+            _conflicted_pr_apply_count(now)
+            + local_backlog
+            + _curator_report_apply_count(conn)
+            + _roadmap_issue_apply_count(conn, now)
         )
     if loop.get("backlog_sql"):
         return _scalar(conn, loop["backlog_sql"])
@@ -673,13 +685,15 @@ def _loop_status(
     loop: dict[str, Any],
     agents_by_role: dict[str, list[dict[str, Any]]],
     now: int,
+    *,
+    allow_external: bool = True,
 ) -> dict[str, Any]:
     from . import config
 
     interval_s = float(getattr(config, loop["interval"], 0) or 0)
     threshold = int(getattr(config, loop.get("threshold", ""), 0) or 0)
     ready_backlog_min = int(loop.get("ready_backlog_min", 0) or 0)
-    backlog = _backlog_count(conn, loop, now)
+    backlog = _backlog_count(conn, loop, now, allow_external=allow_external)
     last = _last_event(conn, loop.get("result_events", loop["event"]), now)
     health = _daemon_health(conn, loop, interval_s, now)
     running = agents_by_role.get(loop.get("role", ""), [])
@@ -739,7 +753,13 @@ def _loop_status(
     }
 
 
-def _loop_statuses(conn, agents: list[dict[str, Any]], now: int) -> list[dict[str, Any]]:
+def _loop_statuses(
+    conn,
+    agents: list[dict[str, Any]],
+    now: int,
+    *,
+    allow_external: bool = True,
+) -> list[dict[str, Any]]:
     agents_by_role: dict[str, list[dict[str, Any]]] = {}
     for agent in agents:
         role = agent.get("role") or ""
@@ -747,7 +767,13 @@ def _loop_statuses(conn, agents: list[dict[str, Any]], now: int) -> list[dict[st
             agents_by_role.setdefault(role, []).append(agent)
     loops: list[dict[str, Any]] = []
     for index, loop in enumerate(_LOOP_DEFS):
-        row = _loop_status(conn, loop, agents_by_role, now)
+        row = _loop_status(
+            conn,
+            loop,
+            agents_by_role,
+            now,
+            allow_external=allow_external,
+        )
         row["_order"] = index
         loops.append(row)
 
@@ -1136,15 +1162,32 @@ def format_memory_cleanup(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, Any]:
-    """Return a JSON-ready snapshot of autonomous loops and running children."""
-    conn = get_db()
+def agent_status_snapshot(
+    refresh: bool = True,
+    limit: int = 50,
+    *,
+    conn=None,
+    include_recent: bool = True,
+    allow_external: bool = True,
+) -> dict[str, Any]:
+    """Return a JSON-ready snapshot of autonomous loops and running children.
+
+    A caller can supply a query-only connection for a display-only surface.
+    In that mode, set ``refresh=False``, ``include_recent=False``, and
+    ``allow_external=False`` to avoid process scans, task-log reads, and
+    GitHub/network-backed backlog checks.
+    """
+    conn = conn or get_db()
     if refresh:
         _refresh_rss(conn)
     now = int(time.time())
     agents = _running_agents(conn, now, limit)
-    loops = _loop_statuses(conn, agents, now)
-    github_budget = github_budget_state(conn, now_t=now)
+    loops = _loop_statuses(conn, agents, now, allow_external=allow_external)
+    github_budget = github_budget_state(
+        conn,
+        now_t=now,
+        ensure_schema=allow_external,
+    )
 
     return {
         "generated_at": now,
@@ -1156,8 +1199,8 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "ready_loop_count": sum(1 for loop in loops if loop["status"] == "ready"),
         "loops": loops,
         "github_budget": github_budget,
-        "recent_results": _recent_results(conn, now),
-        "recent_failures": _recent_failures(conn, now),
+        "recent_results": _recent_results(conn, now) if include_recent else [],
+        "recent_failures": _recent_failures(conn, now) if include_recent else [],
         "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
     }

@@ -125,6 +125,11 @@ remains a live question.
   `blocked,needs-design,wontfix,question,discussion,help wanted`), reports
   exact-mode skips as `skipped: label X`, and surfaces skip telemetry in
   `evolve_apply_status()` / `mp_dashboard()`.
+- Portable MCP App dashboard (#364): `open_dashboard` binds a sandboxed,
+  display-only `ui://thread-keeper/dashboard` resource to the existing status
+  domain. Its privacy-filtered, read-only snapshot is portable to App-capable
+  Windows/Linux/macOS hosts; the macOS menu-bar app remains optional and
+  non-App hosts retain their text/JSON fallback.
 - Evolve applier applied-marker reconciliation (#51): when an open issue has a
   `roadmap_issue_applied` marker, the selector now checks the recorded PR state.
   Open or merged PRs keep the issue out of the queue; a closed-unmerged PR

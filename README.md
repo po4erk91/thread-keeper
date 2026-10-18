@@ -166,7 +166,7 @@ Cline, … — so a single registration there reaches all of them at once.
 Adding a new CLI = one file under `threadkeeper/adapters/` implementing
 the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### MCP primitives (tools, resources, prompts, elicitation)
+### MCP primitives (tools, resources, prompts, Apps, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
 read/act split, plus MCP elicitation for host-native confirmations:
@@ -176,6 +176,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 | **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
+| **MCP App** | host-rendered, display-only | `open_dashboard` → `ui://thread-keeper/dashboard` | a host that advertises MCP Apps opens the sandboxed dashboard |
 
 **Resources** back the genuinely read-only memory views with the same render
 functions as the matching tools, so the content is identical — `memory://brief`
@@ -189,6 +190,24 @@ so an automatic host pull is **side-effect-free**.
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
+**Portable dashboard App.** `open_dashboard` is a read-only progressive
+enhancement over the existing status data. In an MCP Apps-capable host it opens
+`ui://thread-keeper/dashboard` in a sandboxed iframe and shows autonomous
+loops, running children, budget state, task history, recent failures, and
+recent materializations. It never sends prompts, transcripts, task-log text,
+credentials, child identifiers, or local paths to the iframe. Loading and the
+App's Refresh button only open the existing database in SQLite read-only mode;
+they never bootstrap a session, reconcile tasks, start daemons, refresh process
+RSS, or write telemetry.
+
+This is portable across macOS, Windows, and Linux because it uses the existing
+stdio server registration in the table above — no native app installation is
+needed. If the host does not advertise the `io.modelcontextprotocol/ui`
+extension with `text/html;profile=mcp-app`, `open_dashboard` returns a short
+text fallback; use `agent_status(json_output=True)` or `mp_dashboard()` as the
+tested fallback. The macOS menu-bar app remains an optional native frontend
+over the same status data, not a requirement for this dashboard.
+
 **Elicitation** is a client feature, not a server primitive. When a host
 advertises form-mode elicitation, high-stakes mutations can pause for a
 structured user choice instead of relying on an ignorable text nudge. The first
@@ -198,7 +217,8 @@ the previous immediate tool behavior.
 
 Everything here is **additive and capability-gated**: a host that advertises the
 `resources` / `prompts` capabilities sees those primitives; one that advertises
-`elicitation.form` gets structured confirmations for covered high-stakes writes.
+MCP Apps gets the dashboard iframe; and one that advertises `elicitation.form`
+gets structured confirmations for covered high-stakes writes.
 Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 / `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are

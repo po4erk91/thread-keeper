@@ -16,6 +16,7 @@ version bumps follow semver per the policy in
   resume the local/remote feature branch before reading or editing, and
   `agent_status` no longer treats `ERR`/spawn-failure pass events as successful
   health-clock updates.
+
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer
@@ -97,6 +98,17 @@ version bumps follow semver per the policy in
   edit's mtime; filesystems without birth-time support fall back to mtime
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
+
+## v0.17.0 — 2026-10-18
+- **Added: portable, read-only MCP App dashboard (#364).** Supporting hosts
+  can open `ui://thread-keeper/dashboard` through `open_dashboard`. The
+  sandboxed App renders a privacy-filtered structured status projection for
+  autonomous loops, running children, budgets, task history, failures, and
+  recent materializations. Loading or refreshing it only opens an existing
+  SQLite database read-only: it does not create sessions, bootstrap state,
+  start daemons, reconcile tasks, or write telemetry. Hosts without MCP Apps
+  support receive a text fallback and keep the existing status tools and
+  `memory://` resources unchanged.
 
 ## v0.16.3 — 2026-07-19
 

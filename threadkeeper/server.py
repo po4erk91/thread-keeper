@@ -68,6 +68,9 @@ from .tools import forget  # noqa: F401
 # without the resources/prompts capability fall back to the tool-only surface.
 from .tools import resources  # noqa: F401
 from .tools import prompts  # noqa: F401
+# MCP Apps dashboard (#364). This is a display-only progressive enhancement:
+# non-App hosts retain the existing text/JSON status tools unchanged.
+from . import dashboard_app  # noqa: F401
 from .tools import sync  # noqa: F401
 
 
