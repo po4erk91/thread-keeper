@@ -8,6 +8,30 @@ remains a live question.
 
 ---
 
+## 2026-10-18 reviewer audit
+
+This pass reconciled current `main`, the full open and closed issue history,
+four legacy Evolve suggestions, and the 2026-10-17 research digest. Two gaps
+were not covered by the existing roadmap:
+
+- **Portable semantic memory bundle (#395).** Add a versioned,
+  human-inspectable export/import format for selected semantic records while
+  retaining `tk-backup` as the exact disaster-recovery path. Raw dialog, task
+  logs, and personal-memory classes stay excluded by default; imports validate
+  hashes and schema versions and provide a conflict dry run.
+- **Lesson-level Curator manifest integrity (#396).** Record deterministic
+  lesson hashes, revision metadata, link evidence, and duplicate candidates in
+  the audit manifest so frozen batches and final reports can prove which lesson
+  revisions they reviewed without copying private lesson bodies.
+
+The MCP App, Tasks extension, and official conformance findings remain tracked
+in #364, #370, and #379. The encrypted storage profile in #360 is complete.
+An optional cross-encoder reranker remains deferred behind the existing hybrid
+retrieval evaluation gate and the contextual-indexing work in #387; the cheaper
+baseline should reach a measured plateau before adding another model. The
+legacy task-gate and recursive lineage suggestions are already implemented, and
+source-missing skill recovery remains tracked in #373.
+
 ## 2026-10-14 reviewer audit
 
 This pass reconciled the full issue history, current implementation, legacy
