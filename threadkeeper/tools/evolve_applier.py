@@ -63,7 +63,10 @@ from ..evolve_applier import (
     _pending_curator_reports,
     _promoted_unapplied,
     _running_applier_children,
+    _last_apply_pass,
+    _last_apply_dispatch_ts,
     _last_apply_ts,
+    apply_retry_at,
 )
 
 
@@ -221,8 +224,11 @@ def evolve_apply_status() -> str:
     backoff = [e for e in ledger if e["state"] == "backoff"]
     dead = [e for e in ledger if e["state"] == "dead_letter"]
     running = _running_applier_children(conn)
-    floor = _last_apply_ts(conn)
     now = int(time.time())
+    floor = _last_apply_ts(conn)
+    attempt_at, attempt_outcome = _last_apply_pass(conn)
+    dispatched_at = _last_apply_dispatch_ts(conn)
+    retry_at = apply_retry_at(conn)
     age_s = (now - floor) if floor else None
     lines = [
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
@@ -239,6 +245,19 @@ def evolve_apply_status() -> str:
         format_github_budget(github_budget_state(conn, now_t=now)),
         f"cursor_ts={floor} (age={age_s}s)" if floor
         else "cursor_ts=0 (no prior pass)",
+        (
+            f"last_attempt_ts={attempt_at} outcome={attempt_outcome[:120]}"
+            if attempt_at else "last_attempt_ts=0 (no prior attempt)"
+        ),
+        (
+            f"last_successful_dispatch_ts={dispatched_at} "
+            f"(age={now - dispatched_at}s)"
+            if dispatched_at else "last_successful_dispatch_ts=0 (none)"
+        ),
+        (
+            f"next_retry_ts={retry_at} (in={max(0, retry_at - now)}s)"
+            if retry_at else "next_retry_ts=0 (none)"
+        ),
     ]
     if issue_err:
         lines.append(f"roadmap_issue_fetch_error={issue_err}")

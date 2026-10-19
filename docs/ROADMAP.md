@@ -239,6 +239,11 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   `blocked,needs-design,wontfix,question,discussion,help wanted`), reports
   exact-mode skips as `skipped: label X`, and surfaces skip telemetry in
   `evolve_apply_status()` / `mp_dashboard()`.
+- Portable MCP App dashboard (#364): `open_dashboard` binds a sandboxed,
+  display-only `ui://thread-keeper/dashboard` resource to the existing status
+  domain. Its privacy-filtered, read-only snapshot is portable to App-capable
+  Windows/Linux/macOS hosts; the macOS menu-bar app remains optional and
+  non-App hosts retain their text/JSON fallback.
 - Evolve applier applied-marker reconciliation (#51): when an open issue has a
   `roadmap_issue_applied` marker, the selector now checks the recorded PR state.
   Open or merged PRs keep the issue out of the queue; a closed-unmerged PR
@@ -789,6 +794,16 @@ base 2 days) defers re-selection, and after `ROADMAP_ISSUE_MAX_ATTEMPTS`
 comment — and excluded from the auto-drain until a human intervenes (composes
 with the #50 skip-label gate). Attempt counts/states show in
 `evolve_apply_status()`; stuck/dead-letter counts in `mp_dashboard()`.
+
+**Transient applier retry cadence (done, #365).** The Evolve applier now shares
+the reviewer's pass-consumption rule: a real child launch or a fully completed
+empty check consumes `EVOLVE_APPLY_INTERVAL_S`; a busy lock, checkout
+provisioning failure, PR/issue/claim/race error, or raised/returned spawn
+refusal does not. The prior cursor is preserved, repeated identical blockers
+are edge-triggered in telemetry, and the daemon retries on a bounded short
+cadence rather than losing a daily or weekly apply slot. Issue attempt/backoff
+accounting still begins only once an issue child launches. `evolve_apply_status()`
+shows the latest attempt, latest successful dispatch, and next retry time.
 
 **Background daemon resource hygiene (done, #86).** Three low-grade resource
 gaps in the daemon family: (1) every loop slept on a bare interval with zero

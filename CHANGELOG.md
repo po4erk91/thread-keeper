@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Transient Evolve-applier retries no longer consume an apply interval
+  (#365).** A child launch or a completed empty check advances the cursor;
+  no-child provisioning, GitHub, claim/race, lock, and spawn-refusal outcomes
+  preserve it, emit edge-triggered telemetry, and retry on a bounded short
+  cadence. Apply status now reports the latest attempt, latest successful
+  dispatch, and a pending retry time.
+
 - **Opt-in SQLCipher storage profile (#360).** `threadkeeper[encrypted]` adds
   an OS-secret-store-backed encrypted database mode without changing the
   default SQLite installation. `tk-storage` initializes, validates, rekeys,
@@ -580,6 +587,7 @@ version bumps follow semver per the policy in
   resume the local/remote feature branch before reading or editing, and
   `agent_status` no longer treats `ERR`/spawn-failure pass events as successful
   health-clock updates.
+
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer
@@ -662,9 +670,19 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
-## v0.17.0 — 2026-09-30
+## v0.17.0 — 2026-10-18
 
 ### Added
+
+- **Added: portable, read-only MCP App dashboard (#364).** Supporting hosts
+  can open `ui://thread-keeper/dashboard` through `open_dashboard`. The
+  sandboxed App renders a privacy-filtered structured status projection for
+  autonomous loops, running children, budgets, task history, failures, and
+  recent materializations. Loading or refreshing it only opens an existing
+  SQLite database read-only: it does not create sessions, bootstrap state,
+  start daemons, reconcile tasks, or write telemetry. Hosts without MCP Apps
+  support receive a text fallback and keep the existing status tools and
+  `memory://` resources unchanged.
 
 - **Staged model-compatibility gate (#337).** Embedding upgrades now build a
   resumable target generation beside one durable active pointer, validate full

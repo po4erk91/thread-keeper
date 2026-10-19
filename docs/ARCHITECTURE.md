@@ -45,6 +45,7 @@ threadkeeper/
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
+├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
@@ -852,7 +853,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Machine-wide single-flight uses `evolve-applier.lock` plus the `"You are an
   EVOLVE APPLIER"` prompt prefix. Automatic apply passes respect the configured
   interval to avoid duplicate issue workers across foreground server startups;
-  manual apply tools still dispatch immediately. If no roadmap issue is
+  manual apply tools still dispatch immediately. Like the reviewer contract
+  above, an applier pass consumes that interval only after a child actually
+  launches or after a complete empty-queue check. A busy lock, managed-checkout
+  provisioning error, PR/issue/claim/race fetch failure, or raised/returned
+  spawn refusal preserves the cursor, records only the leading instance of a
+  consecutive blocker class, and retries on a bounded short (~1h) cadence.
+  `evolve_apply_status()` separates the latest attempt from the latest
+  successful dispatch and reports a pending retry time. If no roadmap issue is
   startable, the pass falls back to Curator reports and then legacy promoted
   `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
@@ -1893,7 +1901,7 @@ below).
 | evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status, evolve_prune_managed_venv |
 | style | style_set, verbatim_user |
 | process_health | mp_health, mp_cleanup |
-| dashboard | mp_dashboard |
+| dashboard | mp_dashboard, open_dashboard |
 | agent_status | agent_status, agent_status_refresh, agent_memory_cleanup |
 | memory_guard | memory_guard_status, memory_guard_check, memory_guard_reclaim |
 | project_scope | memory_scope_status |
@@ -1954,7 +1962,7 @@ test. It contains no rendered memory, local paths, identifiers, credentials, or
 transcript content. Hooks and per-client managed instruction files remain the
 fallback and reinforcement for hosts that ignore server instructions.
 
-### MCP resources & prompts (#78)
+### MCP resources, prompts, and Apps (#78, #364)
 
 Tools are only one of MCP's three server primitives. thread-keeper also adopts
 the other two for the read/act split they fit naturally:
@@ -1997,6 +2005,20 @@ the `brief()` / `context()` tools, with identical content. Resource/prompt funct
 their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
+
+- **MCP App dashboard** (`dashboard_app.py`, `open_dashboard`) — an MCP
+  Apps-capable host discovers `ui://thread-keeper/dashboard` from the tool's
+  `_meta.ui.resourceUri` and renders its static HTML in a sandboxed iframe. The
+  resource declares an empty network/resource/frame/base CSP and no iframe
+  permissions. Its message handler accepts only JSON-RPC objects from the
+  parent frame, renders structured status data with `textContent`, and exposes
+  only a refresh call back to the same read-only tool. The snapshot opens an
+  existing database with SQLite `mode=ro`, and filters prompts, log excerpts,
+  CIDs, process IDs, credentials, and local paths before they reach the App.
+  It derives loop metadata from `agent_status._LOOP_DEFS`; the existing text
+  tools and `memory://` resources remain unchanged for hosts without the Apps
+  extension. The macOS menu-bar app is a separate optional native frontend over
+  the same status domain.
 
 ### MCP elicitation (#26)
 
