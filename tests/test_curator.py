@@ -795,6 +795,53 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
 
 
+def test_web_research_receives_only_public_brief_and_narrow_tools(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2", web_research="1")
+    private_body = (
+        "TOP_SECRET_ALPHA /Users/alice/private-project token=not-for-web"
+    )
+    pkg["lessons"].append_lesson(
+        title="local deployment lesson", body=private_body, source="shadow",
+    )
+    pkg["lessons"].append_lesson(
+        title="another local lesson", body="also private", source="shadow",
+    )
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod,
+        "spawn",
+        lambda **kwargs: captured.append(kwargs) or "spawn task_id=fake pid=0",
+    )
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    assert len(captured) == 1
+    researcher = captured[0]
+    assert researcher["role"] == "curator_researcher"
+    assert private_body not in researcher["prompt"]
+    assert str(tmp_path) not in researcher["prompt"]
+    assert "AUDIT_MANIFEST_PATH" not in researcher["prompt"]
+    assert researcher["extra_allowed_tools"] == "WebSearch,WebFetch"
+    assert researcher["base_allowed_tools"] == (
+        "mcp__thread-keeper__curator_research_write"
+    )
+    assert "Read" not in researcher["base_allowed_tools"]
+    assert "lesson_get" not in researcher["base_allowed_tools"]
+    assert "expand_concept" not in researcher["base_allowed_tools"]
+
+    conn = pkg["db"].get_db()
+    event_text = "\n".join(
+        f"{row['target'] or ''} {row['summary'] or ''}"
+        for row in conn.execute("SELECT target, summary FROM events").fetchall()
+    )
+    assert private_body not in event_text
+
+
 def test_returned_spawn_error_does_not_advance_curator_cursor(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="1")
     pkg["lessons"].append_lesson(

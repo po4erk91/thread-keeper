@@ -16,6 +16,7 @@ from ..helpers import fmt_age, q, gen_concept_id, gen_distill_id
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, embed_tag, _dialog_embedding_parts
+from ..project_scope import recall_where, resolve_write_scope
 from ..memory_compat import memory_provenance
 
 
@@ -84,7 +85,7 @@ def _is_log_content(text: str) -> bool:
     return sum(sample.count(m) for m in markers) >= 3
 
 
-def _candidate_exists(conn, source_uuid, content):
+def _candidate_exists(conn, source_uuid, content, project_id, memory_scope):
     """True if this source message or identical content was already
     enqueued — in ANY state, INCLUDING 'rejected'.
 
@@ -103,27 +104,33 @@ def _candidate_exists(conn, source_uuid, content):
     """
     if source_uuid:
         if conn.execute(
-            "SELECT 1 FROM extract_candidates WHERE source_uuid=? LIMIT 1",
-            (source_uuid,),
+            "SELECT 1 FROM extract_candidates WHERE source_uuid=? "
+            "AND project_id IS ? AND memory_scope=? LIMIT 1",
+            (source_uuid, project_id, memory_scope),
         ).fetchone():
             return True
     return bool(
         conn.execute(
             "SELECT 1 FROM extract_candidates "
-            "WHERE substr(content, 1, 500) = ? LIMIT 1",
-            (content[:500],),
+            "WHERE substr(content, 1, 500) = ? AND project_id IS ? "
+            "AND memory_scope=? LIMIT 1",
+            (content[:500], project_id, memory_scope),
         ).fetchone()
     )
 
 
-def _enqueue(conn, kind, source_uuid, source_cid, content, rationale):
-    if _candidate_exists(conn, source_uuid, content):
+def _enqueue(conn, kind, source_uuid, source_cid, content, rationale,
+             project_id=None, memory_scope=""):
+    if not memory_scope:
+        memory_scope, project_id = resolve_write_scope()
+    if _candidate_exists(conn, source_uuid, content, project_id, memory_scope):
         return None
     cur = conn.execute(
         "INSERT INTO extract_candidates (kind, source_uuid, source_cid, "
-        "content, rationale, status, created_at) VALUES (?,?,?,?,?,?,?)",
+        "content, rationale, status, created_at, project_id, memory_scope) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (kind, source_uuid, source_cid, content, rationale,
-         "pending", int(time.time())),
+         "pending", int(time.time()), project_id, memory_scope),
     )
     return cur.lastrowid
 
@@ -152,22 +159,24 @@ def _fetch_extract_rows(
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
     dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
+    dialog_scope, dialog_scope_params = recall_where("d")
     return conn.execute(
         exclusion_cte +
         "SELECT d.rowid AS rowid, d.uuid, d.role, d.content, d.session_id, "
-        "       d.created_at, "
+        "       d.created_at, d.project_id, d.memory_scope, "
         f"       {dialog_embedding} AS embedding "
         f"FROM dialog_messages d {dialog_join} WHERE {where_sql} "
         "AND coalesce(d.project, '') != 'subagents' "
         "AND d.role IN ('user','assistant') "
         "AND d.content NOT LIKE '[tool_result]%' AND d.content NOT LIKE '[Image%' "
+        f"AND {dialog_scope} "
         f"AND {msg_noise_clauses} "
         "AND length(d.content) >= 30 "
         "AND d.session_id NOT IN ("
         "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
         f"ORDER BY {order_sql} LIMIT ?",
-        (*exclusion_params, *where_params, *msg_noise_params,
+        (*exclusion_params, *where_params, *dialog_scope_params, *msg_noise_params,
          max(10, int(max_messages))),
     ).fetchall()
 
@@ -237,7 +246,7 @@ def _apply_extract_heuristics(conn, rows, window_min: int) -> str:
         if (role == "user" and _WANT_RE.search(content)
                 and len(content) >= _VERBATIM_MIN_LEN):
             res = _enqueue(conn, "verbatim", uuid, cid, content[:2000],
-                           "H1 user_want pattern")
+                           "H1 user_want pattern", r["project_id"], r["memory_scope"])
             if res:
                 counts["verbatim"] += 1
             else:
@@ -246,7 +255,8 @@ def _apply_extract_heuristics(conn, rows, window_min: int) -> str:
             if (len(content) >= 500 and _HEADER_RE.search(content)
                     and _INSIGHT_MARKERS_RE.search(content)):
                 res = _enqueue(conn, "distill", uuid, cid, content[:4000],
-                               "H2 long_insight (headers + conclusion marker)")
+                               "H2 long_insight (headers + conclusion marker)",
+                               r["project_id"], r["memory_scope"])
                 if res:
                     counts["distill"] += 1
                 else:
@@ -257,6 +267,7 @@ def _apply_extract_heuristics(conn, rows, window_min: int) -> str:
                 res = _enqueue(
                     conn, "concept", uuid, cid, content[:3000],
                     f"H3 example_regularity (bullets={bullets}, examples={examples})",
+                    r["project_id"], r["memory_scope"],
                 )
                 if res:
                     counts["concept"] += 1
@@ -309,6 +320,7 @@ def _apply_extract_heuristics(conn, rows, window_min: int) -> str:
                             rep["content"][:2000],
                             f"H4 paraphrase_repeat n={len(members)} "
                             f"sess={sid[:8]} centroid={rep['uuid'][:8]}",
+                            rep["project_id"], rep["memory_scope"],
                         )
                         if res:
                             counts["note"] += 1
@@ -382,8 +394,10 @@ def accept_candidate(id: int, target_kind: str = "",
     target_kind overrides candidate's kind. thread_id optional."""
     conn = get_db()
     _ensure_session(conn)
+    candidate_scope, candidate_params = recall_where("extract_candidates")
     r = conn.execute(
-        "SELECT * FROM extract_candidates WHERE id=?", (int(id),)
+        f"SELECT * FROM extract_candidates WHERE id=? AND {candidate_scope}",
+        (int(id), *candidate_params),
     ).fetchone()
     if not r:
         return f"ERR candidate_not_found={id}"
@@ -394,7 +408,8 @@ def accept_candidate(id: int, target_kind: str = "",
         return f"ERR bad_target_kind={kind}"
     tid = thread_id.strip() or None
     if tid and not conn.execute(
-        "SELECT 1 FROM threads WHERE id=?", (tid,)
+        "SELECT 1 FROM threads WHERE id=? AND project_id IS ? AND memory_scope=?",
+        (tid, r["project_id"], r["memory_scope"]),
     ).fetchone():
         return f"ERR thread_not_found={tid}"
     now = int(time.time())
@@ -403,16 +418,19 @@ def accept_candidate(id: int, target_kind: str = "",
     if kind == "verbatim":
         cur = conn.execute(
             "INSERT INTO verbatim (speaker, content, thread_id, created_at, "
-            "session_id) VALUES (?,?,?,?,?)",
-            ("user", content, tid, now, identity._session_id),
+            "session_id, project_id, memory_scope) VALUES (?,?,?,?,?,?,?)",
+            ("user", content, tid, now, identity._session_id,
+             r["project_id"], r["memory_scope"]),
         )
         placed = f"verbatim id={cur.lastrowid}"
     elif kind == "note":
         emb = _embed(content)
         cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, "
-            "session_id, embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
-            (tid, content, "insight", now, identity._session_id, emb, embed_tag(emb)),
+            "session_id, embedding, embed_backend, project_id, memory_scope) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (tid, content, "insight", now, identity._session_id, emb, embed_tag(emb),
+             r["project_id"], r["memory_scope"]),
         )
         memory_provenance(
             conn, "note", cur.lastrowid, source_event_kind="extract_accept",
@@ -435,10 +453,10 @@ def accept_candidate(id: int, target_kind: str = "",
             conn.execute(
                 "INSERT INTO concepts (id, description, triangulation_notes, "
                 "confidence, source_thread, registered_by_cid, registered_at, "
-                "last_evidence_at, embedding, embed_backend) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "last_evidence_at, embedding, embed_backend, project_id, memory_scope) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pid, content, r["rationale"], "low", tid, cid, now, now,
-                 emb, embed_tag(emb)),
+                 emb, embed_tag(emb), r["project_id"], r["memory_scope"]),
             )
             placed = f"concept id={pid}"
     elif kind == "distill":
@@ -446,9 +464,10 @@ def accept_candidate(id: int, target_kind: str = "",
         cid = _detect_self_cid()
         conn.execute(
             "INSERT INTO distill (id, content, kind, confidence, "
-            "source_thread, source_cid, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (pid, content, "insight", "medium", tid, cid, now),
+            "source_thread, source_cid, created_at, project_id, memory_scope) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (pid, content, "insight", "medium", tid, cid, now,
+             r["project_id"], r["memory_scope"]),
         )
         if cid:
             conn.execute(

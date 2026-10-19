@@ -45,6 +45,7 @@ threadkeeper/
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
+├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
 ├── brief.py           render_brief() / render_context() — main digest
 ├── egress.py          cross-provider memory egress policy (issue #74)
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
@@ -186,6 +187,30 @@ runtime is fully on the package.
 
 ## Storage layers
 
+### Project namespaces and scopes
+
+Every memory-bearing row has a `memory_scope` and, for project memory, a
+path-free `project_id`. `project_scope.resolve_project_namespace()` fingerprints
+the normalized Git remote, falling back to the repository's root commit; this
+makes worktrees and ordinary directory moves resolve to the same namespace
+without persisting a raw local path. `project`, `global`, and `shared` are
+recallable scopes. `unresolved` is the migration quarantine and is never
+automatically recalled.
+
+Default retrieval predicates admit only the current `project` plus `global` and
+`shared`. `search(cross_project=True)` and `dialog_search(cross_project=True)`
+are visible overrides: each hit carries scope provenance and each call records
+an audit event. Brief resources and the extraction/dialectic learning inputs
+use the same default predicate, so a background loop cannot synthesize one
+project's private dialogs into another project's memory. The v5 migration
+records per-table project/global/shared/unresolved counts in
+`project_scope_migration_report`; only task rows with still-resolvable working
+directories are automatically backfilled, while ambiguous legacy rows fail
+closed. `memory_scope_status()` exposes that report.
+
+This is local recall isolation, not the provider-egress policy: the latter
+decides whether personal data may enter a vendor prompt after retrieval.
+
 The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config startup
 and `bootstrap_db()` best-effort harden the default store:
 `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite `-wal`/`-shm`
@@ -193,17 +218,44 @@ sidecars, `~/.threadkeeper/.env`, and curator `REPORT-*.md` files are
 `0600`. Logically six levels:
 
 Backups use the `tk-backup` console command, not raw file copies. `tk-backup
-create <dest.sqlite>` opens the live store through SQLite and runs
-`VACUUM INTO` into a temporary database beside the requested destination, runs
-`PRAGMA integrity_check`, then atomically moves the single-file result into
-place. Because the source is a SQLite connection, committed WAL frames are part
-of the snapshot even while ingest, shadow-review, curator, dialectic, retention,
-or other writer loops keep running. `tk-backup restore <backup.sqlite> --yes`
+create <dest.sqlite>` uses `VACUUM INTO` for the ordinary SQLite profile and
+SQLCipher's online backup API for the encrypted profile, into a temporary
+database beside the requested destination. It runs `PRAGMA integrity_check`,
+then atomically moves the single-file result into place. Because the source is
+a database connection, committed WAL frames are part of the snapshot even while
+ingest, shadow-review, curator, dialectic, retention, or other writer loops
+keep running. `tk-backup restore <backup.sqlite> --yes`
 verifies the backup, copies it next to the target DB, removes stale target
 `-wal`/`-shm` sidecars, atomically replaces the main file, removes sidecars
 again, and re-runs integrity_check. Restore still requires stopping live
 thread-keeper servers first; replacing a database under an open SQLite
 connection can strand that process on the old unlinked file.
+
+### Encrypted storage profile
+
+`THREADKEEPER_STORAGE_PROFILE=sqlite` is the dependency-free default. The
+explicit `sqlcipher` profile is backed by `sqlcipher3-wheels` and uses the
+platform secret store through `keyring`; the profile selection is config, but
+the generated 256-bit database key is never configuration, environment, CLI
+input, event, telemetry, or logging data. The `db` connection factory opens
+SQLCipher only after retrieving and validating that key. A missing database is
+not auto-created in this profile, which prevents a wrong/missing key from
+creating a replacement store.
+
+SQLCipher encrypts the primary file, WAL/rollback journal, and encrypted
+backup/restore/migration staging files. Connections set `temp_store=MEMORY`
+and `cipher_memory_security=ON`, so SQLite temporary structures are not placed
+in plaintext files. `tk-storage init`, `integrity-check`, `rekey`,
+`recover-rekey`, and `migrate` own lifecycle actions. Rekey places a second,
+pending key only in the OS secret store before rotating; an interrupted rekey
+fails closed until `recover-rekey` validates the old or pending key and repairs
+the primary entry. Migration writes a separately validated destination and
+leaves the source intact.
+
+The boundary is deliberately narrow. Task logs, curator reports and trash,
+exports, skills/lessons, source transcripts, identity sidecars, and sync
+transport are outside this profile. Operators need full-disk encryption and
+the documented retention/transport controls for those artifacts.
 
 `bootstrap_db()` gates baseline schema setup and legacy column migrations with
 SQLite `PRAGMA user_version`, once per process. Databases at the current
@@ -554,10 +606,19 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The child reads each full
-  skill, researches current official docs and comparable public skills, writes
-  a numbered verdict, applies safe repairs/merges/deletes after the report, and
-  revalidates each changed skill. The stable fingerprint includes skill bytes
+  exact duplicates, and lexical semantic candidates. The web-free evaluator
+  reads each full skill, writes a numbered verdict, applies safe
+  repairs/merges/deletes after the report, and revalidates each changed skill.
+  External research is a separate opt-in capability: when
+  `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a Claude-only `curator_researcher`
+  receives a deterministic public brief containing only fixed compatibility
+  queries. Its narrow allowlist has `WebSearch`, `WebFetch`, and the one
+  parent-authorized handoff writer — no local `Read`, lesson/concept/transcript
+  tools, repository access, or general memory reads. The evaluator has no web
+  tools and treats a verified handoff as fenced untrusted external data.
+  Foreground, private, and unclassified entries remain offline and are counted
+  by reason in `curator_pass` status telemetry without exposing their contents.
+  The stable fingerprint includes skill bytes
   and mirrors. Identical manual calls debounce as `unchanged_inventory`, while
   scheduled passes still run because external relevance can change without a
   local-byte change. Each batch prompt carries an explicit entry range and
@@ -648,13 +709,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Both phase prompts open with the same `"You are an EVOLVE REVIEWER"` line, so
   the running-child check and shadow/extract exclusion cover both; dispatch is
   serialized by `evolve-reviewer.lock`. A full research → audit cycle spans two
-  due passes. Only a real spawn consumes the review slot: no-spawn outcomes
-  (dirty checkout, running child, repo/spawn errors) keep the previous cursor in
-  `events.target`, collapse consecutive same-class rows janitor-style, and the
-  daemon retries them on a short (~1h) cadence — a transient blocker no longer
-  costs a full `EVOLVE_REVIEW_INTERVAL_S` of reviewer availability. The
-  research/audit alternation state is read from the latest actually-`spawned`
-  pass row directly, so accumulated skip rows can never bury it.
+  due passes. Only a parsed successful task launch consumes the review slot:
+  returned or raised research/audit launch failures, plus other no-spawn
+  outcomes (dirty checkout, running child, repo errors), keep the previous
+  cursor in `events.target`, collapse consecutive same-class rows janitor-style,
+  and retry on a short (~1h) cadence. A research handoff authorized before an
+  unsuccessful launch is terminally marked failed, so the audit cannot consume
+  it. The research/audit alternation state is read from the latest actually
+  `spawned` pass row directly, so accumulated skip rows can never bury it.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,headRefOid,author,...` and
@@ -791,7 +853,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Machine-wide single-flight uses `evolve-applier.lock` plus the `"You are an
   EVOLVE APPLIER"` prompt prefix. Automatic apply passes respect the configured
   interval to avoid duplicate issue workers across foreground server startups;
-  manual apply tools still dispatch immediately. If no roadmap issue is
+  manual apply tools still dispatch immediately. Like the reviewer contract
+  above, an applier pass consumes that interval only after a child actually
+  launches or after a complete empty-queue check. A busy lock, managed-checkout
+  provisioning error, PR/issue/claim/race fetch failure, or raised/returned
+  spawn refusal preserves the cursor, records only the leading instance of a
+  consecutive blocker class, and retries on a bounded short (~1h) cadence.
+  `evolve_apply_status()` separates the latest attempt from the latest
+  successful dispatch and reports a pending retry time. If no roadmap issue is
   startable, the pass falls back to Curator reports and then legacy promoted
   `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this
@@ -1788,6 +1857,18 @@ FTS AND query retries as a BM25-ranked OR query. `search()`,
 `dialog_search()`, and `brief(query=...)` use this engine, so semantic
 availability can no longer disable lexical recall for partially embedded data.
 
+## MCP tool profiles
+
+`server.py` registers the complete catalog, then
+`_mcp.configure_tool_profile()` removes tools before the SDK can answer
+`tools/list`. `THREADKEEPER_TOOL_PROFILE` selects `core`, `coordination`,
+`memory-admin`, `learning-loops`, or compatibility `full`; exact
+`THREADKEEPER_TOOL_INCLUDE` and `THREADKEEPER_TOOL_EXCLUDE` overrides fail
+closed. A child profile is intersected with its parent surface, so a spawned
+child cannot widen its authority. Narrowed profiles retain the read-only
+`capability_search(query)` tool, which returns bounded family metadata without
+revealing hidden tool names.
+
 ## MCP tools
 
 Grouping by module. The runtime `tools/list` registry is the authoritative
@@ -1820,14 +1901,16 @@ below).
 | evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status, evolve_prune_managed_venv |
 | style | style_set, verbatim_user |
 | process_health | mp_health, mp_cleanup |
-| dashboard | mp_dashboard |
+| dashboard | mp_dashboard, open_dashboard |
 | agent_status | agent_status, agent_status_refresh, agent_memory_cleanup |
 | memory_guard | memory_guard_status, memory_guard_check, memory_guard_reclaim |
+| project_scope | memory_scope_status |
 | correlation | tag_signal, task_thread |
 | consolidate | consolidate |
 | validate | validate_threads |
 | forget | forget |
 | authority | memory_authorize_action |
+| capabilities | capability_search |
 | invariants | find_invariants |
 | missed_spawns | find_missed_spawns |
 | db_maintenance | db_compact, db_deduplicate_embeddings, workflow_retention_preview |
@@ -1868,7 +1951,18 @@ which calls warrant a prompt (substrate for #26). The status tools
 the legacy human-readable text block for backward compatibility. The contract
 is enforced by `tests/test_tool_annotations.py`.
 
-### MCP resources & prompts (#78)
+### MCP server instructions (#354)
+
+The MCP initialize result has a bounded, static `instructions` value. It tells
+connected clients to load brief/context, maintain the open/note/close lifecycle,
+prefer read-only resources for host-attached memory, and use dry-run plus user
+confirmation before destructive maintenance. The text is generated from the
+same lifecycle fragments as the setup-managed instruction block, with a drift
+test. It contains no rendered memory, local paths, identifiers, credentials, or
+transcript content. Hooks and per-client managed instruction files remain the
+fallback and reinforcement for hosts that ignore server instructions.
+
+### MCP resources, prompts, and Apps (#78, #364)
 
 Tools are only one of MCP's three server primitives. thread-keeper also adopts
 the other two for the read/act split they fit naturally:
@@ -1911,6 +2005,20 @@ the `brief()` / `context()` tools, with identical content. Resource/prompt funct
 their own managers, so they never enter the tool registry (pinned by
 `tests/test_mcp_resources_prompts.py`, which also covers list/read, prompt
 rendering, capability advertisement, and the tool-only fallback).
+
+- **MCP App dashboard** (`dashboard_app.py`, `open_dashboard`) — an MCP
+  Apps-capable host discovers `ui://thread-keeper/dashboard` from the tool's
+  `_meta.ui.resourceUri` and renders its static HTML in a sandboxed iframe. The
+  resource declares an empty network/resource/frame/base CSP and no iframe
+  permissions. Its message handler accepts only JSON-RPC objects from the
+  parent frame, renders structured status data with `textContent`, and exposes
+  only a refresh call back to the same read-only tool. The snapshot opens an
+  existing database with SQLite `mode=ro`, and filters prompts, log excerpts,
+  CIDs, process IDs, credentials, and local paths before they reach the App.
+  It derives loop metadata from `agent_status._LOOP_DEFS`; the existing text
+  tools and `memory://` resources remain unchanged for hosts without the Apps
+  extension. The macOS menu-bar app is a separate optional native frontend over
+  the same status domain.
 
 ### MCP elicitation (#26)
 

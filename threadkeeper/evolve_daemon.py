@@ -1405,28 +1405,37 @@ def _spawn_research(repo_root: Path, now_t: int) -> str:
     """Spawn an unprivileged researcher with one registered handoff target."""
     child_cid = str(uuid.uuid4())
     conn = get_db()
-    pass_id, research_file = _authorize_research_handoff(conn, now_t, child_cid)
-    prompt = EVOLVE_RESEARCH_PROMPT.format(research_pass_id=pass_id)
-    from .tools.spawn import _spawn_impl  # late import — avoids import cycle
-    result = _spawn_impl(
-        prompt=prompt,
-        cwd=str(repo_root),
-        visible=False,
-        capture_output=True,
-        permission_mode="auto",
-        role="evolve_researcher",
-        write_origin="evolve",
-        slim=True,
-        child_cid_override=child_cid,
-        # Unlike normal children, the researcher does not inherit spawn's
-        # broad MCP default. Its only mutable capability is this handoff.
-        allowed_tools_override=("mcp__thread-keeper__broadcast",),
-        extra_allowed_tools=(
-            "WebSearch,WebFetch,Read,Glob,Grep,"
-            "mcp__thread-keeper__evolve_research_handoff,"
-            "mcp__thread-keeper__broadcast"
-        ),
-    )
+    pass_id = ""
+    try:
+        pass_id, research_file = _authorize_research_handoff(
+            conn, now_t, child_cid
+        )
+        prompt = EVOLVE_RESEARCH_PROMPT.format(research_pass_id=pass_id)
+        from .tools.spawn import _spawn_impl  # late import — avoids import cycle
+        result = _spawn_impl(
+            prompt=prompt,
+            cwd=str(repo_root),
+            visible=False,
+            capture_output=True,
+            permission_mode="auto",
+            role="evolve_researcher",
+            write_origin="evolve",
+            slim=True,
+            child_cid_override=child_cid,
+            # Unlike normal children, the researcher does not inherit spawn's
+            # broad MCP default. Its only mutable capability is this handoff.
+            allowed_tools_override=("mcp__thread-keeper__broadcast",),
+            extra_allowed_tools=(
+                "WebSearch,WebFetch,Read,Glob,Grep,"
+                "mcp__thread-keeper__evolve_research_handoff,"
+                "mcp__thread-keeper__broadcast"
+            ),
+        )
+    except Exception:
+        if pass_id:
+            _fail_research_handoff(conn, pass_id, "spawn_exception")
+        raise
+
     from .spawn_result import parse_spawn_result
 
     spawn_result = parse_spawn_result(result)
@@ -1498,6 +1507,25 @@ def _spawn_audit(
         f"spawned audit pending={len(pending)} research={research_status} "
         f"{spawn_result.text[:120]}"
     )
+
+
+def _finish_evolve_spawn(
+    conn: sqlite3.Connection,
+    now_t: int,
+    outcome: str,
+) -> str:
+    """Record a launcher outcome without mistaking a no-child result for a pass.
+
+    Both phase launchers use ``parse_spawn_result`` and emit a ``spawned``
+    outcome only after it found a task ID. Every other outcome preserves the
+    previous review cursor and phase, and uses the edge-triggered transient
+    telemetry path.
+    """
+    if outcome.startswith(("spawned research ", "spawned audit ")):
+        _record_evolve_pass(conn, now_t, outcome)
+    else:
+        _record_transient_evolve_pass(conn, outcome)
+    return outcome
 
 
 def run_evolve_pass(force: bool = False) -> str:
@@ -1585,11 +1613,8 @@ def run_evolve_pass(force: bool = False) -> str:
                 out = _spawn_research(repo_root, now_t)
         except Exception as e:  # noqa: BLE001 — never crash the daemon
             out = f"spawn_error: {e}"
-            _record_transient_evolve_pass(conn, out)
-            return out
-        # A real spawn is the only outcome that consumes the review slot.
-        _record_evolve_pass(conn, now_t, out)
-        return out
+            return _finish_evolve_spawn(conn, now_t, out)
+        return _finish_evolve_spawn(conn, now_t, out)
 
 
 def _serve_loop() -> None:

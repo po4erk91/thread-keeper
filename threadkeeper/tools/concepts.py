@@ -14,6 +14,7 @@ from ..db import get_db
 from ..embeddings import _embed, embed_tag
 from ..helpers import fmt_age, q, gen_concept_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
+from ..project_scope import recall_where, resolve_write_scope
 
 
 # Dedup-on-write threshold. Two concept `description`s whose embeddings cosine
@@ -57,8 +58,10 @@ def _find_duplicate_concept(conn: sqlite3.Connection,
     desc = (description or "").strip()
     if not desc:
         return None
+    concept_filter, concept_params = recall_where("concepts")
     rows = conn.execute(
-        "SELECT id, description, embedding FROM concepts"
+        f"SELECT id, description, embedding FROM concepts WHERE {concept_filter}",
+        concept_params,
     ).fetchall()
     norm = _normalize_desc(desc)
     for r in rows:
@@ -126,7 +129,8 @@ def _bump_concept_evidence(conn: sqlite3.Connection,
 def register_concept(description: str,
                      triangulation_notes: str = "",
                      confidence: str = "medium",
-                     source_thread: str = "") -> str:
+                     source_thread: str = "",
+                     memory_scope: str = "project") -> str:
     """Register a concept that lacks a precise human name.
 
     `description` should describe the phenomenon through EXAMPLES, not with
@@ -139,12 +143,21 @@ def register_concept(description: str,
         return "ERR empty_description"
     conn = get_db()
     _ensure_session(conn)
+    try:
+        scope, project_id = resolve_write_scope(memory_scope)
+    except ValueError as exc:
+        return f"ERR {exc}"
     cid = _detect_self_cid()
     src = source_thread.strip() or None
-    if src and not conn.execute(
-        "SELECT 1 FROM threads WHERE id=?", (src,)
-    ).fetchone():
-        return f"ERR source_thread_not_found={src}"
+    if src:
+        thread_filter, thread_params = recall_where("threads")
+        source = conn.execute(
+            f"SELECT project_id, memory_scope FROM threads WHERE id=? AND {thread_filter}",
+            (src, *thread_params),
+        ).fetchone()
+        if not source:
+            return f"ERR source_thread_not_found={src}"
+        project_id, scope = source["project_id"], source["memory_scope"]
     # Dedup-on-write: when an equivalent invariant is re-surfaced, corroborate
     # the existing row (bump last_evidence_at, raise confidence to the max)
     # instead of inserting a near-duplicate. This keeps last_evidence_at a live
@@ -164,9 +177,10 @@ def register_concept(description: str,
     conn.execute(
         "INSERT INTO concepts (id, description, triangulation_notes, "
         "confidence, source_thread, registered_by_cid, registered_at, "
-        "last_evidence_at, embedding, embed_backend) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "last_evidence_at, embedding, embed_backend, project_id, memory_scope) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (pid, description, triangulation_notes or None, confidence,
-         src, cid, now_t, now_t, emb, embed_tag(emb)),
+         src, cid, now_t, now_t, emb, embed_tag(emb), project_id, scope),
     )
     _emit(conn, "register_concept", target=pid,
           summary=description[:140])
@@ -181,10 +195,11 @@ def list_concepts(min_confidence: str = "low", k: int = 10) -> str:
     if min_confidence not in rank:
         return f"ERR bad_confidence={min_confidence}"
     conn = get_db()
+    concept_filter, concept_params = recall_where("concepts")
     rows = conn.execute(
         "SELECT id, description, confidence, source_thread, registered_at "
-        "FROM concepts ORDER BY registered_at DESC LIMIT ?",
-        (max(1, int(k)) * 3,),
+        f"FROM concepts WHERE {concept_filter} ORDER BY registered_at DESC LIMIT ?",
+        (*concept_params, max(1, int(k)) * 3),
     ).fetchall()
     out = []
     for r in rows:

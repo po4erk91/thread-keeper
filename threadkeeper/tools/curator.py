@@ -17,8 +17,8 @@ audit pass:
     Restore one lesson or skill from a destructive pass snapshot.
 
   curator_research_write(pass_id, content, batch_index, batch_total)
-    Persist one parent-authorized, bounded web-research handoff. Only the
-    read-only Curator research phase can call it.
+    Persist one parent-authorized, bounded public-research handoff. Only the
+    web-only Curator research phase can call it.
 
   curator_merge_verdict(slug_a, slug_b, reason)
     Remember a reviewed lesson pair that must remain separate.
@@ -343,11 +343,12 @@ def curator_research_write(
     batch_index: int = 0,
     batch_total: int = 0,
 ) -> str:
-    """Persist bounded web evidence to the parent-authorized Curator handoff.
+    """Persist bounded public web evidence to a parent-authorized handoff.
 
     Only a spawned ``curator_researcher`` child carrying the matching pass ID may
     call this tool. The parent chooses the filename from pass and batch metadata;
-    callers cannot select a destination or hand evidence to another batch.
+    callers cannot select a destination or hand evidence to another batch. The
+    web-only child receives no local inventory, memory, or repository access.
     """
     clean_id = pass_id.strip()
     if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
