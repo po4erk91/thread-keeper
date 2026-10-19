@@ -295,10 +295,18 @@ def github_budget_state(
     *,
     account: str | None = None,
     now_t: int | None = None,
+    ensure_schema: bool = True,
 ) -> dict[str, Any]:
+    """Return the shared GitHub budget state.
+
+    ``ensure_schema=False`` is for an already-open query-only connection, such
+    as a display-only MCP App refresh. The normal status paths retain the
+    schema guard for backwards compatibility.
+    """
     own_conn = conn is None
     db = conn or get_db()
-    _ensure_schema(db)
+    if ensure_schema:
+        _ensure_schema(db)
     acct = account or github_account_key()
     now_i = int(now_t if now_t is not None else _now())
     try:

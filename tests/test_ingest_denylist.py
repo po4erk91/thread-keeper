@@ -22,7 +22,7 @@ class _FakeAdapter:
         yield from self._messages
 
     def project_label(self, _fp: Path) -> str:
-        return "fake-project"
+        return Path.cwd().name
 
 
 def _message(uuid: str, content: str, origin_path: str) -> NormalizedMessage:

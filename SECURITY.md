@@ -48,6 +48,17 @@ removed once a safe remediation is available.
 
 ## Trust boundaries
 
+### Project-memory recall (repository A → repository B)
+
+Repository namespacing is a local access-control boundary. Project-scoped
+threads, notes, dialogs, tasks, and derived records are recalled only in their
+own path-free Git namespace by default; global/shared memory is the explicit
+portable exception. Ambiguous pre-namespace rows are quarantined as
+`unresolved`, not silently global. Cross-project recall requires an explicit
+tool option, includes result provenance, and is audited. This control limits
+local recall; it is independent of the cross-provider egress policy below,
+which decides whether recalled personal data can be sent to a model vendor.
+
 ### Auto-update (future maintainer code → local execution)
 
 The foreground MCP server starts a daily auto-update daemon by default
@@ -139,6 +150,25 @@ Mitigations:
   decides. The privileged repair child only takes same-repository `roadmap/…`
   or `evolve/…` branches. `THREADKEEPER_EVOLVE_AUTOLAND=0` leaves every merge
   to a human.
+
+### Curator web research (private library → external web)
+
+Curator inventory can contain private lessons, skills, concepts, and project
+details. The normal Curator evaluator therefore has no `WebSearch` or
+`WebFetch` capability, even though it retains local reads needed for a complete
+audit. `THREADKEEPER_CURATOR_WEB_RESEARCH=0` is the default: foreground,
+private, and unclassified inventory stays offline and receives `HUMAN_REVIEW`.
+
+An operator may explicitly set `THREADKEEPER_CURATOR_WEB_RESEARCH=1` for
+general public compatibility research. That creates a separate Claude-only
+researcher with a fixed parent-produced brief of public query strings. Its
+allowlist contains only `WebSearch`, `WebFetch`, and a single path-scoped
+handoff writer; it receives no local paths, entry identifiers, bodies,
+credentials, repository reads, lesson/concept/transcript tools, or general
+memory reads. The handoff destination is parent-authorized and its provenance
+stores only a SHA-256 digest. The web-free evaluator treats a verified handoff
+as fenced, untrusted external data. Pass status records only aggregate
+offline/HUMAN_REVIEW sensitivity counts, never entry content.
 
 ### Learning-loop synthesis (observed dialog → auto-loaded artifacts)
 
