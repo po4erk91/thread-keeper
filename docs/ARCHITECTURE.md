@@ -670,7 +670,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Machine-wide single-flight uses `evolve-applier.lock` plus the `"You are an
   EVOLVE APPLIER"` prompt prefix. Automatic apply passes respect the configured
   interval to avoid duplicate issue workers across foreground server startups;
-  manual apply tools still dispatch immediately. If no roadmap issue is
+  manual apply tools still dispatch immediately. Like the reviewer contract
+  above, an applier pass consumes that interval only after a child actually
+  launches or after a complete empty-queue check. A busy lock, managed-checkout
+  provisioning error, PR/issue/claim/race fetch failure, or raised/returned
+  spawn refusal preserves the cursor, records only the leading instance of a
+  consecutive blocker class, and retries on a bounded short (~1h) cadence.
+  `evolve_apply_status()` separates the latest attempt from the latest
+  successful dispatch and reports a pending retry time. If no roadmap issue is
   startable, the pass falls back to Curator reports and then legacy promoted
   `evolve_format` suggestions. Both the reviewer and the code/PR applier paths
   operate on a real git checkout, resolved by `_ensure_repo_ready()` in this

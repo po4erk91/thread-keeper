@@ -603,6 +603,16 @@ comment — and excluded from the auto-drain until a human intervenes (composes
 with the #50 skip-label gate). Attempt counts/states show in
 `evolve_apply_status()`; stuck/dead-letter counts in `mp_dashboard()`.
 
+**Transient applier retry cadence (done, #365).** The Evolve applier now shares
+the reviewer's pass-consumption rule: a real child launch or a fully completed
+empty check consumes `EVOLVE_APPLY_INTERVAL_S`; a busy lock, checkout
+provisioning failure, PR/issue/claim/race error, or raised/returned spawn
+refusal does not. The prior cursor is preserved, repeated identical blockers
+are edge-triggered in telemetry, and the daemon retries on a bounded short
+cadence rather than losing a daily or weekly apply slot. Issue attempt/backoff
+accounting still begins only once an issue child launches. `evolve_apply_status()`
+shows the latest attempt, latest successful dispatch, and next retry time.
+
 **Background daemon resource hygiene (done, #86).** Three low-grade resource
 gaps in the daemon family: (1) every loop slept on a bare interval with zero
 jitter, so the always-on guards (`memory_guard`, `skill_watcher`) — which start

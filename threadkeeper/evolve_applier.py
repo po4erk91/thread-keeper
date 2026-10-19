@@ -2898,6 +2898,8 @@ def _start_pr_conflict_repair_child(
         )
     except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
         return False, f"spawn_error conflicted_pr=#{num}: {e}"
+    if _spawn_was_refused(result):
+        return False, f"spawn_error conflicted_pr=#{num}: {result}"
     return True, f"spawned conflicted_pr=#{num} {str(result)[:140]}"
 
 
@@ -3028,6 +3030,12 @@ def _start_roadmap_issue_child(
         # issue immediately (no 24h-TTL hold on a transient spawn failure).
         _delete_issue_comment(comment_url, repo_root)
         return False, f"spawn_error issue=#{num}: {e}"
+    if _spawn_was_refused(result):
+        # `spawn()` reports admission and setup failures as an ERR string,
+        # rather than raising. It has not created a child in that case, so the
+        # temporary claim must not hold the issue until its TTL expires.
+        _delete_issue_comment(comment_url, repo_root)
+        return False, f"spawn_error issue=#{num}: {result}"
     # Record the spawn as an attempt: the failure ledger that drives backoff +
     # dead-letter. A child that completes the PR writes roadmap_issue_applied
     # (checked first everywhere), so this only accrues on issues that fail.
@@ -3234,6 +3242,8 @@ def apply_curator_report(report_path: str = "") -> str:
             )
         except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
             return f"spawn_error: {e}"
+        if _spawn_was_refused(result):
+            return f"spawn_error: {result}"
         return f"spawned curator_report={path.name} {str(result)[:140]}"
 
 
@@ -3302,10 +3312,97 @@ def apply_evolve(evolve_id: int) -> str:
             )
         except Exception as e:  # noqa: BLE001 — never crash the daemon/tool
             return f"spawn_error: {e}"
+        if _spawn_was_refused(result):
+            return f"spawn_error: {result}"
         return f"spawned evolve_id={evolve_id} {str(result)[:140]}"
 
 
 # ── Optional daemon ───────────────────────────────────────────────────────────
+
+
+# A pass consumes the regular apply interval only after it actually starts a
+# child, or after every source has been checked successfully and is empty. A
+# busy lock, checkout/GitHub failure, or refused spawn keeps the cursor due and
+# uses the same bounded retry cadence as the Evolve reviewer.
+_APPLY_PASS_DISPATCHED = "dispatched"
+_APPLY_PASS_EMPTY = "empty"
+_APPLY_PASS_TRANSIENT = "transient"
+_TRANSIENT_APPLY_RETRY_S = 3600.0
+
+
+def _spawn_was_refused(result: object) -> bool:
+    """Whether `spawn()` returned a refusal instead of launching a child."""
+    return str(result or "").lstrip().startswith("ERR ")
+
+
+def _apply_pass_outcome(outcome: str) -> str:
+    """Classify a completed apply pass for interval-consumption purposes.
+
+    Every dispatch path formats a successful launch with a standalone
+    ``spawned`` token. ``no_apply_work`` and a completed label-only queue
+    inspection are intentional empty checks. Everything else reached no child
+    and is retryable; callers must preserve the prior high-water in that case.
+    """
+    words = (outcome or "").split()
+    if "spawned" in words:
+        return _APPLY_PASS_DISPATCHED
+    if outcome == "no_apply_work" or outcome.startswith((
+        "skipped: label ",
+        "roadmap_issue_skipped_label: skipped: ",
+    )):
+        return _APPLY_PASS_EMPTY
+    return _APPLY_PASS_TRANSIENT
+
+
+def _apply_transient_key(outcome: str) -> str:
+    """Stable blocker class used to make retry telemetry edge-triggered."""
+    text = (outcome or "").strip()
+    if text.startswith("roadmap_issue_fetch_error: "):
+        return "roadmap_issue_fetch_error: " + _apply_transient_key(
+            text.removeprefix("roadmap_issue_fetch_error: ")
+        )
+    if text.startswith("conflicted_pr "):
+        return "conflicted_pr " + _apply_transient_key(
+            text.removeprefix("conflicted_pr ")
+        )
+    if text.startswith("curator_report="):
+        return "curator_report_spawn_failure"
+    if text.startswith("id="):
+        return "legacy_evolve_spawn_failure"
+    if text.startswith("ERR "):
+        return text.split(":", 1)[0].split("=", 1)[0]
+    if text.startswith("spawn_error "):
+        return text.split(":", 1)[0].split("=", 1)[0]
+    return text.split(" ", 1)[0]
+
+
+def _last_apply_pass(conn: sqlite3.Connection) -> tuple[int, str]:
+    """Return the wall-clock and summary of the latest recorded apply try."""
+    try:
+        row = conn.execute(
+            "SELECT created_at, summary FROM events WHERE kind='evolve_apply_pass' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0, ""
+    if not row:
+        return 0, ""
+    return int(row["created_at"] or 0), str(row["summary"] or "")
+
+
+def _last_apply_dispatch_ts(conn: sqlite3.Connection) -> int:
+    """Wall-clock of the most recent pass that successfully launched a child."""
+    try:
+        rows = conn.execute(
+            "SELECT created_at, summary FROM events WHERE kind='evolve_apply_pass' "
+            "ORDER BY id DESC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    for row in rows:
+        if _apply_pass_outcome(str(row["summary"] or "")) == _APPLY_PASS_DISPATCHED:
+            return int(row["created_at"] or 0)
+    return 0
 
 
 def _last_apply_ts(conn: sqlite3.Connection) -> int:
@@ -3339,6 +3436,60 @@ def _record_apply_pass(conn: sqlite3.Connection, ts: int,
         logger.debug("evolve_applier: failed to record pass", exc_info=True)
 
 
+def _record_transient_apply_pass(conn: sqlite3.Connection,
+                                 outcome: str) -> None:
+    """Record a no-child blocker without consuming the apply cursor.
+
+    The previous cursor stays in ``target`` so the pass remains due. Repeating
+    the same normalized blocker adds no event; a changed blocker still gives
+    operators a useful recovery trail.
+    """
+    _, previous = _last_apply_pass(conn)
+    if (
+        _apply_pass_outcome(previous) == _APPLY_PASS_TRANSIENT
+        and _apply_transient_key(previous) == _apply_transient_key(outcome)
+    ):
+        # Keep one telemetry edge, but let status report the most recent real
+        # attempt and schedule the next short retry from it.
+        try:
+            conn.execute(
+                "UPDATE events SET created_at=? WHERE id=("
+                "SELECT id FROM events WHERE kind='evolve_apply_pass' "
+                "ORDER BY id DESC LIMIT 1)",
+                (int(time.time()),),
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            logger.debug(
+                "evolve_applier: failed to refresh transient pass attempt",
+                exc_info=True,
+            )
+        return
+    _record_apply_pass(conn, _last_apply_ts(conn), outcome)
+
+
+def _record_apply_outcome(conn: sqlite3.Connection, ts: int,
+                          outcome: str) -> str:
+    """Persist one pass using the applier's dispatch/empty/transient contract."""
+    kind = _apply_pass_outcome(outcome)
+    if kind == _APPLY_PASS_TRANSIENT:
+        _record_transient_apply_pass(conn, outcome)
+    else:
+        _record_apply_pass(conn, ts, outcome)
+    return kind
+
+
+def apply_retry_at(conn: sqlite3.Connection) -> int:
+    """Next short retry timestamp for an unresolved no-child blocker, or 0."""
+    if EVOLVE_APPLY_INTERVAL_S <= 0:
+        return 0
+    attempted_at, outcome = _last_apply_pass(conn)
+    if not attempted_at or _apply_pass_outcome(outcome) != _APPLY_PASS_TRANSIENT:
+        return 0
+    return attempted_at + int(min(EVOLVE_APPLY_INTERVAL_S,
+                                  _TRANSIENT_APPLY_RETRY_S))
+
+
 def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
     last = _last_apply_ts(conn)
     return last <= 0 or now_t >= last + int(EVOLVE_APPLY_INTERVAL_S)
@@ -3368,7 +3519,7 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     running = _running_applier_children(conn)
     if running:
         out = f"applier_running n={len(running)}"
-        _record_apply_pass(conn, now_t, out)
+        _record_apply_outcome(conn, now_t, out)
         return out
     if not force and not _pass_due(conn, now_t):
         return "not_due"
@@ -3378,17 +3529,17 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     # gate: if we cannot inspect open PR merge states, do not take fresh work.
     _, repo_err = _ensure_repo_ready()
     if repo_err:
-        _record_apply_pass(conn, now_t, repo_err)
+        _record_apply_outcome(conn, now_t, repo_err)
         return repo_err
 
     conflicted_prs, pr_err = _conflicted_applier_prs()
     if pr_err:
         out = f"conflicted_pr_fetch_error: {pr_err}"
-        _record_apply_pass(conn, now_t, out)
+        _record_apply_outcome(conn, now_t, out)
         return out
     if conflicted_prs:
         out = apply_conflicted_pr()
-        _record_apply_pass(conn, now_t, f"conflicted_pr {out}")
+        _record_apply_outcome(conn, now_t, f"conflicted_pr {out}")
         return out
 
     # flag_dead_letter=True so a poison issue is flagged (label + one comment)
@@ -3407,7 +3558,7 @@ def run_evolve_apply_pass(force: bool = False) -> str:
         if out.startswith("spawned roadmap_issue=") or out.startswith(
             "applier_running"
         ):
-            _record_apply_pass(conn, now_t, f"roadmap_issue {out}")
+            _record_apply_outcome(conn, now_t, f"roadmap_issue {out}")
             return out
         issue_err = out
 
@@ -3415,40 +3566,49 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     if reports:
         report = reports[0]
         out = apply_curator_report(str(report))
-        _record_apply_pass(conn, now_t, f"curator_report={report.name} {out}")
+        _record_apply_outcome(
+            conn, now_t, f"curator_report={report.name} {out}"
+        )
         return out
 
     pending = _promoted_unapplied(conn)
     if not pending:
         if label_skipped and not issue_err:
             out = _format_label_skip(label_skipped)
-            _record_apply_pass(conn, now_t, out)
+            _record_apply_outcome(conn, now_t, out)
             return out
         if issue_err:
             if issue_err.startswith("roadmap_issue_skipped_label"):
                 out = issue_err
             else:
                 out = f"roadmap_issue_fetch_error: {issue_err}"
-            _record_apply_pass(conn, now_t, out)
+            _record_apply_outcome(conn, now_t, out)
             return out
         if not force and not _pass_due(conn, now_t):
             return "not_due"
-        _record_apply_pass(conn, now_t, "no_apply_work")
+        _record_apply_outcome(conn, now_t, "no_apply_work")
         return "no_apply_work"
 
     top = pending[0]
     out = apply_evolve(top["id"])
-    _record_apply_pass(conn, now_t, f"id={top['id']} {out}")
+    _record_apply_outcome(conn, now_t, f"id={top['id']} {out}")
     return out
 
 
 def _serve_loop() -> None:
     while True:
         try:
-            run_evolve_apply_pass()
+            out = run_evolve_apply_pass()
         except Exception:
             logger.debug("evolve_applier tick failed", exc_info=True)
-        daemon_sleep(EVOLVE_APPLY_INTERVAL_S)
+            out = "daemon_exception"
+        if out in {"disabled", "not_due"} or (
+            _apply_pass_outcome(out) != _APPLY_PASS_TRANSIENT
+        ):
+            daemon_sleep(EVOLVE_APPLY_INTERVAL_S)
+        else:
+            daemon_sleep(min(EVOLVE_APPLY_INTERVAL_S,
+                             _TRANSIENT_APPLY_RETRY_S))
 
 
 def start_evolve_applier_daemon() -> None:

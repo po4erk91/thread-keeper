@@ -6,6 +6,15 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.17.0 — 2026-10-19
+- **Added: transient Evolve-applier retries no longer consume an apply
+  interval (#365).** A child launch or a completed empty check advances the
+  cursor; no-child provisioning, GitHub, claim/race, lock, and spawn-refusal
+  outcomes preserve it, emit edge-triggered telemetry, and retry on a bounded
+  short cadence. Apply status now reports the latest attempt, latest successful
+  dispatch, and a pending retry time.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

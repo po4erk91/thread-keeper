@@ -937,6 +937,11 @@ daily deterministic `docs/roadmap-audit-YYYY-MM-DD` branch so repeated audit
 passes update or skip the existing roadmap PR rather than opening a second one.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
+That interval is consumed only by a real child launch or a completed empty
+check. A busy applier, checkout/GitHub/claim/race error, or refused spawn keeps
+the prior cursor and retries on a bounded short cadence; repeated identical
+blockers are recorded once until the blocker changes. `evolve_apply_status()`
+shows the last attempt, last successful dispatch, and any pending retry time.
 Manual tools such as `evolve_apply_conflicted_pr()` and
 `evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
 or roadmap issue is startable, the pass falls back to Curator reports and then
