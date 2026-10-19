@@ -1,7 +1,7 @@
 """threadkeeper.server — package entry point.
 
 Importing each tools module triggers its @mcp.tool() decorators against the
-shared FastMCP singleton in threadkeeper._mcp. After all imports, the
+shared MCPServer singleton in threadkeeper._mcp. After all imports, the
 runtime is fully assembled; mcp.run() starts the stdio MCP loop.
 
 To launch:
@@ -10,7 +10,7 @@ To launch:
 from __future__ import annotations
 
 # Singleton must be importable before tool modules.
-from ._mcp import mcp
+from ._mcp import configure_tool_profile, mcp
 
 # Core modules — registered for completeness; no @mcp.tool() decorators here.
 # Import them so any import-time side effects happen in a predictable order.
@@ -34,6 +34,7 @@ from .tools import probes  # noqa: F401
 from .tools import concepts  # noqa: F401
 from .tools import distill  # noqa: F401
 from .tools import core_memory  # noqa: F401
+from .tools import project_scope  # noqa: F401
 from .tools import graph  # noqa: F401
 from .tools import correlation  # noqa: F401
 from .tools import extract  # noqa: F401
@@ -53,6 +54,7 @@ from .tools import shadow_review  # noqa: F401
 from .tools import lessons  # noqa: F401
 from .tools import curator  # noqa: F401
 from .tools import candidate_reviewer  # noqa: F401
+from .tools import evolve_research  # noqa: F401
 from .tools import evolve_applier  # noqa: F401
 from .tools import dialectic_feed  # noqa: F401
 from .tools import dashboard  # noqa: F401
@@ -60,6 +62,8 @@ from .tools import agent_status  # noqa: F401
 from .tools import config_watch  # noqa: F401
 from .tools import db_maintenance  # noqa: F401
 from .tools import forget  # noqa: F401
+from .tools import authority  # noqa: F401
+from .tools import capabilities  # noqa: F401
 
 # MCP Resources & Prompts (roadmap #78) — the other two MCP server primitives.
 # Importing these registers @mcp.resource / @mcp.prompt entries (NOT tools) on
@@ -68,7 +72,14 @@ from .tools import forget  # noqa: F401
 # without the resources/prompts capability fall back to the tool-only surface.
 from .tools import resources  # noqa: F401
 from .tools import prompts  # noqa: F401
+# MCP Apps dashboard (#364). This is a display-only progressive enhancement:
+# non-App hosts retain the existing text/JSON status tools unchanged.
+from . import dashboard_app  # noqa: F401
 from .tools import sync  # noqa: F401
+
+# All decorators above register the complete catalog. Narrow it only after
+# registration, before the SDK can advertise or call the selected surface.
+configure_tool_profile()
 
 
 if __name__ == "__main__":

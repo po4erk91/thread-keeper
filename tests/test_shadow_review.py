@@ -373,8 +373,11 @@ def test_run_shadow_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert kw["write_origin"] == "shadow_review"
     assert "SHADOW LEARNING OBSERVER" in kw["prompt"]
     assert "lesson_list(k=80)" in kw["prompt"]
+    assert "lesson_neighbors(title=<prospective>" in kw["prompt"]
     assert "hard cap 450" in kw["prompt"]
     assert "mcp__thread-keeper__lesson_get" in kw["extra_allowed_tools"]
+    assert "mcp__thread-keeper__lesson_neighbors" in kw["extra_allowed_tools"]
+    assert "mcp__thread-keeper__lesson_patch" in kw["extra_allowed_tools"]
     assert long_msg.strip()[:40] in kw["prompt"]
     # De-privileged (issue #76): no bare Read/Write — path-scoped skill/
     # lesson MCP tools only.
@@ -813,7 +816,12 @@ def test_mcp_shadow_review_status_includes_telemetry_and_snapshot(
     assert "telemetry (production validation" in out
     assert "hit_rate=" in out
     assert "24h" in out and "7d" in out
-    assert snap.exists()
+    assert not snap.exists()
+    assert "shadow_review_snapshot" in out
+
+    write_tool = mcp._tool_manager._tools["shadow_review_snapshot"]
+    write_out = write_tool.fn(snapshot_path=str(snap))
+    assert write_out.startswith("ok wrote_markdown_snapshot=")
     md = snap.read_text(encoding="utf-8")
     assert "# Shadow-review telemetry" in md
     assert "| window |" in md

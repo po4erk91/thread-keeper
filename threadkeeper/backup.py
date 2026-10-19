@@ -120,6 +120,27 @@ def create_backup(
         raise BackupError(f"source database does not exist: {src}")
     if dst.exists() and not replace:
         raise BackupError(f"destination exists; pass --replace: {dst}")
+    from .config import STORAGE_PROFILE
+    from .storage import encrypted, copy_database
+
+    if encrypted(STORAGE_PROFILE):
+        try:
+            result = copy_database(
+                src,
+                dst,
+                source_profile=STORAGE_PROFILE,
+                destination_profile=STORAGE_PROFILE,
+                replace=replace,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            raise BackupError(str(exc)) from exc
+        return BackupResult(
+            source=result.source,
+            destination=result.destination,
+            integrity=result.integrity,
+            bytes_written=result.bytes_written,
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = _temp_path(dst.parent, dst.name)
     try:
@@ -189,6 +210,22 @@ def restore_backup(
     dst = _expand(destination) if destination is not None else _default_db_path()
     if not src.exists():
         raise BackupError(f"backup file does not exist: {src}")
+    from .config import STORAGE_PROFILE
+    from .storage import encrypted, restore_database
+
+    if encrypted(STORAGE_PROFILE):
+        try:
+            result = restore_database(
+                src, dst, profile=STORAGE_PROFILE, timeout=timeout
+            )
+        except Exception as exc:
+            raise BackupError(str(exc)) from exc
+        return RestoreResult(
+            source=result.source,
+            destination=result.destination,
+            integrity=result.integrity,
+            removed_sidecars=_sidecars(dst),
+        )
     integrity = _integrity_check(src, timeout=timeout)
     if integrity != "ok":
         raise BackupError(f"backup integrity_check failed: {integrity}")

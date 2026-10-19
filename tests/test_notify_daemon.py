@@ -101,7 +101,49 @@ def test_failure_pass_fires_one_notification(tmp_path, monkeypatch, caplog):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
     assert "[notify]" in caplog.text and "curator loop failed" in caplog.text
-    assert "budget exhausted" in caplog.text
+    assert "memory budget" in caplog.text
+    assert "subscription" not in caplog.text
+
+
+_RAM_REFUSAL = (
+    "spawn_error batch=9/12: ERR budget_exceeded: running_subagents=4000MB + "
+    "new_child=500MB = 4500MB > limit=4096MB. Wait for a child to finish, "
+    "raise THREADKEEPER_SPAWN_BUDGET_MB, or use task_kill()."
+)
+
+
+@pytest.mark.parametrize("summary,kind,expected", [
+    (_RAM_REFUSAL, "memory",
+     "spawn memory budget full: running children hold 4000MB of 4096MB"),
+    ("spawned pending=3 :: ERR token_budget_exceeded: tokens_24h=9 >= limit=5",
+     "tokens", "daily spawn token budget reached"),
+    ("ERR cost_budget_exceeded: cost_24h=$2.0000 >= limit=$1.0000",
+     "cost", "daily spawn cost budget reached"),
+])
+def test_budget_refusal_names_the_local_cap_not_the_subscription(
+        tmp_path, monkeypatch, summary, kind, expected):
+    # The RAM cap, token cap, and cost cap are thread-keeper's own admission
+    # limits. Reporting any of them as a lapsed CLI subscription sent the user
+    # chasing a billing problem that did not exist.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify = m["notify"]
+    assert notify.budget_refusal_kind(summary) == kind
+    reason = notify._reason_from_summary(summary)
+    assert expected in reason
+    assert "subscription" not in reason.lower()
+
+
+def test_agent_status_labels_spend_caps_separately_from_memory(tmp_path, monkeypatch):
+    _bootstrap(tmp_path, monkeypatch)
+    from threadkeeper.agent_status import _human_summary
+
+    assert _human_summary(_RAM_REFUSAL, "") == "Spawn blocked: memory budget"
+    assert _human_summary(
+        "spawn_error :: ERR token_budget_exceeded: tokens_24h=9 >= limit=5", ""
+    ) == "Spawn blocked: daily token budget"
+    assert _human_summary(
+        "spawned pending=2 :: ERR cost_budget_exceeded: cost_24h=$2 >= limit=$1", ""
+    ) == "Spawn blocked: daily cost budget"
 
 
 def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, caplog):
@@ -109,14 +151,26 @@ def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, ca
     notify, db = m["notify"], m["db"]
     conn = db.get_db()
     assert notify.run_notify_pass(force=True) == "seed"
+    github_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    bearer = "abcdefghijklmnopqrstuvwxyz012345"
+    private_path = "/Users/alice/private/error.log"
     (tmp_path / "tasks" / "child-1.log").write_text(
-        "starting…\nerror: credit balance too low\n")
+        "starting…\n"
+        f"error: credit balance too low; Authorization: Bearer {bearer}; "
+        f"API_KEY=topsecretvalue; token={github_token}; path={private_path}\n"
+    )
     _task(conn, "child-1", rc=1, role="curator", ended_at=int(time.time()))
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
     assert "curator child died (rc=1)" in caplog.text
     assert "credit balance too low" in caplog.text
+    assert "[REDACTED_SECRET]" in caplog.text
+    assert "[REDACTED_HOME_PATH]" in caplog.text
+    assert github_token not in caplog.text
+    assert bearer not in caplog.text
+    assert "topsecretvalue" not in caplog.text
+    assert private_path not in caplog.text
 
 
 def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
@@ -127,6 +181,41 @@ def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
     now = int(time.time())
     _task(conn, "ok-child", rc=0, role="curator", ended_at=now)       # success
     _task(conn, "timeout-child", rc=124, role="probe", ended_at=now)  # timeout (retried)
+    out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=0", out
+
+
+def test_dead_child_returncode_null_with_fatal_log_fires(tmp_path, monkeypatch, caplog):
+    # A child reaped after the DB writer wedged closes its row with the exit
+    # code lost (return_code NULL). It must still alert when the captured log
+    # shows a fatal degradation signature — the quota-exhaustion case that
+    # first exposed the gap.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-q.log").write_text(
+        "booting\nYou have exceeded your monthly quota\n")
+    _task(conn, "child-q", rc=None, role="candidate_reviewer",
+          ended_at=int(time.time()))
+    with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
+        out = notify.run_notify_pass(force=True)
+    assert out == "ok fired=1", out
+    assert "candidate_reviewer child died (rc=unknown)" in caplog.text
+    assert "exceeded your monthly quota" in caplog.text
+
+
+def test_dead_child_returncode_null_clean_log_ignored(tmp_path, monkeypatch):
+    # return_code NULL with no failure evidence in the log is indistinguishable
+    # from a clean completion — must NOT fire (no false positives).
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    (tmp_path / "tasks" / "child-clean.log").write_text(
+        "starting\nall done, wrote 2 notes\n")
+    _task(conn, "child-clean", rc=None, role="curator",
+          ended_at=int(time.time()))
     out = notify.run_notify_pass(force=True)
     assert out == "ok fired=0", out
 
@@ -193,8 +282,48 @@ def test_positives_on_fire(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=2", out
-    assert "skill materialized" in caplog.text
-    assert "lesson added" in caplog.text and "my-lesson" in caplog.text
+    assert "skill materialized | Foo" in caplog.text
+    assert "lesson added | My lesson" in caplog.text
+    assert "/skills/" not in caplog.text
+    assert "op=create" not in caplog.text and "source=shadow" not in caplog.text
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_skill_notification_uses_heading(tmp_path, monkeypatch, directory):
+    m = _bootstrap(tmp_path, monkeypatch, skill="true")
+    md = tmp_path / "api-contract-testing" / "SKILL.md"
+    md.parent.mkdir()
+    md.write_text("---\nname: api-contract-testing\ndescription: |\n"
+                  "  Internal description\n---\n\n# API contract testing\n"
+                  "\nLong implementation details that do not belong in a banner.\n")
+    notify = m["notify"]
+    conn = m["db"].get_db()
+    sent = []
+    monkeypatch.setattr(notify, "_dispatch", lambda *args: sent.append(args))
+    assert notify.run_notify_pass(force=True) == "seed"
+    _ev(conn, "skill_materialized", target="T1",
+        summary=str(md.parent if directory else md))
+    assert notify.run_notify_pass(force=True) == "ok fired=1"
+    assert sent == [("Thread-keeper: skill materialized", "API contract testing")]
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
+
+
+@pytest.mark.parametrize("body", [b"---\nname: foo\n---\nNo heading.", b"\xff"])
+def test_skill_notification_falls_back_to_name(tmp_path, monkeypatch, body):
+    notify = _bootstrap(tmp_path, monkeypatch)["notify"]
+    md = tmp_path / "api-contract-testing" / "SKILL.md"
+    md.parent.mkdir()
+    md.write_bytes(body)
+    assert notify._fmt_skill({"kind": "skill_create", "target": "api-contract-testing",
+                              "summary": str(md)})[1] == "Api contract testing"
+
+
+def test_pathless_skill_mark_does_not_claim_a_materialization(tmp_path, monkeypatch):
+    m = _bootstrap(tmp_path, monkeypatch, skill="true")
+    notify, conn = m["notify"], m["db"].get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    _ev(conn, "skill_materialized", target="T1", summary="(no path recorded)")
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
 
 
 # ── disabled ────────────────────────────────────────────────────────────────
@@ -202,3 +331,15 @@ def test_positives_on_fire(tmp_path, monkeypatch, caplog):
 def test_disabled_when_poll_zero(tmp_path, monkeypatch):
     m = _bootstrap(tmp_path, monkeypatch, poll="0")
     assert m["notify"].run_notify_pass(scheduled=True) == "disabled"
+
+
+def test_spawn_error_reason_is_sanitized_before_banner(tmp_path, monkeypatch):
+    # Loop-pass failure summaries can quote a cwd or CLI output; they feed the
+    # same status list and banners as child-log excerpts.
+    m = _bootstrap(tmp_path, monkeypatch)
+    reason = m["notify"]._reason_from_summary(
+        "spawn_error batch=1/2: ERR cwd_not_found=/Users/alice/work/secret-proj"
+    )
+    assert "/Users/alice" not in reason
+    assert "cwd_not_found=" in reason
+    assert "[REDACTED_HOME_PATH]" in reason

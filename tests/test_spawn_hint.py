@@ -167,36 +167,29 @@ def test_hint_text_is_imperative(mp_with_cid):
     ))
 
 
-def test_hint_escalates_after_repeated_ignores(mp_with_cid):
-    """3+ shows without an intervening spawn() should escalate the hint:
-    add ⚠️ marker, ignored=Nx counter, and reflex-failure footer."""
+def test_hint_reads_do_not_persist_repeated_ignores(mp_with_cid):
+    """Repeated read-only briefs cannot advance the spawn-hint counter."""
     pkg = mp_with_cid(_FAKE_CID)
     _open_threads(pkg, 3)
-    # First two shows — no escalation yet.
+    # Reads may render the hint, but they do not write a show counter.
     _brief_text(pkg)
     _brief_text(pkg)
     txt2 = _brief_text(pkg)
-    # Third show: counter inside brief sees 2 prior shows logged.
-    # The hint text is built BEFORE the current show is logged, so on the
-    # third call consecutive_ignored == 2 (still below threshold).
     assert "ignored=" not in txt2
-    # Fourth call: now 3 prior shows logged → escalation.
     txt3 = _brief_text(pkg)
-    assert "ignored=3x" in txt3 or "ignored=" in txt3
-    assert "⚠️" in txt3
-    assert "FAILING" in txt3
+    assert "ignored=" not in txt3
+    assert "FAILING" not in txt3
 
 
-def test_escalation_resets_after_spawn(mp_with_cid):
-    """A new task row (= spawn() happened) should reset the consecutive
-    ignore counter — hint stops escalating."""
+def test_spawn_does_not_need_to_reset_read_only_hint_state(mp_with_cid):
+    """Reads do not create escalation state for a later spawn to clear."""
     pkg = mp_with_cid(_FAKE_CID)
     _open_threads(pkg, 3)
-    # Drive counter past threshold.
+    # Repeated reads never persist an ignore counter.
     for _ in range(5):
         _brief_text(pkg)
     txt_pre = _brief_text(pkg)
-    assert "⚠️" in txt_pre  # escalated
+    assert "ignored=" not in txt_pre
 
     # Simulate a spawn by inserting a task row with started_at = now.
     conn = pkg["db"].get_db()
