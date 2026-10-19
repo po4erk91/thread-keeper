@@ -18,8 +18,9 @@ import sys
 import time
 from typing import Callable
 
-from .config import SEMANTIC_AVAILABLE
+from .config import SEMANTIC_AVAILABLE, STORAGE_PROFILE
 from .db import get_db
+from .storage import row_factory as storage_row_factory
 from . import embeddings as _emb
 from . import memory_compat as _compat
 
@@ -130,7 +131,7 @@ def run(
             print(message, file=sys.stderr, flush=True)
 
     conn = get_db()
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = storage_row_factory(STORAGE_PROFILE)
     configured = _emb.embedding_fingerprint()
     try:
         if rollback:

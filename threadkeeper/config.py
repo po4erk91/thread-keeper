@@ -23,6 +23,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .permissions import harden_storage_paths
+from .storage import normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class Settings(BaseSettings):
         default=Path("~/.threadkeeper/db.sqlite"),
         validation_alias=AliasChoices("THREADKEEPER_DB", "db"),
     )
+    # The default stays ordinary SQLite. SQLCipher is an explicit opt-in; its
+    # key is looked up by threadkeeper.storage in the OS secret store and is
+    # never read from this settings object, a config file, or process args.
+    storage_profile: str = "sqlite"
     # Unprefixed env names — bypass prefix via AliasChoices
     claude_skills_dir: Path = Field(
         default=Path("~/.claude/skills"),
@@ -88,6 +93,17 @@ class Settings(BaseSettings):
         ),
     )
     task_log_dir: Path = Field(default=Path("~/.threadkeeper/tasks"))
+
+    # ── MCP tool surface ─────────────────────────────────────────────────────
+    # Profiles are resolved once while the server starts. Restart the server
+    # after changing these values so its advertised registry stays stable.
+    tool_profile: str = "full"
+    tool_include: str = ""
+    tool_exclude: str = ""
+    # Internal child constraint emitted by spawn(); it only ever narrows the
+    # profile selection and is intentionally not part of setup guidance.
+    tool_parent_allowlist: str = ""
+    child_tool_profile: str = ""
 
     # ── Embeddings ───────────────────────────────────────────────────────────
     # env: THREADKEEPER_EMBED_MODEL (field name: embed_model → EMBED_MODEL_NAME)
@@ -399,6 +415,10 @@ class Settings(BaseSettings):
     # merge, or delete foreground-authored skills. Off by default globally;
     # users who want full autonomous consolidation opt in deliberately.
     curator_manage_foreground_skills: bool = False
+    # External web research never receives Curator inventory by default. Set
+    # this explicit operator consent to allow a separate, brief-only web
+    # researcher to look up the fixed public compatibility topics.
+    curator_web_research: bool = False
     # Keep the last N destructive curator snapshots under
     # CURATOR_REPORTS_DIR/snapshots. The current pass is always retained, so
     # values below 1 behave as 1.
@@ -424,11 +444,6 @@ class Settings(BaseSettings):
     # and refill only failed/missing batch slots instead of waiting a full
     # curator interval. The normal interval applies again once it is endorsed.
     curator_batch_poll_s: float = Field(default=60.0, ge=1.0)
-    # Web research runs in a separate read-only child per batch before the
-    # web-free evaluator (#289). Disable to skip it (and its token cost); the
-    # evaluator then judges currency from local evidence only.
-    curator_web_research: bool = True
-
     # ── Extract daemon ───────────────────────────────────────────────────────
     extract_interval_s: float = 0.0
     extract_window_min: int = 30
@@ -607,6 +622,11 @@ class Settings(BaseSettings):
     def _expand_path(cls, p: Path) -> Path:
         return p.expanduser()
 
+    @field_validator("storage_profile")
+    @classmethod
+    def _normalize_storage_profile(cls, value: str) -> str:
+        return normalize_profile(value)
+
     @field_validator("curator_reports_dir", mode="before")
     @classmethod
     def _parse_curator_dir(cls, v):
@@ -707,6 +727,7 @@ _EXTRA_THREADKEEPER_ENV_KEYS = {
     "THREADKEEPER_LESSONS",
     "THREADKEEPER_MENUBAR_RESTART_RSS_MB",
     "THREADKEEPER_PYTHON",
+    "THREADKEEPER_PROJECT_NAMESPACE",
     "THREADKEEPER_REAL_GH",
     "THREADKEEPER_REPO",
     "THREADKEEPER_SEARCH_PROXY_POLL_S",
@@ -827,6 +848,7 @@ def _derive_constants(s: "Settings") -> dict:
     )
     return {
         "DB_PATH": s.db,
+        "STORAGE_PROFILE": s.storage_profile,
         "EMBED_MODEL_NAME": s.embed_model,
         "EMBED_BACKEND": s.embed_backend,  # already normalized to lower
         "WRITER_PROVIDER": s.writer_provider,
@@ -939,6 +961,7 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_REPORTS_DIR": curator_reports_dir,
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
         "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
+        "CURATOR_WEB_RESEARCH": s.curator_web_research,
         "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
         "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,
@@ -949,7 +972,6 @@ def _derive_constants(s: "Settings") -> dict:
         "WORKFLOW_RETENTION_COUNT": s.workflow_retention_count,
         "CURATOR_MAX_CONCURRENT_BATCHES": s.curator_max_concurrent_batches,
         "CURATOR_BATCH_POLL_S": s.curator_batch_poll_s,
-        "CURATOR_WEB_RESEARCH": bool(s.curator_web_research),
         "EXTRACT_INTERVAL_S": s.extract_interval_s,
         "EXTRACT_WINDOW_MIN": s.extract_window_min,
         "CANDIDATE_REVIEW_INTERVAL_S": s.candidate_review_interval_s,
@@ -1233,7 +1255,8 @@ def _migrate_legacy_db(legacy_db: Path, db_path: Path) -> None:
 
 
 if (
-    DB_PATH == _DEFAULT_DB
+    settings.storage_profile == "sqlite"
+    and DB_PATH == _DEFAULT_DB
     and not DB_PATH.exists()
     and _LEGACY_DB.exists()
 ):

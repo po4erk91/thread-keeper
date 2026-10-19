@@ -7,6 +7,58 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Transient Evolve-applier retries no longer consume an apply interval
+  (#365).** A child launch or a completed empty check advances the cursor;
+  no-child provisioning, GitHub, claim/race, lock, and spawn-refusal outcomes
+  preserve it, emit edge-triggered telemetry, and retry on a bounded short
+  cadence. Apply status now reports the latest attempt, latest successful
+  dispatch, and a pending retry time.
+
+- **Opt-in SQLCipher storage profile (#360).** `threadkeeper[encrypted]` adds
+  an OS-secret-store-backed encrypted database mode without changing the
+  default SQLite installation. `tk-storage` initializes, validates, rekeys,
+  recovers interrupted rekeys, and migrates stores; profile-aware backup and
+  restore keep encrypted snapshots encrypted.
+
+- **MCP lifecycle instructions (#354).** Server initialization now publishes
+  concise, static guidance for loading brief/context, maintaining thread
+  lifecycle, choosing read-only resources, and confirming destructive
+  maintenance. Setup-managed instruction files render the same lifecycle
+  fragments, while hooks and managed files remain compatibility reinforcement
+  for clients that do not surface server instructions.
+
+- **Role-scoped MCP tool profiles and deferred discovery (#353).** Servers
+  apply `core`, `coordination`, `memory-admin`, `learning-loops`, or `full`
+  before advertising tools. Exact include/exclude overrides fail closed, child
+  profiles cannot widen their parent surface, and `capability_search` supplies
+  bounded read-only metadata for hidden tool families. New setup registrations
+  start at `core`; existing unconfigured registrations retain `full`.
+
+- **Project namespaces and default-deny cross-project recall (#359).** Memory
+  now carries an explicit project/global/shared scope and a path-free Git
+  namespace. Briefs, retrieval, resources, and learning inputs stay within the
+  current project unless global/shared memory is explicit; cross-project search
+  is opt-in, provenance-marked, and audited. Ambiguous legacy rows are
+  quarantined from automatic recall with per-table migration accounting.
+
+## v0.19.1 — 2026-10-14
+
+### Fixed
+
+- **Evolve research launch failures no longer consume the review interval
+  (#356).** The shared launcher finalizer advances the review cursor and phase
+  only after a parsed task launch. Returned or raised research/audit failures
+  preserve both, retry on the transient cadence, and collapse repeated review
+  telemetry. A research handoff authorized before a failed launch is terminally
+  marked and cannot be consumed by a later audit.
+
+- **Added: privacy-bounded Curator web research (#355).** Curator evaluators
+  retain their local audit coverage but have no web tools. External lookup is
+  disabled by default; explicit operator consent starts a separate Claude-only
+  researcher with fixed public compatibility queries, no local memory or
+  repository reads, and one parent-authorized handoff writer. Foreground,
+  private, and unclassified entries use the offline `HUMAN_REVIEW` path.
+
 - **Added: bounded durable workflow artifacts (#349).** Terminal Curator
   passes and consumed Evolve research handoffs follow configurable age/count
   retention. Expired frozen bodies compact to a hash and bounded summary before
@@ -542,6 +594,7 @@ version bumps follow semver per the policy in
   resume the local/remote feature branch before reading or editing, and
   `agent_status` no longer treats `ERR`/spawn-failure pass events as successful
   health-clock updates.
+
 - **Fixed: curator report application now requires pass provenance (#143).**
   Before a Curator child is dispatched, its parent authorizes each exact report
   destination in a `curator_pass` event. The spawned Curator report writer
@@ -624,9 +677,19 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
-## v0.17.0 — 2026-09-30
+## v0.17.0 — 2026-10-18
 
 ### Added
+
+- **Added: portable, read-only MCP App dashboard (#364).** Supporting hosts
+  can open `ui://thread-keeper/dashboard` through `open_dashboard`. The
+  sandboxed App renders a privacy-filtered structured status projection for
+  autonomous loops, running children, budgets, task history, failures, and
+  recent materializations. Loading or refreshing it only opens an existing
+  SQLite database read-only: it does not create sessions, bootstrap state,
+  start daemons, reconcile tasks, or write telemetry. Hosts without MCP Apps
+  support receive a text fallback and keep the existing status tools and
+  `memory://` resources unchanged.
 
 - **Staged model-compatibility gate (#337).** Embedding upgrades now build a
   resumable target generation beside one durable active pointer, validate full

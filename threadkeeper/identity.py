@@ -128,10 +128,13 @@ def _ensure_session_locked(conn: sqlite3.Connection,
         _session_id = f"s_{os.getpid()}_{secrets.token_hex(2)}"
         _session_start = int(time.time())
         cli = client or _client_label
+        from .project_scope import resolve_write_scope
+        memory_scope, project_id = resolve_write_scope()
         conn.execute(
-            "INSERT INTO sessions (id, started_at, client, write_origin) "
-            "VALUES (?,?,?,?)",
-            (_session_id, _session_start, cli, WRITE_ORIGIN),
+            "INSERT INTO sessions (id, started_at, client, write_origin, "
+            "project_id, memory_scope) VALUES (?,?,?,?,?,?)",
+            (_session_id, _session_start, cli, WRITE_ORIGIN,
+             project_id, memory_scope),
         )
         conn.execute(
             "INSERT INTO presence (session_id, client, started_at, heartbeat_at, "

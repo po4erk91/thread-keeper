@@ -27,5 +27,5 @@ def test_install_mcp_servers_pins_imports_to_configured_package(
     assert captured["env"] == {
         "PYTHONPATH": str(tmp_path),
         "PYTHONSAFEPATH": "1",
+        "THREADKEEPER_TOOL_PROFILE": "core",
     }
-

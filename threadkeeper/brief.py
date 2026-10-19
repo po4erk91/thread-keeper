@@ -26,6 +26,7 @@ from .task_spool import append_spool_text
 from . import identity
 from .identity import _detect_self_cid, _ensure_cursor
 from .retrieval import retrieve_notes
+from .project_scope import recall_where
 
 
 # Parallelism cue regex: matches user-language signals that work
@@ -136,6 +137,11 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                  consumer_cli: Optional[str] = None) -> str:
     now = int(time.time())
     out: list[str] = []
+    thread_filter, thread_params = recall_where("threads")
+    dialog_filter, dialog_params = recall_where("dialog_messages")
+    core_filter, core_params = recall_where("core_memory")
+    verbatim_filter, verbatim_params = recall_where("v")
+    dialectic_filter, dialectic_params = recall_where("user_dialectic")
 
     # Footprint controls (default scope='full' + non-lean → byte-identical
     # output). `full` renders everything; any other scope ('query') renders
@@ -197,8 +203,9 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         "SELECT COUNT(DISTINCT session_id) c FROM dialog_messages "
         "WHERE created_at > ? AND session_id IS NOT NULL AND session_id != '' "
         "AND session_id != ? "
-        "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%'",
-        (now - 300, self_cid or ""),
+        "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
+        f"AND {dialog_filter}",
+        (now - 300, self_cid or "", *dialog_params),
     ).fetchone()["c"]
 
     out.append(
@@ -212,8 +219,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     # sparingly — these are "what new-claude must know" lines.
     try:
         core_rows = conn.execute(
-            "SELECT key, content, priority FROM core_memory "
-            "ORDER BY priority DESC, key ASC"
+            "SELECT key, key_name, content, priority FROM core_memory "
+            f"WHERE {core_filter} ORDER BY priority DESC, key ASC", core_params
         ).fetchall()
     except sqlite3.OperationalError:
         core_rows = []
@@ -224,7 +231,7 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             snip = r["content"][:120].replace("\n", " ")
             if len(r["content"]) > 120:
                 snip += "…"
-            out.append(f"  [P{r['priority']}] {r['key']}: {q(snip)}")
+            out.append(f"  [P{r['priority']}] {r['key_name'] or r['key']}: {q(snip)}")
 
     # ── inbox (unread signals to me) ──────────────────────────────────────
     if self_cid:
@@ -384,8 +391,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         "SELECT session_id, role, content, created_at FROM dialog_messages "
         "WHERE created_at > ? AND session_id IS NOT NULL AND session_id != '' "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
-        "ORDER BY created_at DESC LIMIT 200",
-        (now - 300,),
+        f"AND {dialog_filter} ORDER BY created_at DESC LIMIT 200",
+        (now - 300, *dialog_params),
     ).fetchall()
     by_sess: dict[str, dict] = {}
     for r in peer_rows:
@@ -419,7 +426,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
 
     # ── open ──────────────────────────────────────────────────────────────
     open_t = conn.execute(
-        "SELECT * FROM threads WHERE state='active' ORDER BY last_touched_at DESC"
+        f"SELECT * FROM threads WHERE state='active' AND {thread_filter} "
+        "ORDER BY last_touched_at DESC", thread_params
     ).fetchall()
     if open_t:
         out.append("")
@@ -449,8 +457,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
 
     # ── idle ──────────────────────────────────────────────────────────────
     idle_t = conn.execute(
-        "SELECT * FROM threads WHERE state='idle' "
-        "ORDER BY last_touched_at DESC LIMIT 5"
+        f"SELECT * FROM threads WHERE state='idle' AND {thread_filter} "
+        "ORDER BY last_touched_at DESC LIMIT 5", thread_params
     ).fetchall()
     if idle_t:
         out.append("")
@@ -463,8 +471,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
 
     # ── closed (recent) ───────────────────────────────────────────────────
     closed_t = conn.execute(
-        "SELECT * FROM threads WHERE state='closed' "
-        "ORDER BY last_touched_at DESC LIMIT 3"
+        f"SELECT * FROM threads WHERE state='closed' AND {thread_filter} "
+        "ORDER BY last_touched_at DESC LIMIT 3", thread_params
     ).fetchall()
     if closed_t:
         out.append("")
@@ -696,8 +704,9 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         "          )"
         "      )"
         "  ) AS react "
-        "FROM verbatim v "
-        "ORDER BY react DESC, v.created_at DESC, v.id DESC LIMIT 5"
+        f"FROM verbatim v WHERE {verbatim_filter} "
+        "ORDER BY react DESC, v.created_at DESC, v.id DESC LIMIT 5",
+        verbatim_params,
     ).fetchall()
     if qt and full and allow_personal:
         out.append("")
@@ -767,8 +776,9 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     try:
         cs = conn.execute(
             "SELECT id, description FROM concepts "
-            "WHERE confidence='high' "
-            "ORDER BY COALESCE(last_evidence_at, registered_at) DESC LIMIT 3"
+            f"WHERE confidence='high' AND {recall_where('concepts')[0]} "
+            "ORDER BY COALESCE(last_evidence_at, registered_at) DESC LIMIT 3",
+            recall_where("concepts")[1],
         ).fetchall()
     except sqlite3.OperationalError:
         cs = []
@@ -790,12 +800,12 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             "SELECT id, claim, domain, confidence, tier, "
             "  support_count, contradict_count, valid_from, valid_to "
             "FROM user_dialectic "
-            "WHERE state='active' AND tier IN ('observed','validated') "
+            f"WHERE state='active' AND tier IN ('observed','validated') AND {dialectic_filter} "
             "ORDER BY "
             "  CASE tier WHEN 'validated' THEN 0 ELSE 1 END, "
             "  (support_count - contradict_count) DESC, "
             "  domain ASC "
-            "LIMIT 12"
+            "LIMIT 12", dialectic_params
         ).fetchall()
     except sqlite3.OperationalError:
         syn_rows = []
@@ -803,7 +813,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         try:
             validity_history_exists = conn.execute(
                 "SELECT 1 FROM user_dialectic "
-                "WHERE valid_to IS NOT NULL LIMIT 1"
+                f"WHERE valid_to IS NOT NULL AND {dialectic_filter} LIMIT 1",
+                dialectic_params,
             ).fetchone() is not None
         except sqlite3.OperationalError:
             validity_history_exists = False
@@ -848,10 +859,10 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
         hyp_rows = conn.execute(
             "SELECT id, claim, domain "
             "FROM user_dialectic "
-            "WHERE state='active' AND tier='hypothesis' "
+            f"WHERE state='active' AND tier='hypothesis' AND {dialectic_filter} "
             "  AND support_count >= 1 "
             "ORDER BY last_evidence_at DESC, created_at DESC "
-            "LIMIT 3"
+            "LIMIT 3", dialectic_params
         ).fetchall()
     except sqlite3.OperationalError:
         hyp_rows = []
@@ -869,8 +880,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     try:
         ds = conn.execute(
             "SELECT id, kind, vote_sum FROM distill "
-            "WHERE vote_sum >= 2 AND exported_at IS NULL "
-            "ORDER BY vote_sum DESC LIMIT 3"
+            f"WHERE vote_sum >= 2 AND exported_at IS NULL AND {recall_where('distill')[0]} "
+            "ORDER BY vote_sum DESC LIMIT 3", recall_where("distill")[1]
         ).fetchall()
     except sqlite3.OperationalError:
         ds = []
@@ -885,7 +896,9 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     # ── extract_pending ────────────────────────────────────────────────────
     try:
         ex_pending = conn.execute(
-            "SELECT COUNT(*) c FROM extract_candidates WHERE status='pending'"
+            "SELECT COUNT(*) c FROM extract_candidates WHERE status='pending' "
+            f"AND {recall_where('extract_candidates')[0]}",
+            recall_where("extract_candidates")[1],
         ).fetchone()["c"]
     except sqlite3.OperationalError:
         ex_pending = 0
@@ -922,16 +935,18 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     # current work (i.e. fewer than 3 active threads).
     try:
         active_count = conn.execute(
-            "SELECT COUNT(*) c FROM threads WHERE state='active'"
+            f"SELECT COUNT(*) c FROM threads WHERE state='active' AND {thread_filter}",
+            thread_params,
         ).fetchone()["c"]
         if active_count < 3 and not eff_lean:
             top = conn.execute(
                 "SELECT id, question, last_touched_at FROM threads "
                 "WHERE state IN ('active','idle') "
+                f"AND {thread_filter} "
                 "AND (claimed_at IS NULL OR claimed_at <= ?) "
                 "AND last_touched_at <= ? "
                 "ORDER BY last_touched_at ASC LIMIT 1",
-                (now - PICKUP_CLAIM_TTL_S, now - 3 * 86400),
+                (*thread_params, now - PICKUP_CLAIM_TTL_S, now - 3 * 86400),
             ).fetchone()
             if top:
                 out.append("")
@@ -991,8 +1006,10 @@ def render_context(conn: sqlite3.Connection) -> tuple[str, dict]:
     automatically as a resource.
     """
     now = int(time.time())
+    thread_filter, thread_params = recall_where("threads")
     counts = conn.execute(
-        "SELECT state, COUNT(*) c FROM threads GROUP BY state"
+        f"SELECT state, COUNT(*) c FROM threads WHERE {thread_filter} GROUP BY state",
+        thread_params,
     ).fetchall()
     thread_counts = {r["state"]: r["c"] for r in counts}
     cs = " ".join(f"{k}={v}" for k, v in thread_counts.items()) or "empty"

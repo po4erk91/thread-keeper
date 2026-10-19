@@ -38,6 +38,7 @@ from .config import (
     SHADOW_REVIEW_WINDOW_S,
 )
 from .db import get_db
+from .project_scope import recall_where
 from .helpers import (
     alive,
     daemon_sleep,
@@ -326,18 +327,20 @@ def _collect_window(conn: sqlite3.Connection,
         # the lookback so a long-running install doesn't dump everything.
         floor_rowid = dialog_rowid_at_or_before(conn, now - max(1, window_s))
     exclusion_cte, exclusion_params = harvest_exclusion_cte()
+    dialog_scope, dialog_scope_params = recall_where("dialog_messages")
     rows = conn.execute(
         exclusion_cte +
         "SELECT rowid, role, content, created_at, session_id "
         "FROM dialog_messages "
         "WHERE rowid > ? "
         "  AND coalesce(project, '') != 'subagents' "
+        f"  AND {dialog_scope} "
         "  AND session_id NOT IN ("
         "    SELECT session_id FROM harvest_excluded_sessions"
         "  ) "
         "ORDER BY rowid ASC "
         "LIMIT ?",
-        (*exclusion_params, floor_rowid, _COLLECT_ROW_CAP),
+        (*exclusion_params, floor_rowid, *dialog_scope_params, _COLLECT_ROW_CAP),
     ).fetchall()
     if not rows:
         return ("", floor_rowid, 0, 0)

@@ -507,6 +507,7 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
         # Post-migration: notes.id is TEXT, joined via the notes_vec_map bridge.
         sql = (
             "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+            "       n.project_id, n.memory_scope, "
             "       v.distance "
             "FROM notes_vec v "
             "JOIN notes_vec_map m ON m.rowid = v.rowid "
@@ -516,6 +517,7 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     else:
         sql = (
             "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+            "       n.project_id, n.memory_scope, "
             "       v.distance "
             "FROM notes_vec v "
             "JOIN notes n ON n.id = v.id "
@@ -531,7 +533,8 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
     for r in rows:
         score = max(-1.0, min(1.0, 1.0 - (r["distance"] ** 2) / 2.0))
         d = {k_: r[k_] for k_ in ("id", "content", "kind",
-                                  "thread_id", "created_at")}
+                                  "thread_id", "created_at", "project_id",
+                                  "memory_scope")}
         d["score"] = float(score)
         out.append(d)
     return out[:want]
@@ -560,7 +563,7 @@ def _dialog_cosine_search(conn, query: str, k: int,
     join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        "       d.created_at, g.embedding AS embedding "
+        "       d.project_id, d.memory_scope, d.created_at, g.embedding AS embedding "
         "FROM dialog_messages d JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='dialog' "
         "AND g.memory_id=CAST(d.uuid AS TEXT)"
@@ -572,7 +575,7 @@ def _dialog_cosine_search(conn, query: str, k: int,
     sql += " UNION ALL "
     sql += (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        f"       d.created_at, {effective_embedding} AS embedding "
+        f"       d.project_id, d.memory_scope, d.created_at, {effective_embedding} AS embedding "
         f"FROM dialog_messages d {join} "
         f"WHERE {effective_embedding} IS NOT NULL AND d.embed_backend=? "
         "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
@@ -772,6 +775,7 @@ def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
     dialog_messages for payload."""
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
+        "       d.project_id, d.memory_scope, "
         "       d.created_at, v.distance "
         "FROM dialog_vec v "
         "JOIN dialog_vec_map m ON m.rowid = v.rowid "
@@ -791,7 +795,8 @@ def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
     for r in rows:
         score = max(-1.0, min(1.0, 1.0 - (r["distance"] ** 2) / 2.0))
         d = {k_: r[k_] for k_ in ("uuid", "role", "project",
-                                  "session_id", "content", "created_at")}
+                                  "session_id", "content", "created_at",
+                                  "project_id", "memory_scope")}
         d["score"] = float(score)
         out.append(d)
     return out
@@ -809,6 +814,7 @@ def _fts_search(conn: sqlite3.Connection, query: str,
     def _run(match_query: str):
         sql = (
             "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
+            "       d.project_id, d.memory_scope, "
             "       d.created_at, bm25(dialog_fts) AS lexical_score "
             "FROM dialog_fts f "
             "JOIN dialog_messages d ON d.rowid = f.rowid "
@@ -837,6 +843,8 @@ def _fts_search(conn: sqlite3.Connection, query: str,
             "session_id": r["session_id"],
             "content": r["content"],
             "created_at": r["created_at"],
+            "project_id": r["project_id"],
+            "memory_scope": r["memory_scope"],
             "lexical_score": float(r["lexical_score"]),
         }
         for r in rows

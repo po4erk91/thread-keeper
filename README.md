@@ -106,6 +106,12 @@ managed instructions block and call `brief()` / `context()` before answering, or
 `memory://brief` resource the host attaches automatically (see
 [MCP primitives](#mcp-primitives-tools-resources-prompts)).
 
+The MCP initialization response also carries concise, static lifecycle guidance:
+load the brief/context, open/note/close substantive threads, prefer read-only
+resources for host-attached context, and use dry-run plus confirmation before
+destructive maintenance. Hooks and the managed files remain reinforcement for
+clients that do not surface server instructions.
+
 ### Alternative installs
 
 If you don't have `pipx` and don't want to install it:
@@ -180,7 +186,7 @@ stable Skills extension uses the MCP 2026-07-28 extension surface, while tools,
 resources, prompts, annotations, structured content, elicitation, and stdio
 continue to use the same `MCPServer` instance.
 
-### MCP primitives (tools, resources, prompts, elicitation)
+### MCP primitives (tools, resources, prompts, Apps, elicitation)
 
 MCP has three server primitives. thread-keeper uses all three, mapped to the
 read/act split, plus MCP elicitation for host-native confirmations:
@@ -190,6 +196,7 @@ read/act split, plus MCP elicitation for host-native confirmations:
 | **Tools** | model-controlled (may act) | the full surface — `brief`, `note`, `spawn`, `search`, `curator_review`, `wikilink_health`, … | the agent decides to call them |
 | **Resources** | application-controlled, read-only | `memory://brief`, `memory://context`, `memory://dashboard`, `memory://agent-status` | the **host** attaches/pulls them automatically; capable hosts may subscribe |
 | **Prompts** | user-controlled templates | `review_recent_threads`, `run_library_curation`, `audit_threadkeeper` | the user runs them (Claude Code: `/mcp__thread-keeper__<name>`) |
+| **MCP App** | host-rendered, display-only | `open_dashboard` → `ui://thread-keeper/dashboard` | a host that advertises MCP Apps opens the sandboxed dashboard |
 
 **Resources** back the genuinely read-only memory views with the same render
 functions as the matching tools, so the content is identical — `memory://brief`
@@ -203,6 +210,24 @@ so an automatic host pull is **side-effect-free**.
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
+**Portable dashboard App.** `open_dashboard` is a read-only progressive
+enhancement over the existing status data. In an MCP Apps-capable host it opens
+`ui://thread-keeper/dashboard` in a sandboxed iframe and shows autonomous
+loops, running children, budget state, task history, recent failures, and
+recent materializations. It never sends prompts, transcripts, task-log text,
+credentials, child identifiers, or local paths to the iframe. Loading and the
+App's Refresh button only open the existing database in SQLite read-only mode;
+they never bootstrap a session, reconcile tasks, start daemons, refresh process
+RSS, or write telemetry.
+
+This is portable across macOS, Windows, and Linux because it uses the existing
+stdio server registration in the table above — no native app installation is
+needed. If the host does not advertise the `io.modelcontextprotocol/ui`
+extension with `text/html;profile=mcp-app`, `open_dashboard` returns a short
+text fallback; use `agent_status(json_output=True)` or `mp_dashboard()` as the
+tested fallback. The macOS menu-bar app remains an optional native frontend
+over the same status data, not a requirement for this dashboard.
+
 **Elicitation** is a client feature, not a server primitive. When a host
 advertises form-mode elicitation, high-stakes mutations can pause for a
 structured user choice instead of relying on an ignorable text nudge. The first
@@ -212,7 +237,8 @@ the previous immediate tool behavior.
 
 Everything here is **additive and capability-gated**: a host that advertises the
 `resources` / `prompts` capabilities sees those primitives; one that advertises
-`elicitation.form` gets structured confirmations for covered high-stakes writes.
+MCP Apps gets the dashboard iframe; and one that advertises `elicitation.form`
+gets structured confirmations for covered high-stakes writes.
 Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 / `context()` tools and the existing write behavior — same content, no
 regression. Static URIs only for now (resource *templates* with `{param}` are
@@ -277,6 +303,28 @@ override wins over `.env`):
 ```bash
 THREADKEEPER_MEMORY_EGRESS=same-vendor
 ```
+
+### Project memory boundaries
+
+Memory is also isolated by repository. thread-keeper derives a path-free
+`prj_…` namespace from the repository remote (or, when no remote exists, its
+Git history), so ordinary moves and Git worktrees retain one identity without
+storing a local path. New project memory is scoped to that namespace; portable
+memory must be explicitly written as `global` or `shared`.
+
+`brief()`, `search()`, `dialog_search()`, resources, and learning-loop inputs
+read the current project plus explicit global/shared rows. Set
+`cross_project=True` on `search` or `dialog_search` only for deliberate
+cross-project recall. Those results show `scope=`/`project=` provenance and
+write a `cross_project_recall` audit event. The `memory_scope_status()` tool
+shows the current namespace and the migration accounting.
+
+Existing databases are migrated conservatively: rows without reliable
+repository provenance are marked `unresolved`, excluded from automatic recall,
+and listed in the migration report until an operator classifies them. This
+boundary controls *which local memory is recalled*; it is separate from
+`THREADKEEPER_MEMORY_EGRESS`, which controls whether personal memory may be
+sent to another model provider.
 
 ---
 
@@ -727,12 +775,13 @@ inventory and `curator_review_status()` report emitted/rejected counts and
 rejection reasons, so the rule can be tuned from production data. A
 non-protected candidate must become one validated, checklist-style canonical
 skill before its source lessons are retired; protected clusters are left for
-human review. A read-only research child reads every
-complete skill and relevant support file, performs current web research against
-official docs and comparable public skills, then writes a bounded
-`RESEARCH-<pass>-batch-NNN-of-MMM.json` handoff through a destination-scoped
-tool. A separate web-free evaluator receives that handoff as fenced, untrusted
-data and writes numbered per-skill verdicts to
+human review. The evaluator reads every complete skill and relevant support
+file, but has no web tools. External research is off by default. With explicit
+`THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a separate Claude-only researcher gets
+only fixed public compatibility queries, `WebSearch`, `WebFetch`, and one
+parent-authorized handoff writer; it cannot read local memory or the
+repository. The evaluator receives that handoff as fenced, untrusted data and
+writes numbered per-skill verdicts to
 `~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
 `REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
 UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
@@ -1140,6 +1189,11 @@ daily deterministic `docs/roadmap-audit-YYYY-MM-DD` branch so repeated audit
 passes update or skip the existing roadmap PR rather than opening a second one.
 Automatic apply passes respect the configured interval so multiple foreground
 MCP server startups do not repeatedly spawn workers for the same open issue.
+That interval is consumed only by a real child launch or a completed empty
+check. A busy applier, checkout/GitHub/claim/race error, or refused spawn keeps
+the prior cursor and retries on a bounded short cadence; repeated identical
+blockers are recorded once until the blocker changes. `evolve_apply_status()`
+shows the last attempt, last successful dispatch, and any pending retry time.
 Manual tools such as `evolve_apply_conflicted_pr()` and
 `evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
 or roadmap issue is startable, the pass falls back to Curator reports and then
@@ -1324,8 +1378,45 @@ Adding a new language is a two-file PR — see [CONTRIBUTING.md](CONTRIBUTING.md
 
 The most-used env knobs (full list in `threadkeeper/config.py`):
 
+### MCP tool profiles
+
+The server can advertise a role-sized MCP tool surface instead of its full
+catalog. Set `THREADKEEPER_TOOL_PROFILE` before server startup, then restart
+the host after changing it:
+
+| Profile | Intended surface |
+| --- | --- |
+| `core` | daily session memory: `brief`, `context`, threads, notes, search, and peer coordination |
+| `coordination` | `core` plus child spawning, task status, pickup, and delegated search |
+| `memory-admin` | `core` plus durable memory, concepts, lessons, graph links, and explicit erasure |
+| `learning-loops` | `core` plus extraction, validation, skills, Curator, probes, and dialectic workflows |
+| `full` | every registered tool; the compatibility default when no profile is configured |
+
+New `thread-keeper-setup` registrations use `core`. Existing server entries
+without the setting retain `full` until you opt in. Add exact, comma-separated
+tool names with `THREADKEEPER_TOOL_INCLUDE`, or remove names with
+`THREADKEEPER_TOOL_EXCLUDE`; unknown names and contradictory overrides stop the
+server rather than exposing an unintended surface.
+
+Spawned children default to `core`; archival, Curator, candidate-review,
+shadow-review, probe-runner, and dialectic-validator roles use
+`learning-loops`, while Evolve roles request `full`. The server receives the
+parent’s resolved allowlist and intersects it with the child profile, so a
+child cannot regain a tool its parent did not expose.
+`THREADKEEPER_CHILD_TOOL_PROFILE` explicitly selects a different child profile,
+still under that parent constraint.
+
+Every non-full profile includes read-only `capability_search(query)`. It returns
+at most six matching capability *families* with a summary and the profile that
+would expose them. It does not list hidden concrete tools or enable any action;
+use it as the fallback on hosts that lack native deferred tool discovery.
+
 | Knob | Default | Purpose |
 |---|---|---|
+| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, or `full`; read at server start |
+| `THREADKEEPER_TOOL_INCLUDE` | "" | exact comma-separated tool names to add to the selected profile; unknown names fail closed |
+| `THREADKEEPER_TOOL_EXCLUDE` | "" | exact comma-separated tool names to remove from the selected profile; unknown or overlapping names fail closed |
+| `THREADKEEPER_CHILD_TOOL_PROFILE` | role default | spawned-child profile override; always intersected with the parent’s resolved tool surface |
 | `THREADKEEPER_DB` | `~/.threadkeeper/db.sqlite` | SQLite file |
 | `THREADKEEPER_TASK_LOG_DIR` | `~/.threadkeeper/tasks` | owner-only task spool for spawn logs, stdin prompts, command scripts, and small runtime logs |
 | `THREADKEEPER_RETENTION_INTERVAL_S` | 0 (off) | SQLite retention/compaction daemon tick; 0 disables the daemon |
@@ -1376,7 +1467,7 @@ The most-used env knobs (full list in `threadkeeper/config.py`):
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `1` (on) | run a read-only web research child per batch before the web-free evaluator; `0` skips research (the evaluator uses local evidence only) |
+| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, while foreground/private/unclassified entries use `HUMAN_REVIEW` |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
 | `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 10 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
@@ -1668,9 +1759,10 @@ best-effort: `~/.threadkeeper` is `0700`, while `db.sqlite`, SQLite
 `-wal`/`-shm` sidecars, `~/.threadkeeper/.env`, curator `REPORT-*.md`
 files, and headless spawn logs are owner-only (`0600`).
 
-Use `tk-backup` for disaster recovery. It uses SQLite `VACUUM INTO`, so
-committed frames still living in the live `-wal` sidecar are included in a
-compacted snapshot without quiescing background writers:
+Use `tk-backup` for disaster recovery. In the default SQLite profile it uses
+`VACUUM INTO`; the encrypted profile uses SQLCipher's online backup API into a
+new encrypted destination. Both paths include committed frames still living in
+the live `-wal` sidecar without quiescing background writers:
 
 ```bash
 tk-backup create ~/threadkeeper-backup.sqlite
@@ -1692,6 +1784,73 @@ WAL mode because recent committed transactions may exist only in
 first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
+
+### Opt-in encrypted storage (experimental)
+
+The default `sqlite` profile is unchanged. For sensitive memory at rest, the
+optional `sqlcipher` profile encrypts the main database, WAL/rollback-journal
+pages, and profile-aware snapshots with SQLCipher. SQLCipher temporary
+structures are kept in memory with cipher memory security enabled. Install it
+explicitly and initialize a new store before starting any MCP server:
+
+```bash
+pip install 'threadkeeper[encrypted]'
+tk-storage init --db ~/.threadkeeper/secure.sqlite
+export THREADKEEPER_DB=~/.threadkeeper/secure.sqlite
+export THREADKEEPER_STORAGE_PROFILE=sqlcipher
+```
+
+The profile name may live in normal configuration; the encryption key never
+does. Thread-keeper generates a random key and retrieves it from the operating
+system secret store through `keyring`. It never accepts a key in an environment
+variable, config file, command argument, event, log, or telemetry. If the
+secret store, SQLCipher backend, or key is unavailable, opening the encrypted
+profile fails closed. A wrong key cannot initialize or replace an existing
+database.
+
+Use the normal backup command after enabling the profile; it recognizes the
+profile and creates an encrypted destination with its own OS-secret-store key:
+
+```bash
+tk-backup create ~/threadkeeper-secure-backup.sqlite
+tk-backup restore ~/threadkeeper-secure-backup.sqlite --yes
+tk-storage integrity-check --db ~/.threadkeeper/secure.sqlite
+tk-storage rekey --db ~/.threadkeeper/secure.sqlite
+```
+
+Stop all MCP servers, the daemon host, and CLI sessions before a restore or
+rekey. If a machine loses power during rekey, normal opens intentionally stop;
+run `tk-storage recover-rekey --db …` to have the OS secret store validate and
+finish the pending rotation without printing either key. Back up the operating
+system account and its secret store according to your platform's recovery
+procedure. Thread-keeper deliberately has no key-export command: exporting a
+raw database key into a shell history or ordinary file defeats this profile.
+
+Move an existing store through a separately validated output path. The source
+is never replaced, so it remains available until the new store has been
+verified:
+
+```bash
+tk-storage migrate ~/.threadkeeper/db.sqlite ~/.threadkeeper/secure.sqlite \
+  --from-profile sqlite --to-profile sqlcipher
+tk-storage migrate ~/.threadkeeper/secure.sqlite ~/.threadkeeper/plain.sqlite \
+  --from-profile sqlcipher --to-profile sqlite
+```
+
+Only switch `THREADKEEPER_DB` and `THREADKEEPER_STORAGE_PROFILE` after the
+destination passes `tk-storage integrity-check` (for SQLCipher) or
+`sqlite3 <path> 'PRAGMA integrity_check'` (for ordinary SQLite). The migration
+checks integrity plus table/index/trigger coverage before the destination is
+atomically published.
+
+This is an at-rest database profile, not full-device encryption. It does not
+encrypt task logs, curator reports/snapshots, exported briefs, source CLI
+transcripts, skills, `node.id`, or sync traffic. Put the whole state directory
+on full-disk encryption, use the existing owner-only permissions, set retention
+for logs/reports, and use TLS/private networking for sync. The profile is
+experimental: automated SQLCipher coverage currently runs on Linux; validate
+the OS keyring integration on macOS or Windows before relying on it for a
+recovery-sensitive deployment.
 
 ### Selective Erasure
 

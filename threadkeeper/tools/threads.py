@@ -20,6 +20,7 @@ from ..embeddings import _embed, _vec_upsert_note, _notes_mapped, embed_tag
 from ..memory_compat import memory_provenance
 from ..retrieval import retrieve_notes
 from ..brief import render_brief, render_context
+from ..project_scope import format_provenance, resolve_write_scope
 from ..config import WRITE_ORIGIN
 from ..authority import can_stamp, stamp
 
@@ -71,7 +72,8 @@ def context() -> ContextStatus:
 
 
 @write_tool()
-def open_thread(question: str, parent_id: str = "") -> str:
+def open_thread(question: str, parent_id: str = "",
+                memory_scope: str = "project") -> str:
     """Open a thread. `question` should be terse (5-15 words, the open question).
     `parent_id` optional — pass an existing ID like 'T7f3' for a child. Returns new ID."""
     identity.ensure_session_started()
@@ -80,18 +82,26 @@ def open_thread(question: str, parent_id: str = "") -> str:
     def _write(conn: sqlite3.Connection) -> str:
         now = int(time.time())
         depth = 0
+        project_id = None
+        scope = memory_scope
         if parent:
             row = conn.execute(
-                "SELECT depth FROM threads WHERE id=?", (parent,)
+                "SELECT depth, project_id, memory_scope FROM threads WHERE id=?", (parent,)
             ).fetchone()
             if not row:
                 return f"ERR parent_not_found={parent}"
             depth = row["depth"] + 1
+            project_id, scope = row["project_id"], row["memory_scope"]
+        else:
+            try:
+                scope, project_id = resolve_write_scope(memory_scope)
+            except ValueError as exc:
+                return f"ERR {exc}"
         tid = gen_thread_id(conn)
         conn.execute(
             "INSERT INTO threads (id, question, state, parent_id, opened_at, "
-            "last_touched_at, depth) VALUES (?,?,?,?,?,?,?)",
-            (tid, question, "active", parent, now, now, depth),
+            "last_touched_at, depth, project_id, memory_scope) VALUES (?,?,?,?,?,?,?,?,?)",
+            (tid, question, "active", parent, now, now, depth, project_id, scope),
         )
         _emit(conn, "open_thread", target=tid, summary=question)
         return tid
@@ -117,16 +127,17 @@ def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> 
     emb = _embed(content)
 
     def _write(conn: sqlite3.Connection) -> str:
-        if not conn.execute(
-            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
-        ).fetchone():
+        thread = conn.execute(
+            "SELECT project_id, memory_scope FROM threads WHERE id=?", (thread_id,)
+        ).fetchone()
+        if not thread:
             return f"ERR thread_not_found={thread_id}"
         now = int(time.time())
         cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
-            "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            "embedding, embed_backend, project_id, memory_scope) VALUES (?,?,?,?,?,?,?,?,?)",
             (thread_id, content, kind, now, identity._session_id,
-             emb, embed_tag(emb)),
+             emb, embed_tag(emb), thread["project_id"], thread["memory_scope"]),
         )
         note_id = _note_gid(conn, cur.lastrowid)
         if not can_stamp(conn, "note", str(note_id), write_origin=WRITE_ORIGIN, source=source):
@@ -165,9 +176,10 @@ def close_thread(thread_id: str, outcome: str) -> str:
     identity.ensure_session_started()
 
     def _write(conn: sqlite3.Connection) -> str:
-        if not conn.execute(
-            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
-        ).fetchone():
+        thread = conn.execute(
+            "SELECT project_id, memory_scope FROM threads WHERE id=?", (thread_id,)
+        ).fetchone()
+        if not thread:
             return f"ERR thread_not_found={thread_id}"
         now = int(time.time())
         conn.execute(
@@ -231,9 +243,10 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
     emb = _embed(note_body)
 
     def _write(conn: sqlite3.Connection) -> str:
-        if not conn.execute(
-            "SELECT 1 FROM threads WHERE id=?", (thread_id,)
-        ).fetchone():
+        thread = conn.execute(
+            "SELECT project_id, memory_scope FROM threads WHERE id=?", (thread_id,)
+        ).fetchone()
+        if not thread:
             return f"ERR thread_not_found={thread_id}"
         now = int(time.time())
         conn.execute(
@@ -244,9 +257,9 @@ def mark_skill_materialized(thread_id: str, skill_path: str = "") -> str:
         )
         cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
-            "embedding, embed_backend) VALUES (?,?,?,?,?,?,?)",
+            "embedding, embed_backend, project_id, memory_scope) VALUES (?,?,?,?,?,?,?,?,?)",
             (thread_id, note_body, "move", now, identity._session_id,
-             emb, embed_tag(emb)),
+             emb, embed_tag(emb), thread["project_id"], thread["memory_scope"]),
         )
         note_id = _note_gid(conn, cur.lastrowid)
         _vec_upsert_note(conn, note_id, emb)
@@ -281,16 +294,25 @@ def idle_thread(thread_id: str) -> str:
 
 
 @read_tool()
-def search(query: str, k: int = 5) -> str:
-    """Semantic (or FTS) search over all notes."""
+def search(query: str, k: int = 5, cross_project: bool = False) -> str:
+    """Search current-project notes plus global/shared memory.
+
+    Set ``cross_project=True`` only for an intentional cross-project recall;
+    output marks every result's scope and an audit event is recorded.
+    """
     identity.ensure_session_started()
     with read_db() as conn:
-        return _search_conn(conn, query=query, k=k)
+        result = _search_conn(conn, query=query, k=k, cross_project=cross_project)
+    if cross_project:
+        _audit_cross_project_recall("search", query)
+    return result
 
 
-def _search_conn(conn: sqlite3.Connection, *, query: str, k: int) -> str:
+def _search_conn(conn: sqlite3.Connection, *, query: str, k: int,
+                 cross_project: bool = False) -> str:
     """Connection-scoped implementation used by the read-only MCP wrapper."""
-    hits = retrieve_notes(conn, query, k=k, mode="hybrid")
+    hits = retrieve_notes(conn, query, k=k, mode="hybrid",
+                          cross_project=cross_project)
     if not hits:
         return "no_matches"
     lines = []
@@ -299,9 +321,25 @@ def _search_conn(conn: sqlite3.Connection, *, query: str, k: int) -> str:
         score_part = f"s={score:.2f} " if score is not None else ""
         lines.append(
             f"{hit.thread_id or '-'} {hit.kind or '-'} {score_part}"
+            f"{format_provenance(hit.memory_scope, hit.project_id)} "
             f"{q(hit.content[:200].replace(chr(10), ' '))}"
         )
     return "\n".join(lines)
+
+
+def _audit_cross_project_recall(tool: str, query: str) -> None:
+    """Record deliberate boundary overrides without retaining the query text."""
+    now = int(time.time())
+
+    def _write(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (identity._session_id or "", "cross_project_recall", tool,
+             f"query_chars={len(query)}", now),
+        )
+
+    run_write("cross-project-recall", _write, deadline_s=0.25)
 
 
 @read_tool()
