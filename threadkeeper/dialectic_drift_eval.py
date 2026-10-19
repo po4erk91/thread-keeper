@@ -297,9 +297,18 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"ERR: {exc}", file=sys.stderr)
         return 2
-    safe_report = dict(report)
-    if "rows" in safe_report:
-        safe_report["rows"] = {"redacted": True, "count": len(report["rows"])}
+    safe_report = {
+        "corpus": report.get("corpus"),
+        "n": report.get("n"),
+        "supersession": report.get("supersession"),
+        "false_durable_flip_rate": report.get("false_durable_flip_rate"),
+        "clarification_rate": report.get("clarification_rate"),
+        "poisoning_containment": report.get("poisoning_containment"),
+        "audit_complete": report.get("audit_complete"),
+        "thresholds": report.get("thresholds"),
+        "thresholds_met": report.get("thresholds_met"),
+        "rows": {"redacted": True, "count": len(report.get("rows", []))},
+    }
     print(
         json.dumps(safe_report, indent=2)
         if args.json
