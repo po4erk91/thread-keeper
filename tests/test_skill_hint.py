@@ -171,15 +171,14 @@ def test_hint_ignores_old_closures(mp_with_cid):
     assert "skill_hint" not in txt
 
 
-def test_hint_escalates_after_repeated_ignores(mp_with_cid):
-    """3+ shows without an intervening materialization escalate the hint."""
+def test_hint_reads_do_not_persist_repeated_ignores(mp_with_cid):
+    """Repeated read-only briefs cannot advance hint telemetry."""
     pkg = mp_with_cid(_FAKE_CID)
     _close_rich_thread(pkg, n_total=6, n_rich=4)
-    # First three shows — third call sees 2 prior shows logged so no escalation yet.
+    # Repeated reads can render the hint but do not record escalation state.
     _brief_text(pkg)
     _brief_text(pkg)
     txt3 = _brief_text(pkg)
     assert "ignored=" not in txt3
     txt4 = _brief_text(pkg)
-    assert "ignored=3x" in txt4 or "ignored=" in txt4
-    assert "⚠️" in txt4
+    assert "ignored=" not in txt4

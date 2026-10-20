@@ -23,8 +23,9 @@ import sys
 import time
 from pathlib import Path
 
-from ..config import DB_PATH
+from ..config import DB_PATH, STORAGE_PROFILE
 from ..helpers import gen_global_id
+from ..storage import connect as open_storage_connection
 from . import SYNC_SCHEMA_VERSION
 from . import identity as sync_identity
 
@@ -265,7 +266,9 @@ def apply(db_path: Path, do_apply: bool) -> int:
         print(f"error: DB not found: {db_path}", file=sys.stderr)
         return 2
 
-    probe = sqlite3.connect(str(db_path))
+    probe = open_storage_connection(
+        db_path, profile=STORAGE_PROFILE, create=False
+    )
     try:
         uv = _sync_version(probe)
         summary = plan(probe)
@@ -287,19 +290,16 @@ def apply(db_path: Path, do_apply: bool) -> int:
         return 0
 
     backup = db_path.with_name(db_path.name + f".bak-{int(time.time())}.sqlite")
-    # Consistent single-file snapshot BEFORE any mutation. VACUUM INTO reads the
-    # live DB *through a connection*, so it captures committed pages still resident
-    # in the -wal — a plain file copy would miss them and produce a torn/stale
-    # backup exactly when it matters most (review of PR #201; same class as #95).
-    bk = sqlite3.connect(str(db_path))
-    try:
-        bk.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        bk.execute("VACUUM INTO ?", (str(backup),))
-    finally:
-        bk.close()
+    # The profile-aware backup path keeps an encrypted profile encrypted. It
+    # reads committed WAL frames through SQLite instead of creating a raw copy.
+    from ..backup import create_backup
+
+    create_backup(backup, source=db_path)
     print(f"\nbackup: {backup}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = open_storage_connection(
+        db_path, profile=STORAGE_PROFILE, create=False
+    )
     try:
         conn.execute("PRAGMA foreign_keys=OFF")
         try:

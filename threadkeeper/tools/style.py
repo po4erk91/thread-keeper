@@ -6,6 +6,9 @@ from .._mcp import write_tool
 from ..db import run_write
 from .. import identity
 from ..identity import _emit
+from ..project_scope import resolve_write_scope
+from ..config import WRITE_ORIGIN
+from ..authority import authority_for_origin, record_origin_root
 
 
 @write_tool()
@@ -13,19 +16,42 @@ def verbatim_user(content: str, thread_id: str = "") -> str:
     """Capture a user quote worth surfacing in future briefs. Use when the user's
     exact phrasing matters (sharp reframes, decisions, pushback)."""
     identity.ensure_session_started()
+    if authority_for_origin(WRITE_ORIGIN) is None:
+        return "ERR authority_unknown_origin"
     now = int(time.time())
     tid = thread_id.strip() or None
 
     def _write(conn: sqlite3.Connection) -> str:
-        conn.execute(
-            "INSERT INTO verbatim (speaker, content, thread_id, created_at, "
-            "session_id) VALUES (?,?,?,?,?)",
-            ("user", content, tid, now, identity._session_id),
+        thread = None
+        if tid:
+            thread = conn.execute(
+                "SELECT project_id, memory_scope FROM threads WHERE id=?", (tid,)
+            ).fetchone()
+            if thread is None:
+                return f"ERR thread_not_found={tid}"
+        scope, project_id = (
+            (thread["memory_scope"], thread["project_id"])
+            if thread else resolve_write_scope()
         )
+        cur = conn.execute(
+            "INSERT INTO verbatim (speaker, content, thread_id, created_at, "
+            "session_id, project_id, memory_scope) VALUES (?,?,?,?,?,?,?)",
+            ("user", content, tid, now, identity._session_id, project_id, scope),
+        )
+        if not record_origin_root(
+            conn, "verbatim", str(cur.lastrowid), write_origin=WRITE_ORIGIN,
+            principal=identity._session_id or "unknown-principal", channel="mcp:verbatim",
+        ):
+            raise ValueError("authority_stamp_failed")
         _emit(conn, "verbatim_user", target=tid, summary=content)
         return "ok"
 
-    return run_write("verbatim-user", _write)
+    try:
+        return run_write("verbatim-user", _write)
+    except ValueError as exc:
+        if str(exc).startswith("authority_"):
+            return f"ERR {exc}"
+        raise
 
 
 @write_tool(idempotent=True)

@@ -7,6 +7,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 DOCKERFILE = ROOT / "Dockerfile"
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+PIP_AUDIT_IGNORES = ROOT / ".github" / "pip-audit-ignores.txt"
 
 BOT_TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -96,17 +98,53 @@ def test_glama_dockerfile_pin_matches_the_project_release():
     assert f"threadkeeper=={version}" in DOCKERFILE.read_text()
 
 
-def test_mcp_requirement_supports_the_tasks_extension_api():
-    # MCP 2.3.0 supplies the 2026-07-28 extension interface used by the
-    # durable Tasks implementation. Keep its import surface and bounded major
-    # requirement in lockstep so a fresh install cannot silently resolve 1.x.
-    importers = [
+def test_mcp_requirement_supports_the_skills_and_tasks_extension_surface():
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    mcp_req = next(d for d in deps if d.split(">")[0].split("<")[0].strip() == "mcp")
+    assert mcp_req == "mcp>=2.3.0,<3"
+
+    for importer in (
         ROOT / "threadkeeper" / "_mcp.py",
         ROOT / "threadkeeper" / "elicitation.py",
         ROOT / "threadkeeper" / "tools" / "dialectic.py",
-    ]
-    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
-    mcp_req = next(d for d in deps if d.split(">")[0].split("<")[0].strip() == "mcp")
+    ):
+        text = importer.read_text()
+        assert "mcp.server.fastmcp" not in text
+    assert "mcp.server.mcpserver" in (ROOT / "threadkeeper" / "_mcp.py").read_text()
 
-    assert all("mcp.server.mcpserver" in p.read_text() for p in importers)
-    assert "mcp>=2.3.0,<3" == mcp_req
+
+def test_ci_matrix_covers_the_supported_mcp_sdk_surface():
+    matrix = _workflow("test.yml")["jobs"]["pytest-shard"]["strategy"]["matrix"]
+    assert matrix["mcp"] == [">=2.3.0,<3"]
+    assert "include" not in matrix
+    assert '"mcp${{ matrix.mcp }}"' in _workflow_text("test.yml")
+
+def test_ci_security_scanning_covers_code_and_resolved_dependencies():
+    codeql = _workflow("codeql.yml")
+    codeql_text = _workflow_text("codeql.yml")
+    pip_audit_job = _workflow("test.yml")["jobs"]["pip-audit"]
+    dependabot = yaml.safe_load(DEPENDABOT.read_text())
+
+    assert codeql["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+    }
+    assert "branches: [main]" in codeql_text
+    assert "cron:" in codeql_text
+    assert "github/codeql-action/init@v4" in codeql_text
+    assert "github/codeql-action/analyze@v4" in codeql_text
+    assert "languages: python" in codeql_text
+    assert "build-mode: none" in codeql_text
+    assert "queries:" not in codeql_text  # Keep the default suite for now.
+
+    audit_text = _workflow_text("test.yml")
+    assert pip_audit_job["name"] == "pip-audit (resolved dependencies)"
+    assert "python -m pip install -e '.[semantic,dev]'" in audit_text
+    assert "python -m pip uninstall -y threadkeeper" in audit_text
+    assert "pip-audit --local --strict" in audit_text
+    assert "--ignore-vuln" in audit_text
+    assert "Malformed .github/pip-audit-ignores.txt entry" in audit_text
+    assert "There are no active suppressions at present." in PIP_AUDIT_IGNORES.read_text()
+
+    ecosystems = {entry["package-ecosystem"] for entry in dependabot["updates"]}
+    assert "docker" in ecosystems

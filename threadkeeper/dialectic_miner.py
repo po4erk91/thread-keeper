@@ -19,6 +19,7 @@ from .db import get_db
 from .helpers import daemon_sleep, resolve_ingest_watermark
 from . import daemon_state, identity
 from .identity import _ensure_session, _emit
+from .project_scope import recall_where
 
 logger = logging.getLogger(__name__)
 
@@ -364,19 +365,22 @@ def run_mine_pass(force: bool = False, *, scheduled: bool = False) -> str:
     from .harvest import harvest_exclusion_cte
 
     exclusion_cte, exclusion_params = harvest_exclusion_cte()
+    dialog_scope, dialog_scope_params = recall_where("dialog_messages")
 
     rows = conn.execute(
         exclusion_cte +
-        "SELECT rowid, uuid, session_id, content, created_at FROM dialog_messages "
+        "SELECT rowid, uuid, session_id, content, created_at, project_id, memory_scope "
+        "FROM dialog_messages "
         "WHERE role='user' AND rowid > ? "
         "AND coalesce(project, '') != 'subagents' "
+        f"AND {dialog_scope} "
         "AND content NOT LIKE '[tool_result]%' AND content NOT LIKE '[Image%' "
         "AND length(content) >= 1 "
         "AND session_id NOT IN ("
         "  SELECT session_id FROM harvest_excluded_sessions"
         ") "
         "ORDER BY rowid ASC",
-        (*exclusion_params, cursor),
+        (*exclusion_params, cursor, *dialog_scope_params),
     ).fetchall()
 
     if not rows:
@@ -410,9 +414,10 @@ def run_mine_pass(force: bool = False, *, scheduled: bool = False) -> str:
         ctx = _preceding_context(conn, r["session_id"] or "", r["created_at"])
         cur = conn.execute(
             "INSERT OR IGNORE INTO dialectic_observations "
-            "(dialog_uuid, user_quote, context, source_cid, status, created_at) "
-            "VALUES (?,?,?,?, 'pending', ?)",
-            (r["uuid"], r["content"], ctx, r["session_id"], now),
+            "(dialog_uuid, user_quote, context, source_cid, status, created_at, "
+            "project_id, memory_scope) VALUES (?,?,?,?, 'pending', ?,?,?)",
+            (r["uuid"], r["content"], ctx, r["session_id"], now,
+             r["project_id"], r["memory_scope"]),
         )
         if cur.rowcount:
             captured += 1

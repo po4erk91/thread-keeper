@@ -15,8 +15,9 @@ from typing import Any
 
 from .config import TASK_LOG_DIR
 from .task_spool import open_spool_binary_read
-from .db import get_db
+from .db import get_db, read_db
 from .github_budget import format_github_budget, github_budget_state
+from .github_safety import sanitize_presentation_text
 from .helpers import alive, fmt_age
 from .agent_metadata import role_metadata
 from .daemon_liveness import daemon_thread_status
@@ -296,7 +297,7 @@ for _loop_def in _LOOP_DEFS:
 _RESULT_WINDOW_S = 3600
 _RESULT_SUMMARY_LIMIT = 240
 _ISSUE_BACKLOG_CACHE: dict[str, int] = {"at": 0, "count": 0}
-_CONFLICTED_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
+_APPLIER_PR_CACHE: dict[str, int] = {"at": 0, "count": 0}
 
 
 def _detect_role(prompt: str) -> str:
@@ -330,15 +331,15 @@ def _status_for(pid: int | None, ended_at: int | None) -> str:
 
 
 def _refresh_rss(conn) -> None:
-    """Refresh task liveness/RSS using the existing spawn-budget sweeper.
+    """Refresh task liveness/RSS in observation-only mode.
 
-    This intentionally reuses the production measurement path, so the widget
-    and spawn-budget tool agree on memory numbers.
+    Status reads measure only and never kill or respawn; lifecycle
+    enforcement stays daemon-owned.
     """
     try:
         from .spawn_budget import _refresh_all_running
 
-        _refresh_all_running(conn)
+        _refresh_all_running(conn, enforce=False)
     except Exception:
         # A status widget should degrade to the last cached RSS instead of
         # failing when ps is briefly unavailable or the DB is locked.
@@ -445,32 +446,46 @@ def _roadmap_issue_apply_count(conn, now: int) -> int:
     return len(issues)
 
 
-def _conflicted_pr_apply_count(now: int) -> int:
-    if now - _CONFLICTED_PR_CACHE["at"] < 300:
-        return _CONFLICTED_PR_CACHE["count"]
+def _applier_pr_apply_count(now: int) -> int:
+    """Open applier PRs the applier will act on: repair, update, or merge."""
+    if now - _APPLIER_PR_CACHE["at"] < 300:
+        return _APPLIER_PR_CACHE["count"]
     try:
-        from .evolve_applier import _conflicted_applier_prs
+        from .evolve_applier import _applier_pr_queue
 
-        prs, err = _conflicted_applier_prs()
+        queue, err = _applier_pr_queue()
     except Exception:
-        return _CONFLICTED_PR_CACHE["count"]
+        return _APPLIER_PR_CACHE["count"]
     if err:
-        return _CONFLICTED_PR_CACHE["count"]
-    _CONFLICTED_PR_CACHE["at"] = int(now)
-    _CONFLICTED_PR_CACHE["count"] = len(prs)
-    return len(prs)
+        return _APPLIER_PR_CACHE["count"]
+    count = sum(1 for action, _pr in queue if action != "wait")
+    _APPLIER_PR_CACHE["at"] = int(now)
+    _APPLIER_PR_CACHE["count"] = count
+    return count
 
 
-def _backlog_count(conn, loop: dict[str, Any], now: int) -> int:
+def _backlog_count(
+    conn,
+    loop: dict[str, Any],
+    now: int,
+    *,
+    allow_external: bool = True,
+) -> int:
     if loop.get("backlog_metric") == "probe_due":
         return _probe_due_count(conn, now)
     if loop.get("backlog_metric") == "evolve_apply":
-        return _conflicted_pr_apply_count(now) + _scalar(
+        local_backlog = _scalar(
             conn,
             "SELECT COUNT(*) FROM evolve WHERE applied=0 "
             "AND COALESCE(status,'pending')='promoted'",
-        ) + _curator_report_apply_count(conn) + _roadmap_issue_apply_count(
-            conn, now
+        )
+        if not allow_external:
+            return local_backlog
+        return (
+            _applier_pr_apply_count(now)
+            + local_backlog
+            + _curator_report_apply_count(conn)
+            + _roadmap_issue_apply_count(conn, now)
         )
     if loop.get("backlog_sql"):
         return _scalar(conn, loop["backlog_sql"])
@@ -615,19 +630,28 @@ def _daemon_health(
     }
 
 
+_BUDGET_BLOCK_LABELS = {
+    "memory": "Spawn blocked: memory budget",
+    "tokens": "Spawn blocked: daily token budget",
+    "cost": "Spawn blocked: daily cost budget",
+}
+
+
 def _human_summary(summary: str, fallback: str) -> str:
+    from .notify import budget_refusal_kind
+
     s = (summary or "").strip()
     if not s:
         return fallback
     if s.startswith("spawn_error"):
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"
     if ":: ERR" in s:
-        if "budget_exceeded" in s:
-            return "Spawn blocked: memory budget"
+        if budget := budget_refusal_kind(s):
+            return _BUDGET_BLOCK_LABELS[budget]
         if "Argument list too long" in s:
             return "Spawn failed: prompt too large"
         return "Spawn failed"
@@ -673,13 +697,15 @@ def _loop_status(
     loop: dict[str, Any],
     agents_by_role: dict[str, list[dict[str, Any]]],
     now: int,
+    *,
+    allow_external: bool = True,
 ) -> dict[str, Any]:
     from . import config
 
     interval_s = float(getattr(config, loop["interval"], 0) or 0)
     threshold = int(getattr(config, loop.get("threshold", ""), 0) or 0)
     ready_backlog_min = int(loop.get("ready_backlog_min", 0) or 0)
-    backlog = _backlog_count(conn, loop, now)
+    backlog = _backlog_count(conn, loop, now, allow_external=allow_external)
     last = _last_event(conn, loop.get("result_events", loop["event"]), now)
     health = _daemon_health(conn, loop, interval_s, now)
     running = agents_by_role.get(loop.get("role", ""), [])
@@ -714,6 +740,15 @@ def _loop_status(
     elif last_summary:
         work = _human_summary(last_summary, loop["work"])
 
+    curator_batches: dict[str, object] = {}
+    if loop["id"] == "curator":
+        try:
+            from .curator import curator_pass_status
+
+            curator_batches = curator_pass_status(conn)
+        except Exception:
+            curator_batches = {}
+
     return {
         "id": loop["id"],
         "name": loop["name"],
@@ -735,11 +770,18 @@ def _loop_status(
         "running_agent_count": len(running),
         "rss_mb": rss_mb,
         "rss_kb": rss_mb * 1024,
+        **({"batches": curator_batches} if curator_batches else {}),
         **health,
     }
 
 
-def _loop_statuses(conn, agents: list[dict[str, Any]], now: int) -> list[dict[str, Any]]:
+def _loop_statuses(
+    conn,
+    agents: list[dict[str, Any]],
+    now: int,
+    *,
+    allow_external: bool = True,
+) -> list[dict[str, Any]]:
     agents_by_role: dict[str, list[dict[str, Any]]] = {}
     for agent in agents:
         role = agent.get("role") or ""
@@ -747,7 +789,13 @@ def _loop_statuses(conn, agents: list[dict[str, Any]], now: int) -> list[dict[st
             agents_by_role.setdefault(role, []).append(agent)
     loops: list[dict[str, Any]] = []
     for index, loop in enumerate(_LOOP_DEFS):
-        row = _loop_status(conn, loop, agents_by_role, now)
+        row = _loop_status(
+            conn,
+            loop,
+            agents_by_role,
+            now,
+            allow_external=allow_external,
+        )
         row["_order"] = index
         loops.append(row)
 
@@ -816,7 +864,7 @@ def _read_log_sample(task_id: str, max_head: int = 16_384, max_tail: int = 65_53
 def _clean_result_line(line: str) -> str:
     line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line)
     line = re.sub(r"\s+", " ", line).strip()
-    return line
+    return sanitize_presentation_text(line)
 
 
 # Enumerated / bulleted lines ("d. …", "4) …", "- …") are prompt formatting
@@ -878,17 +926,47 @@ def _extract_useful_result(task_id: str) -> str:
     return ""
 
 
-def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+def _recent_materializations(conn, now: int, limit: int) -> list[dict[str, Any]]:
+    """Name actual writes, including foreground writes without a child task."""
     from . import config
-    # Positive materialization notifications (#257). These are captured skills /
-    # lessons surfaced as useful loop output; the app posts a banner only when
-    # notifications are enabled (NOTIFY_POLL_S master gate) and a positive toggle
-    # is on, but the menu always lists them (`notify` flag).
+    from .notify import _fmt_skill, _fmt_lesson
+
     enabled = float(getattr(config, "NOTIFY_POLL_S", 0) or 0) > 0
-    positive_notify = enabled and bool(
-        getattr(config, "NOTIFY_SKILL_MATERIALIZED", False)
-        or getattr(config, "NOTIFY_LESSON", False)
-    )
+    rows = conn.execute(
+        "SELECT id, kind, target, summary, created_at FROM events "
+        "WHERE kind IN ('skill_create', 'skill_materialized', 'lesson_append') "
+        "AND created_at>=? ORDER BY created_at DESC, id DESC LIMIT ?",
+        (now - _RESULT_WINDOW_S, int(limit)),
+    ).fetchall()
+    results = []
+    for row in rows:
+        skill = row["kind"] != "lesson_append"
+        title, summary = (_fmt_skill if skill else _fmt_lesson)(dict(row))
+        if not summary:
+            continue
+        age_s = max(0, now - row["created_at"])
+        results.append({
+            "id": f"materialization:{row['id']}",
+            "task_id": "",
+            "role": "skill" if skill else "lesson",
+            "loop_id": "",
+            "loop_name": "Skill" if skill else "Lesson",
+            "title": title,
+            "summary": summary,
+            "ended_at": row["created_at"],
+            "age_s": age_s,
+            "age": fmt_age(age_s),
+            "notify": enabled and bool(
+                config.NOTIFY_SKILL_MATERIALIZED if skill else config.NOTIFY_LESSON
+            ),
+        })
+    return results
+
+
+def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
+    # Event-backed materializations carry names and per-category toggles.
+    # Generic completion reports remain in history without duplicate banners.
+    materializations = _recent_materializations(conn, now, limit)
     role_loop = _role_to_loop()
     rows = conn.execute(
         "SELECT id, prompt, ended_at, return_code FROM tasks "
@@ -919,11 +997,12 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
             "ended_at": ended_at,
             "age_s": age_s,
             "age": fmt_age(age_s),
-            "notify": positive_notify,
+            "notify": False,
         })
         if len(results) >= limit:
             break
-    return results
+    return sorted(materializations + results, key=lambda r: r["ended_at"],
+                  reverse=True)[:limit]
 
 
 def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
@@ -1136,18 +1215,26 @@ def format_memory_cleanup(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, Any]:
-    """Return a JSON-ready snapshot of autonomous loops and running children."""
-    conn = get_db()
-    if refresh:
-        _refresh_rss(conn)
-    now = int(time.time())
+def _agent_status_snapshot(
+    conn,
+    now: int,
+    limit: int,
+    *,
+    freshness: str,
+    include_recent: bool = True,
+    allow_external: bool = True,
+) -> dict[str, Any]:
     agents = _running_agents(conn, now, limit)
-    loops = _loop_statuses(conn, agents, now)
-    github_budget = github_budget_state(conn, now_t=now)
+    loops = _loop_statuses(conn, agents, now, allow_external=allow_external)
+    github_budget = github_budget_state(
+        conn,
+        now_t=now,
+        ensure_schema=allow_external,
+    )
 
     return {
         "generated_at": now,
+        "rss_freshness": freshness,
         "running_count": len(agents),
         "total_rss_kb": sum(a["rss_kb"] for a in agents),
         "total_rss_mb": sum(a["rss_mb"] for a in agents),
@@ -1156,11 +1243,63 @@ def agent_status_snapshot(refresh: bool = True, limit: int = 50) -> dict[str, An
         "ready_loop_count": sum(1 for loop in loops if loop["status"] == "ready"),
         "loops": loops,
         "github_budget": github_budget,
-        "recent_results": _recent_results(conn, now),
-        "recent_failures": _recent_failures(conn, now),
+        "recent_results": _recent_results(conn, now) if include_recent else [],
+        "recent_failures": _recent_failures(conn, now) if include_recent else [],
         "timed_out_count": _timed_out_count(conn, now),
         "agents": agents,
     }
+
+
+def agent_status_snapshot(
+    refresh: bool = False,
+    limit: int = 50,
+    *,
+    conn=None,
+    include_recent: bool = True,
+    allow_external: bool = True,
+) -> dict[str, Any]:
+    """Return a JSON-ready snapshot of autonomous loops and running children.
+
+    ``refresh=True`` is for explicit write callers (the CLI and refresh tool).
+    Observational callers receive only the last persisted RSS/lifecycle cache.
+    A display-only caller may supply a query-only connection and disable
+    external backlog checks and recent task-log reads.
+    """
+    now = int(time.time())
+    if conn is not None:
+        if refresh:
+            _refresh_rss(conn)
+        return _agent_status_snapshot(
+            conn,
+            now,
+            limit,
+            freshness="refreshed" if refresh else "cached",
+            include_recent=include_recent,
+            allow_external=allow_external,
+        )
+    if refresh:
+        conn = get_db()
+        try:
+            _refresh_rss(conn)
+            return _agent_status_snapshot(
+                conn,
+                now,
+                limit,
+                freshness="refreshed",
+                include_recent=include_recent,
+                allow_external=allow_external,
+            )
+        finally:
+            conn.close()
+    with read_db() as conn:
+        return _agent_status_snapshot(
+            conn,
+            now,
+            limit,
+            freshness="cached",
+            include_recent=include_recent,
+            allow_external=allow_external,
+        )
 
 
 def format_agent_status(snapshot: dict[str, Any]) -> str:
@@ -1170,7 +1309,8 @@ def format_agent_status(snapshot: dict[str, Any]) -> str:
         f"loops enabled={snapshot.get('enabled_loop_count', 0)} "
         f"running={snapshot.get('running_loop_count', 0)} "
         f"ready={snapshot.get('ready_loop_count', 0)} "
-        f"child_rss={snapshot['total_rss_mb']}MB{timed_out_disp} "
+        f"child_rss={snapshot['total_rss_mb']}MB "
+        f"rss_freshness={snapshot.get('rss_freshness', 'cached')}{timed_out_disp} "
         f"{format_github_budget(snapshot.get('github_budget') or {})}"
     ]
     for loop in snapshot.get("loops", []):

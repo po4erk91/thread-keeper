@@ -191,6 +191,19 @@ def test_cli_golden_baseline_is_clean():
     assert r["shadow"]["ready"] and r["candidate"]["ready"] and r["quality"]["ready"]
 
 
+def test_upgrade_replay_regression_fails_the_release_gate(tmp_path):
+    """A one-way model regression must not be downgraded to PARTIAL."""
+    for fixture in FIXTURES.iterdir():
+        (tmp_path / fixture.name).write_text(fixture.read_text())
+    replay = json.loads((tmp_path / "upgrade_replay.json").read_text())
+    replay["items"][0]["new_to_old"]["retrieved_memory_ids"] = []
+    (tmp_path / "upgrade_replay.json").write_text(json.dumps(replay))
+
+    report = h.run_eval(tmp_path)
+    assert not report["upgrade"]["passed"]
+    assert report["verdict"] == "FAIL"
+
+
 def test_cli_llm_judge_without_key_exits_cleanly():
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     proc = _run_cli("--judge", "llm", env=env)
@@ -211,7 +224,8 @@ _SECRET_PATTERNS = [
 
 
 def test_fixtures_have_no_secrets_or_private_paths():
-    for name in ("shadow.json", "candidates.json", "skill_quality.json"):
+    for name in ("shadow.json", "candidates.json", "skill_quality.json",
+                 "upgrade_replay.json"):
         text = (FIXTURES / name).read_text()
         # valid JSON
         json.loads(text)

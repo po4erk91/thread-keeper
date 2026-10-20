@@ -52,9 +52,16 @@ def _ensure_cursor(conn: sqlite3.Connection) -> None:
 
 def _emit(conn: sqlite3.Connection, kind: str,
           target: Optional[str] = None, summary: Optional[str] = None) -> None:
-    """Append to event log + bump heartbeat. Called by every mutating tool."""
+    """Append an event and heartbeat after the caller initializes its session.
+
+    Every mutating path must call :func:`_ensure_session` first. Failing loudly
+    here prevents an incomplete telemetry stream from looking successful.
+    """
     if _session_id is None:
-        return
+        raise RuntimeError(
+            "_emit() requires session setup; call _ensure_session() before "
+            "emitting events"
+        )
     now = int(time.time())
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
@@ -106,6 +113,13 @@ def _ensure_session_locked(conn: sqlite3.Connection,
     if _session_id is not None:
         return _session_id
 
+    # A host may inspect a resource or a readOnlyHint tool before any explicit
+    # user action. Do not turn that observation into a session/presence/cursor
+    # bootstrap or daemon start. The caller can still render the anonymous
+    # cached view; the next mutating action creates the real session.
+    if bool(conn.execute("PRAGMA query_only").fetchone()[0]):
+        return ""
+
     if _session_id is None:
         # pid embedded so two processes can never collide; hex tail keeps id short.
         # NB: claude desktop/code may multiplex several windows into one mcp
@@ -114,10 +128,13 @@ def _ensure_session_locked(conn: sqlite3.Connection,
         _session_id = f"s_{os.getpid()}_{secrets.token_hex(2)}"
         _session_start = int(time.time())
         cli = client or _client_label
+        from .project_scope import resolve_write_scope
+        memory_scope, project_id = resolve_write_scope()
         conn.execute(
-            "INSERT INTO sessions (id, started_at, client, write_origin) "
-            "VALUES (?,?,?,?)",
-            (_session_id, _session_start, cli, WRITE_ORIGIN),
+            "INSERT INTO sessions (id, started_at, client, write_origin, "
+            "project_id, memory_scope) VALUES (?,?,?,?,?,?)",
+            (_session_id, _session_start, cli, WRITE_ORIGIN,
+             project_id, memory_scope),
         )
         conn.execute(
             "INSERT INTO presence (session_id, client, started_at, heartbeat_at, "

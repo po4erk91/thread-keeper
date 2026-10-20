@@ -30,6 +30,9 @@ python -m threadkeeper._setup --dry-run
 - [ ] If a new MCP tool — added to `threadkeeper/tools/` AND imported in `server.py`
 - [ ] If a new adapter — registered in `adapters/__init__.py` with a test in `tests/test_adapters.py`
 - [ ] If user-visible behavior changed — README / CONTRIBUTING reflects it
+- [ ] Version is bumped in `pyproject.toml`, `server.json`, and `Dockerfile`
+      (fix → patch, feature → minor, replacement/breaking implementation → major),
+      with a matching versioned `CHANGELOG.md` heading
 - [ ] No new emoji in code or docs (per house style)
 - [ ] No new locale strings outside `threadkeeper/i18n.py`
 
