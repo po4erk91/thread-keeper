@@ -8,6 +8,36 @@ remains a live question.
 
 ---
 
+## 2026-10-20 reviewer audit
+
+The current audit added two narrow safety/reliability items:
+
+- **Automation-owned PR landing (#400).** The default Evolve landing sweep
+  currently merges or updates every ready PR authored by the account that
+  `gh` uses, including unmarked manual and fork PRs. Require durable Evolve or
+  reviewer ownership evidence before the daemon changes a PR; ambiguous PRs
+  must remain visible but wait for a human.
+- **Task-gate hook contract (#399).** The installed matcher now includes
+  `Task`, `Agent`, and `Workflow`, but no regression executes the real hook
+  with current `PreToolUse` payloads. Pin the generated matcher and both the
+  blocking legacy path and advisory native-agent path, or remove any branch
+  the supported host no longer emits.
+
+The audit also reconciled the post-October backlog that was not yet indexed in
+this document: spawned-child memory authority (#385), incoming MCP trace
+context (#386), context-enriched short-fragment retrieval (#387), verified
+skill-mirror convergence (#388), persisted task roles in status (#389), consent
+for learned host-wide mutations (#390), semantic memory export/import (#395),
+and lesson integrity in Curator manifests (#396). These remain issue-backed;
+this pass did not create parallel proposals.
+
+The research leads were already covered by the Tasks facade (#370), the
+official conformance gate (#379), and the action/outcome and forgetting-aware
+evaluation work (#380/#371), with protocol compatibility, cache hints,
+outcome-quality evaluation, and the portable MCP App already completed in
+#344/#345/#347/#364. The two remaining legacy suggestions map directly to
+protected-lesson freshness (#372) and hidden skill fixtures (#381).
+
 ## 2026-10-14 reviewer audit
 
 This pass reconciled the full issue history, current implementation, legacy
