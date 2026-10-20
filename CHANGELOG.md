@@ -98,6 +98,14 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-20
+
+- **Added: MCP Tasks support for durable headless spawned work (#370).** Clients
+  that advertise `io.modelcontextprotocol/tasks` receive an opaque,
+  authorization-bound task handle for eligible `spawn(visible=False)` calls and
+  can poll `tasks/get` or cooperatively request cancellation with
+  `tasks/cancel`. Existing clients retain the synchronous spawn response.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

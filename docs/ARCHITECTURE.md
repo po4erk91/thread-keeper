@@ -13,7 +13,7 @@ use short explicit transactions. One state file: `~/.threadkeeper/db.sqlite`.
 
 ```
 threadkeeper/
-├── _mcp.py            FastMCP singleton (shared @mcp.tool / .resource / .prompt registrar)
+├── _mcp.py            MCPServer singleton (shared @mcp.tool / .resource / .prompt registrar)
 ├── server.py          entry point: import all tools/ → mcp.run() (stdio)
 ├── config.py          pydantic-settings Settings ← ~/.threadkeeper/.env (DB_PATH, …)
 ├── db.py              SCHEMA + user_version migrations + WAL-knobs + sqlite-vec loader
@@ -853,6 +853,24 @@ only thread-keeper with full state and embeddings) plans and makes decisions;
 spawned children are light-executors. Trigger: **N≥2 modular independent units,
 ≥5 min each**.
 
+### MCP Tasks extension
+
+For MCP 2026-07-28 clients that advertise
+`io.modelcontextprotocol/tasks`, a headless `spawn(visible=False)` returns a
+durable public task handle instead of the synchronous spawn text. The handle is
+a 256-bit random token stored separately from the short internal `tasks.id` and
+is bound to the authenticated principal; a local stdio deployment falls back to
+the operating-system user boundary. `tasks/get` refreshes the underlying child
+and returns `working`, `completed`, `cancelled`, or `failed` with a 5-second polling hint
+while it is working. `tasks/cancel` sends the existing cooperative SIGTERM path,
+is idempotent, and never reveals or acts on a task owned by another caller.
+
+Only headless spawn is eligible because a visible Terminal.app launch has no
+stable process-group handle. The extension does not add `tasks/list` or
+`tasks/update`: spawn never pauses for client input. Calls from clients that do
+not advertise the extension, and calls using earlier protocol versions, retain
+the existing custom `spawn` / `tasks` / `task_kill` behavior.
+
 For Codex children, normal `permission_mode="auto"` spawns use
 `codex exec --sandbox workspace-write`. PR-gated code-evolve spawns use
 `permission_mode="bypassPermissions"`, which maps to Codex's
@@ -1488,7 +1506,7 @@ below).
 | panel | 1 | convene_panel |
 | session | 1 | session_end |
 
-Each tool is a synchronous Python function; FastMCP wraps it in JSON-Schema
+Each tool is a synchronous Python function; MCPServer wraps it in JSON-Schema
 automatically from type annotations. One process — one mcp instance
 (`threadkeeper._mcp.mcp`).
 
@@ -1541,7 +1559,7 @@ the other two for the read/act split they fit naturally:
   one instruction message that drives the existing read/act tools (it does not act
   on its own).
 
-Both are **additive**: FastMCP advertises the `resources` / `prompts`
+Both are **additive**: MCPServer advertises the `resources` / `prompts`
 capabilities, which only changes what a capability-aware host *sees* — never the
 tool surface. A host that uses neither falls back to the hook-injected brief and
 the `brief()` / `context()` tools, with identical content. Resource/prompt functions register on

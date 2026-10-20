@@ -10,6 +10,10 @@ remains a live question.
 
 ## Closed
 
+- MCP Tasks extension for headless spawned work (#370): clients that advertise
+  `io.modelcontextprotocol/tasks` receive authorization-bound opaque handles
+  for `spawn(visible=False)` and can poll `tasks/get` or cooperatively cancel
+  with `tasks/cancel`; legacy clients retain the custom synchronous lifecycle.
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB
@@ -241,7 +245,7 @@ machine by design; the SQLite store lives at
 paths. Move to a hosted topology where N users connect their CLIs to
 one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
 
-- **HTTP / SSE transport.** FastMCP already supports
+- **HTTP / SSE transport.** MCPServer already supports
   `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
   Scope: S.
 - **Per-user auth.** Bearer token in `Authorization` header on every

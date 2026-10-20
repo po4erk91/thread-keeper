@@ -35,7 +35,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -480,6 +480,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_respawned_as TEXT
 );
 
+-- Public MCP Tasks-extension handles for eligible spawned work. The opaque
+-- task_id is deliberately separate from tasks.id: internal task IDs remain
+-- short display identifiers and must never become cross-client handles.
+CREATE TABLE IF NOT EXISTS mcp_task_handles (
+    task_id                TEXT PRIMARY KEY,
+    internal_task_id       TEXT NOT NULL UNIQUE,
+    owner_key              TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK(status IN
+                           ('working','completed','cancelled','failed')),
+    status_message         TEXT,
+    created_at             INTEGER NOT NULL,
+    last_updated_at        INTEGER NOT NULL,
+    cancel_requested_at    INTEGER,
+    cancel_accepted_at     INTEGER,
+    result_json            TEXT
+);
+
 -- Cross-process resource-control requests. The memory guard uses this as a
 -- small mailbox so one MCP server can ask peer servers to unload models/caches
 -- without sharing process memory.
@@ -560,6 +577,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_started  ON tasks(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_spawned  ON tasks(spawned_cid);
 CREATE INDEX IF NOT EXISTS idx_tasks_running  ON tasks(ended_at) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mcp_task_handles_owner ON mcp_task_handles(owner_key);
 CREATE INDEX IF NOT EXISTS idx_resource_controls_pending
     ON resource_controls(target_pid, action, handled_at, expires_at);
 CREATE INDEX IF NOT EXISTS idx_github_rate_budget_cooldown
@@ -897,7 +915,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3):
+    if from_version not in (0, 1, 2, 3, 4):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"

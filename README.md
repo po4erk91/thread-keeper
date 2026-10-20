@@ -204,6 +204,23 @@ Hosts without a capability fall back to the SessionStart hook plus the `brief()`
 regression. Static URIs only for now (resource *templates* with `{param}` are
 still unevenly supported across hosts).
 
+### MCP Tasks for headless spawn
+
+Clients using MCP 2026-07-28 that advertise the
+`io.modelcontextprotocol/tasks` extension can call
+`spawn(..., visible=False)` as a durable asynchronous operation. The response is
+an opaque public task handle; poll it with `tasks/get` and request cooperative
+cancellation with `tasks/cancel`. Handles are bound to the authenticated caller
+(or the local OS user for stdio), survive a host reconnect, and never expose the
+short internal spawn ID. The server suggests a 5-second polling interval.
+
+Only headless `spawn` is task-eligible: visible Terminal.app work has no stable
+process-group handle. `tournament`, `tasks`, `task_logs`, and the legacy custom
+spawn lifecycle stay unchanged. Clients that do not advertise the extension
+receive the existing synchronous `spawn` response, including on older protocol
+versions. `spawn` does not pause for approval, so it deliberately does not
+implement `tasks/update` or task enumeration.
+
 ### Memory egress (cross-provider privacy)
 
 thread-keeper is "one user model … shared across CLIs," and that sharing is by
@@ -1715,7 +1732,7 @@ the suite on every push and PR.
 ```
 threadkeeper/
 ├── server.py             # MCP entry: python -m threadkeeper.server
-├── _mcp.py               # FastMCP singleton + read_tool()/write_tool() annotation wrappers
+├── _mcp.py               # MCPServer singleton + read_tool()/write_tool() annotation wrappers
 ├── tool_schemas.py       # typed outputSchema models for the structured status tools
 ├── _setup.py             # `thread-keeper-setup` installer
 ├── config.py             # env-driven defaults

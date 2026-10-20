@@ -1,4 +1,4 @@
-"""Singleton FastMCP instance shared by every tool module. All
+"""Singleton MCPServer instance shared by every tool module. All
 @mcp.tool() definitions across the package register on this same instance,
 so server.py can simply import every tool module and call mcp.run().
 
@@ -14,11 +14,13 @@ writes without calling them:
 This static metadata layer is what a confirmation/elicitation client reads
 to decide which calls warrant a prompt (roadmap #67; substrate for #26).
 """
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel
 
-mcp = FastMCP("thread-keeper")
+from .mcp_tasks import MCPTasksExtension
+
+mcp = MCPServer("thread-keeper", extensions=[MCPTasksExtension()])
 
 
 def read_tool(**kwargs):

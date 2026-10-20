@@ -1,7 +1,7 @@
 """threadkeeper.server — package entry point.
 
 Importing each tools module triggers its @mcp.tool() decorators against the
-shared FastMCP singleton in threadkeeper._mcp. After all imports, the
+shared MCPServer singleton in threadkeeper._mcp. After all imports, the
 runtime is fully assembled; mcp.run() starts the stdio MCP loop.
 
 To launch:

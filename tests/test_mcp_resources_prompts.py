@@ -158,7 +158,7 @@ def test_audit_threadkeeper_prompt_renders(fresh_mp):
 # ──────────────────────────────────────────────────────────────────────
 
 def test_server_advertises_resources_and_prompts_capabilities(fresh_mp):
-    caps = fresh_mp["mcp"]._mcp_server.get_capabilities(NotificationOptions(), {})
+    caps = fresh_mp["mcp"]._lowlevel_server.get_capabilities(NotificationOptions(), {})
     assert caps.resources is not None
     assert caps.prompts is not None
     assert caps.tools is not None  # tools unaffected

@@ -1,7 +1,7 @@
 """Typed output schemas for the status tools that advertise an MCP
 ``outputSchema`` and return ``structuredContent`` (roadmap #67).
 
-Each model is used as the return annotation of its tool so FastMCP derives
+Each model is used as the return annotation of its tool so MCPServer derives
 the ``outputSchema`` exposed in ``tools/list``; the tool body builds the
 model and hands it to :func:`threadkeeper._mcp.structured_result`, which
 keeps the legacy human-readable text block alongside the structured JSON.
