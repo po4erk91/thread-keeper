@@ -480,7 +480,7 @@ moving the high-water forward; `force=True` bypasses this due gate.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
   audits lessons, concepts, and every tracked/materialized skill through
   bounded slim-child batches. A deterministic parent phase writes
-  `AUDIT-<pass-id>.json` with
+  `AUDIT-<date>-<nonce>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
   exact duplicates, and lexical semantic candidates. The child reads each full
   skill, researches current official docs and comparable public skills, writes
@@ -500,11 +500,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   endorsed `inventory_sha256` and the current inventory hash. Spawned
   `curator_pass` events record total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
-  Before dispatching each child, the parent also authorizes that exact
-  `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
-  path-scoped writer requires that authorization plus its matching pass ID and
-  records the final SHA-256 in `curator_report_provenance`; a file appearing in
-  the report directory alone is therefore never trusted as Curator output.
+  The parent supplies pass/snapshot context as explicit data for each private
+  Curator launch, never by mutating its own environment; ordinary spawns strip
+  those values even when inherited stale. It records the task, child identity,
+  pass, batch, role, write origin, and exact `REPORT-*.md` destination before
+  launch. The report writer requires that task-bound authorization, and a
+  watchdog retry may restore only recorded Curator launch data. It records the
+  final SHA-256 in `curator_report_provenance`; a file appearing in the report
+  directory alone is therefore never trusted as Curator output.
   Destructive lesson removals and skill deletes reserve from one atomic,
   pass-ID-scoped server-side budget before touching disk. The default
   `CURATOR_MAX_DESTRUCTIVE_PER_PASS=10` is shared across child batches and
@@ -1134,8 +1137,9 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
-- **Curator recovery and destructive telemetry** — destructive curator passes
-  receive a pass id and pre-mutation snapshot dir in their environment. When the
+- **Curator recovery and destructive telemetry** — destructive curator children
+  receive pass and pre-mutation snapshot context only through their private,
+  task-bound launch environment. When the
   normal `lesson_append`, `lesson_remove`, or `skill_manage` tools run under
   that pass, they emit `events.kind='curator_destructive_action'` rows such as
   `lesson_pruned`, `lesson_patched`, `lesson_consolidated`, and

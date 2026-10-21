@@ -509,6 +509,26 @@ def _respawn_timed_out(conn, row, age: int) -> None:
 
     root_id = _retry_chain_root(conn, row)
     prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
+    curator_launch = None
+    if (
+        str(_row_get(row, "role", "") or "") == "curator"
+        and str(_row_get(row, "write_origin", "") or "") == "curator"
+    ):
+        from .curator import _curator_launch_for_continuation
+        curator_launch = _curator_launch_for_continuation(conn, str(row["id"]))
+        if curator_launch is None:
+            try:
+                from .identity import _emit
+                _emit(
+                    conn,
+                    "spawn_timeout_retry_skipped",
+                    target=row["id"],
+                    summary="curator_launch_authorization_missing",
+                )
+                conn.commit()
+            except Exception:
+                pass
+            return
     try:
         from .tools.spawn import _spawn_impl
         result = _spawn_impl(
@@ -529,6 +549,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             retry_attempt=next_attempt,
             parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
             cli=str(_row_get(row, "chosen_cli", "") or ""),
+            _curator_launch=curator_launch,
         )
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)

@@ -10,6 +10,11 @@ remains a live question.
 
 ## Closed
 
+- Curator child-authority isolation (#366): Curator pass/snapshot values are
+  now private per-child launch data rather than temporary server-process
+  environment. Generic foreground and daemon spawns strip stale capability
+  variables, report writes are bound to their authorized task/pass/batch/role,
+  and watchdog continuations restore only recorded Curator launch context.
 - Spawn as primary parallelism primitive (`spawn`, `tournament`, `tasks`,
   `task_logs`, `task_kill`).
 - Slim children by default: `NO_EMBEDDINGS=1`, no third-party MCP, ~500MB

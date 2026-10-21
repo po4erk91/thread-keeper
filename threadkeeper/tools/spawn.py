@@ -51,6 +51,10 @@ _BYPASS_ALLOWED_PAIRS = {
     ("evolve_applier", "evolve_apply"),
 }
 _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
+_CURATOR_CAPABILITY_ENV = frozenset({
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+})
 
 # Linux caps one execve argv string at MAX_ARG_STRLEN (128 KiB), even when the
 # total ARG_MAX budget is larger. Keep Claude's positional prompt well below
@@ -416,7 +420,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_attempt: int = 0,
                 parent_cid_override: str = "",
                 cli: str = "",
-                task_id_override: str = "") -> str:
+                task_id_override: str = "",
+                _curator_launch: object | None = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -524,6 +529,25 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         child=child_cid,
     )
     role_clean = role.strip().lower()
+    curator_launch = None
+    if _curator_launch is not None:
+        # The public spawn tool cannot reach this parameter.  Keep the type
+        # check here as a second boundary so arbitrary internal callers cannot
+        # smuggle Curator authority through a generic child launch.
+        from ..curator import _CuratorLaunch, _new_curator_launch
+        if not isinstance(_curator_launch, _CuratorLaunch):
+            return "ERR invalid_curator_launch"
+        if role_clean != "curator" or write_origin != "curator":
+            return "ERR invalid_curator_launch_context"
+        try:
+            curator_launch = _new_curator_launch(
+                _curator_launch.pass_id,
+                _curator_launch.snapshot_dir,
+                _curator_launch.batch_index,
+                _curator_launch.batch_total,
+            )
+        except (TypeError, ValueError):
+            return "ERR invalid_curator_launch"
     if role_clean:
         if role_clean in ROLE_PROMPTS:
             sys_extra += f"\n\nROLE: {role_clean}\n{ROLE_PROMPTS[role_clean]}"
@@ -536,7 +560,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if append_system:
         sys_extra += "\n\n" + append_system
     child_env = {
-        **os.environ,
+        **{
+            key: value for key, value in os.environ.items()
+            if key not in _CURATOR_CAPABILITY_ENV
+        },
         "THREADKEEPER_DB": str(DB_PATH),
         "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
         "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
@@ -548,6 +575,12 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
         child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
+    if curator_launch is not None:
+        child_env["THREADKEEPER_CURATOR_PASS_ID"] = curator_launch.pass_id
+        if curator_launch.snapshot_dir is not None:
+            child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"] = str(
+                curator_launch.snapshot_dir
+            )
     inherited_wrapper_dir = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
     child_env.pop("THREADKEEPER_REAL_GH", None)
     if inherited_wrapper_dir:
@@ -778,6 +811,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root or None, int(retry_attempt or 0),
             ),
         )
+        if curator_launch is not None:
+            from ..curator import _record_curator_child_launch
+            _record_curator_child_launch(
+                conn, curator_launch, task_id, child_cid,
+            )
     except sqlite3.Error as e:
         conn.rollback()
         return f"ERR spawn_reservation_failed={e}"

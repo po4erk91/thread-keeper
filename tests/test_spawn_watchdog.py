@@ -247,6 +247,51 @@ def test_watchdog_immediately_respawns_with_continuation_prompt(
     assert "respawned_as=tk_retry" in ev["summary"]
 
 
+def test_watchdog_restores_only_recorded_curator_launch_authority(
+    mp_with_cid, monkeypatch,
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "1")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper.curator as curator
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    reports_dir = pkg["tmp"] / "curator-reports"
+    monkeypatch.setattr(curator, "CURATOR_REPORTS_DIR", reports_dir)
+    pass_id = "continuation-pass"
+    snapshot_dir = reports_dir / "snapshots" / pass_id
+    snapshot_dir.mkdir(parents=True)
+    launch = curator._new_curator_launch(pass_id, snapshot_dir, 0, 0)
+    calls: list[dict] = []
+    monkeypatch.setattr(sb, "_terminate_tree", lambda *_args: None)
+    monkeypatch.setattr(
+        spawn_mod,
+        "_spawn_impl",
+        lambda **kwargs: calls.append(kwargs) or "ok task=tk_retry",
+    )
+
+    old = int(time.time()) - 200
+    conn = _insert_running(pkg, "tk_curator_retry", os.getpid(), old)
+    conn.execute(
+        "UPDATE tasks SET role='curator', write_origin='curator' "
+        "WHERE id='tk_curator_retry'"
+    )
+    curator._record_curator_child_launch(
+        conn, launch, "tk_curator_retry", "child-tk_curator_retry",
+    )
+    conn.commit()
+
+    sb._refresh_all_running(conn)
+
+    assert len(calls) == 1
+    retried_launch = calls[0]["_curator_launch"]
+    assert retried_launch.pass_id == pass_id
+    assert retried_launch.snapshot_dir == snapshot_dir
+
+
 def test_watchdog_retry_limit_stops_infinite_restart(mp_with_cid, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
     monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "1")

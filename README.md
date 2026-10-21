@@ -668,12 +668,16 @@ latest report, deterministic audit manifest, recovery snapshot, last endorsed
 `entries`, `batches`, `batch_entries`, and `max_batch_chars`, making partial or
 large reviews visible in the normal `curator_pass` trail.
 
-Each report path is explicitly authorized in a parent-authored `curator_pass`
-event before its child is launched. `curator_report_write` only accepts that
-exact path from the spawned Curator carrying the matching pass ID, then records
-the persisted report's SHA-256 in `curator_report_provenance`. This makes the
-report directory an untrusted transport: a stray or forged `REPORT-*.md` file
-cannot acquire the provenance needed by the applier.
+Curator pass and snapshot values are explicit, per-child launch data — never
+temporary process environment. Ordinary foreground and daemon spawns strip
+those variables, including stale inherited values. The private Curator launcher
+binds each task, child identity, pass, batch, role, and write origin before
+launch; a watchdog retry may restore only that recorded launch data.
+`curator_report_write` checks this binding before accepting the exact report
+destination, then records the persisted report's SHA-256 in
+`curator_report_provenance`. This makes the report directory an untrusted
+transport: a stray or forged `REPORT-*.md` file cannot acquire the provenance
+needed by the applier.
 
 Curator applies its own PATCH / PRUNE / CONSOLIDATE directly by default (it
 writes the REPORT first, then mutates — `lesson_remove` is in its toolset so it

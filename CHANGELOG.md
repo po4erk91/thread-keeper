@@ -6,6 +6,15 @@ version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
 ## [Unreleased]
+
+## v0.16.4 — 2026-10-21
+
+- **Fixed: Curator child authority is no longer ambient process state (#366).**
+  Pass and snapshot values are supplied only to the task-bound private Curator
+  launcher, ordinary spawns strip stale inherited values, report writes verify
+  the owning task/pass/batch/role/origin, and watchdog retries restore only
+  recorded Curator launch data.
+
 - **Fixed: one abandoned Evolve attempt can no longer deadlock the apply
   scheduler.** Managed-checkout refresh used to reject a dirty tree before the
   abandoned-WIP recovery gate ran, so a child that edited `main` and then hit a

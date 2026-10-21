@@ -27,12 +27,12 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
-from ..identity import _ensure_session
+from ..identity import _detect_self_cid, _ensure_session
 from ..curator import (
     CURATOR_PROMPT,
     CURATOR_REPORT_PROVENANCE_KIND,
     _collect_inventory,
-    _curator_report_is_authorized,
+    _curator_writer_owns_launch,
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
@@ -266,8 +266,8 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
 
 @write_tool(idempotent=True)
 def curator_report_write(
-    pass_id: str,
-    content: str,
+    pass_id: str = "",
+    content: str = "",
     batch_index: int = 0,
     batch_total: int = 0,
 ) -> str:
@@ -283,8 +283,8 @@ def curator_report_write(
     a parent-authorized spawned Curator carrying the matching pass ID may write
     a report; the final content hash is recorded for the report applier.
     """
-    clean_id = pass_id.strip()
-    if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
+    supplied_id = pass_id.strip()
+    if supplied_id and not _PASS_ID_RE.fullmatch(supplied_id):
         return "ERR invalid_pass_id"
     try:
         batch_index = int(batch_index)
@@ -301,7 +301,10 @@ def curator_report_write(
         return "ERR empty_report"
     if WRITE_ORIGIN != "curator" or not SPAWNED_CHILD:
         return "ERR report_write_not_authorized"
-    if current_pass_id() != clean_id:
+    clean_id = current_pass_id()
+    if not clean_id:
+        return "ERR report_write_pass_mismatch"
+    if supplied_id and supplied_id != clean_id:
         return "ERR report_write_pass_mismatch"
     conn = get_db()
     _ensure_session(conn)
@@ -312,7 +315,14 @@ def curator_report_write(
         )
     else:
         report_name = f"REPORT-{clean_id}.md"
-    if not _curator_report_is_authorized(conn, clean_id, report_name):
+    if not _curator_writer_owns_launch(
+        conn,
+        child_cid=_detect_self_cid() or "",
+        pass_id=clean_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        report_name=report_name,
+    ):
         return "ERR report_write_not_authorized"
     target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
