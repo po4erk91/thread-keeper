@@ -8,6 +8,45 @@ remains a live question.
 
 ---
 
+## 2026-10-21 reviewer audit
+
+This pass reconciled current `main`, the complete open/closed issue history,
+the pending legacy Evolve queue, and the 2026-10-20 research digest. Four new,
+issue-backed gaps remain:
+
+- **Curator-neutral lesson reads (#402).** Curator evaluators must be able to
+  read complete lesson bodies without incrementing consultation counters or
+  refreshing `last_used_at`; foreground/task reads must keep recording real
+  use.
+- **Authenticated source-tracked skill updates (#403).** Resolve immutable
+  commits, retain whole-directory provenance, verify supported detached
+  publisher signatures, and make unsigned-source policy explicit before an
+  upstream skill is mirrored into auto-loaded roots.
+- **Portable Agent Plugins package (#404).** Generate validated `plugin.json`
+  and `mcp.json` manifests plus a bootstrap skill from the same canonical
+  setup metadata as `thread-keeper-setup`, while retaining current installers
+  for hosts without plugin support.
+- **Progressive memory evidence links (#405).** Keep the text fallback from
+  `search` and `dialog_search`, but add structured hits and scoped
+  `resource_link` blocks for exact notes, threads, and bounded dialog windows.
+
+The standards leads for durable Tasks, live memory-resource subscriptions,
+and a portable read-only dashboard are already complete in #370, #345, and
+#364. The core-memory doctor proposal was not re-filed because the mechanical
+dedup gate linked it to the completed outcome-evaluation work in #347.
+MCP Sampling is no longer a future integration target: the 2026-07-28 release
+deprecated it in favor of direct provider integration, so ThreadKeeper's
+provider/CLI spawn adapters remain the deliberate execution boundary.
+
+The post-2026-10-14 open backlog is also now represented explicitly: spawned
+child memory authority (#385), validated host trace context (#386), contextual
+index text for short memories (#387), verified skill-mirror convergence (#388),
+persisted task-role status (#389), consent and rollback for learned host-wide
+mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
+installed Agent/Workflow gate tests (#399), and automation-owned Evolve
+autoland (#400). Curator launch-authority isolation remains #366, with its
+implementation PR under review.
+
 ## 2026-10-14 reviewer audit
 
 This pass reconciled the full issue history, current implementation, legacy
@@ -863,10 +902,10 @@ mutation count.
   ✅ DONE — lesson reads now update `lesson_usage`, and the curator dry-run
   inventory surfaces ranked stale lesson candidates using a recency/frequency
   decay score while excluding pinned/validated/protected entries. (#27)
-- Note: MCP **sampling** (host-run completions, which would let daemons skip
-  paid spawn children entirely) remains *unsupported* on Claude Code
-  (anthropics/claude-code#1785) — tracked, not actionable yet. The slim-spawn
-  subprocess model stays correct until a host exposes the capability.
+- MCP **Sampling** is no longer planned. The MCP 2026-07-28 release deprecated
+  Sampling in favor of direct provider integration, so the existing
+  provider/CLI spawn adapters and slim-subprocess path are the intentional
+  long-term boundary rather than a temporary fallback.
 
 Scope: S–M each.
 
@@ -1379,12 +1418,12 @@ retention:
 The current audit added four concrete gaps around tool discovery, portable MCP
 guidance, Curator research privacy, and Evolve review cadence:
 
-- **Role-scoped MCP tool profiles (#353).** Advertise a small daily-use catalog
+- ✅ DONE (#353). **Role-scoped MCP tool profiles.** Advertise a small daily-use catalog
   by default, keep a `full` compatibility profile, support validated
   include/exclude overrides, and provide bounded capability discovery for hosts
   without native deferred tool search. Spawned-child allowlists remain the
   upper bound and cannot be widened by a profile.
-- **Portable server instructions (#354).** Publish concise MCP initialization
+- ✅ DONE (#354). **Portable server instructions.** Publish concise MCP initialization
   guidance for brief/context loading, thread lifecycle, read-only resources,
   and destructive-operation confirmation. Generate it from the same source as
   the setup-managed CLI block so the two paths cannot drift.
@@ -1408,12 +1447,12 @@ not a second roadmap item.
 The current audit added two privacy gaps at the boundary between the shared
 local store and the projects or storage media that contain it:
 
-- **Project-scoped memory (#359).** Give project-bound threads, notes, dialog,
+- ✅ DONE (#359). **Project-scoped memory.** Give project-bound threads, notes, dialog,
   tasks, and derived artifacts a stable privacy-safe project identity. Default
   briefs, retrieval, resources, and learning-loop inputs to the current project
   plus explicitly global/shared memory; require a visible opt-in for
   cross-project recall and fail closed on ambiguous legacy rows.
-- **Encrypted storage profile (#360).** Offer an opt-in, SQLCipher-backed
+- ✅ DONE (#360). **Encrypted storage profile.** Offer an opt-in, SQLCipher-backed
   database profile with OS-secret-store key custody and tested WAL, temporary
   file, backup/restore, rekey, migration, crash-recovery, and multi-process
   behavior. Keep ordinary SQLite as the default and document which external
@@ -1429,12 +1468,12 @@ in #344 and #338. Broader structured output was already considered under
 The current audit added three gaps around portable status, Evolve retry cadence,
 and Curator child-capability isolation:
 
-- **Portable read-only MCP App dashboard (#364).** Add a capability-gated
+- ✅ DONE (#364). **Portable read-only MCP App dashboard.** Add a capability-gated
   `ui://thread-keeper/dashboard` frontend over the existing structured status,
   task, budget, failure, and materialization data. Keep initial load and refresh
   observationally pure, sandboxed, and compatible with hosts that only use the
   existing text tools/resources.
-- **Evolve applier transient retry cadence (#365).** Do not consume the full
+- ✅ DONE (#365). **Evolve applier transient retry cadence.** Do not consume the full
   apply interval when checkout, GitHub, claim, lock, or spawn preflight fails
   before a child launches. Preserve the cursor, collapse repeated blocker
   telemetry, and retry on a bounded short cadence while keeping real issue
@@ -1451,8 +1490,8 @@ completed as #370; #344 continues to cover dual-era request compatibility and
 replay-safe writes, not standard Tasks.
 The outcome-quality evaluator in #347 is complete. The remaining bounded
 action/recovery-memory experiment is #380, while obsolete-evidence mutation
-coverage remains #371. Tool-profile disclosure and project namespaces remain
-tracked in #353 and #359.
+coverage remains #371. Tool-profile disclosure and project namespaces are
+complete in #353 and #359.
 
 ---
 
