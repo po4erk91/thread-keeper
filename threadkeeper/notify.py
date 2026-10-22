@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import threading
@@ -41,6 +43,7 @@ from .config import (
     NOTIFY_FAILURE_COOLDOWN_S,
 )
 from .db import get_db
+from .github_safety import sanitize_presentation_text
 from . import daemon_state, identity
 from .helpers import daemon_sleep, single_flight_lock
 
@@ -69,6 +72,22 @@ _FAIL_TOKENS = (
 )
 _SPAWN_TIMEOUT_RETURN_CODE = 124  # spawn_budget.SPAWN_TIMEOUT_RETURN_CODE
 
+# A child can end with return_code=NULL when its exit code was never captured —
+# the parent reaper's waitpid can't see a cross-session child, and a child
+# reaped AFTER the DB writer wedged closes its row (ended_at set) with the code
+# lost. A NULL code is otherwise indistinguishable from a clean completion, so
+# such rows are surfaced ONLY when the captured log carries one of these fatal
+# degradation signatures. This is the case that first exposed the gap: a
+# spawned child hit "exceeded your monthly quota", died, and — because the same
+# exhaustion had wedged the writer — its row closed with no return_code, so the
+# return_code!=0 branch never saw it and no alert fired.
+_CHILD_FATAL_LOG_TOKENS = (
+    "exceeded your monthly quota", "monthly quota", "quota exceeded",
+    "credit balance is too low", "insufficient credits", "out of credits",
+    "usage limit", "invalid api key", "authentication_error",
+    "unauthorized", "login expired", "please run /login",
+)
+
 
 # ── classification ──────────────────────────────────────────────────────────
 
@@ -91,30 +110,64 @@ def classify_summary(summary: str | None) -> str:
     return "neutral"
 
 
+def budget_refusal_kind(summary: str | None) -> str:
+    """Which local spawn cap refused a child: 'memory' | 'tokens' | 'cost' | ''.
+
+    All three are thread-keeper's own admission caps (spawn_budget.check_budget),
+    not the CLI subscription: `budget_exceeded` is the RAM cap on concurrently
+    running children, `token_budget_exceeded` / `cost_budget_exceeded` are the
+    rolling 24h spend caps. The spend markers contain the RAM marker as a
+    substring, so they are tested first.
+    """
+    low = (summary or "").lower()
+    if "token_budget" in low:
+        return "tokens"
+    if "cost_budget" in low:
+        return "cost"
+    if "budget_exceeded" in low:
+        return "memory"
+    return ""
+
+
 def _reason_from_summary(summary: str) -> str:
     """Human, actionable reason from a failure summary."""
     s = summary or ""
     low = s.lower()
-    if "budget_exceeded" in low or "token_budget" in low or "cost_budget" in low:
-        return "subscription/credit budget exhausted"
+    budget = budget_refusal_kind(s)
+    if budget == "memory":
+        m = re.search(r"running_subagents=(\d+)MB.*?limit=(\d+)MB", s)
+        held = (f": running children hold {m.group(1)}MB of {m.group(2)}MB"
+                if m else "")
+        return f"spawn memory budget full{held} (THREADKEEPER_SPAWN_BUDGET_MB)"
+    if budget == "tokens":
+        return "daily spawn token budget reached (THREADKEEPER_SPAWN_TOKEN_BUDGET)"
+    if budget == "cost":
+        return "daily spawn cost budget reached (THREADKEEPER_SPAWN_COST_BUDGET_USD)"
     if "binary_not_found" in low or "cli_not_found" in low:
         return "CLI binary missing / not installed"
     if "argument list too long" in low:
         return "prompt too large"
     idx = s.find("ERR")
     tail = (s[idx:] if idx >= 0 else s).strip()
-    return (tail[:120] or "spawn failed")
+    # Spawn errors can quote cwd paths or CLI output; they reach the same
+    # status list and banners as child-log excerpts.
+    return (sanitize_presentation_text(tail)[:120] or "spawn failed")
 
 
-def _reason_from_task_log(task_id: str) -> str:
-    """Last meaningful line of a dead child's captured log (the failure reason)."""
+def _child_log_tail(task_id: str) -> str:
+    """Tail of a spawned child's captured log ('' when unavailable)."""
     try:
         from .tools.spawn import task_logs  # lazy: spawn imports identity/config
-        txt = task_logs(task_id, tail_lines=12)
+        return task_logs(task_id, tail_lines=12)
     except Exception:
-        return "no_log"
+        return ""
+
+
+def _reason_from_task_log(task_id: str, tail: str | None = None) -> str:
+    """Sanitized last meaningful line of a dead child's captured log."""
+    txt = _child_log_tail(task_id) if tail is None else tail
     lines = [ln for ln in txt.splitlines() if ln.strip()]
-    return (lines[-1][:180] if lines else "no_log")
+    return (sanitize_presentation_text(lines[-1])[:180] if lines else "no_log")
 
 
 # ── watermark (dual cursor in one notify_pass row) ──────────────────────────
@@ -210,14 +263,26 @@ def _scan_failures(conn: sqlite3.Connection, ev_floor: int,
 
 def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
                         tk_ceil: int) -> list[dict]:
-    """SOURCE 2: spawned children that ended non-zero (excluding timeouts and
-    children superseded by a retry). Catches subscription-exhausted-mid-run."""
+    """SOURCE 2: spawned children that ended badly (excluding timeouts and
+    children superseded by a retry). Catches subscription-exhausted-mid-run.
+
+    Two shapes qualify:
+      * return_code present and non-zero (and not the timeout code) — an
+        outright failed child; always surfaced.
+      * return_code NULL — the exit code was never captured (cross-session
+        reap, or a child reaped after the writer wedged). Indistinguishable
+        from a clean completion on its own, so surfaced ONLY when the captured
+        log carries a fatal degradation signature (_CHILD_FATAL_LOG_TOKENS).
+        This is the branch that catches quota/credit exhaustion whose very
+        failure mode also stalled the DB writer that would have stamped rc.
+    """
     out: list[dict] = []
     try:
         rows = conn.execute(
             "SELECT id, role, chosen_cli, return_code FROM tasks "
             "WHERE ended_at IS NOT NULL AND ended_at > ? AND ended_at <= ? "
-            "AND return_code IS NOT NULL AND return_code != 0 AND return_code != ? "
+            "AND (return_code IS NULL "
+            "     OR (return_code != 0 AND return_code != ?)) "
             "AND timeout_respawned_as IS NULL ORDER BY ended_at",
             (tk_floor, tk_ceil, _SPAWN_TIMEOUT_RETURN_CODE),
         ).fetchall()
@@ -225,11 +290,20 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
         return out
     for r in rows:
         label = r["role"] or r["chosen_cli"] or "child"
+        rc = r["return_code"]
+        tail = _child_log_tail(r["id"])
+        if rc is None:
+            low = tail.lower()
+            if not any(tok in low for tok in _CHILD_FATAL_LOG_TOKENS):
+                continue  # code lost but no failure evidence — likely clean.
+            rc_disp: object = "unknown"
+        else:
+            rc_disp = rc
         out.append({
             "kind": f"child:{label}",
             "label": label,
-            "rc": r["return_code"],
-            "reason": _reason_from_task_log(r["id"]),
+            "rc": rc_disp,
+            "reason": _reason_from_task_log(r["id"], tail=tail),
         })
     return out
 
@@ -307,11 +381,43 @@ def _fmt_child(c: dict) -> tuple[str, str]:
 
 
 def _fmt_skill(s: dict) -> tuple[str, str]:
-    return ("Thread-keeper: skill materialized", (s["summary"] or s["target"])[:200])
+    path = (s.get("summary") or "").strip()
+    name = s.get("target", "") if s.get("kind") == "skill_create" else ""
+    if path and path != "(no path recorded)":
+        md = Path(path).expanduser()
+        if md.name == "SKILL.md":
+            name = md.parent.name
+        else:
+            name = md.name
+            md = md / "SKILL.md"
+        try:
+            # A title is near the top. Never load an entire skill (or follow
+            # paths mentioned in its body) just to render a notification.
+            body = ""
+            if md.is_file():
+                with md.open(encoding="utf-8") as stream:
+                    body = stream.read(8192)
+            if body.startswith("---\n"):
+                body = body.split("\n---", 1)[-1]
+            heading = re.search(r"^#\s+(.+?)(?:\s+#+)?\s*$", body, re.MULTILINE)
+            if heading:
+                name = heading.group(1)
+        except (OSError, ValueError):
+            pass
+    return ("Thread-keeper: skill materialized", _artifact_name(name))
+
+
+def _artifact_name(name: str) -> str:
+    """One readable name, without slug separators or Markdown decoration."""
+    name = " ".join((name or "").replace("`", "").split())
+    if " " not in name:
+        name = re.sub(r"[-_]+", " ", name)
+        name = name[:1].upper() + name[1:]
+    return name[:200]
 
 
 def _fmt_lesson(l: dict) -> tuple[str, str]:
-    return ("Thread-keeper: lesson added", f"{l['target']} ({l['summary']})"[:200])
+    return ("Thread-keeper: lesson added", _artifact_name(l["target"]))
 
 
 # ── pass + daemon lifecycle ─────────────────────────────────────────────────
@@ -359,8 +465,10 @@ def run_notify_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 _dispatch(*_fmt_child(c))
                 fired += 1
         for s in skills:
-            _dispatch(*_fmt_skill(s))
-            fired += 1
+            title, body = _fmt_skill(s)
+            if body:  # A pathless mark only silences a nudge; no named artifact.
+                _dispatch(title, body)
+                fired += 1
         for l in lessons:
             _dispatch(*_fmt_lesson(l))
             fired += 1

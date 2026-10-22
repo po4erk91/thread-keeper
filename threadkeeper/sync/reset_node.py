@@ -29,8 +29,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from ..config import DB_PATH
+from ..config import DB_PATH, STORAGE_PROFILE
 from ..helpers import gen_global_id
+from ..storage import connect as open_storage_connection
 from . import identity as sync_identity
 from .capture import is_migrated
 
@@ -69,7 +70,9 @@ def reset_node(db_path: Path, do_apply: bool) -> int:
         print(f"error: DB not found: {db_path}", file=sys.stderr)
         return 2
 
-    conn = sqlite3.connect(str(db_path))
+    conn = open_storage_connection(
+        db_path, profile=STORAGE_PROFILE, create=False
+    )
     # Autocommit: the setup reads/_ensure_state must not leave an implicit
     # transaction open, so the explicit BEGIN IMMEDIATE below is the only one.
     conn.isolation_level = None

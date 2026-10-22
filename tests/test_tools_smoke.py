@@ -21,6 +21,7 @@ _NO_INVOKE = {
     "ask",            # round-trip to a peer
     "respond",        # needs valid qid from ask()
     "open_dialog_window",  # spawns subprocess
+    "shadow_review_snapshot",  # writes a caller-selected report path
     "tournament",     # multi-step, expensive
 }
 

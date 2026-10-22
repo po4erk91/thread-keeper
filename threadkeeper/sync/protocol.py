@@ -23,6 +23,8 @@ import json
 import sqlite3
 
 from .capture import _PK, _COMPOSITE, applying_guard
+from ..config import STORAGE_PROFILE
+from ..storage import row_factory as storage_row_factory
 
 # Columns never shipped: recomputed locally from content on each node.
 _PAYLOAD_EXCLUDE = {"embedding", "embed_backend"}
@@ -81,7 +83,7 @@ def _row_payload(table: str, row: sqlite3.Row) -> dict:
 
 def collect_changes(conn: sqlite3.Connection, peer_vv: dict) -> list[dict]:
     """Every row/tombstone whose hlc exceeds what the peer knows for its origin."""
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = storage_row_factory(STORAGE_PROFILE)
     out: list[dict] = []
     for t in _ALL_TABLES:
         try:
