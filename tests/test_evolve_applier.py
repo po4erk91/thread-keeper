@@ -404,8 +404,8 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert calls["cwd"] == str(pkg["ea"]._repo_root())
     assert "Do not open a thread" in calls["append_system"]
     tools = calls["extra_allowed_tools"]
-    assert "lesson_remove" in tools
-    assert "lesson_append" in tools
+    assert "lesson_remove" not in tools
+    assert "lesson_patch" in tools
     assert "skill_manage" in tools
     assert "evolve_mark_curator_report_applied" in tools
     assert "Bash" not in tools and "Edit" not in tools

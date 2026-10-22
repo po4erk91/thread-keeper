@@ -429,8 +429,9 @@ class Settings(BaseSettings):
     curator_trash_ttl_days: int = 30
     # Server-side admission limit shared by every destructive child batch in
     # one curator pass. 0 disables curator lesson/skill deletes for that pass;
-    # foreground deletes are never subject to this limit.
-    curator_max_destructive_per_pass: int = 10
+    # foreground deletes are never subject to this limit. Only the verifier
+    # deletes, after failing to refute the proposal, inside a snapshotted pass.
+    curator_max_destructive_per_pass: int = 30
     # Terminal Curator/Evolve workflow output can include frozen memory bodies.
     # Age and count each protect recent artifacts; setting both to zero disables
     # workflow pruning.
@@ -746,6 +747,8 @@ _EXTRA_THREADKEEPER_ENV_KEYS = {
     "THREADKEEPER_CURATOR_PASS_ID",
     "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
     "THREADKEEPER_MODEL_ROUTER_PASS_ID",
+    "THREADKEEPER_CURATOR_PHASE",
+    "THREADKEEPER_CURATOR_VERIFY_BATCH",
 }
 
 _THREADKEEPER_NESTED_ENV_KEYS = {

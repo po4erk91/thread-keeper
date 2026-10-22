@@ -356,8 +356,9 @@ Steady-state access is split by intent:
    `last_patched_at` remains the external-edit mtime. This is the input for the
    curator.
 
-6. **lesson_usage** — telemetry for `lessons.md` slugs. `lesson_list` bumps
-   `view_count`, `lesson_get` bumps `use_count`, and the curator uses
+6. **lesson_usage** — telemetry for `lessons.md` slugs. A foreground
+   `lesson_list` bumps `view_count`, a foreground `lesson_get` bumps
+   `use_count` (loop and curator reads are not counted), and the curator uses
    `last_used_at` / `last_viewed_at` / pull counts for decay scoring.
    `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
    recommendations.
@@ -502,7 +503,11 @@ observability only: the supervisor restarts dead threads, never a live child.
   updates GitHub-backed skills that carry `.threadkeeper-skill-source.json` or
   can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`. Replaced local
   skills are backed up under the state dir, and source-tracked local edits after
-  the last upstream hash are skipped rather than overwritten.
+  the last upstream hash are skipped rather than overwritten. A primary copy
+  that fails validation is never mirrored, and a skill whose primary copy was
+  deleted or archived is not imported back from an older leftover copy: the
+  leftovers are removed instead (`removed_strays`). A copy written after the
+  removal counts as a new install and is imported.
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats **two** targets, each
   with its own mtime cursor (#2, generalized cross-CLI in #133):
@@ -678,7 +683,7 @@ moving the high-water forward; `force=True` bypasses this due gate.
   the report directory alone is therefore never trusted as Curator output.
   Destructive lesson removals and skill deletes reserve from one atomic,
   pass-ID-scoped server-side budget before touching disk. The default
-  `CURATOR_MAX_DESTRUCTIVE_PER_PASS=10` is shared across child batches and
+  `CURATOR_MAX_DESTRUCTIVE_PER_PASS=30` is shared across child batches and
   processes; the reservation event makes a cap refusal visible as
   `curator_destructive_cap status=HIT` in `mp_dashboard`. Recovery snapshots
   remain available. Foreground deletes bypass this autonomous-delete guard;
@@ -1378,9 +1383,8 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 6. The child IS the LLM evaluator. Decides class-vs-incident, on materialization
    first checks existing lessons/skills, then prefers patching or creating a
    broad skill. `lesson_append(source='shadow')` is the compact fallback; a
-   clear new directive or debunk records `lesson_reconciliation` events for
-   older permissive lessons on the same concrete practice so a curator can
-   patch, cross-link, or supersede them.
+   lesson that debunks a near-duplicate is refused so the child corrects the
+   existing lesson with `lesson_patch` instead of adding a conflicting one.
 7. Child-side MCP startup sees `THREADKEEPER_SPAWNED_CHILD=1` /
    `write_origin='shadow_review'` and refuses to start its own shadow daemon.
 8. Write events.kind='shadow_review_pass' with the new high-water rowid only
@@ -1415,11 +1419,16 @@ children, native `agent-*` parent cids, and descendants reached through
 foreground promotion all consult this same boundary.
 SHADOW_REVIEW_PROMPT — inline rubric class-vs-incident, defense against
 false positives (false negatives are "cheaper"). Shadow-origin lessons have
-a hard body cap, a cheap slug-similarity duplicate gate, and a semantic body
-duplicate gate. Strong semantic matches patch/append evidence to the incumbent
-lesson, while borderline or protected matches are rejected with the incumbent
-slug so the child/curator patches existing memory instead of growing the flat
-lessons list.
+a hard body cap. Every writer passes a cheap slug-similarity duplicate gate and
+a semantic body duplicate gate (lesson vectors are cached per process, so a
+write encodes only new text). For loop writers, strong semantic matches
+patch/append evidence to the incumbent lesson, while borderline or protected
+matches are rejected with the incumbent slug so the child/curator patches
+existing memory instead of growing the flat lessons list. Foreground writers get
+the same refusal and may override it only with `new_despite=<neighbour-slug>`.
+A near-duplicate whose new text debunks permissive incumbent guidance is
+refused for every writer (`ERR contradicts_existing_lesson`), and refusals are
+logged as `lesson_refused` events.
 
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`. Beyond the last few passes, the status tool carries a
@@ -1458,7 +1467,10 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   descriptions load in Codex and other strict parsers. `write_file/remove_file`
   are restricted to subfolders
   `references|templates|scripts|assets` with path-traversal blocking.
-  `patch` revalidates the result before writing. Every successful write
+  `patch` revalidates the result before writing. A non-foreground `create`,
+  `edit`, or `patch` may not grow SKILL.md past `SKILL_MD_SOFT_CAP_CHARS`
+  (20 000): it is refused with a hint to move detail into `references/` via
+  `write_file`, while shrinking or same-size rewrites stay allowed. Every successful write
   mirrors the whole skill directory into all configured roots:
   `~/.claude/skills/`, `~/.codex/skills/`,
   `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
@@ -1476,15 +1488,17 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   from jsonl: sees `name=Skill` → raw `use_count++`, `last_used_at=ts`. The
   `foreground_use_count` is the authoritative promotion/trust signal: it is
   the foreground subset of raw uses, with spawned review-fork activity
-  excluded so automation cannot promote a skill tier. `skill_list` records a
-  `view_count` bump for every returned row. The curator checklist shows raw
-  uses, foreground uses, views, and patches, but the curator's own automated
-  inventory read does not count as a view. The `skill_watcher` daemon catches
+  excluded so automation cannot promote a skill tier. `skill_list` is not a
+  consultation: it never bumps `view_count` or revives a stale row, because
+  autonomous loops list every skill on each pass. Views come only from
+  explicit `skill_record(kind='view')`. The curator checklist shows raw uses,
+  foreground uses, views, and patches. The `skill_watcher` daemon catches
   external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
 
-- **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
-  `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
-  `use_count` bump for the returned body. The curator computes
+- **lesson_usage telemetry (passive reads)** — a foreground `lesson_list(k=...)`
+  records a `view_count` bump for each displayed lesson row; a foreground
+  `lesson_get(slug)` records a `use_count` bump for the returned body. Reads
+  by the curator and other loops are not counted. The curator computes
   `access_frequency × exp(-days_since_access / tau)` over this table and
   surfaces a ranked `STALE LESSONS (dry-run decay ranking)` section for lessons
   with no recent access and low pull-count. The section is advisory only; it is
@@ -1499,12 +1513,36 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   before clustering. Maximal clusters are deduplicated, and
   `curator_review_status()` reports `promotion_candidates` emitted/rejected
   counts plus rejection reasons (`no_meaningful_title_pair`,
-  `high_document_frequency_term`, or `low_body_cohesion`). An unprotected
-  `PROMOTE_TO_SKILL` candidate directs the curator to read every source lesson,
-  create a checklist-style canonical skill with a `Retired lessons` provenance
-  section, validate it, and only then retire those source lessons. Any protected
-  member makes the candidate `HUMAN_REVIEW`, so a background curator never
-  creates a partial promotion or deletes protected memory.
+  `high_document_frequency_term`, or `low_body_cohesion`). Every
+  `PROMOTE_TO_SKILL` candidate, protected members included, directs the
+  evaluator to read every source lesson and write one PROMOTE proposal. The
+  verifier then creates or patches a checklist-style canonical skill with a
+  `Retired lessons` provenance section, validates it, and only then retires the
+  source lessons.
+
+- **Curator verifier phase** — the third child of a batch. The evaluator applies
+  only in-place edits to unprotected entries and ends its report with a
+  `VERIFY_PROPOSALS` block holding every removal, consolidation, merge, split,
+  promotion, and change to a `[PROTECTED]` entry. When the block has at least one
+  `PROPOSAL n:` line, the batch's `verify_state` becomes `pending` and the next
+  tick launches a verifier (`THREADKEEPER_CURATOR_PHASE=verify`, same `curator`
+  write origin, the pass snapshot) whose prompt starts with the curator prefix,
+  so single-flight detection counts it. It tries to refute each proposal against
+  the full bodies, applies the survivors, records `keep_both` verdicts for
+  refuted merges, and writes a provenanced `VERIFY-*` report ending with
+  `CURATOR_VERIFY_COMPLETE`. A failed verifier is retried up to three attempts;
+  endorsement waits until every batch's verification is `none`, `complete`, or
+  exhausted. Server-side, `is_curator_evaluator()` refuses removals and
+  protected-entry edits, and `is_curator_verifier()` grants the protected-entry
+  authority only inside a pass with pass-id and snapshot-dir context; pins stay
+  out of reach of both. The verifier is further limited to the names its
+  batch's proposals mention (`verifier_scope_refusal`, scope file under the
+  pass snapshot, `THREADKEEPER_CURATOR_VERIFY_BATCH`); both the phase and the
+  batch env names are in `CHILD_MCP_ENV_KEYS`, so CLIs that scrub the MCP
+  server environment (Codex) still see them. Curator env reaches a child only
+  under `CHILD_ENV_LOCK`, shared with the watchdog's continuation launches.
+  `curator_batches.eval_mode` records the mode an evaluator actually ran in;
+  only a destructive evaluation can make a batch `pending` for the verifier.
 
 - **Wikilink health** — `wikilink_health(include_archived=True)` is a
   deterministic, read-only scan across every materialized lesson and skill
@@ -1558,9 +1596,10 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   durable pass manifest (`research_state`, `research_attempts`); a researcher
   that fails or leaves a missing, malformed, swapped, or mismatched handoff is
   retried three times, then the batch falls back to a non-mutating evaluator
-  that records `HUMAN_REVIEW`. The recovery snapshot is taken right before a
-  destructive pass's first mutating evaluator.
+  that marks `DEFER`. The recovery snapshot is taken right before a
+  destructive pass's first mutating child.
   `THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips the research phase.
+  A batch whose `## SKILLS (n=0)` section is empty skips research too.
 
 - **skill_manage write_origin** — `THREADKEEPER_WRITE_ORIGIN`
   (`foreground` default | `background_review` | `shadow_review` | loop-specific
@@ -1570,11 +1609,20 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   memory checks.
 
 - **curator_run(stale_after_days, archive_after_days, dry_run=True)** —
-  background cleanup of stale agent-created skills. Never touches
+  background cleanup of stale agent-created skills of every learning-loop
+  origin. Every new destructive Curator pass runs it with `dry_run=False`
+  before freezing its inventory. Activity is the last use (a Skill tool call,
+  or a `/name` slash command of a known skill), a foreground view, or
+  creation; patches are maintenance and do not keep a skill alive. A skill
+  must stay `stale` (tracked in `skill_usage.stale_since`) for the gap between
+  the two windows before it is archived, renewed activity moves it back to
+  `active`, and re-creating or restoring an archived skill starts a fresh
+  lifecycle. Never touches
   `foreground`, `pinned=1`, or **`tier='validated'`** (proven externally).
   Hypothesis-tier ages at half the configured window (unproven skills
   don't linger); observed-tier uses the default window. On apply,
-  physically archives into `.archive/<name>`. Its false-positive rubric uses
+  physically archives into `.archive/<name>` and removes the skill's mirrors,
+  so a later root sync cannot revive it. Its false-positive rubric uses
   `foreground_use_count` and creation age: a background-review skill with
   `fg_uses=0` after 14 days remains eligible for prune review even when
   automation has incremented `patch_count`. Patch activity is maintenance, not

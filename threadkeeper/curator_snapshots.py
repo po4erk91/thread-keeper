@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,20 @@ from .identity import _ensure_session
 
 PASS_ID_ENV = "THREADKEEPER_CURATOR_PASS_ID"
 SNAPSHOT_DIR_ENV = "THREADKEEPER_CURATOR_SNAPSHOT_DIR"
+# Which half of a curator batch a child runs: the evaluator proposes, the
+# verifier independently tries to refute each proposal and applies survivors.
+PHASE_ENV = "THREADKEEPER_CURATOR_PHASE"
+VERIFY_PHASE = "verify"
+EVALUATE_PHASE = "evaluate"
+# The verifier may only touch the lessons and skills its batch's proposals
+# name; the parent writes that scope next to the pass snapshot.
+VERIFY_BATCH_ENV = "THREADKEEPER_CURATOR_VERIFY_BATCH"
+VERIFY_SCOPE_DIR = "verify_scope"
+_SCOPE_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.:-]{2,}")
+# Curator identity reaches a child through the process environment, which is
+# shared by every thread. Hold this lock while it is set for one launch so a
+# concurrent launch (for example a watchdog continuation) cannot inherit it.
+CHILD_ENV_LOCK = threading.Lock()
 ACTION_EVENT = "curator_destructive_action"
 SNAPSHOT_EVENT = "curator_snapshot"
 CAP_EVENT = "curator_destructive_cap"
@@ -42,6 +57,84 @@ def snapshots_root(reports_dir: Path | None = None) -> Path:
 
 def current_pass_id() -> str:
     return os.environ.get(PASS_ID_ENV, "").strip()
+
+
+def is_curator_evaluator() -> bool:
+    """A curator child that may only propose destructive changes."""
+    return (
+        WRITE_ORIGIN == "curator"
+        and os.environ.get(PHASE_ENV, "").strip() != VERIFY_PHASE
+    )
+
+
+def is_curator_verifier() -> bool:
+    """A curator verifier inside a snapshotted pass.
+
+    This is the agent that applies destructive and protected-entry changes,
+    after it has failed to refute them.
+    """
+    return bool(
+        WRITE_ORIGIN == "curator"
+        and os.environ.get(PHASE_ENV, "").strip() == VERIFY_PHASE
+        and current_pass_id()
+        and os.environ.get(SNAPSHOT_DIR_ENV, "").strip()
+    )
+
+
+def _verify_scope_path(snapshot_dir: Path, batch_index: int) -> Path:
+    return snapshot_dir / VERIFY_SCOPE_DIR / f"batch-{int(batch_index):03d}.json"
+
+
+def write_verify_scope(
+    snapshot_dir: Path,
+    batch_index: int,
+    pass_id: str,
+    proposals: str,
+) -> None:
+    """Record every name a batch's proposals mention as the verifier's scope.
+
+    Tokens rather than parsed fields keep this robust to how the evaluator
+    formatted its proposals; an extra word cannot widen the scope to a real
+    lesson or skill that the proposals do not name.
+    """
+    path = _verify_scope_path(Path(snapshot_dir), batch_index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keys = sorted(set(_SCOPE_TOKEN_RE.findall(proposals.lower())))
+    _write_json(path, {"pass_id": pass_id, "batch_index": int(batch_index), "keys": keys})
+
+
+def verifier_scope_refusal(key: str) -> str:
+    """Error when the verifier would touch an entry its proposals do not name.
+
+    Fails closed: a missing or unreadable scope refuses every mutation.
+    """
+    if not is_curator_verifier():
+        return ""
+    try:
+        batch_index = int(os.environ.get(VERIFY_BATCH_ENV, "").strip())
+        data = json.loads(
+            _verify_scope_path(current_snapshot_dir(), batch_index).read_text(
+                encoding="utf-8",
+            )
+        )
+    except (OSError, TypeError, ValueError):
+        return f"ERR verify_scope_unavailable key={key}"
+    if data.get("pass_id") != current_pass_id():
+        return f"ERR verify_scope_unavailable key={key}"
+    if key.strip().lower() not in set(data.get("keys") or ()):
+        return (
+            f"ERR outside_verify_scope key={key}; the verifier may only change "
+            "entries its proposals name"
+        )
+    return ""
+
+
+def verification_required_error(action: str, key: str) -> str:
+    return (
+        f"ERR verification_required action={action} key={key}; list it under "
+        "VERIFY PROPOSALS in the report so the curator verifier can check "
+        "and apply it"
+    )
 
 
 def current_snapshot_dir() -> Path | None:

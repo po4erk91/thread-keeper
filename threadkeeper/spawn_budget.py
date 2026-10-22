@@ -529,7 +529,10 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     try:
         from .tools.spawn import _retry_bypass_capability, _spawn_impl
         permission_mode = str(_row_get(row, "permission_mode", "auto") or "auto")
+        from .curator_snapshots import CHILD_ENV_LOCK
+
         exported = _curator_retry_env(conn, str(row["id"]))
+        CHILD_ENV_LOCK.acquire()
         saved = {key: os.environ.get(key) for key in exported}
         os.environ.update(exported)
         try:
@@ -560,6 +563,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            CHILD_ENV_LOCK.release()
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)
         result = f"ERR exception={type(e).__name__}: {e}"

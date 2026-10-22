@@ -691,9 +691,23 @@ can correct one unique substring without reserializing a lesson. Shadow-origin
 though an existing same-slug long lesson may be corrected without increasing
 its body size; near-duplicate slugs are blocked, and semantic body matches are
 routed to the incumbent lesson or surfaced for curation instead of minting a
-sibling lesson. A clear new directive or debunk also flags older permissive
-lessons on the same concrete practice for patch, cross-link, or supersession
-review.
+sibling lesson. The same slug and semantic gates apply to every writer,
+foreground sessions included: a foreground near-duplicate is refused with the
+neighbour's slug, and the author either extends it with `lesson_patch` or, after
+reading it, passes `new_despite=<slug>` (comma-separated when the gates name
+several neighbours) to keep a deliberately separate rule. Loop writers are
+recognized by their write origin, so a loop child cannot opt out by passing a
+foreground-looking `source`. A same-slug rewrite is never folded into a
+different lesson, and the Curator verifier writes the umbrella of a verified
+consolidation without the gates.
+A new lesson that debunks a near-duplicate is refused too: correct the existing
+lesson instead of adding a conflicting one. Refusals are recorded as
+`lesson_refused` events so the gate's hit rate stays measurable. Replacing a
+lesson by its exact title keeps the creator's `origin` (and, for a
+human-authored lesson, its `source` too), and each new Curator
+pass first backfills legacy or mislabeled origin markers (loop sources such as
+`shadow` and `curator` can never count as human-authored), keeping the
+original file as `lessons.md.pre-origin-backfill`.
 Before a genuinely new fallback lesson is written,
 `lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
 slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
@@ -793,10 +807,10 @@ flags a dense lesson subtopic when at least
 concrete title terms and a non-generic body mechanism. Generic joins and
 domain-wide/high-document-frequency title words cannot form a candidate. The
 inventory and `curator_review_status()` report emitted/rejected counts and
-rejection reasons, so the rule can be tuned from production data. A
-non-protected candidate must become one validated, checklist-style canonical
-skill before its source lessons are retired; protected clusters are left for
-human review. The evaluator reads every complete skill and relevant support
+rejection reasons, so the rule can be tuned from production data. Every
+candidate, protected members included, becomes a PROMOTE proposal: the
+verifier creates or patches one validated, checklist-style canonical skill
+before it retires the source lessons. The evaluator reads every complete skill and relevant support
 file, but has no web tools. External research is off by default. With explicit
 `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a separate Claude-only researcher gets
 only fixed public compatibility queries, `WebSearch`, `WebFetch`, and one
@@ -805,11 +819,44 @@ repository. The evaluator receives that handoff as fenced, untrusted data and
 writes numbered per-skill verdicts to
 `~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
 `REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
-UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
-Similar names and cosine scores are only candidates; merge/delete decisions
-compare intent, workflow, inputs, outcomes, and unique details. Pinned and
-foreground-authored entries are marked `[PROTECTED]`, and delete-class tools
-enforce the same boundary server-side. The pass is
+UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / DEFER. DEFER means
+the evidence is insufficient for now and a later pass re-examines the entry;
+no verdict waits for a person. Similar names and cosine scores are only
+candidates; merge/delete decisions compare intent, workflow, inputs, outcomes,
+and unique details. Pinned entries are marked `[PINNED]` (keep only), and
+foreground-authored or legacy entries `[PROTECTED]`; the mutating tools enforce
+both boundaries server-side.
+
+Destructive decisions are settled by a second agent, not by a person. The
+evaluator applies only in-place edits that remove nothing (lesson and skill
+patches, repairs, cross-links, concept curation) to entries that are neither
+`[PROTECTED]` nor `[PINNED]`. Every removal, consolidation, merge, split and
+promotion, and every change to a `[PROTECTED]` entry, goes into a
+`VERIFY_PROPOSALS` block at the end of its report. When that block holds at
+least one numbered proposal, the batch gets a third child: an independent
+verifier that re-reads every lesson and skill a proposal touches, tries to
+refute it (a merge that would lose a distinct rule, a removal whose "covered
+by" claim is only partly true, a promotion that is not one procedure), and
+applies only the confirmed or corrected proposals inside the pass snapshot. It
+patches missing residue into a covering skill before removing a lesson,
+records `keep_both` merge verdicts for the pairs it refutes, and writes a
+provenanced `VERIFY-<pass>[-batch-NNN-of-MMM].md` report ending with
+`CURATOR_VERIFY_COMPLETE`. A pass is endorsed only after every batch's
+verification is complete or has used its three attempts. Server-side,
+`lesson_remove` and `skill_manage(action='delete')` refuse the evaluator
+outright, and `lesson_patch` / same-slug `lesson_append` refuse it on protected
+lessons; only the verifier phase, inside a pass carrying both pass-id and
+snapshot-dir context, may change protected entries, and no curator phase may
+touch a pinned one. The verifier is also scoped: the parent records every name
+its batch's proposals mention under the pass snapshot
+(`verify_scope/batch-NNN.json`), and the server refuses a verifier change to
+any lesson or skill outside that list. The batch inventory and the proposals
+reach it as fenced, untrusted data. The Evolve report applier never removes
+anything: it may patch, and the server refuses its `lesson_remove` and skill
+deletes. The parent records the mode each evaluator actually ran in, so a batch
+whose research failed (and was evaluated without mutation tools) never reaches
+the verifier. Report destinations are authorized by exact pass and name, so a
+long pass cannot age them out. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
@@ -871,11 +918,13 @@ SHA-256 as provenance. Research and evaluation are two phases of each batch
 inside the durable pass: the web-free evaluator for a batch starts only after
 that batch's handoff validates. A researcher that fails or leaves a missing,
 malformed, swapped, or mismatched handoff is retried (three attempts); after
-that the batch gets a non-mutating evaluator that records `HUMAN_REVIEW` for
-decisions that depend on current external facts. A destructive pass takes its
+that the batch gets a non-mutating evaluator that marks `DEFER` for decisions
+that depend on current external facts, so a later pass re-examines them. A destructive pass takes its
 recovery snapshot right before its first mutating evaluator.
 `THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips the research phase entirely (and
 its token cost); the evaluator then judges currency from local evidence only.
+A batch that holds no skills never gets a researcher: the fixed research topics
+only concern skills, so its evaluator starts at once.
 Each report path is then
 authorized in the existing parent-authored `curator_pass` event;
 `curator_report_write` records its SHA-256 in `curator_report_provenance`.
@@ -883,22 +932,22 @@ This makes the report directory an untrusted transport: a stray or forged
 `REPORT-*.md` file cannot acquire the provenance needed by the applier.
 
 The web-enabled researcher never receives lesson, skill, or concept mutation
-tools. The evaluator never receives web tools. Curator applies its own PATCH /
-PRUNE / CONSOLIDATE directly by default (the evaluator writes the REPORT first,
-then mutates — `lesson_remove` is in its toolset so it can actually prune and
-consolidate duplicate lessons). Set
+tools. The evaluator never receives web tools. By default the evaluator applies
+its own in-place edits directly after writing the REPORT, and the verifier
+applies the confirmed destructive proposals; neither the evaluator's toolset
+nor the server lets the evaluator remove anything. Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. Pinned and
-untracked skills remain protected. Foreground-authored skills are protected by
-default; set `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` to grant the
-Curator explicit snapshot-scoped authority to repair, merge, and delete those
-skills too. The opt-in never overrides pins and is accepted only inside a real
-Curator pass carrying both pass-id and snapshot-dir context. Lessons are
+untracked skills remain protected. Foreground-authored skills are `[PROTECTED]`
+by default, so only the verifier changes them;
+`THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` (which does not limit the
+verifier) additionally lets the
+evaluator make in-place repairs to them. Lessons are
 stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
 appended; missing, legacy, or unknown lesson provenance is protected by
 default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
 foreground/unknown-origin entries unless `force=True` is called from a
-foreground writer; curator/spawned children cannot elevate themselves with
-`force`. Before a destructive child is spawned, thread-keeper writes
+foreground writer or the caller is the Curator verifier phase; curator/spawned
+children cannot elevate themselves with `force`. Before a destructive child is spawned, thread-keeper writes
 a recoverable snapshot under
 `<reports_dir>/snapshots/<pass-id>/` (default
 `~/.threadkeeper/curator/snapshots/<pass-id>/`). The snapshot contains
@@ -914,7 +963,8 @@ Use `curator_restore(pass_id, lesson_slug="...")` or
 As a prevention layer before recovery is needed, a destructive Curator pass
 has one server-side shared admission budget for `lesson_remove` and
 `skill_manage(action='delete')`, including across bounded child batches.
-`THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 10; set it to 0 to
+`THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 30 (only verified
+proposals delete anything); set it to 0 to
 disable those autonomous deletes. The pass ID makes the count durable and
 cross-process, while foreground/human deletes are unaffected. `mp_dashboard`
 shows admitted and refused operations with `status=HIT` when the Curator reaches
@@ -948,9 +998,21 @@ The shared lesson file has its own write serialization: `lesson_append`,
 `lessons.md.lock` around file creation/read/mutate/write, so foreground calls
 and learning-loop children cannot last-writer-win over each other's sections.
 
+`lesson_list(k=20, query="")` lists the newest lessons, or with `query` (the
+managed instructions pass the opening request) the most relevant ones with a
+relevance score: semantic when embeddings are available, otherwise the share
+of query words (any script) a lesson contains. Lesson vectors are stored in the
+`lesson_vectors` table keyed by body hash and embedding fingerprint, so each
+body is encoded once per install. Missing vectors are encoded in chunks of 32
+within an 8-second budget per call; a call that runs out falls back to the
+lexical ranking and the next call resumes. Each line shows the lesson's summary. Without a query a session
+would only ever see the newest few lessons, whatever the task.
+
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
-`lesson_usage.use_count` for the returned lesson. Curator dry runs include a
+`lesson_usage.use_count` for the returned lesson. Only foreground reads count:
+the curator and other loops read every lesson they audit, and counting those
+reads would make every lesson look recently useful. Curator dry runs include a
 ranked `STALE LESSONS (dry-run decay ranking)` section computed as
 `access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
 lessons with no recent access and low pull-count. That decay list is advisory
@@ -1480,11 +1542,11 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` | 40 | most pending candidates (oldest first) one reviewer child receives; the rest stay pending for the next pass |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
-| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
+| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | let the Curator evaluator make in-place repairs to foreground skills; the verifier changes foreground skills its proposals name regardless, and pinned skills stay protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, while foreground/private/unclassified entries use `HUMAN_REVIEW` |
+| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, and decisions that need facts the handoff lacks are marked `DEFER` for a later pass |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
-| `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 10 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
+| `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 30 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |

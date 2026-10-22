@@ -159,3 +159,12 @@ def test_capability_search_returns_bounded_family_metadata(tmp_path, monkeypatch
         "truncated": False,
     }
     assert "evolve_apply" not in str(result)
+
+
+def test_memory_admin_profile_has_every_tool_the_lesson_instructions_name():
+    from threadkeeper.instructions import MANAGED_INSTRUCTIONS_BLOCK
+    from threadkeeper.tool_profiles import MEMORY_ADMIN_TOOLS
+
+    for tool in ("lesson_list", "lesson_get", "lesson_neighbors", "lesson_patch", "lesson_append"):
+        assert f"`{tool}" in MANAGED_INSTRUCTIONS_BLOCK
+        assert tool in MEMORY_ADMIN_TOOLS

@@ -1043,6 +1043,16 @@ END;
 # an incompatible global schema version and breaking still-running clients.
 # Keep this block strictly backward-compatible: CREATE ... IF NOT EXISTS only.
 ADDITIVE_RUNTIME_SCHEMA = """
+-- Lesson body vectors for the write-time duplicate gate and lesson_list(query).
+-- Keyed by body hash and embedding fingerprint, so a body is encoded once per
+-- install and a model change simply misses the cache.
+CREATE TABLE IF NOT EXISTS lesson_vectors (
+    text_sha256 TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    vector      BLOB NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (text_sha256, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS daemon_health (
     name              TEXT PRIMARY KEY,
     thread_alive      INTEGER NOT NULL,
@@ -1140,6 +1150,20 @@ ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_sha256 TEXT",
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_summary TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE curator_batches ADD COLUMN workflow_compacted_at INTEGER",
+    # Phase three: an independent verifier tries to refute the evaluator's
+    # destructive proposals and applies the survivors. 'none' means the
+    # evaluator proposed nothing (or has not finished).
+    "ALTER TABLE curator_batches ADD COLUMN verify_state TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE curator_batches ADD COLUMN verify_task_id TEXT",
+    "ALTER TABLE curator_batches ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE curator_batches ADD COLUMN verify_failure TEXT",
+    # The mode the batch's evaluator actually ran in: a research failure
+    # downgrades one batch of a destructive pass to advisory, and its
+    # proposals must then never reach the verifier.
+    "ALTER TABLE curator_batches ADD COLUMN eval_mode TEXT",
+    # When curator_run moved a skill to 'stale'; archiving needs a dwell time
+    # in that state, so a long-idle skill is never archived on its first run.
+    "ALTER TABLE skill_usage ADD COLUMN stale_since INTEGER",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_at INTEGER",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_body TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_summary TEXT NOT NULL DEFAULT ''",
