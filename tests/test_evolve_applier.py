@@ -449,7 +449,19 @@ def test_authorized_curator_report_writer_is_applied_once(
     report_name = f"REPORT-{pass_id}.md"
     monkeypatch.setenv(PASS_ID_ENV, pass_id)
     conn = pkg["db"].get_db()
-    curator._authorize_curator_report(conn, int(time.time()), pass_id, report_name)
+    launch = curator._new_curator_launch(pass_id, None, 0, 0)
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, role, write_origin) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "tk_curator_report", 1, "parent", _FAKE_CID, str(tmp_path),
+            "curator assignment", int(time.time()), "curator", "curator",
+        ),
+    )
+    curator._record_curator_child_launch(
+        conn, launch, "tk_curator_report", _FAKE_CID,
+    )
+    conn.commit()
     write_report = _tool(pkg, "curator_report_write")
     assert write_report(
         pass_id=pass_id,

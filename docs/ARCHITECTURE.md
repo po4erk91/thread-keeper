@@ -674,13 +674,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   counts. The same counts are available on the Curator row of `agent_status`.
   Dispatch telemetry records total entries, batch count, compressed
   `batch_entries`, and max rendered batch chars.
-  The pass ID and snapshot directory are exported only around each batch
-  launch, so they never leak into other loops' children.
-  Before dispatching each child, the parent also authorizes that exact
-  `REPORT-*.md` destination in a `curator_pass` event. The spawned Curator's
-  path-scoped writer requires that authorization plus its matching pass ID and
-  records the final SHA-256 in `curator_report_provenance`; a file appearing in
-  the report directory alone is therefore never trusted as Curator output.
+  The parent supplies pass and snapshot context only as private, task-bound
+  launch data; ordinary spawns strip stale inherited values. It records the
+  task, child identity, pass, batch, role, origin, and exact report/research
+  destination before launch. Writers require that binding, and a watchdog retry
+  may restore only recorded launch data. The report writer records the final
+  SHA-256 in `curator_report_provenance`; a file appearing in the report
+  directory alone is therefore never trusted as Curator output.
   Destructive lesson removals and skill deletes reserve from one atomic,
   pass-ID-scoped server-side budget before touching disk. The default
   `CURATOR_MAX_DESTRUCTIVE_PER_PASS=30` is shared across child batches and
@@ -1539,8 +1539,9 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   batch's proposals mention (`verifier_scope_refusal`, scope file under the
   pass snapshot, `THREADKEEPER_CURATOR_VERIFY_BATCH`); both the phase and the
   batch env names are in `CHILD_MCP_ENV_KEYS`, so CLIs that scrub the MCP
-  server environment (Codex) still see them. Curator env reaches a child only
-  under `CHILD_ENV_LOCK`, shared with the watchdog's continuation launches.
+  server environment (Codex) still see them. Each child receives those values
+  only from its private, task-bound Curator launch record; ordinary spawns
+  strip inherited Curator values, and watchdog retries rebuild that record.
   `curator_batches.eval_mode` records the mode an evaluator actually ran in;
   only a destructive evaluation can make a batch `pending` for the verifier.
 
@@ -1550,8 +1551,9 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   inventory and returns every unresolved target with its source entry. It
   detects global link drift; it does not repair links during a scan.
 
-- **Curator recovery and destructive telemetry** — destructive curator passes
-  receive a pass id and pre-mutation snapshot dir in their environment. When the
+- **Curator recovery and destructive telemetry** — destructive curator children
+  receive pass and pre-mutation snapshot context only through their private,
+  task-bound launch environment. When the
   normal `lesson_append`, `lesson_patch`, `lesson_remove`, or `skill_manage`
   tools run under
   that pass, they emit `events.kind='curator_destructive_action'` rows such as

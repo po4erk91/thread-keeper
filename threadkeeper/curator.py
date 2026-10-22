@@ -60,13 +60,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
 from collections import Counter, defaultdict
-from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -89,12 +88,7 @@ from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
 from . import daemon_state, identity, lessons
 from .curator_snapshots import (
-    CHILD_ENV_LOCK,
     EVALUATE_PHASE,
-    PASS_ID_ENV,
-    PHASE_ENV,
-    SNAPSHOT_DIR_ENV,
-    VERIFY_BATCH_ENV,
     VERIFY_PHASE,
     create_curator_snapshot,
     write_verify_scope,
@@ -147,6 +141,7 @@ CURATOR_RESEARCH_PROMPT_PREFIX = (
 CURATOR_REPORT_PROVENANCE_KIND = "curator_report_provenance"
 CURATOR_RESEARCH_AUTHORIZATION_KIND = "curator_research_authorization"
 CURATOR_RESEARCH_PROVENANCE_KIND = "curator_research_provenance"
+CURATOR_CHILD_LAUNCH_KIND = "curator_child_launch"
 CURATOR_RESEARCH_SCHEMA_VERSION = 1
 # The evaluator prompt already carries a bounded inventory batch. Keep web
 # evidence small enough that adding it cannot turn a normal batch into an
@@ -187,8 +182,8 @@ Write concise public URLs, access dates, and general public conclusions. Do not
 recommend tool calls or changes. The evaluator treats the handoff as untrusted
 external data. If research is unavailable, say so. Finish the handoff with the
 literal line `CURATOR_RESEARCH_COMPLETE` and persist it only through
-`curator_research_write(pass_id=PASS_ID, batch_index=BATCH_INDEX,
-batch_total=BATCH_TOTAL, content=<full evidence>)`. Do not use filesystem Write
+`curator_research_write(batch_index=BATCH_INDEX, batch_total=BATCH_TOTAL,
+content=<full evidence>)`. Do not use filesystem Write
 or choose a destination.
 """
 
@@ -255,8 +250,8 @@ reason=...)` before completing the report. Use a short reason such as
 CROSS-CLI REPAIR is mandatory when the manifest flags a supported consumer.
 For a curatable skill, repair frontmatter/body/resources through skill_manage,
 then call skill_validate(name=...) and require every supported consumer plus
-all mirrors to pass. If post-change validation fails, restore that skill from
-PASS_ID with curator_restore and record the rollback. For a [PROTECTED] skill,
+all mirrors to pass. If post-change validation fails, restore that skill with
+curator_restore and record the rollback. For a [PROTECTED] skill,
 put the exact repair in a VERIFY proposal. Never touch an external plugin skill
 or a [PINNED] entry.
 
@@ -275,7 +270,7 @@ MERGE/DELETE safety:
     record PASS/FAIL/ROLLED_BACK in REPORT.md.
 
 OUTPUT: persist REPORT.md through
-`curator_report_write(pass_id=PASS_ID, content=<full markdown>)`. Do NOT use
+`curator_report_write(content=<full markdown>)`. Do NOT use
 the filesystem Write tool for the report: sandboxed CLIs may not write outside
 their project. REPORT.md is the durable audit trail. In destructive mode,
 write the complete planned report once before mutations, apply only the safe,
@@ -467,7 +462,7 @@ FOR EACH PROPOSAL, in order:
      • a promoted skill needs a `## Retired lessons` section listing every
        source slug; call skill_validate(name=...) before removing any lesson;
      • after any skill change call skill_validate(name=...); if it fails,
-       restore the skill with curator_restore(pass_id=PASS_ID, ...) and record
+       restore the skill with curator_restore(...) and record
        the rollback;
      • when the umbrella is an existing lesson, extend it with lesson_patch;
        when you write it with lesson_append, check that the reply names the
@@ -490,8 +485,8 @@ HARD LIMITS:
   • Do not create work beyond the proposals.
 
 OUTPUT: persist your verification report through
-curator_report_write(pass_id=PASS_ID, batch_index=BATCH_INDEX,
-batch_total=BATCH_TOTAL, phase='verify', content=<markdown>). For every
+curator_report_write(batch_index=BATCH_INDEX, batch_total=BATCH_TOTAL,
+phase='verify', content=<markdown>). For every
 proposal give one row: proposal | verdict | reason | applied result
 (APPLIED / ROLLED_BACK / REFUSED_BY_SERVER / NOT_APPLIED). Write the planned
 verdicts once before mutating, then the final results. Do not cite internal IDs
@@ -544,6 +539,85 @@ class _InventoryBatch:
     skill_count: int
     concept_count: int
     char_count: int
+
+
+@dataclass(frozen=True)
+class _CuratorLaunch:
+    """Private, task-bound authority for one Curator child."""
+
+    pass_id: str
+    snapshot_dir: Path | None
+    batch_index: int
+    batch_total: int
+    role: str
+    write_origin: str
+    phase: str
+    verify_batch: int
+
+    def authority_name(self) -> str:
+        if self.role == "curator_researcher":
+            return curator_research_name(
+                self.pass_id, self.batch_index, self.batch_total,
+            )
+        return curator_report_name(
+            self.pass_id,
+            self.batch_index,
+            self.batch_total,
+            phase=self.phase,
+        )
+
+
+def _new_curator_launch(
+    pass_id: str,
+    snapshot_dir: Path | None,
+    batch_index: int,
+    batch_total: int,
+    *,
+    role: str = "curator",
+    write_origin: str = "curator",
+    phase: str = EVALUATE_PHASE,
+    verify_batch: int = 0,
+) -> _CuratorLaunch:
+    """Validate the authority the private Curator launcher may attach."""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", pass_id):
+        raise ValueError("invalid curator pass")
+    if bool(batch_index) != bool(batch_total):
+        raise ValueError("invalid curator batch")
+    if batch_index and not (1 <= batch_index <= batch_total <= 9999):
+        raise ValueError("invalid curator batch")
+    if (role, write_origin) not in {
+        ("curator", "curator"),
+        ("curator_researcher", "curator_research"),
+    }:
+        raise ValueError("invalid curator launch context")
+    if phase not in {"research", EVALUATE_PHASE, VERIFY_PHASE}:
+        raise ValueError("invalid curator phase")
+    if role == "curator_researcher":
+        if phase != "research" or not batch_index or snapshot_dir is not None:
+            raise ValueError("invalid curator research launch")
+    elif phase == "research":
+        raise ValueError("invalid curator launch phase")
+    if phase == VERIFY_PHASE:
+        if not (1 <= verify_batch <= (batch_total or 1)):
+            raise ValueError("invalid verifier batch")
+    elif verify_batch:
+        raise ValueError("invalid verifier batch")
+    if snapshot_dir is not None:
+        expected = (CURATOR_REPORTS_DIR / "snapshots" / pass_id).resolve()
+        if role != "curator" or snapshot_dir.resolve() != expected:
+            raise ValueError("invalid curator snapshot")
+    if phase == VERIFY_PHASE and snapshot_dir is None:
+        raise ValueError("verifier launch requires a snapshot")
+    return _CuratorLaunch(
+        pass_id,
+        snapshot_dir,
+        batch_index,
+        batch_total,
+        role,
+        write_origin,
+        phase,
+        verify_batch,
+    )
 
 
 @dataclass(frozen=True)
@@ -889,46 +963,173 @@ def _record_curator_pass(conn: sqlite3.Connection,
         logger.debug("curator: failed to record pass", exc_info=True)
 
 
-def _authorize_curator_report(
+def _record_curator_child_launch(
     conn: sqlite3.Connection,
-    ts: int,
-    pass_id: str,
-    report_name: str,
+    launch: _CuratorLaunch,
+    task_id: str,
+    child_cid: str,
 ) -> None:
-    """Record an exact report destination before dispatching its curator child.
-
-    ``curator_report_write`` requires this parent-authored ``curator_pass``
-    record in addition to its spawned-curator context.  A writer that merely
-    drops a matching filename into the reports directory cannot mint the
-    provenance event consumed by the Evolve applier.
-    """
-    _record_curator_pass(
-        conn,
-        ts,
-        f"report_authorized pass_id={pass_id} report_name={report_name}",
+    """Bind one task and child identity to its Curator authority."""
+    payload = json.dumps({
+        "pass_id": launch.pass_id,
+        "snapshot": bool(launch.snapshot_dir),
+        "batch_index": launch.batch_index,
+        "batch_total": launch.batch_total,
+        "authority_name": launch.authority_name(),
+        "child_cid": child_cid,
+        "role": launch.role,
+        "write_origin": launch.write_origin,
+        "phase": launch.phase,
+        "verify_batch": launch.verify_batch,
+    }, sort_keys=True, separators=(",", ":"))
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            identity._session_id or "", CURATOR_CHILD_LAUNCH_KIND, task_id,
+            payload, int(time.time()),
+        ),
     )
 
 
-def _curator_report_is_authorized(
-    conn: sqlite3.Connection,
-    pass_id: str,
-    report_name: str,
-) -> bool:
-    """Whether the curator parent authorized this exact report destination.
-
-    The lookup is an exact match, not a recent window: a long pass records a
-    status event on every poll, which would push early authorizations out of
-    any fixed-size window.
-    """
-    expected = f"report_authorized pass_id={pass_id} report_name={report_name}"
+def _curator_launch_payload(
+    conn: sqlite3.Connection, task_id: str,
+) -> dict | None:
     try:
         row = conn.execute(
-            "SELECT 1 FROM events WHERE kind='curator_pass' AND summary=? LIMIT 1",
-            (expected,),
+            "SELECT summary FROM events WHERE kind=? AND target=? "
+            "ORDER BY id DESC LIMIT 1",
+            (CURATOR_CHILD_LAUNCH_KIND, task_id),
         ).fetchone()
-    except sqlite3.OperationalError:
+        payload = json.loads((row["summary"] if row else "") or "")
+    except (sqlite3.Error, json.JSONDecodeError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _curator_child_owns_launch(
+    conn: sqlite3.Connection,
+    *,
+    child_cid: str,
+    pass_id: str,
+    batch_index: int,
+    batch_total: int,
+    authority_name: str,
+    role: str,
+    write_origin: str,
+) -> bool:
+    """Require a live child to own the exact launch authorization it uses."""
+    if not child_cid:
         return False
-    return row is not None
+    try:
+        task = conn.execute(
+            "SELECT id, role, write_origin FROM tasks "
+            "WHERE spawned_cid=? AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (child_cid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    if not task or (task["role"], task["write_origin"]) != (
+        role, write_origin,
+    ):
+        return False
+    payload = _curator_launch_payload(conn, task["id"])
+    if not payload:
+        return False
+    return (
+        payload.get("pass_id") == pass_id
+        and payload.get("batch_index") == batch_index
+        and payload.get("batch_total") == batch_total
+        and payload.get("authority_name") == authority_name
+        and payload.get("child_cid") == child_cid
+        and payload.get("role") == role
+        and payload.get("write_origin") == write_origin
+    )
+
+
+def _curator_writer_owns_launch(
+    conn: sqlite3.Connection,
+    *,
+    child_cid: str,
+    pass_id: str,
+    batch_index: int,
+    batch_total: int,
+    report_name: str,
+) -> bool:
+    return _curator_child_owns_launch(
+        conn,
+        child_cid=child_cid,
+        pass_id=pass_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        authority_name=report_name,
+        role="curator",
+        write_origin="curator",
+    )
+
+
+def _curator_researcher_owns_launch(
+    conn: sqlite3.Connection,
+    *,
+    child_cid: str,
+    pass_id: str,
+    batch_index: int,
+    batch_total: int,
+    research_name: str,
+) -> bool:
+    return _curator_child_owns_launch(
+        conn,
+        child_cid=child_cid,
+        pass_id=pass_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        authority_name=research_name,
+        role="curator_researcher",
+        write_origin="curator_research",
+    )
+
+
+def _curator_launch_for_continuation(
+    conn: sqlite3.Connection, task_id: str,
+) -> _CuratorLaunch | None:
+    """Restore authority only for the recorded Curator task being retried."""
+    try:
+        task = conn.execute(
+            "SELECT spawned_cid, role, write_origin FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not task:
+        return None
+    payload = _curator_launch_payload(conn, task_id)
+    if not payload or (
+        payload.get("child_cid"), payload.get("role"),
+        payload.get("write_origin"),
+    ) != (task["spawned_cid"], task["role"], task["write_origin"]):
+        return None
+    try:
+        pass_id = str(payload["pass_id"])
+        snapshot_dir = (
+            CURATOR_REPORTS_DIR / "snapshots" / pass_id
+            if payload.get("snapshot") else None
+        )
+        if snapshot_dir is not None and not snapshot_dir.is_dir():
+            return None
+        launch = _new_curator_launch(
+            pass_id,
+            snapshot_dir,
+            int(payload["batch_index"]),
+            int(payload["batch_total"]),
+            role=str(payload["role"]),
+            write_origin=str(payload["write_origin"]),
+            phase=str(payload["phase"]),
+            verify_batch=int(payload["verify_batch"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return launch if launch.authority_name() == payload.get("authority_name") else None
 
 
 def curator_report_sha256(content: str) -> str:
@@ -2688,7 +2889,9 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             suffix += 1
         manifest_path = write_skill_audit_manifest(
             skill_audit,
-            CURATOR_REPORTS_DIR / f"AUDIT-{pass_id}.json",
+            CURATOR_REPORTS_DIR / (
+                f"AUDIT-{time.strftime('%Y%m%d')}-{secrets.token_hex(4)}.json"
+            ),
         )
         # The recovery snapshot is taken right before the pass's first
         # mutating child (_ensure_pass_snapshot), not here.
@@ -2702,10 +2905,6 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
             Path(manifest_path).read_text(encoding="utf-8"),
         )
         for batch in batches:
-            _authorize_curator_report(
-                conn, now, pass_id,
-                _report_name_for_batch(pass_id, batch.index, batch.total),
-            )
             if CURATOR_WEB_RESEARCH:
                 _authorize_curator_research(
                     conn, pass_id=pass_id, fingerprint=fingerprint,
@@ -2767,8 +2966,7 @@ def _evaluation_contract(mode: str, snapshot_dir) -> tuple[str, str]:
             "proposal and applies the survivors after you finish. "
             f"{foreground_clause} NEVER pass force=True. Apply changes ONLY "
             "after the REPORT.md is written (audit trail first, mutation "
-            "second). A recovery snapshot for this pass already exists at "
-            f"{snapshot_dir}."
+            "second). A recovery snapshot for this pass already exists."
         )
         allowed_tools = (
             "mcp__thread-keeper__lesson_list,"
@@ -3030,23 +3228,24 @@ class _LaunchSpec:
     base_allowed_tools: str | None = None
     mode: str = ""
     verify_batch: int = 0
+    batch_index: int = 0
+    batch_total: int = 0
 
 
 def _research_spec(pass_row: sqlite3.Row, index: int, total: int) -> _LaunchSpec:
     prompt = (
         CURATOR_RESEARCH_PROMPT
         + "\n\n"
-        + f"PASS_ID = {pass_row['pass_id']}\n"
         + f"BATCH_INDEX = {index}\n"
         + f"BATCH_TOTAL = {total}\n"
         + "Persist only the evidence through curator_research_write "
-        + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL."
+        + "using BATCH_INDEX and BATCH_TOTAL."
     )
     return _LaunchSpec(
         phase="research", prompt=prompt, tools="WebSearch,WebFetch",
         base_allowed_tools=_RESEARCH_TOOLS,
         role="curator_researcher", write_origin="curator_research",
-        pass_row=pass_row,
+        pass_row=pass_row, batch_index=index, batch_total=total,
     )
 
 
@@ -3109,29 +3308,29 @@ def _evaluate_spec(
             return snapshotted
         pass_row, snapshot_dir = snapshotted
     destructive_clause, tools = _evaluation_contract(mode, snapshot_dir)
-    _authorize_curator_report(conn, int(time.time()), pass_id, row["report_name"])
     writer_index, writer_total = _writer_batch_args(index, total)
+    batch_instruction = (
+        f"using batch_index={writer_index} and batch_total={writer_total}."
+        if writer_index else "without batch_index or batch_total."
+    )
     prompt = (
         CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
         + row["batch_text"]
         + "\n\n"
-        + f"REPORT_PATH = {CURATOR_REPORTS_DIR}/{row['report_name']}\n"
         + f"AUDIT_MANIFEST_PATH = {pass_row['audit_manifest_path']}\n"
-        + f"PASS_ID = {pass_id}\n"
-        + f"BATCH_INDEX = {writer_index}\n"
-        + f"BATCH_TOTAL = {writer_total}\n"
         + "<curator_research_data>\n"
         + research_block
         + "\n</curator_research_data>\n"
         + "Persist the report through curator_report_write "
-        + "using PASS_ID, BATCH_INDEX, and BATCH_TOTAL; "
-        + "REPORT_PATH is "
-        + "informational and must not be written directly."
+        + batch_instruction
+        + " The server supplies report authority; do not select a report path "
+        + "or pass value."
     )
     return _LaunchSpec(
         phase=EVALUATE_PHASE, prompt=prompt, tools=tools,
         role="curator", write_origin="curator",
         pass_row=pass_row, snapshot_dir=snapshot_dir, mode=mode,
+        batch_index=writer_index, batch_total=writer_total,
     )
 
 
@@ -3164,10 +3363,12 @@ def _verify_spec(
     pass_row, snapshot_dir = snapshotted
     proposals = verify_proposals(found[0])
     write_verify_scope(Path(snapshot_dir), index, pass_id, proposals)
-    now = int(time.time())
-    verify_name = _report_name_for_batch(pass_id, index, total, phase=VERIFY_PHASE)
-    _authorize_curator_report(conn, now, pass_id, verify_name)
     writer_index, writer_total = _writer_batch_args(index, total)
+    batch_instruction = (
+        f"using batch_index={writer_index} and batch_total={writer_total} "
+        + "and phase='verify'."
+        if writer_index else "using phase='verify' without batch_index or batch_total."
+    )
     prompt = (
         CURATOR_VERIFY_PROMPT
         + "<curator_verify_proposals>\n"
@@ -3178,18 +3379,14 @@ def _verify_spec(
         + "<curator_inventory_data>\n"
         + _defang_fence_tags(row["batch_text"])
         + "\n</curator_inventory_data>\n\n"
-        + f"EVALUATOR_REPORT_PATH = {CURATOR_REPORTS_DIR}/{row['report_name']}\n"
-        + f"PASS_ID = {pass_id}\n"
-        + f"BATCH_INDEX = {writer_index}\n"
-        + f"BATCH_TOTAL = {writer_total}\n"
-        + f"A recovery snapshot for this pass exists at {snapshot_dir}.\n"
         + "Persist your verification report through curator_report_write "
-        + "using PASS_ID, BATCH_INDEX, BATCH_TOTAL and phase='verify'."
+        + batch_instruction
     )
     return _LaunchSpec(
         phase=VERIFY_PHASE, prompt=prompt, tools=_VERIFY_TOOLS,
         role="curator", write_origin="curator",
         pass_row=pass_row, snapshot_dir=snapshot_dir, verify_batch=index,
+        batch_index=writer_index, batch_total=writer_total,
     )
 
 
@@ -3321,6 +3518,8 @@ def _advance_pass(
                 base_allowed_tools=spec.base_allowed_tools,
                 phase=spec.phase,
                 verify_batch=spec.verify_batch,
+                batch_index=spec.batch_index,
+                batch_total=spec.batch_total,
             ))
         except Exception as exc:
             result = parse_spawn_result(f"ERR spawn_exception={exc}")
@@ -3356,57 +3555,6 @@ def _advance_pass(
     return out
 
 
-def curator_retry_env(conn: sqlite3.Connection, task_id: str) -> dict[str, str]:
-    """Pass identity for the watchdog continuation of a Curator batch child.
-
-    The report and research writers authorize by the pass ID in the child's
-    environment, which the parent exports only around the original launch. A
-    continuation launched later by the watchdog would otherwise start without
-    it and could never persist its work. Empty when the task is not a batch
-    child of a live pass.
-    """
-    try:
-        row = conn.execute(
-            "SELECT b.pass_id, b.batch_index, b.task_id, b.verify_task_id, "
-            "p.snapshot_path "
-            "FROM curator_batches b JOIN curator_passes p USING(pass_id) "
-            "WHERE (b.task_id=? OR b.research_task_id=? OR b.verify_task_id=?) "
-            "AND p.endorsed_at IS NULL AND p.abandoned_at IS NULL LIMIT 1",
-            (task_id, task_id, task_id),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return {}
-    if row is None:
-        return {}
-    env = {PASS_ID_ENV: row["pass_id"], PHASE_ENV: EVALUATE_PHASE}
-    if row["verify_task_id"] == task_id:
-        env[PHASE_ENV] = VERIFY_PHASE
-        env[VERIFY_BATCH_ENV] = str(row["batch_index"])
-    mutating = task_id in (row["task_id"], row["verify_task_id"])
-    if mutating and row["snapshot_path"]:
-        env[SNAPSHOT_DIR_ENV] = str(row["snapshot_path"])
-    return env
-
-
-@contextmanager
-def _scoped_environ(values: dict[str, str | None]):
-    """Set (or, for None, unset) environment variables for one block."""
-    saved = {key: os.environ.get(key) for key in values}
-    try:
-        for key, value in values.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        yield
-    finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
 def _spawn_batch_child(
     pass_id: str,
     snapshot_dir,
@@ -3418,36 +3566,34 @@ def _spawn_batch_child(
     base_allowed_tools: str | None = None,
     phase: str = EVALUATE_PHASE,
     verify_batch: int = 0,
+    batch_index: int = 0,
+    batch_total: int = 0,
 ) -> str:
-    """Launch one batch child with this pass's identity in its environment.
+    """Launch a child with task-bound Curator authority, never ambient state."""
+    from .tools.spawn import _spawn_impl  # type: ignore
 
-    Every report writer, including advisory-mode children, must carry the
-    pass identifier the parent authorized.  The writer rejects filenames that
-    are not one of this pass's explicit report destinations.  The phase tells
-    the child's memory tools whether it may only propose (evaluator) or may
-    apply verified changes (verifier). The identity is exported only around
-    the launch itself, so it never leaks into children of other loops in this
-    process.
-    """
-    from .tools.spawn import spawn  # type: ignore
-
-    with CHILD_ENV_LOCK, _scoped_environ({
-        PASS_ID_ENV: pass_id,
-        SNAPSHOT_DIR_ENV: str(snapshot_dir) if snapshot_dir else None,
-        PHASE_ENV: phase,
-        VERIFY_BATCH_ENV: str(verify_batch) if verify_batch else None,
-    }):
-        return spawn(
-            prompt=prompt,
-            visible=False,
-            capture_output=True,
-            permission_mode="auto",
-            role=role,
-            write_origin=write_origin,
-            slim=True,
-            extra_allowed_tools=allowed_tools,
-            base_allowed_tools=base_allowed_tools,
-        )
+    launch = _new_curator_launch(
+        pass_id,
+        Path(snapshot_dir) if snapshot_dir else None,
+        batch_index,
+        batch_total,
+        role=role,
+        write_origin=write_origin,
+        phase=phase,
+        verify_batch=verify_batch,
+    )
+    return _spawn_impl(
+        prompt=prompt,
+        visible=False,
+        capture_output=True,
+        permission_mode="auto",
+        role=role,
+        write_origin=write_origin,
+        slim=True,
+        extra_allowed_tools=allowed_tools,
+        base_allowed_tools=base_allowed_tools,
+        _curator_launch=launch,
+    )
 
 
 def _serve_loop() -> None:

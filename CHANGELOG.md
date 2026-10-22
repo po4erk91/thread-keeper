@@ -7,6 +7,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Curator child authority is no longer ambient process state (#366).**
+  Pass and snapshot values are attached only to a private, task-bound Curator
+  launch. Ordinary spawns strip inherited values, report/research writes verify
+  their task, child, pass, batch, role, and origin, and watchdog retries restore
+  only recorded Curator launch data.
+
 ## v0.20.0 — 2026-10-22
 
 - **Fixed: the lesson instructions only name tools agents can call.** The

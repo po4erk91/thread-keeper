@@ -925,8 +925,12 @@ recovery snapshot right before its first mutating evaluator.
 its token cost); the evaluator then judges currency from local evidence only.
 A batch that holds no skills never gets a researcher: the fixed research topics
 only concern skills, so its evaluator starts at once.
-Each report path is then
-authorized in the existing parent-authored `curator_pass` event;
+Curator pass and snapshot values are explicit, per-child launch data rather
+than temporary server-process environment. Ordinary foreground and daemon
+spawns strip stale inherited values. The private launcher binds each task,
+child identity, pass, batch, phase, role, origin, and exact
+report/research destination before launch; a watchdog retry restores only that
+recorded data.
 `curator_report_write` records its SHA-256 in `curator_report_provenance`.
 This makes the report directory an untrusted transport: a stray or forged
 `REPORT-*.md` file cannot acquire the provenance needed by the applier.
