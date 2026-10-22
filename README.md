@@ -336,9 +336,13 @@ cross-project recall. Those results show `scope=`/`project=` provenance and
 write a `cross_project_recall` audit event. The `memory_scope_status()` tool
 shows the current namespace and the migration accounting.
 
-Existing databases are migrated conservatively: rows without reliable
-repository provenance are marked `unresolved`, excluded from automatic recall,
-and listed in the migration report until an operator classifies them. This
+Existing databases keep their memory recallable: legacy rows without reliable
+repository provenance become `global`, as all memory effectively was before
+namespaces, while tasks whose working directory still resolves are scoped to
+their project; new memory is scoped from then on. The migration report records
+the counts. A database that was already at schema v5 before namespaces existed
+gets the namespace columns and this one-time backfill on its next start. Rows
+explicitly marked `unresolved` stay excluded from automatic recall. This
 boundary controls *which local memory is recalled*; it is separate from
 `THREADKEEPER_MEMORY_EGRESS`, which controls whether personal memory may be
 sent to another model provider.

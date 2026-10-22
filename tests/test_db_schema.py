@@ -181,3 +181,38 @@ print(f"version={version} retry_attempt={retry_col}")
     )
     assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     raw.close()
+
+
+def test_v5_database_without_namespaces_gets_them_and_keeps_memory_global(tmp_path, monkeypatch):
+    import sqlite3 as sqlite
+
+    path = tmp_path / "pre-namespace.sqlite"
+    conn = sqlite.connect(path)
+    conn.executescript(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, question TEXT NOT NULL, "
+        "state TEXT NOT NULL, opened_at INTEGER NOT NULL, last_touched_at INTEGER NOT NULL);"
+        "CREATE TABLE core_memory (key TEXT PRIMARY KEY, content TEXT NOT NULL, "
+        "priority INTEGER NOT NULL DEFAULT 50, updated_at INTEGER NOT NULL);"
+        "INSERT INTO threads VALUES ('T1', 'old thread', 'active', 1, 1);"
+        "INSERT INTO core_memory VALUES ('rule', 'keep me', 100, 1);"
+        "PRAGMA user_version=5;"
+    )
+    conn.close()
+    monkeypatch.setenv("THREADKEEPER_DB", str(path))
+    import importlib
+    import sys
+
+    for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
+        del sys.modules[name]
+    db = importlib.import_module("threadkeeper.db")
+
+    live = db.get_db()
+
+    thread = live.execute("SELECT memory_scope, project_id FROM threads WHERE id='T1'").fetchone()
+    rule = live.execute("SELECT memory_scope FROM core_memory WHERE key='rule'").fetchone()
+    assert tuple(thread) == ("global", None)
+    assert rule[0] == "global"
+    report = live.execute(
+        "SELECT global_rows FROM project_scope_migration_report WHERE table_name='threads'"
+    ).fetchone()
+    assert report[0] == 1

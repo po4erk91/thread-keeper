@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: project namespaces reach databases already at schema v5, and
+  legacy memory stays recallable.** Namespaces were added under the existing
+  v5 schema, so a database that was already at v5 skipped their migration and
+  every scoped query failed on the missing `project_id` column. Such databases
+  now get the columns and a one-time backfill on their next start. Legacy rows
+  without reliable provenance become `global` instead of `unresolved`, so a
+  user's rules, threads and history stay in every brief; new memory is scoped.
+
 - **Fixed: the daemon host no longer inherits a child's identity.** When a
   curator or model-router child's MCP server happened to spawn the host, the
   host kept that child's pass id, egress consumer and conversation id. The

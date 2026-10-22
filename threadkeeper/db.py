@@ -1354,13 +1354,14 @@ _PROJECT_SCOPED_TABLES = (
 
 
 def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
-    """Quarantine legacy memory and record an auditable migration report.
+    """Classify legacy memory and record an auditable migration report.
 
     Old rows do not carry trustworthy repository provenance.  Tasks are the
     exception: their persisted working directory can still be resolved while
-    it exists, so they are safely backfilled. Everything else is explicitly
-    unresolved rather than treated as global.  This report is intentionally
-    retained for operators deciding how to classify old data.
+    it exists, so they are scoped to their project. Every other legacy row
+    becomes global: before namespaces existed all memory was recalled in
+    every project, and quarantining it would silently drop the user's rules,
+    threads and history from every brief. New memory is scoped from now on.
     """
     from .project_scope import resolve_project_namespace
 
@@ -1381,6 +1382,11 @@ def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
                 "UPDATE tasks SET project_id=?, memory_scope='project' WHERE id=?",
                 (namespace.project_id, row["id"]),
             )
+    for table in _PROJECT_SCOPED_TABLES:
+        conn.execute(
+            f"UPDATE {table} SET memory_scope='global' "
+            "WHERE memory_scope='unresolved'"
+        )
     now = int(time.time())
     for table in _PROJECT_SCOPED_TABLES:
         counts = dict(conn.execute(
@@ -1532,6 +1538,26 @@ def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
     for ddl in ADDITIVE_RUNTIME_COLUMN_MIGRATIONS:
         _apply_column_migration(conn, ddl)
+    _ensure_project_namespaces(conn)
+
+
+def _ensure_project_namespaces(conn: sqlite3.Connection) -> None:
+    """Bring a v5 database that predates project namespaces up to them.
+
+    Namespaces were added under the existing schema version 5, so a database
+    that was already at v5 skipped their migration and lacked the columns
+    every scoped query needs. Add them idempotently and backfill scopes once:
+    the migration report is empty exactly when the backfill never ran.
+    """
+    for ddl in LEGACY_COLUMN_MIGRATIONS:
+        _apply_column_migration(conn, ddl)
+    if conn.execute(
+        "SELECT 1 FROM project_scope_migration_report LIMIT 1"
+    ).fetchone():
+        return
+    _backfill_project_scopes(conn)
+    for idx in POST_SCHEMA_INDEXES:
+        conn.execute(idx)
 
 
 def _guard_managed_checkout_live_db() -> None:
