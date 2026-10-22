@@ -58,6 +58,7 @@ _started = False
 _LOOP_PASS_KINDS = (
     "shadow_review_pass", "candidate_review_pass", "curator_pass",
     "probe_pass", "extract_pass", "dialectic_validate_pass",
+    "model_router_pass",
     "evolve_review_pass", "evolve_apply_pass", "auto_update_pass",
     "skill_update_pass", "spawn_timeout_retry_failed",
 )

@@ -9,6 +9,9 @@ from __future__ import annotations
 from typing import Final
 
 
+ROUTER_ROLE: Final[str] = "model_router"
+
+
 AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
     {
         "role": "shadow_observer",
@@ -129,6 +132,18 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
         "writes": "Code, documentation, commits, branches, and pull requests",
         "impact": "code_write",
         "interval_key": "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S",
+    },
+    {
+        "role": ROUTER_ROLE,
+        "name": "Model router",
+        "description": (
+            "Weekly reviews which CLI, model and effort each auto role runs "
+            "on, and re-assigns them."
+        ),
+        "reads": "Spawn telemetry, recent run outcomes, and the local model catalog",
+        "writes": "Routing decisions for roles set to auto",
+        "impact": "config_write",
+        "interval_key": "THREADKEEPER_MODEL_ROUTER_INTERVAL_S",
     },
 )
 

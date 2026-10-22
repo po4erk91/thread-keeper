@@ -181,8 +181,8 @@ the `CLIAdapter` contract. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Python MCP SDK surface
 
-thread-keeper requires MCP Python SDK 2.2 or later (`mcp>=2.2.0,<3`). Its
-stable Skills extension uses the MCP 2026-07-28 extension surface, while tools,
+thread-keeper requires MCP Python SDK 2.3 or later (`mcp>=2.3.0,<3`). Its
+stable Skills and durable Tasks extensions use the MCP 2026-07-28 extension surface, while tools,
 resources, prompts, annotations, structured content, elicitation, and stdio
 continue to use the same `MCPServer` instance.
 
@@ -267,6 +267,23 @@ activate it, approve its tools, record use telemetry, or approve supporting
 files. Activation and any user approval remain responsibilities of the host's
 skill-loading path.
 
+### MCP Tasks for headless spawn
+
+Clients using MCP 2026-07-28 that advertise the
+`io.modelcontextprotocol/tasks` extension can call `spawn(..., visible=False)`
+as a durable asynchronous operation. The response is an opaque public task
+handle; poll it with `tasks/get` and request cooperative cancellation with
+`tasks/cancel`. Handles are bound to the authenticated caller (or the local OS
+user for stdio), survive a host reconnect, and never expose the short internal
+spawn ID. The server suggests a five-second polling interval.
+
+Only headless `spawn` is task-eligible: visible Terminal.app work has no stable
+process-group handle. `tournament`, `tasks`, `task_logs`, and the legacy custom
+spawn lifecycle stay unchanged. Clients that do not advertise the extension
+receive the existing synchronous `spawn` response, including on older protocol
+versions. `spawn` does not pause for approval, so it deliberately does not
+implement `tasks/update` or task enumeration.
+
 ### Memory egress (cross-provider privacy)
 
 thread-keeper is "one user model … shared across CLIs," and that sharing is by
@@ -319,9 +336,13 @@ cross-project recall. Those results show `scope=`/`project=` provenance and
 write a `cross_project_recall` audit event. The `memory_scope_status()` tool
 shows the current namespace and the migration accounting.
 
-Existing databases are migrated conservatively: rows without reliable
-repository provenance are marked `unresolved`, excluded from automatic recall,
-and listed in the migration report until an operator classifies them. This
+Existing databases keep their memory recallable: legacy rows without reliable
+repository provenance become `global`, as all memory effectively was before
+namespaces, while tasks whose working directory still resolves are scoped to
+their project; new memory is scoped from then on. The migration report records
+the counts. A database that was already at schema v5 before namespaces existed
+gets the namespace columns and this one-time backfill on its next start. Rows
+explicitly marked `unresolved` stay excluded from automatic recall. This
 boundary controls *which local memory is recalled*; it is separate from
 `THREADKEEPER_MEMORY_EGRESS`, which controls whether personal memory may be
 sent to another model provider.
@@ -670,9 +691,23 @@ can correct one unique substring without reserializing a lesson. Shadow-origin
 though an existing same-slug long lesson may be corrected without increasing
 its body size; near-duplicate slugs are blocked, and semantic body matches are
 routed to the incumbent lesson or surfaced for curation instead of minting a
-sibling lesson. A clear new directive or debunk also flags older permissive
-lessons on the same concrete practice for patch, cross-link, or supersession
-review.
+sibling lesson. The same slug and semantic gates apply to every writer,
+foreground sessions included: a foreground near-duplicate is refused with the
+neighbour's slug, and the author either extends it with `lesson_patch` or, after
+reading it, passes `new_despite=<slug>` (comma-separated when the gates name
+several neighbours) to keep a deliberately separate rule. Loop writers are
+recognized by their write origin, so a loop child cannot opt out by passing a
+foreground-looking `source`. A same-slug rewrite is never folded into a
+different lesson, and the Curator verifier writes the umbrella of a verified
+consolidation without the gates.
+A new lesson that debunks a near-duplicate is refused too: correct the existing
+lesson instead of adding a conflicting one. Refusals are recorded as
+`lesson_refused` events so the gate's hit rate stays measurable. Replacing a
+lesson by its exact title keeps the creator's `origin` (and, for a
+human-authored lesson, its `source` too), and each new Curator
+pass first backfills legacy or mislabeled origin markers (loop sources such as
+`shadow` and `curator` can never count as human-authored), keeping the
+original file as `lessons.md.pre-origin-backfill`.
 Before a genuinely new fallback lesson is written,
 `lesson_neighbors(title, body, summary, k=3)` shows the nearest existing lesson
 slugs (semantic, with a lexical fallback). Shadow and candidate reviewers use
@@ -772,10 +807,10 @@ flags a dense lesson subtopic when at least
 concrete title terms and a non-generic body mechanism. Generic joins and
 domain-wide/high-document-frequency title words cannot form a candidate. The
 inventory and `curator_review_status()` report emitted/rejected counts and
-rejection reasons, so the rule can be tuned from production data. A
-non-protected candidate must become one validated, checklist-style canonical
-skill before its source lessons are retired; protected clusters are left for
-human review. The evaluator reads every complete skill and relevant support
+rejection reasons, so the rule can be tuned from production data. Every
+candidate, protected members included, becomes a PROMOTE proposal: the
+verifier creates or patches one validated, checklist-style canonical skill
+before it retires the source lessons. The evaluator reads every complete skill and relevant support
 file, but has no web tools. External research is off by default. With explicit
 `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a separate Claude-only researcher gets
 only fixed public compatibility queries, `WebSearch`, `WebFetch`, and one
@@ -784,11 +819,44 @@ repository. The evaluator receives that handoff as fenced, untrusted data and
 writes numbered per-skill verdicts to
 `~/.threadkeeper/curator/REPORT-<isodate>.md` for a one-batch pass or
 `REPORT-<isodate>-batch-NNN-of-MMM.md` for a multi-batch pass: KEEP / REPAIR /
-UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / HUMAN_REVIEW.
-Similar names and cosine scores are only candidates; merge/delete decisions
-compare intent, workflow, inputs, outcomes, and unique details. Pinned and
-foreground-authored entries are marked `[PROTECTED]`, and delete-class tools
-enforce the same boundary server-side. The pass is
+UPDATE / MERGE / SPLIT / DEPRECATE / DELETE / CROSS_LINK / DEFER. DEFER means
+the evidence is insufficient for now and a later pass re-examines the entry;
+no verdict waits for a person. Similar names and cosine scores are only
+candidates; merge/delete decisions compare intent, workflow, inputs, outcomes,
+and unique details. Pinned entries are marked `[PINNED]` (keep only), and
+foreground-authored or legacy entries `[PROTECTED]`; the mutating tools enforce
+both boundaries server-side.
+
+Destructive decisions are settled by a second agent, not by a person. The
+evaluator applies only in-place edits that remove nothing (lesson and skill
+patches, repairs, cross-links, concept curation) to entries that are neither
+`[PROTECTED]` nor `[PINNED]`. Every removal, consolidation, merge, split and
+promotion, and every change to a `[PROTECTED]` entry, goes into a
+`VERIFY_PROPOSALS` block at the end of its report. When that block holds at
+least one numbered proposal, the batch gets a third child: an independent
+verifier that re-reads every lesson and skill a proposal touches, tries to
+refute it (a merge that would lose a distinct rule, a removal whose "covered
+by" claim is only partly true, a promotion that is not one procedure), and
+applies only the confirmed or corrected proposals inside the pass snapshot. It
+patches missing residue into a covering skill before removing a lesson,
+records `keep_both` merge verdicts for the pairs it refutes, and writes a
+provenanced `VERIFY-<pass>[-batch-NNN-of-MMM].md` report ending with
+`CURATOR_VERIFY_COMPLETE`. A pass is endorsed only after every batch's
+verification is complete or has used its three attempts. Server-side,
+`lesson_remove` and `skill_manage(action='delete')` refuse the evaluator
+outright, and `lesson_patch` / same-slug `lesson_append` refuse it on protected
+lessons; only the verifier phase, inside a pass carrying both pass-id and
+snapshot-dir context, may change protected entries, and no curator phase may
+touch a pinned one. The verifier is also scoped: the parent records every name
+its batch's proposals mention under the pass snapshot
+(`verify_scope/batch-NNN.json`), and the server refuses a verifier change to
+any lesson or skill outside that list. The batch inventory and the proposals
+reach it as fenced, untrusted data. The Evolve report applier never removes
+anything: it may patch, and the server refuses its `lesson_remove` and skill
+deletes. The parent records the mode each evaluator actually ran in, so a batch
+whose research failed (and was evaluated without mutation tools) never reaches
+the verifier. Report destinations are authorized by exact pass and name, so a
+long pass cannot age them out. The pass is
 single-flight across processes — a non-blocking `fcntl.flock` pidfile
 (`<db dir>/curator.lock`) plus a running-children check serialize it, so
 multiple MCP server instances can't run overlapping (now destructive) passes
@@ -850,11 +918,13 @@ SHA-256 as provenance. Research and evaluation are two phases of each batch
 inside the durable pass: the web-free evaluator for a batch starts only after
 that batch's handoff validates. A researcher that fails or leaves a missing,
 malformed, swapped, or mismatched handoff is retried (three attempts); after
-that the batch gets a non-mutating evaluator that records `HUMAN_REVIEW` for
-decisions that depend on current external facts. A destructive pass takes its
+that the batch gets a non-mutating evaluator that marks `DEFER` for decisions
+that depend on current external facts, so a later pass re-examines them. A destructive pass takes its
 recovery snapshot right before its first mutating evaluator.
 `THREADKEEPER_CURATOR_WEB_RESEARCH=0` skips the research phase entirely (and
 its token cost); the evaluator then judges currency from local evidence only.
+A batch that holds no skills never gets a researcher: the fixed research topics
+only concern skills, so its evaluator starts at once.
 Each report path is then
 authorized in the existing parent-authored `curator_pass` event;
 `curator_report_write` records its SHA-256 in `curator_report_provenance`.
@@ -862,22 +932,22 @@ This makes the report directory an untrusted transport: a stray or forged
 `REPORT-*.md` file cannot acquire the provenance needed by the applier.
 
 The web-enabled researcher never receives lesson, skill, or concept mutation
-tools. The evaluator never receives web tools. Curator applies its own PATCH /
-PRUNE / CONSOLIDATE directly by default (the evaluator writes the REPORT first,
-then mutates — `lesson_remove` is in its toolset so it can actually prune and
-consolidate duplicate lessons). Set
+tools. The evaluator never receives web tools. By default the evaluator applies
+its own in-place edits directly after writing the REPORT, and the verifier
+applies the confirmed destructive proposals; neither the evaluator's toolset
+nor the server lets the evaluator remove anything. Set
 `THREADKEEPER_CURATOR_DESTRUCTIVE=0` for advisory REPORT-only. Pinned and
-untracked skills remain protected. Foreground-authored skills are protected by
-default; set `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` to grant the
-Curator explicit snapshot-scoped authority to repair, merge, and delete those
-skills too. The opt-in never overrides pins and is accepted only inside a real
-Curator pass carrying both pass-id and snapshot-dir context. Lessons are
+untracked skills remain protected. Foreground-authored skills are `[PROTECTED]`
+by default, so only the verifier changes them;
+`THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS=1` (which does not limit the
+verifier) additionally lets the
+evaluator make in-place repairs to them. Lessons are
 stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
 appended; missing, legacy, or unknown lesson provenance is protected by
 default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
 foreground/unknown-origin entries unless `force=True` is called from a
-foreground writer; curator/spawned children cannot elevate themselves with
-`force`. Before a destructive child is spawned, thread-keeper writes
+foreground writer or the caller is the Curator verifier phase; curator/spawned
+children cannot elevate themselves with `force`. Before a destructive child is spawned, thread-keeper writes
 a recoverable snapshot under
 `<reports_dir>/snapshots/<pass-id>/` (default
 `~/.threadkeeper/curator/snapshots/<pass-id>/`). The snapshot contains
@@ -893,7 +963,8 @@ Use `curator_restore(pass_id, lesson_slug="...")` or
 As a prevention layer before recovery is needed, a destructive Curator pass
 has one server-side shared admission budget for `lesson_remove` and
 `skill_manage(action='delete')`, including across bounded child batches.
-`THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 10; set it to 0 to
+`THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` defaults to 30 (only verified
+proposals delete anything); set it to 0 to
 disable those autonomous deletes. The pass ID makes the count durable and
 cross-process, while foreground/human deletes are unaffected. `mp_dashboard`
 shows admitted and refused operations with `status=HIT` when the Curator reaches
@@ -927,9 +998,21 @@ The shared lesson file has its own write serialization: `lesson_append`,
 `lessons.md.lock` around file creation/read/mutate/write, so foreground calls
 and learning-loop children cannot last-writer-win over each other's sections.
 
+`lesson_list(k=20, query="")` lists the newest lessons, or with `query` (the
+managed instructions pass the opening request) the most relevant ones with a
+relevance score: semantic when embeddings are available, otherwise the share
+of query words (any script) a lesson contains. Lesson vectors are stored in the
+`lesson_vectors` table keyed by body hash and embedding fingerprint, so each
+body is encoded once per install. Missing vectors are encoded in chunks of 32
+within an 8-second budget per call; a call that runs out falls back to the
+lexical ranking and the next call resumes. Each line shows the lesson's summary. Without a query a session
+would only ever see the newest few lessons, whatever the task.
+
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
-`lesson_usage.use_count` for the returned lesson. Curator dry runs include a
+`lesson_usage.use_count` for the returned lesson. Only foreground reads count:
+the curator and other loops read every lesson they audit, and counting those
+reads would make every lesson look recently useful. Curator dry runs include a
 ranked `STALE LESSONS (dry-run decay ranking)` section computed as
 `access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
 lessons with no recent access and low pull-count. That decay list is advisory
@@ -1095,8 +1178,9 @@ If a killed child leaves an unresolved merge or plain tracked WIP in the default
 auto-managed checkout, the next code-producing pass archives the diff before
 recovering it. Merge recovery remains limited to `roadmap/…`/`evolve/…`
 branches whose exact PR is confirmed open or merged. For an open PR, the parent
-archives the interrupted merge, aborts it, refreshes the disposable checkout,
-and lets the normal conflict-repair sweep retry that same PR. A merged PR's
+archives the interrupted merge (including edits the child made after staging
+a resolution), resets it, refreshes the disposable checkout, and lets the
+normal conflict-repair sweep retry that same PR. A merged PR's
 leftover merge is discarded as stale. Plain abandoned WIP is recoverable on
 those applier branches when PR state is readable, and also on the configured
 base branch: the disposable base can contain orphaned edits when an older child
@@ -1465,11 +1549,11 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` | 40 | most pending candidates (oldest first) one reviewer child receives; the rest stay pending for the next pass |
 | `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
-| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | allow snapshot-scoped Curator repair/merge/delete of foreground skills; pinned/untracked skills remain protected |
+| `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | let the Curator evaluator make in-place repairs to foreground skills; the verifier changes foreground skills its proposals name regardless, and pinned skills stay protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
-| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, while foreground/private/unclassified entries use `HUMAN_REVIEW` |
+| `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, and decisions that need facts the handoff lacks are marked `DEFER` for a later pass |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
-| `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 10 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
+| `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 30 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |
 | `THREADKEEPER_PROBE_INTERVAL_S` | 0 (off) | probe daemon tick (s); 1800 = 30 min recommended so finished probe answers are graded promptly |
@@ -1511,6 +1595,10 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_SKILL_NUDGE_INTERVAL` | 10 | events between `skill_hint` nudges |
 | `THREADKEEPER_DIALECTIC_MINE_INTERVAL_S` | 0 (off) | dialectic_miner daemon tick (s); 0 disables mechanical observation capture |
 | `THREADKEEPER_DIALECTIC_VALIDATE_INTERVAL_S` | 0 (off) | dialectic_validator daemon tick (s); 0 disables LLM-driven claim synthesis |
+| `THREADKEEPER_MODEL_ROUTER_INTERVAL_S` | 604800 (weekly) | model-router pass interval (s); 0 disables it and `auto` follows the active CLI |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_CLI` | codex | CLI for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_MODEL` | gpt-6.1-sol | model for the router's fallback run |
+| `THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT` | xhigh | effort for the router's fallback run |
 | `THREADKEEPER_DIALECTIC_VALIDATE_MIN` | 5 | min buffered observations before validator engages |
 | `THREADKEEPER_DIALECTIC_VALIDATE_FLUSH_AGE_S` | 259200 | age-flush: an undersized observation buffer is still validated once its oldest eligible row is this old (0 = threshold only) |
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
@@ -1577,7 +1665,7 @@ THREADKEEPER_SPAWN__DEFAULT=claude
 # supported CLI keys: claude, codex, antigravity (agy executable), copilot
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=claude   # heaviest reasoning → keep on Claude
 THREADKEEPER_SPAWN__LOOP__CURATOR=codex            # weekly audit → Codex is fine
-THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = follow active CLI
+THREADKEEPER_SPAWN__LOOP__CANDIDATE_REVIEWER=auto  # "auto" = model router decides (active CLI until it has)
 # model pin per CLI or per role:  THREADKEEPER_SPAWN__MODEL__<KEY>=<model>
 THREADKEEPER_SPAWN__MODEL__CLAUDE=opus
 THREADKEEPER_SPAWN__MODEL__CODEX=gpt-5.5
@@ -1590,13 +1678,36 @@ THREADKEEPER_SPAWN__EFFORT__CURATOR=xhigh
 ```
 
 Resolution per role: `SPAWN__LOOP__<role>` → `SPAWN__DEFAULT` → active CLI →
-`claude`; `"auto"` (or unset) defers to the active CLI. Real environment
+`claude`; unset defers to the active CLI, and `"auto"` does too until the model
+router (below) has decided for that role. Real environment
 variables override the `.env`. Force host detection with
 `THREADKEEPER_ACTIVE_CLI=claude` (or `codex`, `antigravity`/`agy`,
 `copilot`). `agy` is normalized to `antigravity`. See `.env.example`
 for the full knob list. `spawn_status()` includes warnings when a configured
 spawn CLI is unsupported or a model key does not match a supported CLI/startup
 role, while keeping the same fallback resolution.
+
+### Model router (`auto` roles)
+
+Set a role's CLI to `auto` to let the weekly **model router** choose its CLI,
+model and effort:
+
+```bash
+THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=auto
+```
+
+The router reviews the last 30 days of that role's spawns (success rate,
+failures such as provider capacity errors, run time, tokens, recent outcomes)
+plus the local model catalog, and records one decision per `auto` role with a
+reason. Until it has decided, `auto` keeps its old meaning and follows the
+active CLI. While a role is routed, its `SPAWN__MODEL__<ROLE>` and
+`SPAWN__EFFORT__<ROLE>` pins are ignored and `spawn_status()` warns about them.
+
+The router runs on `claude` / `opus` / `max` (override with the usual
+`SPAWN__LOOP|MODEL|EFFORT__MODEL_ROUTER` keys). If that run fails, the same pass
+reruns on the fallback below; a pass that fails twice retries after 6 hours.
+`model_router_status()` shows current decisions and `model_router_run()` runs a
+pass now. Set `THREADKEEPER_MODEL_ROUTER_INTERVAL_S=0` to disable the router.
 
 Adapters without headless support (Claude Desktop, VS Code) can't be
 spawn targets — `spawn_status()` reports them as "no adapter" and any
@@ -1751,7 +1862,9 @@ that keeps a write transaction open for a minute or more.
 
 Schema migration uses SQLite `PRAGMA user_version`: a current database skips
 legacy `ALTER TABLE` work, while an old or fresh v0 database migrates once
-under a writer transaction and records the current version. Duplicate-column
+under a writer transaction and records the current version. Every startup
+also replays the idempotent baseline `CREATE ... IF NOT EXISTS` schema, so a
+table added after the last version bump still reaches existing databases. Duplicate-column
 migrations are the only expected no-op; other DDL errors are logged and raised.
 
 On POSIX systems, startup and `get_db()` harden the default local store

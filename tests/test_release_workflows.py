@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 import tomllib
 
@@ -9,6 +10,19 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 DOCKERFILE = ROOT / "Dockerfile"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 PIP_AUDIT_IGNORES = ROOT / ".github" / "pip-audit-ignores.txt"
+
+
+def _assert_reviewed_pip_audit_suppressions(text: str) -> None:
+    """Every active suppression names a tracker, a rationale and a review date."""
+    assert "Keep this file empty unless an advisory is demonstrably inapplicable" in text
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        advisory, tracking, rationale, review_by = (
+            field.strip() for field in line.split("|")
+        )
+        assert advisory and tracking.startswith("https://") and rationale, line
+        date.fromisoformat(review_by)
 
 BOT_TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -98,10 +112,10 @@ def test_glama_dockerfile_pin_matches_the_project_release():
     assert f"threadkeeper=={version}" in DOCKERFILE.read_text()
 
 
-def test_mcp_requirement_uses_the_2x_skills_extension_surface():
+def test_mcp_requirement_supports_the_skills_and_tasks_extension_surface():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     mcp_req = next(d for d in deps if d.split(">")[0].split("<")[0].strip() == "mcp")
-    assert mcp_req == "mcp>=2.2.0,<3"
+    assert mcp_req == "mcp>=2.3.0,<3"
 
     for importer in (
         ROOT / "threadkeeper" / "_mcp.py",
@@ -115,7 +129,7 @@ def test_mcp_requirement_uses_the_2x_skills_extension_surface():
 
 def test_ci_matrix_covers_the_supported_mcp_sdk_surface():
     matrix = _workflow("test.yml")["jobs"]["pytest-shard"]["strategy"]["matrix"]
-    assert matrix["mcp"] == [">=2.2.0,<3"]
+    assert matrix["mcp"] == [">=2.3.0,<3"]
     assert "include" not in matrix
     assert '"mcp${{ matrix.mcp }}"' in _workflow_text("test.yml")
 
@@ -144,7 +158,7 @@ def test_ci_security_scanning_covers_code_and_resolved_dependencies():
     assert "pip-audit --local --strict" in audit_text
     assert "--ignore-vuln" in audit_text
     assert "Malformed .github/pip-audit-ignores.txt entry" in audit_text
-    assert "There are no active suppressions at present." in PIP_AUDIT_IGNORES.read_text()
+    _assert_reviewed_pip_audit_suppressions(PIP_AUDIT_IGNORES.read_text())
 
     ecosystems = {entry["package-ecosystem"] for entry in dependabot["updates"]}
     assert "docker" in ecosystems

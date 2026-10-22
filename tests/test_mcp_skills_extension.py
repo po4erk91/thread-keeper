@@ -42,13 +42,17 @@ def _call_extension(pkg, method: str, params):
 def test_discovery_advertises_stable_skills_extension_without_changing_core_contracts(fresh_mp):
     from mcp.server.lowlevel.server import NotificationOptions
     from threadkeeper.mcp_skills import SKILLS_EXTENSION_ID
+    from threadkeeper.mcp_tasks import TASKS_EXTENSION_ID
 
     server = fresh_mp["mcp"]._lowlevel_server
     caps = server.get_capabilities(
         NotificationOptions(), {}, protocol_version=_STABLE_PROTOCOL,
     )
 
-    assert caps.extensions == {SKILLS_EXTENSION_ID: {}}
+    assert caps.extensions == {
+        SKILLS_EXTENSION_ID: {},
+        TASKS_EXTENSION_ID: {},
+    }
     assert caps.resources is not None
     assert caps.prompts is not None
     assert caps.tools is not None

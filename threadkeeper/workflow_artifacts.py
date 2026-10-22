@@ -255,6 +255,13 @@ def _artifact_paths_for_pass(
     ).fetchall()
     for batch in batches:
         paths.append((CURATOR_REPORTS_DIR / batch["report_name"], CURATOR_REPORTS_DIR))
+        # The verifier's report quotes memory text too, so it ages out with
+        # the rest of the pass. Only batches that ran a verifier have one.
+        verify_report = CURATOR_REPORTS_DIR / (
+            "VERIFY-" + batch["report_name"].removeprefix("REPORT-")
+        )
+        if verify_report.exists():
+            paths.append((verify_report, CURATOR_REPORTS_DIR))
         if batch["research_state"] == "complete":
             name = (
                 f"RESEARCH-{row['pass_id']}-batch-{batch['batch_index']:03d}-"

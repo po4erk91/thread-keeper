@@ -534,8 +534,11 @@ def format_skill_checklist(manifest: dict) -> str:
     ]
     for index, record in enumerate(manifest["skills"], start=1):
         flags = ",".join(record["findings"]) or "clean"
-        protected = " [PROTECTED]" if record["protected"] else ""
         telemetry = record["telemetry"]
+        protected = (
+            " [PINNED]" if telemetry.get("pinned")
+            else " [PROTECTED]" if record["protected"] else ""
+        )
         created_at = int(telemetry.get("created_at") or 0)
         created_age = (
             max(0, int(time.time()) - created_at) // 86400
