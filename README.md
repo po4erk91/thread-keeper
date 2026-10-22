@@ -1613,7 +1613,7 @@ python scripts/memory_eval/run.py --semantic      # use embeddings if installed
 python scripts/memory_eval/run.py --judge llm      # LLM-graded (needs ANTHROPIC_API_KEY)
 ```
 
-It reports four headline groups over a fixed ground-truth set:
+It reports five headline groups over a fixed ground-truth set:
 
 - **accuracy** — fraction of questions whose retrieval recalled the gold
   fact, broken out per the five LongMemEval axes (information extraction,
@@ -1628,6 +1628,11 @@ It reports four headline groups over a fixed ground-truth set:
 - **retrieval latency** — mean / p50 / p95 / max wall-clock milliseconds. With
   `--semantic`, the backend is reported as `hybrid`, because dense candidates
   augment rather than replace FTS.
+- **forgetting lifecycle** — the bundled mutation fixture writes a fact,
+  corrects it twice, supersedes its dialectic claim, consolidates duplicate
+  verbatim evidence, forgets the old source, and reopens the store in a new
+  process. It reports a separate score for thread notes, verbatim memory,
+  dialectic claims, and lessons or skills.
 
 For DB concurrency, run the reproducible local gate:
 
@@ -1651,6 +1656,13 @@ retrieval recall) with an Anthropic model when a key is set — the intended
 optimization target for lesson-decay tuning (#27) and bi-temporal claims (#28)
 work. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
 axes map onto thread-keeper's retrieval surface.
+
+The lifecycle score gives current evidence `+1` and subtracts `0.5` for every
+obsolete or invalidated fact that the same retrieval path returns. A current
+fact alongside stale evidence therefore does not receive full credit. The
+post-forgetting and post-restart stages must score `1.0` in both deterministic
+FTS and hybrid variants; the JSON report names the lifecycle stage and memory
+class for any release-gate failure.
 
 ## Evaluating learning-loop decision quality
 

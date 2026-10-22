@@ -797,6 +797,15 @@ verified at the cited file:line, deduplicated against the issues above):
   to temp). Use the temporal-reasoning + knowledge-update axes as the
   optimization target for #27/#28.
 
+- ✅ DONE (#371). The memory eval now also replays a frozen **full-store
+  forgetting lifecycle** through real writes and reads: repeated correction,
+  dialectic supersession, consolidation, targeted source erasure, and a fresh
+  process restart. Its per-class report gives explicit negative credit when
+  thread notes, verbatim memory, dialectic claims, or lessons/skills surface
+  obsolete evidence beside the current fact. FTS and hybrid runs require a
+  clean `1.0` score after forgetting and restart; supersession descendants lose
+  inherited provenance unless independently corroborated.
+
 - ✅ DONE (#72). Learning-loop **decision-quality** eval harness. The
   quality-control daemons (`shadow_review`, `candidate_reviewer`, `curator`)
   make accept/reject/materialize calls with decision telemetry but no labeled

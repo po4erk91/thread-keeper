@@ -299,6 +299,64 @@ def _source_tokens(plan: ForgetPlan) -> set[str]:
     return {t for t in tokens if t}
 
 
+def _include_supersede_descendants(
+    conn: sqlite3.Connection,
+    claim_ids: set[str],
+    evidence_ids: set[str],
+) -> None:
+    """Add claims derived only through a forgotten supersession chain.
+
+    A replacement claim's seeded evidence points to ``supersede:<old-id>``.
+    That provenance is a descendant of the erased source, not independent
+    evidence. Delete the descendant when every one of its evidence rows is
+    already selected; otherwise erase only its inherited evidence and retain
+    the independently supported current claim.
+    """
+    pending = set(claim_ids)
+    while pending:
+        sources = [f"supersede:{claim_id}" for claim_id in sorted(pending)]
+        pending = set()
+        descendants = _fetch_where_in(
+            conn,
+            "dialectic_evidence",
+            "source",
+            sources,
+            "claim_id",
+            cast=str,
+        )
+        evidence_ids.update(
+            _fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "source",
+                sources,
+                "id",
+                cast=str,
+            )
+        )
+        for claim_id in set(descendants) - claim_ids:
+            all_evidence_ids = set(_fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "claim_id",
+                [claim_id],
+                "id",
+                cast=str,
+            ))
+            if all_evidence_ids and all_evidence_ids.issubset(evidence_ids):
+                claim_ids.add(claim_id)
+                pending.add(claim_id)
+        for claim_id in pending:
+            evidence_ids.update(_fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "claim_id",
+                [claim_id],
+                "id",
+                cast=str,
+            ))
+
+
 def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
     if not _table_exists(conn, "dialectic_observations"):
         return
@@ -370,6 +428,7 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
                 cast=str,
             )
         )
+    _include_supersede_descendants(conn, claim_ids, evidence_ids)
     plan.evidence_ids = sorted(evidence_ids)
     plan.claim_ids = sorted(claim_ids)
 

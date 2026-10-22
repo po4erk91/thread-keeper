@@ -1,0 +1,15 @@
+{
+  "id": "subscription-plan-full-store-lifecycle",
+  "query": "memory-eval-river-otter lifecycle subscription plan",
+  "domain": "memory-eval-lifecycle",
+  "lesson_title": "Memory eval lifecycle plan",
+  "facts": [
+    "memory-eval-river-otter plan=bronze",
+    "memory-eval-river-otter plan=silver",
+    "memory-eval-river-otter plan=gold"
+  ],
+  "release_thresholds": {
+    "fts": 1.0,
+    "hybrid": 1.0
+  }
+}

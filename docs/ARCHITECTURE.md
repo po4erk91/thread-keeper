@@ -1638,6 +1638,17 @@ file first so the original is never opened for writing. Backend (`fts` vs
 `tests/test_memory_eval.py` (subprocess, to keep import-time env setup off the
 shared in-process package state).
 
+The same command also replays `scripts/memory_eval/lifecycle_fixture.json`
+through real mutation tools: assertion, two corrections, dialectic
+supersession, verbatim consolidation, targeted source forgetting, and a fresh
+process restart. It calls `brief`, `search`, dialectic synthesis, and lesson or
+skill reads after every stage. Each class receives `+1` for its current fact
+and `-0.5` for each obsolete fact returned with it. The report keeps those
+negative credits separate by class and stage. `source_forgetting` and `restart`
+must both reach the frozen `1.0` threshold for FTS and hybrid CI; inherited
+`supersede:<claim>` evidence is erased unless the descendant has independent
+evidence.
+
 ## Evaluating the learning loop
 
 `verify_ingest.py` measures the *ingest plumbing* (did rows land, does shadow

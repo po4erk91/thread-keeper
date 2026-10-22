@@ -98,6 +98,19 @@ version bumps follow semver per the policy in
   capped at discovery time. `last_patched_at` continues to record the edit
   signal used by the watcher.
 
+## v0.17.0 — 2026-10-22
+
+### Added
+
+- **Forgetting-aware memory evaluation (#371).** The existing memory-quality
+  harness now drives a frozen real-store lifecycle through repeated
+  correction, dialectic supersession, consolidation, targeted source erasure,
+  and process restart. It reports per-class negative credit when stale or
+  invalidated evidence is returned beside the current fact, and gates FTS and
+  hybrid post-forgetting retrieval at a deterministic 1.0 score. Forgetting
+  now also removes supersession descendants whose only provenance came from
+  the erased source, while retaining independently corroborated claims.
+
 ## v0.16.3 — 2026-07-19
 
 ### Changed

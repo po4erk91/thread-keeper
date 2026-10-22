@@ -358,3 +358,69 @@ def test_forget_after_reid_migration(fresh_mp):
         assert orphans["notes_fts_orphans"] == 0
     finally:
         conn.close()
+
+
+def test_forget_removes_only_supersede_descendants_without_independent_evidence(
+        fresh_mp):
+    """Erasing a root also erases purely derived claims, not a corroborated one."""
+    from threadkeeper import forget
+
+    conn = fresh_mp["db"].get_db()
+    now = int(time.time())
+    erased_source = "lifecycle-erased-source"
+    root_id = "UCroot"
+    derived_id = "UCderived"
+    current_id = "UCcurrent"
+    try:
+        for claim_id, claim in (
+            (root_id, "memory-eval-river-otter plan=bronze"),
+            (derived_id, "memory-eval-river-otter plan=silver"),
+            (current_id, "memory-eval-river-otter plan=gold"),
+        ):
+            conn.execute(
+                "INSERT INTO user_dialectic "
+                "(id, claim, domain, created_by_cid, created_at, valid_from) "
+                "VALUES (?, ?, 'memory-eval', 'other', ?, ?)",
+                (claim_id, claim, now, now),
+            )
+        evidence = (
+            (root_id, f"session:{erased_source}"),
+            (derived_id, f"supersede:{root_id}"),
+            (current_id, f"supersede:{derived_id}"),
+            (current_id, "session:independent-current-source"),
+            (current_id, "session:independent-current-source"),
+        )
+        for claim_id, source in evidence:
+            conn.execute(
+                "INSERT INTO dialectic_evidence "
+                "(claim_id, kind, source, quote, weight, created_at) "
+                "VALUES (?, 'support', ?, 'fixture', 1.0, ?)",
+                (claim_id, source, now),
+            )
+        conn.commit()
+
+        plan = forget.build_forget_plan(conn, erased_source, "session_id")
+        assert {root_id, derived_id} <= set(plan.claim_ids)
+        assert current_id not in plan.claim_ids
+
+        deleted = forget._apply_forget(conn, plan)
+        assert deleted["user_dialectic"] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM user_dialectic WHERE id IN (?, ?)",
+            (root_id, derived_id),
+        ).fetchone()[0] == 0
+        remaining = conn.execute(
+            "SELECT support_count, confidence FROM user_dialectic WHERE id=?",
+            (current_id,),
+        ).fetchone()
+        assert remaining["support_count"] == 2
+        assert remaining["confidence"] == "medium"
+        sources = [
+            row[0] for row in conn.execute(
+                "SELECT source FROM dialectic_evidence WHERE claim_id=?",
+                (current_id,),
+            ).fetchall()
+        ]
+        assert sources == ["session:independent-current-source"] * 2
+    finally:
+        conn.close()
