@@ -15,6 +15,8 @@ layer that scopes that egress:
 """
 from __future__ import annotations
 
+import re
+
 import os
 
 import pytest
@@ -118,6 +120,10 @@ def test_personal_allowed_matrix(policy, consumer, expected):
 
 # ── render_brief gating ───────────────────────────────────────────────────────
 
+def _without_ages(text: str) -> str:
+    return re.sub(r"\blast=\d+[smhd]\b", "last=<age>", text)
+
+
 def test_default_all_renders_personal_for_every_consumer(mp_with_cid):
     """Default policy = no gating: personal sections present regardless of the
     consuming CLI, and output is identical across consumers (byte-parity)."""
@@ -125,14 +131,15 @@ def test_default_all_renders_personal_for_every_consumer(mp_with_cid):
     _seed_personal(pkg)
     conn = pkg["db"].get_db()
 
-    base = render_brief(conn)  # no consumer override
+    base = _without_ages(render_brief(conn))  # no consumer override
     for consumer in ("claude", "codex", "gemini", "copilot"):
         txt = render_brief(conn, consumer_cli=consumer)
         assert "verbatim" in txt
         assert "user_model" in txt
         assert "withheld" not in txt
-        # default 'all' ignores the consumer entirely → byte-identical
-        assert txt == base
+        # default 'all' ignores the consumer entirely → byte-identical apart
+        # from relative ages, which tick when a render crosses a second.
+        assert _without_ages(txt) == base
 
 
 def test_same_vendor_omits_personal_for_third_party(mp_with_cid):

@@ -16,6 +16,7 @@ from typing import Optional
 
 from .config import (
     BACKGROUND_DAEMONS_ALLOWED,
+    CLAUDE_SKILLS_DIR,
     INGEST_CAP_PER_CALL,
     INGEST_INTERVAL_S,
     INGEST_RECENT_WINDOW_S,
@@ -297,6 +298,25 @@ def _scan_message_for_skill_use(msg: dict) -> list[str]:
     return found
 
 
+_SLASH_COMMAND_RE = re.compile(r"<command-name>/([A-Za-z0-9][A-Za-z0-9:_.-]*)</command-name>")
+
+
+def _slash_skill_invocations(conn: sqlite3.Connection, text: str) -> list[str]:
+    """Skills a user ran as /name in this message.
+
+    Only names that already exist as skills count, so built-in commands such
+    as /clear never become fake skill rows.
+    """
+    found: list[str] = []
+    for name in _SLASH_COMMAND_RE.findall(text or ""):
+        known = conn.execute(
+            "SELECT 1 FROM skill_usage WHERE name=?", (name,),
+        ).fetchone() or (CLAUDE_SKILLS_DIR / name / "SKILL.md").is_file()
+        if known:
+            found.append(name)
+    return found
+
+
 def _is_spawned_child_session(conn: sqlite3.Connection,
                              session_id: Optional[str]) -> bool:
     """True when `session_id` belongs to autonomous child lineage.
@@ -526,7 +546,8 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
             # resulting counter writes happen in phase 3 below.
             skills = (
                 _scan_message_for_skill_use(nm.raw)
-                if nm.role == "assistant" else []
+                if nm.role == "assistant"
+                else _slash_skill_invocations(conn, nm.content)
             )
             text = _scrub_dialog_secrets(nm.content)
             if not text or len(text) < 10:

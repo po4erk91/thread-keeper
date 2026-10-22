@@ -34,14 +34,15 @@ import time
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
-from ..identity import _ensure_session
+from ..identity import _detect_self_cid, _ensure_session
 from ..curator import (
     CURATOR_RESEARCH_MAX_CHARS,
     CURATOR_RESEARCH_PROVENANCE_KIND,
     CURATOR_PROMPT,
     CURATOR_REPORT_PROVENANCE_KIND,
     _collect_inventory,
-    _curator_report_is_authorized,
+    _curator_researcher_owns_launch,
+    _curator_writer_owns_launch,
     _current_inventory_fingerprint,
     _last_inventory_fingerprint,
     _last_curator_ts,
@@ -52,11 +53,16 @@ from ..curator import (
     lesson_promotion_telemetry,
     curator_pass_status,
     CURATOR_REPORT_COMPLETE_MARKER,
+    curator_report_name,
     record_merge_verdict,
     run_curator_pass,
 )
 from ..curator_snapshots import (
+    EVALUATE_PHASE,
+    PHASE_ENV,
+    VERIFY_PHASE,
     current_pass_id,
+    verifier_scope_refusal,
     restore_lesson,
     restore_skill,
     snapshots_root,
@@ -338,8 +344,8 @@ def wikilink_health(include_archived: bool = True) -> str:
 
 @write_tool(idempotent=True)
 def curator_research_write(
-    pass_id: str,
-    content: str,
+    pass_id: str = "",
+    content: str = "",
     batch_index: int = 0,
     batch_total: int = 0,
 ) -> str:
@@ -350,8 +356,8 @@ def curator_research_write(
     callers cannot select a destination or hand evidence to another batch. The
     web-only child receives no local inventory, memory, or repository access.
     """
-    clean_id = pass_id.strip()
-    if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
+    supplied_id = pass_id.strip()
+    if supplied_id and not _PASS_ID_RE.fullmatch(supplied_id):
         return "ERR invalid_pass_id"
     try:
         batch_index = int(batch_index)
@@ -367,7 +373,10 @@ def curator_research_write(
         return "ERR malformed_research"
     if WRITE_ORIGIN != "curator_research" or not SPAWNED_CHILD:
         return "ERR research_write_not_authorized"
-    if current_pass_id() != clean_id:
+    clean_id = current_pass_id()
+    if not clean_id:
+        return "ERR research_write_pass_mismatch"
+    if supplied_id and supplied_id != clean_id:
         return "ERR research_write_pass_mismatch"
     conn = get_db()
     _ensure_session(conn)
@@ -375,6 +384,15 @@ def curator_research_write(
         conn, clean_id, batch_index, batch_total,
     )
     if authorization is None:
+        return "ERR research_write_not_authorized"
+    if not _curator_researcher_owns_launch(
+        conn,
+        child_cid=_detect_self_cid() or "",
+        pass_id=clean_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        research_name=authorization["research_name"],
+    ):
         return "ERR research_write_not_authorized"
     target = CURATOR_REPORTS_DIR / authorization["research_name"]
     persisted = curator_research_payload(authorization, evidence)
@@ -421,10 +439,11 @@ def curator_research_write(
 
 @write_tool(idempotent=True)
 def curator_report_write(
-    pass_id: str,
-    content: str,
+    pass_id: str = "",
+    content: str = "",
     batch_index: int = 0,
     batch_total: int = 0,
+    phase: str = "",
 ) -> str:
     """Atomically write one Curator report inside the configured report dir.
 
@@ -437,9 +456,11 @@ def curator_report_write(
     plan before mutation and then add actual validation/rollback results. Only
     a parent-authorized spawned Curator carrying the matching pass ID may write
     a report; the final content hash is recorded for the report applier.
+    The verifier passes ``phase='verify'`` and writes its own ``VERIFY-*``
+    report; only a child launched in the verify phase may do so.
     """
-    clean_id = pass_id.strip()
-    if not clean_id or not _PASS_ID_RE.fullmatch(clean_id):
+    supplied_id = pass_id.strip()
+    if supplied_id and not _PASS_ID_RE.fullmatch(supplied_id):
         return "ERR invalid_pass_id"
     try:
         batch_index = int(batch_index)
@@ -456,18 +477,33 @@ def curator_report_write(
         return "ERR empty_report"
     if WRITE_ORIGIN != "curator" or not SPAWNED_CHILD:
         return "ERR report_write_not_authorized"
-    if current_pass_id() != clean_id:
+    clean_id = current_pass_id()
+    if not clean_id:
         return "ERR report_write_pass_mismatch"
+    if supplied_id and supplied_id != clean_id:
+        return "ERR report_write_pass_mismatch"
+    child_phase = (
+        VERIFY_PHASE
+        if os.environ.get(PHASE_ENV, "").strip() == VERIFY_PHASE
+        else EVALUATE_PHASE
+    )
+    requested_phase = phase.strip().lower()
+    if requested_phase != (VERIFY_PHASE if child_phase == VERIFY_PHASE else ""):
+        return "ERR report_write_phase_mismatch"
     conn = get_db()
     _ensure_session(conn)
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    if batch_index:
-        report_name = (
-            f"REPORT-{clean_id}-batch-{batch_index:03d}-of-{batch_total:03d}.md"
-        )
-    else:
-        report_name = f"REPORT-{clean_id}.md"
-    if not _curator_report_is_authorized(conn, clean_id, report_name):
+    report_name = curator_report_name(
+        clean_id, batch_index, batch_total, phase=child_phase,
+    )
+    if not _curator_writer_owns_launch(
+        conn,
+        child_cid=_detect_self_cid() or "",
+        pass_id=clean_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        report_name=report_name,
+    ):
         return "ERR report_write_not_authorized"
     target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
@@ -512,7 +548,7 @@ def curator_report_write(
 
 @write_tool(destructive=True, idempotent=True)
 def curator_restore(
-    pass_id: str,
+    pass_id: str = "",
     lesson_slug: str = "",
     skill_name: str = "",
 ) -> str:
@@ -523,12 +559,37 @@ def curator_restore(
     Restoring a skill replaces the primary skill dir and mirrors it to the
     configured skill roots.
     """
+    supplied_id = pass_id.strip()
+    scoped_id = current_pass_id()
+    if scoped_id and supplied_id and supplied_id != scoped_id:
+        return "ERR restore_pass_mismatch"
+    clean_id = scoped_id or supplied_id
+    if not clean_id:
+        return "ERR restore_pass_missing"
     conn = get_db()
     _ensure_session(conn)
     lesson_slug = lesson_slug.strip()
     skill_name = skill_name.strip()
     if bool(lesson_slug) == bool(skill_name):
         return "ERR pass exactly one of lesson_slug or skill_name"
+    if refusal := _curator_restore_refusal(conn, lesson_slug, skill_name):
+        return refusal
     if lesson_slug:
-        return restore_lesson(pass_id, lesson_slug, conn)
-    return restore_skill(pass_id, skill_name, conn)
+        return restore_lesson(clean_id, lesson_slug, conn)
+    return restore_skill(clean_id, skill_name, conn)
+
+
+def _curator_restore_refusal(conn, lesson_slug: str, skill_name: str) -> str:
+    """A restore overwrites the live entry, so curator phases get the same
+    limits as any other change to it."""
+    if skill_name:
+        from .skills import curator_skill_refusal
+
+        return curator_skill_refusal(skill_name, "restore")
+    from ..lessons import iter_lessons
+    from .lessons import _curator_lesson_refusal
+
+    current = next((it for it in iter_lessons() if it["slug"] == lesson_slug), None)
+    if current is None:
+        return verifier_scope_refusal(lesson_slug)
+    return _curator_lesson_refusal(conn, current, "curator_restore")

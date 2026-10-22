@@ -100,6 +100,12 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
 
+- Curator child-authority isolation (#366): Curator pass/snapshot values are
+  private per-child launch data instead of temporary server-process environment.
+  Generic foreground and daemon spawns strip stale capability values, writes are
+  bound to their task/pass/batch/role, and watchdog continuations restore only
+  recorded launch context.
+
 - MCP Tasks extension for headless spawned work (#370): clients that advertise
   `io.modelcontextprotocol/tasks` receive authorization-bound opaque handles
   for `spawn(visible=False)` and can poll `tasks/get` or cooperatively cancel

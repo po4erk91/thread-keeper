@@ -468,14 +468,19 @@ def _parse_spawned_task_id(result: str) -> Optional[str]:
     return None
 
 
-def _curator_retry_env(conn, task_id: str) -> dict[str, str]:
-    """Curator pass identity a continuation must inherit ({} otherwise)."""
+# Roles whose loop re-runs a failed child itself (with the pass identity a
+# blind continuation would lack); a watchdog continuation would double-spawn.
+_SELF_RETRYING_ROLES = frozenset({"model_router"})
+
+
+def _record_retry_skipped(conn, task_id: str, summary: str) -> None:
     try:
-        from .curator import curator_retry_env
-        return curator_retry_env(conn, task_id)
+        from .identity import _emit, _ensure_session
+        _ensure_session(conn)
+        _emit(conn, "spawn_timeout_retry_skipped", target=task_id, summary=summary)
+        conn.commit()
     except Exception:
-        logger.debug("curator retry env lookup failed", exc_info=True)
-        return {}
+        pass
 
 
 def _respawn_timed_out(conn, row, age: int) -> None:
@@ -487,34 +492,23 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     infinite kill/restart loop on pathological prompts.
     """
     if SPAWN_TIMEOUT_RETRY_LIMIT <= 0:
-        try:
-            from .identity import _emit, _ensure_session
-            _ensure_session(conn)
-            _emit(conn, "spawn_timeout_retry_skipped", target=row["id"],
-                  summary="disabled limit=0")
-            conn.commit()
-        except Exception:
-            pass
+        _record_retry_skipped(conn, row["id"], "disabled limit=0")
+        return
+
+    role = str(_row_get(row, "role", "") or "")
+    if role in _SELF_RETRYING_ROLES:
+        _record_retry_skipped(conn, row["id"], f"loop_retries_itself role={role}")
         return
 
     current_attempt = int(_row_get(row, "retry_attempt", 0) or 0)
     next_attempt = current_attempt + 1
     if next_attempt > SPAWN_TIMEOUT_RETRY_LIMIT:
-        try:
-            from .identity import _emit, _ensure_session
-            _ensure_session(conn)
-            _emit(
-                conn,
-                "spawn_timeout_retry_skipped",
-                target=row["id"],
-                summary=(
-                    f"attempts_exhausted attempt={current_attempt} "
-                    f"limit={SPAWN_TIMEOUT_RETRY_LIMIT}"
-                ),
-            )
-            conn.commit()
-        except Exception:
-            pass
+        _record_retry_skipped(
+            conn,
+            row["id"],
+            f"attempts_exhausted attempt={current_attempt} "
+            f"limit={SPAWN_TIMEOUT_RETRY_LIMIT}",
+        )
         return
 
     if SPAWN_TIMEOUT_RETRY_DELAY_S > 0:
@@ -522,40 +516,47 @@ def _respawn_timed_out(conn, row, age: int) -> None:
 
     root_id = _retry_chain_root(conn, row)
     prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
+    write_origin = str(_row_get(row, "write_origin", "") or "")
+    curator_launch = None
+    if (role, write_origin) in {
+        ("curator", "curator"),
+        ("curator_researcher", "curator_research"),
+    }:
+        from .curator import _curator_launch_for_continuation
+
+        curator_launch = _curator_launch_for_continuation(conn, str(row["id"]))
+        if curator_launch is None:
+            _record_retry_skipped(
+                conn,
+                row["id"],
+                "curator_launch_authorization_missing",
+            )
+            return
     try:
         from .tools.spawn import _retry_bypass_capability, _spawn_impl
         permission_mode = str(_row_get(row, "permission_mode", "auto") or "auto")
-        exported = _curator_retry_env(conn, str(row["id"]))
-        saved = {key: os.environ.get(key) for key in exported}
-        os.environ.update(exported)
-        try:
-            result = _spawn_impl(
-                prompt=prompt,
-                cwd=str(row["cwd"] or os.getcwd()),
-                append_system=str(_row_get(row, "append_system", "") or ""),
-                model=str(_row_get(row, "model", "") or ""),
-                effort=str(_row_get(row, "effort", "") or ""),
-                permission_mode=permission_mode,
-                extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
-                capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
-                visible=_as_bool(_row_get(row, "visible", 0), False),
-                role=str(_row_get(row, "role", "") or ""),
-                write_origin=str(_row_get(row, "write_origin", "") or ""),
-                slim=_as_bool(_row_get(row, "slim", 1), True),
-                retry_of=str(row["id"]),
-                retry_root=root_id,
-                retry_attempt=next_attempt,
-                parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
-                cli=str(_row_get(row, "chosen_cli", "") or ""),
-                traceparent_override=str(_row_get(row, "traceparent", "") or ""),
-                _bypass_capability=_retry_bypass_capability(permission_mode),
-            )
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+        result = _spawn_impl(
+            prompt=prompt,
+            cwd=str(row["cwd"] or os.getcwd()),
+            append_system=str(_row_get(row, "append_system", "") or ""),
+            model=str(_row_get(row, "model", "") or ""),
+            effort=str(_row_get(row, "effort", "") or ""),
+            permission_mode=permission_mode,
+            extra_allowed_tools=str(_row_get(row, "extra_allowed_tools", "") or ""),
+            capture_output=_as_bool(_row_get(row, "capture_output", 1), True),
+            visible=_as_bool(_row_get(row, "visible", 0), False),
+            role=role,
+            write_origin=write_origin,
+            slim=_as_bool(_row_get(row, "slim", 1), True),
+            retry_of=str(row["id"]),
+            retry_root=root_id,
+            retry_attempt=next_attempt,
+            parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
+            cli=str(_row_get(row, "chosen_cli", "") or ""),
+            traceparent_override=str(_row_get(row, "traceparent", "") or ""),
+            _bypass_capability=_retry_bypass_capability(permission_mode),
+            _curator_launch=curator_launch,
+        )
     except Exception as e:
         logger.warning("spawn watchdog retry failed for %s: %s", row["id"], e)
         result = f"ERR exception={type(e).__name__}: {e}"

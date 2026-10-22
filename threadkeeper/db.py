@@ -1043,6 +1043,16 @@ END;
 # an incompatible global schema version and breaking still-running clients.
 # Keep this block strictly backward-compatible: CREATE ... IF NOT EXISTS only.
 ADDITIVE_RUNTIME_SCHEMA = """
+-- Lesson body vectors for the write-time duplicate gate and lesson_list(query).
+-- Keyed by body hash and embedding fingerprint, so a body is encoded once per
+-- install and a model change simply misses the cache.
+CREATE TABLE IF NOT EXISTS lesson_vectors (
+    text_sha256 TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    vector      BLOB NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (text_sha256, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS daemon_health (
     name              TEXT PRIMARY KEY,
     thread_alive      INTEGER NOT NULL,
@@ -1100,6 +1110,32 @@ CREATE TABLE IF NOT EXISTS workflow_retention_state (
     last_at      INTEGER NOT NULL,
     last_outcome TEXT NOT NULL
 );
+
+-- Model router: one row per routing decision. The latest row per role is the
+-- current route; older rows are the history the next pass reads. Local only:
+-- catalogs differ per machine, so these tables are not synced.
+CREATE TABLE IF NOT EXISTS model_routes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    role        TEXT NOT NULL,
+    cli         TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    effort      TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL,
+    pass_id     TEXT NOT NULL,
+    decided_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_routes_role
+    ON model_routes(role, decided_at DESC);
+CREATE TABLE IF NOT EXISTS model_router_passes (
+    pass_id     TEXT PRIMARY KEY,
+    roles_json  TEXT NOT NULL,
+    attempt     TEXT NOT NULL CHECK(attempt IN ('primary','fallback')),
+    task_id     TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'running'
+                CHECK(status IN ('running','complete','failed')),
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER
+);
 """
 
 # These columns are independently additive: current databases deliberately do
@@ -1114,6 +1150,20 @@ ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_sha256 TEXT",
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_summary TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE curator_batches ADD COLUMN workflow_compacted_at INTEGER",
+    # Phase three: an independent verifier tries to refute the evaluator's
+    # destructive proposals and applies the survivors. 'none' means the
+    # evaluator proposed nothing (or has not finished).
+    "ALTER TABLE curator_batches ADD COLUMN verify_state TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE curator_batches ADD COLUMN verify_task_id TEXT",
+    "ALTER TABLE curator_batches ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE curator_batches ADD COLUMN verify_failure TEXT",
+    # The mode the batch's evaluator actually ran in: a research failure
+    # downgrades one batch of a destructive pass to advisory, and its
+    # proposals must then never reach the verifier.
+    "ALTER TABLE curator_batches ADD COLUMN eval_mode TEXT",
+    # When curator_run moved a skill to 'stale'; archiving needs a dwell time
+    # in that state, so a long-idle skill is never archived on its first run.
+    "ALTER TABLE skill_usage ADD COLUMN stale_since INTEGER",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_at INTEGER",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_body TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE evolve_research_handoffs ADD COLUMN retention_summary TEXT NOT NULL DEFAULT ''",
@@ -1328,13 +1378,14 @@ _PROJECT_SCOPED_TABLES = (
 
 
 def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
-    """Quarantine legacy memory and record an auditable migration report.
+    """Classify legacy memory and record an auditable migration report.
 
     Old rows do not carry trustworthy repository provenance.  Tasks are the
     exception: their persisted working directory can still be resolved while
-    it exists, so they are safely backfilled. Everything else is explicitly
-    unresolved rather than treated as global.  This report is intentionally
-    retained for operators deciding how to classify old data.
+    it exists, so they are scoped to their project. Every other legacy row
+    becomes global: before namespaces existed all memory was recalled in
+    every project, and quarantining it would silently drop the user's rules,
+    threads and history from every brief. New memory is scoped from now on.
     """
     from .project_scope import resolve_project_namespace
 
@@ -1355,6 +1406,11 @@ def _backfill_project_scopes(conn: sqlite3.Connection) -> None:
                 "UPDATE tasks SET project_id=?, memory_scope='project' WHERE id=?",
                 (namespace.project_id, row["id"]),
             )
+    for table in _PROJECT_SCOPED_TABLES:
+        conn.execute(
+            f"UPDATE {table} SET memory_scope='global' "
+            "WHERE memory_scope='unresolved'"
+        )
     now = int(time.time())
     for table in _PROJECT_SCOPED_TABLES:
         counts = dict(conn.execute(
@@ -1496,11 +1552,36 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
 
 
 def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
-    """Materialize backward-compatible tables without a version migration."""
-    for statement in _iter_sql_statements(ADDITIVE_RUNTIME_SCHEMA):
-        conn.execute(statement)
+    """Materialize backward-compatible tables without a version migration.
+
+    SCHEMA is replayed too: it is CREATE ... IF NOT EXISTS only, and a table
+    added to it without a version bump must still reach current-version DBs.
+    """
+    for script in (SCHEMA, ADDITIVE_RUNTIME_SCHEMA):
+        for statement in _iter_sql_statements(script):
+            conn.execute(statement)
     for ddl in ADDITIVE_RUNTIME_COLUMN_MIGRATIONS:
         _apply_column_migration(conn, ddl)
+    _ensure_project_namespaces(conn)
+
+
+def _ensure_project_namespaces(conn: sqlite3.Connection) -> None:
+    """Bring a v5 database that predates project namespaces up to them.
+
+    Namespaces were added under the existing schema version 5, so a database
+    that was already at v5 skipped their migration and lacked the columns
+    every scoped query needs. Add them idempotently and backfill scopes once:
+    the migration report is empty exactly when the backfill never ran.
+    """
+    for ddl in LEGACY_COLUMN_MIGRATIONS:
+        _apply_column_migration(conn, ddl)
+    if conn.execute(
+        "SELECT 1 FROM project_scope_migration_report LIMIT 1"
+    ).fetchone():
+        return
+    _backfill_project_scopes(conn)
+    for idx in POST_SCHEMA_INDEXES:
+        conn.execute(idx)
 
 
 def _guard_managed_checkout_live_db() -> None:

@@ -60,6 +60,12 @@ _BYPASS_ENV_OVERRIDE = "THREADKEEPER_ALLOW_BYPASS_PERMISSIONS_SPAWN"
 # This object is intentionally private and never accepted by an MCP tool.  The
 # Evolve-only launchers below are the only code paths that hold it.
 _EVOLVE_BYPASS_CAPABILITY = object()
+_CURATOR_CAPABILITY_ENV = frozenset({
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_CURATOR_PHASE",
+    "THREADKEEPER_CURATOR_VERIFY_BATCH",
+})
 
 # Default allowlist for every spawned child: thread-keeper tools so the child
 # can actually report back via broadcast/whisper without the auto-mode
@@ -679,7 +685,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 task_id_override: str = "",
                 child_cid_override: str = "",
                 allowed_tools_override: Optional[tuple[str, ...]] = None,
-                _bypass_capability: object | None = None) -> str:
+                _bypass_capability: object | None = None,
+                _curator_launch: object | None = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -815,6 +822,30 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         child=child_cid,
     )
     role_clean = role.strip().lower()
+    curator_launch = None
+    if _curator_launch is not None:
+        # The public spawn tool cannot supply this private object. Validate it
+        # again here so internal generic spawn callers cannot mint authority.
+        from ..curator import _CuratorLaunch, _new_curator_launch
+        if not isinstance(_curator_launch, _CuratorLaunch):
+            return "ERR invalid_curator_launch"
+        if (role_clean, write_origin) != (
+            _curator_launch.role, _curator_launch.write_origin,
+        ):
+            return "ERR invalid_curator_launch_context"
+        try:
+            curator_launch = _new_curator_launch(
+                _curator_launch.pass_id,
+                _curator_launch.snapshot_dir,
+                _curator_launch.batch_index,
+                _curator_launch.batch_total,
+                role=_curator_launch.role,
+                write_origin=_curator_launch.write_origin,
+                phase=_curator_launch.phase,
+                verify_batch=_curator_launch.verify_batch,
+            )
+        except (TypeError, ValueError):
+            return "ERR invalid_curator_launch"
     if role_clean:
         if role_clean in ROLE_PROMPTS:
             sys_extra += f"\n\nROLE: {role_clean}\n{ROLE_PROMPTS[role_clean]}"
@@ -827,7 +858,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     if append_system:
         sys_extra += "\n\n" + append_system
     child_env = {
-        **{k: v for k, v in os.environ.items() if k != "THREADKEEPER_ROLE"},
+        **{
+            k: v for k, v in os.environ.items()
+            if k != "THREADKEEPER_ROLE" and k not in _CURATOR_CAPABILITY_ENV
+        },
         "THREADKEEPER_DB": str(DB_PATH),
         "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
         "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
@@ -863,6 +897,17 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
         child_env["THREADKEEPER_WRITE_ORIGIN"] = write_origin
+    if curator_launch is not None:
+        child_env["THREADKEEPER_CURATOR_PASS_ID"] = curator_launch.pass_id
+        if curator_launch.snapshot_dir is not None:
+            child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"] = str(
+                curator_launch.snapshot_dir
+            )
+        child_env["THREADKEEPER_CURATOR_PHASE"] = curator_launch.phase
+        if curator_launch.verify_batch:
+            child_env["THREADKEEPER_CURATOR_VERIFY_BATCH"] = str(
+                curator_launch.verify_batch
+            )
     inherited_wrapper_dir = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
     child_env.pop("THREADKEEPER_REAL_GH", None)
     if inherited_wrapper_dir:
@@ -1056,6 +1101,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 trace_queue_wait_ms,
             ),
         )
+        if curator_launch is not None:
+            from ..curator import _record_curator_child_launch
+            _record_curator_child_launch(
+                conn, curator_launch, task_id, child_cid,
+            )
         return ""
 
     def _release(reason: str) -> str:
@@ -1122,6 +1172,16 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 env_pairs.append(
                     ("THREADKEEPER_CURATOR_SNAPSHOT_DIR",
                      child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"])
+                )
+            if "THREADKEEPER_CURATOR_PHASE" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_PHASE",
+                     child_env["THREADKEEPER_CURATOR_PHASE"])
+                )
+            if "THREADKEEPER_CURATOR_VERIFY_BATCH" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_VERIFY_BATCH",
+                     child_env["THREADKEEPER_CURATOR_VERIFY_BATCH"])
                 )
             if _permission_mode_is_bypass(permission_mode):
                 env_pairs.extend([

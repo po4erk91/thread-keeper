@@ -7,6 +7,8 @@ that spawn() would have run, and check it's shaped the way we expect.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 
@@ -211,6 +213,108 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     assert len(log_files) == 1, log_files
     mode = log_files[0].stat().st_mode & 0o777
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+
+def test_ordinary_spawn_strips_stale_curator_capabilities(mp_with_cid, monkeypatch):
+    """Ambient Curator values must never cross a normal spawn boundary."""
+    pkg = mp_with_cid(_FAKE_CID)
+    import threadkeeper.identity as identity
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "stale-pass")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", "/stale/snapshot")
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/usr/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, _args, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.pid = 4323
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
+    out = spawn_mod.spawn(
+        prompt="ordinary child", cwd=str(pkg["tmp"]), visible=False,
+        capture_output=False,
+    )
+
+    assert out.startswith("ok task="), out
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in captured["env"]
+    assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in captured["env"]
+
+
+def test_curator_launch_isolated_from_concurrent_spawn(mp_with_cid, monkeypatch):
+    """A paused Curator launch cannot leak authority to a parallel child."""
+    pkg = mp_with_cid(_FAKE_CID)
+    import threadkeeper.curator as curator
+    import threadkeeper.identity as identity
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "stale-pass")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", "/stale/snapshot")
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/usr/bin/true")
+    monkeypatch.setattr(identity, "_active_cli", "claude")
+    curator_waiting = threading.Event()
+    release_curator = threading.Event()
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    original_build_config = spawn_mod._build_slim_mcp_config
+
+    def pause_curator_config(task_id, overrides):
+        if "THREADKEEPER_CURATOR_PASS_ID" in (overrides or {}):
+            curator_waiting.set()
+            assert release_curator.wait(timeout=5)
+        return original_build_config(task_id, overrides)
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured.append((list(args), dict(kwargs["env"])))
+            self.pid = 4324 + len(captured)
+
+    monkeypatch.setattr(spawn_mod, "_build_slim_mcp_config", pause_curator_config)
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", _FakePopen)
+    launch = curator._new_curator_launch(
+        "cap-pass", None, 0, 0,
+    )
+    curator_result: list[str] = []
+    thread = threading.Thread(
+        target=lambda: curator_result.append(spawn_mod._spawn_impl(
+            prompt="curator child", cwd=str(pkg["tmp"]), visible=False,
+            capture_output=False, role="curator", write_origin="curator",
+            _curator_launch=launch,
+        )),
+    )
+    thread.start()
+    assert curator_waiting.wait(timeout=5)
+
+    ordinary_result = spawn_mod.spawn(
+        prompt="ordinary child", cwd=str(pkg["tmp"]), visible=False,
+        capture_output=False,
+    )
+    release_curator.set()
+    thread.join(timeout=5)
+
+    assert ordinary_result.startswith("ok task="), ordinary_result
+    assert curator_result and curator_result[0].startswith("ok task=")
+    curator_env = next(
+        env for _args, env in captured
+        if env.get("THREADKEEPER_CURATOR_PASS_ID") == "cap-pass"
+    )
+    ordinary_args, ordinary_env = next(
+        pair for pair in captured
+        if "THREADKEEPER_CURATOR_PASS_ID" not in pair[1]
+    )
+    assert curator_env["THREADKEEPER_CURATOR_PASS_ID"] == "cap-pass"
+    assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in curator_env
+    assert "THREADKEEPER_CURATOR_PASS_ID" not in ordinary_env
+    assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in ordinary_env
+    assert "cap-pass" not in " ".join(ordinary_args)
+    assert "cap-pass" not in " ".join(
+        row["prompt"] for row in pkg["db"].get_db().execute(
+            "SELECT prompt FROM tasks WHERE role='curator'"
+        )
+    )
+    assert os.environ["THREADKEEPER_CURATOR_PASS_ID"] == "stale-pass"
 
 
 def test_claude_large_prompt_uses_stdin_file(mp_with_cid, monkeypatch):

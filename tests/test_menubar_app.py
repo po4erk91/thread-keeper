@@ -317,7 +317,7 @@ def test_settings_role_taxonomy_comes_from_shared_python_metadata():
     assert AGENT_ROLE_NAMES == (
         "shadow_observer", "archivist", "candidate_reviewer", "curator",
         "curator_researcher", "dialectic_validator", "probe_runner", "evolve_researcher",
-        "evolve_reviewer", "evolve_applier",
+        "evolve_reviewer", "evolve_applier", "model_router",
     )
     mechanical = {item["id"] for item in MECHANICAL_JOBS}
     assert {"ingest", "extract", "dialectic_miner", "thread_janitor"} <= mechanical

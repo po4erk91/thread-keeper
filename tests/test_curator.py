@@ -112,6 +112,17 @@ def _bootstrap(
     }
 
 
+def _add_skill(pkg, name: str = "research-topic-skill") -> None:
+    """A primary-store skill, so a batch has something the research covers."""
+    skill_dir = pkg["skills_dir"] / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Use when testing curator research.\n"
+        "---\n\n# Research topic\n",
+        encoding="utf-8",
+    )
+
+
 def _complete_manifest_batch(pkg, *, pass_id: str | None = None) -> str:
     """Give one fake spawned Curator task a valid terminal report."""
     conn = pkg["db"].get_db()
@@ -198,6 +209,77 @@ def _finish_research(pkg, *, evidence: str = "evidence\nCURATOR_RESEARCH_COMPLET
     conn.commit()
 
 
+def _bind_curator_writer(
+    pkg,
+    pass_id,
+    *,
+    batch_index=0,
+    batch_total=0,
+    phase="evaluate",
+    verify_batch=0,
+    snapshot_dir=None,
+):
+    """Create the task-bound authority a real Curator launch records."""
+    conn = pkg["db"].get_db()
+    task_id = f"tk_curator_{phase}_{batch_index or 'single'}_{verify_batch}"
+    conn.execute(
+        "UPDATE tasks SET ended_at=? WHERE spawned_cid=? AND ended_at IS NULL",
+        (int(time.time()), _FAKE_CID),
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, role, write_origin) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            task_id, 1, "parent", _FAKE_CID, str(pkg["reports_dir"]),
+            "curator assignment", int(time.time()), "curator", "curator",
+        ),
+    )
+    launch = pkg["curator"]._new_curator_launch(
+        pass_id,
+        snapshot_dir,
+        batch_index,
+        batch_total,
+        phase=phase,
+        verify_batch=verify_batch,
+    )
+    pkg["curator"]._record_curator_child_launch(
+        conn, launch, task_id, _FAKE_CID,
+    )
+    conn.commit()
+
+
+def _bind_curator_researcher(pkg, pass_id, *, batch_index, batch_total):
+    """Create the task-bound authority for a web-only Curator child."""
+    conn = pkg["db"].get_db()
+    task_id = f"tk_curator_research_{batch_index}"
+    conn.execute(
+        "UPDATE tasks SET ended_at=? WHERE spawned_cid=? AND ended_at IS NULL",
+        (int(time.time()), _FAKE_CID),
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, role, write_origin) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            task_id, 1, "parent", _FAKE_CID, str(pkg["reports_dir"]),
+            "curator research", int(time.time()), "curator_researcher",
+            "curator_research",
+        ),
+    )
+    launch = pkg["curator"]._new_curator_launch(
+        pass_id,
+        None,
+        batch_index,
+        batch_total,
+        role="curator_researcher",
+        write_origin="curator_research",
+        phase="research",
+    )
+    pkg["curator"]._record_curator_child_launch(
+        conn, launch, task_id, _FAKE_CID,
+    )
+    conn.commit()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Pure functions
 # ──────────────────────────────────────────────────────────────────────
@@ -266,8 +348,8 @@ def test_collect_inventory_counts_lessons_and_skills(tmp_path, monkeypatch):
     assert "testid-drift-detection [PROTECTED]" in dump
     # shadow-origin lesson is NOT protected
     assert "reset-wifi-proxy-before-wda-start [PROTECTED]" not in dump
-    # pinned + foreground skill is PROTECTED
-    assert "SKILL pinned-skill [PROTECTED]" in dump
+    # pinned skill is PINNED: a standing keep decision
+    assert "SKILL pinned-skill [PINNED]" in dump
     # background_review skill (not pinned) is NOT protected
     assert "SKILL auto-created-skill [PROTECTED]" not in dump
     assert "SKILL auto-created-skill" in dump
@@ -314,7 +396,9 @@ def test_dense_lesson_cluster_crosses_promotion_threshold(tmp_path, monkeypatch)
     )
 
 
-def test_protected_dense_cluster_requires_human_review(tmp_path, monkeypatch):
+def test_protected_dense_cluster_is_still_a_promotion_candidate(
+    tmp_path, monkeypatch,
+):
     pkg = _bootstrap(tmp_path, monkeypatch)
     for title in (
         "curator snapshot protects lesson rollback",
@@ -331,7 +415,7 @@ def test_protected_dense_cluster_requires_human_review(tmp_path, monkeypatch):
         pkg["lessons"].lesson_usage_map(conn),
     )
     assert len(candidates) == 1
-    assert candidates[0].decision == "HUMAN_REVIEW"
+    assert candidates[0].decision == "PROMOTE_TO_SKILL"
     assert candidates[0].protected_slugs == candidates[0].lesson_slugs
 
 
@@ -532,7 +616,7 @@ def test_curator_reuses_merge_verdicts_and_wikilink_adjacency(
         captured.append(kwargs)
         return f"spawn task_id=curator-{len(captured)} pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
     assert "curator-1" in pkg["curator"].run_curator_pass(force=True)
 
     from threadkeeper._mcp import mcp
@@ -643,7 +727,7 @@ def test_run_curator_pass_fails_closed_when_lessons_cannot_be_read(
         lambda: (_ for _ in ()).throw(OSError("lesson file unreadable")),
     )
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+        spawn_mod, "_spawn_impl", lambda **kwargs: captured.append(kwargs),
     )
 
     out = pkg["curator"].run_curator_pass(force=True)
@@ -667,7 +751,7 @@ def test_run_curator_pass_fails_closed_when_skill_audit_fails(
 
     monkeypatch.setattr(pkg["curator"], "build_skill_audit", fail_audit)
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+        spawn_mod, "_spawn_impl", lambda **kwargs: captured.append(kwargs),
     )
 
     out = pkg["curator"].run_curator_pass(force=True)
@@ -705,7 +789,7 @@ def test_run_curator_pass_fails_closed_when_concepts_cannot_be_read(
         pkg["curator"], "get_db", lambda: ConceptReadFailure(conn),
     )
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kwargs: captured.append(kwargs),
+        spawn_mod, "_spawn_impl", lambda **kwargs: captured.append(kwargs),
     )
 
     out = pkg["curator"].run_curator_pass(force=True)
@@ -729,20 +813,19 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     captured: list[dict] = []
 
     def fake_spawn(**kwargs):
-        snap_raw = os.environ.get("THREADKEEPER_CURATOR_SNAPSHOT_DIR", "")
-        pass_id = os.environ.get("THREADKEEPER_CURATOR_PASS_ID", "")
-        assert pass_id
-        assert snap_raw
-        snap = Path(snap_raw)
+        launch = kwargs["_curator_launch"]
+        assert launch.pass_id
+        assert launch.snapshot_dir is not None
+        snap = launch.snapshot_dir
         assert snap.is_dir()
         assert (snap / "lessons.md").is_file()
         manifest = json.loads((snap / "manifest.json").read_text())
-        assert manifest["pass_id"] == pass_id
+        assert manifest["pass_id"] == launch.pass_id
         assert manifest["lessons"]["count"] == 2
         captured.append(kwargs)
         return "spawn task_id=fake-curator-task pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
     assert "fake-curator-task" in out
@@ -758,20 +841,22 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "CONSOLIDATE" in kw["prompt"]
     assert "PRUNE" in kw["prompt"]
     assert "STALE LESSONS DRY-RUN" in kw["prompt"]
-    assert "do NOT call lesson_remove solely" in kw["prompt"]
+    assert "do NOT propose a removal solely" in kw["prompt"]
+    assert "<!-- VERIFY_PROPOSALS:BEGIN -->" in kw["prompt"]
+    assert "HUMAN_REVIEW" not in kw["prompt"]
     assert "EVOLVE_CANDIDATE" in kw["prompt"]
     assert "evolve_format" in kw["prompt"]
     assert "lesson-one" in kw["prompt"]
     assert "lesson-two" in kw["prompt"]
-    # Scoped toolset — destructive default (the new default) includes
-    # lesson_append / lesson_patch / lesson_remove / skill_manage, but never
-    # shell or spawn.
+    # Scoped toolset — the destructive evaluator edits in place
+    # (lesson_append / lesson_patch / skill_manage) but removes nothing: every
+    # removal is a proposal for the verifier. Never shell or spawn.
     allowed = kw["extra_allowed_tools"]
     assert "lesson_list" in allowed
     assert "lesson_get" in allowed
     assert "lesson_append" in allowed
     assert "lesson_patch" in allowed
-    assert "lesson_remove" in allowed
+    assert "lesson_remove" not in allowed
     assert "skill_manage" in allowed
     assert "evolve_format" in allowed
     assert "Read" in allowed
@@ -791,8 +876,10 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text())["schema_version"] == 1
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
+    assert kw["_curator_launch"].pass_id not in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+    assert "THREADKEEPER_CURATOR_PHASE" not in os.environ
 
 
 def test_web_research_receives_only_public_brief_and_narrow_tools(
@@ -808,13 +895,14 @@ def test_web_research_receives_only_public_brief_and_narrow_tools(
     pkg["lessons"].append_lesson(
         title="another local lesson", body="also private", source="shadow",
     )
+    _add_skill(pkg)
 
     import threadkeeper.tools.spawn as spawn_mod
 
     captured: list[dict] = []
     monkeypatch.setattr(
         spawn_mod,
-        "spawn",
+        "_spawn_impl",
         lambda **kwargs: captured.append(kwargs) or "spawn task_id=fake pid=0",
     )
 
@@ -849,7 +937,7 @@ def test_returned_spawn_error_does_not_advance_curator_cursor(tmp_path, monkeypa
     )
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+        spawn_mod, "_spawn_impl", lambda **kw: "ERR spawn_reservation_failed=busy",
     )
     conn = pkg["db"].get_db()
     before = pkg["curator"]._last_curator_ts(conn)
@@ -884,7 +972,7 @@ def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
         captured.append(kwargs)
         return "spawn task_id=fake-promotion-curator pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
     assert "fake-promotion-curator" in out
@@ -892,9 +980,9 @@ def test_run_curator_pass_hands_dense_cluster_to_skill_promotion(
     prompt = captured[0]["prompt"]
     assert "LESSON CLUSTER PROMOTION CANDIDATES (n=1)" in prompt
     assert "PROMOTE_TO_SKILL: topic=curator snapshot lesson_count=3" in prompt
-    assert "Create one new, clearly named canonical skill" in prompt
+    assert "Write one PROMOTE proposal" in prompt
     assert "## Retired lessons" in prompt
-    assert "Only after it passes may you call" in prompt
+    assert "only then\n     removes the retired lessons" in prompt
 
 
 def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
@@ -912,7 +1000,7 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
         captured.append(kwargs)
         return f"ok task=tk_batch_{len(captured)} pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
 
@@ -958,16 +1046,17 @@ def _batch_spawner(monkeypatch, refuse):
     launched: list[int] = []
 
     def fake_spawn(**kwargs):
-        idx = int(re.search(r"BATCH_INDEX = (\d+)", kwargs["prompt"]).group(1))
+        launch = kwargs["_curator_launch"]
+        idx = launch.batch_index or 1
         attempts.append(idx)
-        assert os.environ["THREADKEEPER_CURATOR_PASS_ID"]
+        assert launch.pass_id
         error = refuse(idx, attempts.count(idx))
         if error:
             return error
         launched.append(idx)
         return f"ok task=tk_batch_{idx} pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
     return attempts, launched
 
 
@@ -1124,7 +1213,7 @@ def test_run_curator_pass_recent_high_water_is_not_due(
     def fail_spawn(**kwargs):  # pragma: no cover - should not be called
         raise AssertionError("spawn should not run before interval elapses")
 
-    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fail_spawn)
 
     assert pkg["curator"].run_curator_pass() == "not_due"
     rows = conn.execute(
@@ -1157,7 +1246,7 @@ def test_run_curator_pass_stale_high_water_spawns(tmp_path, monkeypatch):
         captured.append(kwargs)
         return "spawn task_id=fake-curator-stale pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass()
     assert "fake-curator-stale" in out
@@ -1188,7 +1277,7 @@ def test_run_curator_pass_force_bypasses_recent_high_water(
         captured.append(kwargs)
         return "spawn task_id=fake-curator-forced pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
     assert "fake-curator-forced" in out
@@ -1211,15 +1300,13 @@ def test_run_curator_pass_advisory_writes_no_snapshot(tmp_path, monkeypatch):
     captured: list[dict] = []
 
     def fake_spawn(**kwargs):
-        # Advisory children now carry the parent-authorized pass id so their
-        # report writer can emit verifiable provenance, but still receive no
-        # destructive snapshot context.
-        assert os.environ["THREADKEEPER_CURATOR_PASS_ID"]
-        assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
+        launch = kwargs["_curator_launch"]
+        assert launch.pass_id
+        assert launch.snapshot_dir is None
         captured.append(kwargs)
         return "spawn task_id=fake-curator-task pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
     assert "fake-curator-task" in out
@@ -1242,10 +1329,26 @@ def test_curator_delete_cap_is_shared_across_lesson_and_skill_deletes(
         )
 
     from threadkeeper._mcp import mcp
-    from threadkeeper.curator_snapshots import CAP_EVENT, PASS_ID_ENV
+    from threadkeeper.curator_snapshots import (
+        CAP_EVENT,
+        PASS_ID_ENV,
+        PHASE_ENV,
+        SNAPSHOT_DIR_ENV,
+        VERIFY_BATCH_ENV,
+        VERIFY_PHASE,
+        write_verify_scope,
+    )
 
     remove = mcp._tool_manager._tools["lesson_remove"].fn
     manage = mcp._tool_manager._tools["skill_manage"].fn
+    snapshot = tmp_path / "cap-snapshot"
+    write_verify_scope(
+        snapshot, 1, "cap-pass", "PROPOSAL 1: first-lesson second-lesson cap-target",
+    )
+    monkeypatch.setenv(PASS_ID_ENV, "cap-pass")
+    monkeypatch.setenv(SNAPSHOT_DIR_ENV, str(snapshot))
+    monkeypatch.setenv(PHASE_ENV, VERIFY_PHASE)
+    monkeypatch.setenv(VERIFY_BATCH_ENV, "1")
     assert manage(
         action="create",
         name="cap-target",
@@ -1253,7 +1356,6 @@ def test_curator_delete_cap_is_shared_across_lesson_and_skill_deletes(
         content="# Cap target\n\nThis is safe test content.",
     ).startswith("ok")
 
-    monkeypatch.setenv(PASS_ID_ENV, "cap-pass")
     assert remove(slug="first-lesson") == "ok removed=first-lesson"
     assert manage(action="delete", name="cap-target") == "ok"
     blocked = remove(slug="second-lesson")
@@ -1329,6 +1431,11 @@ def test_curator_restore_recovers_pruned_lesson_body(tmp_path, monkeypatch):
     snap = create_curator_snapshot(pass_id, conn=conn, retention=10)
     monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", pass_id)
     monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snap))
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PHASE", "verify")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_VERIFY_BATCH", "1")
+    from threadkeeper.curator_snapshots import write_verify_scope
+
+    write_verify_scope(snap, 1, pass_id, "PROPOSAL 1: restore-target-lesson")
 
     from threadkeeper._mcp import mcp
 
@@ -1369,7 +1476,7 @@ def test_run_curator_pass_skips_unchanged_inventory_only_after_completion(
         captured.append(kwargs)
         return f"spawn task_id=fake-curator-{len(captured)} pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     first = pkg["curator"].run_curator_pass(force=True)
     second = pkg["curator"].run_curator_pass(force=True)
@@ -1414,7 +1521,7 @@ def test_curator_child_failure_is_durable_and_retries_that_batch(
         calls.append(kwargs)
         return f"ok task=tk_retry_{len(calls)} pid=1"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
     assert "tk_retry_1" in pkg["curator"].run_curator_pass(force=True)
 
     conn = pkg["db"].get_db()
@@ -1455,7 +1562,7 @@ def test_curator_budget_refusal_keeps_successful_batch_and_retries_missing_one(
             return "ok task=tk_first_batch pid=1"
         return "ERR spawn_budget_exceeded"
 
-    monkeypatch.setattr(spawn_mod, "spawn", first_wave)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", first_wave)
     out = pkg["curator"].run_curator_pass(force=True)
     assert out.startswith("dispatch pass_id="), out
     assert "waiting_for_memory=1" in out
@@ -1473,7 +1580,7 @@ def test_curator_budget_refusal_keeps_successful_batch_and_retries_missing_one(
         calls.append(kwargs)
         return "ok task=tk_second_batch pid=1"
 
-    monkeypatch.setattr(spawn_mod, "spawn", retry_only_missing)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", retry_only_missing)
     assert "tk_second_batch" in pkg["curator"].run_curator_pass(force=True)
     assert "CURATOR BATCH 2/2" in calls[-1]["prompt"]
     rows = conn.execute(
@@ -1505,7 +1612,7 @@ def test_scheduled_curator_researches_unchanged_inventory_after_interval(
         captured.append(kwargs)
         return f"spawn task_id=scheduled-{len(captured)} pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
     first = pkg["curator"].run_curator_pass(force=True)
     _complete_manifest_batch(pkg)
     assert pkg["curator"].run_curator_pass(force=True).startswith("endorsed")
@@ -1616,7 +1723,7 @@ def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(
         captured.append(kwargs)
         return "spawn task_id=patched-background-skill pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
     pkg["curator"].run_curator_pass(force=True)
 
     prompt = captured[0]["prompt"]
@@ -1731,16 +1838,8 @@ def test_curator_report_write_is_path_scoped_and_replaceable(
     write_report = mcp._tool_manager._tools["curator_report_write"].fn
     pass_id = "20260719T120000"
     monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    _bind_curator_writer(pkg, pass_id)
     conn = pkg["db"].get_db()
-    pkg["curator"]._authorize_curator_report(
-        conn, int(time.time()), pass_id, f"REPORT-{pass_id}.md",
-    )
-    pkg["curator"]._authorize_curator_report(
-        conn,
-        int(time.time()),
-        pass_id,
-        f"REPORT-{pass_id}-batch-002-of-003.md",
-    )
 
     assert write_report(pass_id="../escape", content="x") == (
         "ERR invalid_pass_id"
@@ -1750,6 +1849,7 @@ def test_curator_report_write_is_path_scoped_and_replaceable(
         pass_id=pass_id,
         content="# Results\n\nCURATOR_PASS_COMPLETE",
     )
+    _bind_curator_writer(pkg, pass_id, batch_index=2, batch_total=3)
     batch = write_report(
         pass_id=pass_id,
         batch_index=2,
@@ -1881,7 +1981,7 @@ def test_curator_wakeup_coalesces_before_rereading_inflight_snapshot(
     def fail_spawn(**kwargs):  # pragma: no cover - should not be called
         raise AssertionError("spawn should not run while a curator is active")
 
-    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fail_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
 
@@ -2006,7 +2106,7 @@ def test_curator_dry_run_ranks_stale_lessons_by_decay_score(
 def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
     """When CURATOR_DESTRUCTIVE=1 the curator child gets skill_manage +
     lesson_append in extra_allowed_tools AND the prompt instructs it
-    to apply its own recommendations directly."""
+    to apply its in-place edits directly and propose everything else."""
     monkeypatch.setenv("THREADKEEPER_CURATOR_DESTRUCTIVE", "1")
     pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
     pkg["lessons"].append_lesson(
@@ -2023,23 +2123,24 @@ def test_destructive_mode_widens_allowed_tools(tmp_path, monkeypatch):
         captured.append(kwargs)
         return "spawn task_id=fake-curator pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     pkg["curator"].run_curator_pass(force=True)
     assert len(captured) == 1
     kw = captured[0]
     allowed = kw["extra_allowed_tools"]
-    # Destructive mode → widened toolset (incl. lesson_remove for prune/consolidate)
+    # Destructive mode → in-place edit tools; removals go to the verifier
     assert "skill_manage" in allowed
     assert "lesson_append" in allowed
     assert "lesson_patch" in allowed
-    assert "lesson_remove" in allowed
+    assert "lesson_remove" not in allowed
     assert "evolve_format" in allowed
     # Prompt explicitly flips into destructive mode
     assert "DESTRUCTIVE MODE ENABLED" in kw["prompt"]
     assert "audit trail first" in kw["prompt"]
-    # PROTECTED guarantee still in effect
+    # PROTECTED guarantee still in effect, enforced through proposals
     assert "PROTECTED" in kw["prompt"]
+    assert "VERIFY proposal" in kw["prompt"]
 
 
 def test_advisory_mode_excludes_destructive_tools(
@@ -2065,7 +2166,7 @@ def test_advisory_mode_excludes_destructive_tools(
         captured.append(kwargs)
         return "spawn task_id=fake pid=0"
 
-    monkeypatch.setattr(spawn_mod, "spawn", fake_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
 
     pkg["curator"].run_curator_pass(force=True)
     kw = captured[0]
@@ -2103,7 +2204,7 @@ def test_single_flight_when_curator_child_running(tmp_path, monkeypatch):
     def fail_spawn(**kwargs):  # pragma: no cover - should not be called
         raise AssertionError("spawn should not run while a curator is active")
 
-    monkeypatch.setattr(spawn_mod, "spawn", fail_spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fail_spawn)
 
     out = pkg["curator"].run_curator_pass(force=True)
 
@@ -2171,7 +2272,7 @@ def test_run_curator_pass_includes_concepts_in_inventory(
     import threadkeeper.tools.spawn as spawn_mod
     captured: list[dict] = []
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
@@ -2196,7 +2297,7 @@ def test_destructive_toolset_includes_concept_manage(tmp_path, monkeypatch):
     import threadkeeper.tools.spawn as spawn_mod
     captured: list[dict] = []
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
@@ -2222,7 +2323,7 @@ def test_advisory_toolset_excludes_concept_manage(tmp_path, monkeypatch):
     import threadkeeper.tools.spawn as spawn_mod
     captured: list[dict] = []
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(kw) or "spawn task_id=fake pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
@@ -2239,7 +2340,7 @@ def test_concepts_alone_do_not_trigger_pass(tmp_path, monkeypatch):
 
     import threadkeeper.tools.spawn as spawn_mod
     called = []
-    monkeypatch.setattr(spawn_mod, "spawn",
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
                         lambda **kw: called.append(kw) or "x")
     out = pkg["curator"].run_curator_pass(force=True)
     assert out.startswith("below_threshold")
@@ -2268,6 +2369,9 @@ def test_curator_research_write_is_scoped_and_requires_completion(
         manifest_sha256="b" * 64,
     )
     monkeypatch.setenv(PASS_ID_ENV, pass_id)
+    _bind_curator_researcher(
+        pkg, pass_id, batch_index=1, batch_total=1,
+    )
     write_research = mcp._tool_manager._tools["curator_research_write"].fn
 
     assert write_research(
@@ -2299,10 +2403,11 @@ def _two_lesson_research_pass(tmp_path, monkeypatch, destructive="1"):
     )
     pkg["lessons"].append_lesson(title="one", body="body", source="shadow")
     pkg["lessons"].append_lesson(title="two", body="body", source="shadow")
+    _add_skill(pkg)
     import threadkeeper.tools.spawn as spawn_mod
     captured: list[dict] = []
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(kw) or f"ok task=tk_c{len(captured)} pid=0",
     )
     return pkg, captured
@@ -2381,7 +2486,7 @@ def test_curator_web_and_memory_mutation_capabilities_never_cogranted(
     import threadkeeper.tools.spawn as spawn_mod
     captured: list[dict] = []
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: captured.append(kw) or f"ok task=tk_w{len(captured)} pid=0",
     )
     pkg["curator"].run_curator_pass(force=True)
@@ -2414,24 +2519,33 @@ def test_timed_out_batch_follows_the_watchdog_continuation(tmp_path, monkeypatch
     conn = pkg["db"].get_db()
     first = conn.execute("SELECT task_id, pass_id FROM curator_batches").fetchone()
     now = int(time.time())
+    snapshot_path = conn.execute(
+        "SELECT snapshot_path FROM curator_passes WHERE pass_id=?",
+        (first["pass_id"],),
+    ).fetchone()[0]
     conn.execute(
-        "INSERT INTO tasks (id, pid, cwd, prompt, started_at, ended_at, "
-        "return_code, timeout_respawned_as) VALUES "
-        "(?, 1, '/tmp', 'curator', ?, ?, 124, 'tk_continued')",
-        (first["task_id"], now - 3700, now),
+        "INSERT INTO tasks (id, pid, spawned_cid, cwd, prompt, started_at, "
+        "ended_at, return_code, timeout_respawned_as, role, write_origin) "
+        "VALUES (?, 1, ?, '/tmp', 'curator', ?, ?, 124, 'tk_continued', "
+        "'curator', 'curator')",
+        (first["task_id"], f"child-{first['task_id']}", now - 3700, now),
     )
     conn.execute(
         "INSERT INTO tasks (id, pid, cwd, prompt, started_at) "
         "VALUES ('tk_continued', 0, '/tmp', 'curator', ?)", (now,),
     )
+    launch = curator._new_curator_launch(
+        first["pass_id"], Path(snapshot_path) if snapshot_path else None, 0, 0,
+    )
+    curator._record_curator_child_launch(
+        conn, launch, first["task_id"], f"child-{first['task_id']}",
+    )
     conn.commit()
 
-    assert curator.curator_retry_env(conn, first["task_id"]) == {
-        "THREADKEEPER_CURATOR_PASS_ID": first["pass_id"],
-        "THREADKEEPER_CURATOR_SNAPSHOT_DIR": conn.execute(
-            "SELECT snapshot_path FROM curator_passes"
-        ).fetchone()[0],
-    }
+    continuation = curator._curator_launch_for_continuation(conn, first["task_id"])
+    assert continuation is not None
+    assert continuation.pass_id == first["pass_id"]
+    assert continuation.snapshot_dir == Path(snapshot_path)
     out = curator.run_curator_pass(force=True)
 
     assert out.startswith("curator_pending"), out
@@ -2440,3 +2554,433 @@ def test_timed_out_batch_follows_the_watchdog_continuation(tmp_path, monkeypatch
         "tk_continued", "running", 1,
     )
     assert len(launched) == 1  # no duplicate child for the same batch
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Verifier phase: agents, not people, settle destructive proposals
+# ──────────────────────────────────────────────────────────────────────
+
+_PROPOSAL_REPORT = (
+    "# report\n\n"
+    "<!-- VERIFY_PROPOSALS:BEGIN -->\n"
+    "PROPOSAL 1: REMOVE lesson\n"
+    "  targets: lesson-one\n"
+    "  reason_class: superseded\n"
+    "  evidence: lesson-two covers the rule\n"
+    "<!-- VERIFY_PROPOSALS:END -->\n\n"
+    "CURATOR_PASS_COMPLETE\n"
+)
+_NO_PROPOSAL_REPORT = (
+    "# report\n\n<!-- VERIFY_PROPOSALS:BEGIN -->\nnone\n"
+    "<!-- VERIFY_PROPOSALS:END -->\n\nCURATOR_PASS_COMPLETE\n"
+)
+
+
+def _finish_child(pkg, *, task_id, report_name, content, return_code=0):
+    """Simulate a batch child that ended after persisting one report."""
+    conn = pkg["db"].get_db()
+    report = pkg["reports_dir"] / report_name
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(content, encoding="utf-8")
+    digest = pkg["curator"].curator_report_sha256(report.read_text())
+    now = int(time.time())
+    conn.execute(
+        "INSERT OR REPLACE INTO tasks "
+        "(id, pid, cwd, prompt, started_at, ended_at, return_code) "
+        "VALUES (?, 0, '/tmp', 'curator', ?, ?, ?)",
+        (task_id, now - 1, now, return_code),
+    )
+    pass_id = conn.execute(
+        "SELECT pass_id FROM curator_passes ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()["pass_id"]
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            _FAKE_CID, pkg["curator"].CURATOR_REPORT_PROVENANCE_KIND,
+            str(report.resolve()), f"pass_id={pass_id} sha256={digest}", now,
+        ),
+    )
+    pkg["curator"]._record_batch_report_provenance(
+        conn, pass_id=pass_id, report_name=report_name,
+        digest=digest, complete=True, now=now,
+    )
+    conn.commit()
+    return pass_id
+
+
+def _recording_spawn(monkeypatch):
+    import threadkeeper.tools.spawn as spawn_mod
+
+    launches: list[dict] = []
+
+    def fake_spawn(**kwargs):
+        launch = kwargs["_curator_launch"]
+        launches.append({
+            "kwargs": kwargs,
+            "phase": launch.phase,
+            "snapshot": launch.snapshot_dir,
+        })
+        return f"spawn task_id=fake-{len(launches)} pid=0"
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", fake_spawn)
+    return launches
+
+
+def _two_shadow_lessons(pkg):
+    pkg["lessons"].append_lesson(title="lesson one", body="body one", source="shadow")
+    pkg["lessons"].append_lesson(title="lesson two", body="body two", source="shadow")
+
+
+def _batch(pkg):
+    return pkg["db"].get_db().execute("SELECT * FROM curator_batches").fetchone()
+
+
+def test_verify_proposals_only_counts_numbered_proposals(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    proposals = pkg["curator"].verify_proposals
+
+    assert proposals(_PROPOSAL_REPORT).startswith("PROPOSAL 1: REMOVE lesson")
+    assert proposals(_NO_PROPOSAL_REPORT) == ""
+    assert proposals("# report without a block") == ""
+
+
+def test_evaluator_proposals_launch_a_verifier_before_endorsement(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+
+    curator.run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT,
+    )
+    dispatched = curator.run_curator_pass(force=True)
+
+    assert "verify spawn task_id=fake-2" in dispatched
+    assert [launch["phase"] for launch in launches] == ["evaluate", "verify"]
+    verifier = launches[1]
+    prompt = verifier["kwargs"]["prompt"]
+    assert prompt.startswith(curator.CURATOR_PROMPT_PREFIX + "'s VERIFIER phase")
+    assert "<curator_verify_proposals>\nPROPOSAL 1: REMOVE lesson" in prompt
+    assert "lesson_remove" in verifier["kwargs"]["extra_allowed_tools"]
+    assert verifier["snapshot"]
+    assert verifier["kwargs"]["write_origin"] == "curator"
+    assert curator.run_curator_pass(force=True).startswith("curator_pending")
+
+    verifying = _batch(pkg)
+    assert verifying["verify_state"] == "running"
+    verify_name = curator._report_name_for_batch(
+        verifying["pass_id"], 1, 1, phase="verify",
+    )
+    assert verify_name.startswith("VERIFY-")
+    _finish_child(
+        pkg, task_id=verifying["verify_task_id"], report_name=verify_name,
+        content="# verification\n\nCURATOR_VERIFY_COMPLETE\n",
+    )
+
+    assert curator.run_curator_pass(force=True).startswith("endorsed pass_id=")
+    assert _batch(pkg)["verify_state"] == "complete"
+
+
+def test_report_without_proposals_endorses_without_a_verifier(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_NO_PROPOSAL_REPORT,
+    )
+
+    assert pkg["curator"].run_curator_pass(force=True).startswith("endorsed pass_id=")
+    assert len(launches) == 1
+    assert _batch(pkg)["verify_state"] == "none"
+
+
+def test_failed_verifier_retries_then_stops_blocking_the_pass(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT,
+    )
+
+    outcomes = []
+    for _ in range(curator.CURATOR_BATCH_MAX_ATTEMPTS):
+        curator.run_curator_pass(force=True)
+        row = _batch(pkg)
+        _finish_child(
+            pkg, task_id=row["verify_task_id"], report_name="unused.md",
+            content="crashed", return_code=1,
+        )
+        outcomes.append(row["verify_attempts"])
+
+    final = curator.run_curator_pass(force=True)
+
+    assert outcomes == [1, 2, 3]
+    assert final.startswith("endorsed pass_id=")
+    exhausted = _batch(pkg)
+    assert exhausted["verify_state"] == "failed"
+    assert exhausted["verify_failure"] == "child_exit=1"
+    assert len(launches) == 1 + curator.CURATOR_BATCH_MAX_ATTEMPTS
+
+
+def test_verifier_watchdog_continuation_keeps_the_verify_phase(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT,
+    )
+    curator.run_curator_pass(force=True)
+    row = _batch(pkg)
+    evaluator_launch = launches[0]["kwargs"]["_curator_launch"]
+    verify_launch = launches[1]["kwargs"]["_curator_launch"]
+
+    assert evaluator_launch.phase == "evaluate"
+    assert evaluator_launch.verify_batch == 0
+    assert verify_launch.phase == "verify"
+    assert verify_launch.verify_batch == 1
+    assert verify_launch.snapshot_dir
+
+
+def test_report_writer_binds_the_report_kind_to_the_child_phase(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, write_origin="curator", spawned_child="1",
+    )
+    curator = pkg["curator"]
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "pass-9")
+    from threadkeeper._mcp import mcp
+
+    write = mcp._tool_manager._tools["curator_report_write"].fn
+
+    assert write(pass_id="pass-9", content="x", phase="verify") == (
+        "ERR report_write_phase_mismatch"
+    )
+    _bind_curator_writer(pkg, "pass-9")
+    assert write(pass_id="pass-9", content="x").startswith("ok path=")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PHASE", "verify")
+    assert write(pass_id="pass-9", content="x") == "ERR report_write_phase_mismatch"
+    snapshot = pkg["reports_dir"] / "snapshots" / "pass-9"
+    snapshot.mkdir(parents=True)
+    _bind_curator_writer(
+        pkg,
+        "pass-9",
+        phase="verify",
+        verify_batch=1,
+        snapshot_dir=snapshot,
+    )
+    verified = write(pass_id="pass-9", content="CURATOR_VERIFY_COMPLETE", phase="verify")
+    assert verified.startswith(f"ok path={pkg['reports_dir'] / 'VERIFY-pass-9.md'}")
+
+
+def test_new_pass_backfills_legacy_lesson_origins(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    pkg["lessons_path"].write_text(
+        "# thread-keeper lessons\n\n"
+        "<!-- LESSON:BEGIN slug=legacy-one ts=1 source=shadow -->\n## legacy-one\nA\n"
+        "<!-- LESSON:END slug=legacy-one -->\n\n"
+        "<!-- LESSON:BEGIN slug=legacy-two ts=2 source=shadow origin=foreground -->\n"
+        "## legacy-two\nB\n<!-- LESSON:END slug=legacy-two -->\n\n",
+        encoding="utf-8",
+    )
+    _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    origins = {item["slug"]: item["origin"] for item in pkg["lessons"].iter_lessons()}
+    assert origins == {"legacy-one": "shadow_review", "legacy-two": "shadow_review"}
+    event = pkg["db"].get_db().execute(
+        "SELECT summary FROM events WHERE kind='lesson_origin_backfill'"
+    ).fetchone()
+    assert event["summary"] == "shadow_review=2"
+
+
+def test_new_pass_archives_long_unused_loop_skills(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    skill_dir = pkg["skills_dir"] / "unused-loop-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: unused-loop-skill\ndescription: Use when testing aging.\n---\n\n# x\n",
+        encoding="utf-8",
+    )
+    conn = pkg["db"].get_db()
+    old = int(time.time()) - 400 * 86400
+    conn.execute(
+        "INSERT INTO skill_usage (name, created_at, created_by_origin, "
+        "last_used_at, state, tier, stale_since) VALUES "
+        "('unused-loop-skill', ?, 'shadow_review', ?, 'stale', 'hypothesis', ?)",
+        (old, old, old),
+    )
+    conn.commit()
+    _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    row = conn.execute(
+        "SELECT state FROM skill_usage WHERE name='unused-loop-skill'"
+    ).fetchone()
+    assert row["state"] == "archived"
+    assert not skill_dir.exists()
+
+
+def test_lesson_only_batch_skips_web_research(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2", web_research="1")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    assert [launch["kwargs"]["role"] for launch in launches] == ["curator"]
+    prompt = launches[0]["kwargs"]["prompt"]
+    assert "NO WEB RESEARCH FOR THIS BATCH" in prompt
+    assert "DESTRUCTIVE MODE ENABLED" in prompt
+
+
+
+def test_task_bound_report_authority_survives_a_long_pass(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    batch = _batch(pkg)
+    for tick in range(250):
+        curator._record_curator_pass(conn, tick, f"curator_pending tick={tick}")
+
+    launch = launches[0]["kwargs"]["_curator_launch"]
+    assert launch.pass_id == batch["pass_id"]
+    assert launch.authority_name() == batch["report_name"]
+
+
+def test_research_failed_batch_never_reaches_the_verifier(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    conn.execute("UPDATE curator_batches SET eval_mode='advisory'")
+    conn.commit()
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT,
+    )
+
+    assert curator.run_curator_pass(force=True).startswith("endorsed pass_id=")
+    assert _batch(pkg)["verify_state"] == "none"
+    assert len(launches) == 1
+
+
+def test_evaluator_launch_records_its_mode(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    assert _batch(pkg)["eval_mode"] == "destructive"
+
+
+def test_verifier_launch_writes_its_scope(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    launches = _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT.replace("PROPOSAL 1:", "**Proposal 1** —"),
+    )
+
+    curator.run_curator_pass(force=True)
+
+    snapshot = Path(launches[1]["snapshot"])
+    scope = json.loads((snapshot / "verify_scope" / "batch-001.json").read_text())
+    assert "lesson-one" in scope["keys"]
+    assert "lesson-two" in scope["keys"]
+    assert "<curator_inventory_data>" in launches[1]["kwargs"]["prompt"]
+
+
+def test_unpreparable_verifier_uses_an_attempt_instead_of_stalling(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+    curator = pkg["curator"]
+    curator.run_curator_pass(force=True)
+    evaluator = _batch(pkg)
+    _finish_child(
+        pkg, task_id=evaluator["task_id"], report_name=evaluator["report_name"],
+        content=_PROPOSAL_REPORT,
+    )
+    conn = pkg["db"].get_db()
+    curator._refresh_pass_completion(conn, evaluator["pass_id"], int(time.time()))
+    assert _batch(pkg)["verify_state"] == "pending"
+    (pkg["reports_dir"] / evaluator["report_name"]).write_text("tampered", encoding="utf-8")
+
+    curator.run_curator_pass(force=True)
+
+    row = _batch(pkg)
+    assert row["verify_state"] == "failed"
+    assert row["verify_attempts"] == 1
+    assert row["verify_failure"].startswith("verify_report_unprovenanced")
+
+
+def test_curator_phase_reaches_child_mcp_servers():
+    from threadkeeper.adapters.base import CHILD_MCP_ENV_KEYS
+
+    assert "THREADKEEPER_CURATOR_PHASE" in CHILD_MCP_ENV_KEYS
+    assert "THREADKEEPER_CURATOR_VERIFY_BATCH" in CHILD_MCP_ENV_KEYS
+
+
+def test_pinned_lessons_never_count_toward_a_promotion(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="shadow_review")
+    for title in (
+        "curator snapshot protects lesson rollback",
+        "curator snapshot keeps lesson evidence",
+        "curator snapshot restores lesson recovery",
+    ):
+        pkg["lessons"].append_lesson(
+            title=title, body="snapshot journal procedure", source="shadow",
+        )
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO lesson_usage (slug, created_at, pinned) "
+        "VALUES ('curator-snapshot-keeps-lesson-evidence', 1, 1)"
+    )
+    conn.commit()
+
+    detection = pkg["curator"]._analyze_lesson_promotion_candidates(
+        list(pkg["lessons"].iter_lessons()),
+        pkg["lessons"].lesson_usage_map(conn),
+    )
+
+    assert detection.candidates == ()
+    assert dict(detection.rejected_by_reason)["pinned_member"] == 1

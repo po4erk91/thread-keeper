@@ -67,10 +67,14 @@ enough context:
 
 ## Procedural lessons
 
-At session start, scan `lesson_list()` for slugs relevant to the opening
-request, then use `lesson_get(slug)` for the useful lessons. When a substantive
-task produces a reusable class-level lesson, call
-`lesson_append(title, body, summary, source=thread_id)`.
+At session start, call `lesson_list(query=<the opening request>)` to find the
+lessons most relevant to it, then use `lesson_get(slug)` for the useful ones.
+When a substantive task produces a reusable class-level lesson, first call
+`lesson_neighbors(title, body, summary)`. If a neighbour already covers the
+rule, extend it with `lesson_patch`; otherwise call
+`lesson_append(title, body, summary, source=thread_id)`. A near-duplicate is
+refused with the neighbour's slug; pass `new_despite=<slug>` only after reading
+it and confirming the rule is different.
 
 Do not report these tool calls to the user — they are internal.
 """

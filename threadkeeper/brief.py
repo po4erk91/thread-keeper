@@ -2,7 +2,7 @@
 
 `render_brief` builds the multi-section ctx string returned by the
 `brief()` MCP tool: ctx header, core_memory, inbox, tasks_running,
-live_peers, open/idle/closed threads, style, verbatim, query-relevant
+live_peers, worktree_safety, open/idle/closed threads, style, verbatim, query-relevant
 hits, weak_spots, concepts, distill_pending, extract_pending,
 pickup_top, evolve_pending, and the trailing user-facing reminder.
 
@@ -424,6 +424,21 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                     f"last={fmt_age(now - d['last_at'])}_ago"
                 )
 
+    # ── worktree_safety ──────────────────────────────────────────────────
+    # Concurrent sessions can otherwise stage, commit, or push each other's
+    # work from a shared checkout. The spawn path must give every session its
+    # own worktree; until that is true, make the boundary explicit in the
+    # session-start snapshot where git actions are planned.
+    if peers_n and full:
+        out.append("")
+        out.append(f"worktree_safety peers={peers_n}")
+        out.append(
+            "  → concurrent sessions detected. BEFORE commit/push: verify "
+            "this session has its own git worktree. If it does not, do NOT "
+            "stage broadly, commit, or push — move the work to an isolated "
+            "worktree first"
+        )
+
     # ── open ──────────────────────────────────────────────────────────────
     open_t = conn.execute(
         f"SELECT * FROM threads WHERE state='active' AND {thread_filter} "
@@ -613,6 +628,43 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             "  lesson_patch(slug, old_string, new_string): replace one "
             "unique lesson-body substring without rewriting the full lesson"
         )
+
+    # ── consulted_lessons (this session) ──────────────────────────────────
+    # Lessons keep their access telemetry in lesson_usage rather than events:
+    # lesson_list records a view and lesson_get records a full recall. Surface
+    # the lessons touched since this session started so a later brief can show
+    # which procedural memory was actually consulted, including its durable
+    # read/view counts and the most recent full recall.
+    try:
+        session = conn.execute(
+            "SELECT started_at FROM sessions WHERE id=?",
+            (identity._session_id,),
+        ).fetchone()
+        session_started_at = session["started_at"] if session else now
+        consulted_lessons = conn.execute(
+            "SELECT slug, last_used_at, last_viewed_at, use_count, view_count "
+            "FROM lesson_usage "
+            "WHERE last_used_at >= ? OR last_viewed_at >= ? "
+            "ORDER BY MAX(COALESCE(last_used_at, 0), "
+            "             COALESCE(last_viewed_at, 0)) DESC, slug ASC",
+            (session_started_at, session_started_at),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        consulted_lessons = []
+    if consulted_lessons and full:
+        out.append("")
+        out.append("consulted_lessons")
+        for lesson in consulted_lessons:
+            parts = []
+            if lesson["view_count"]:
+                parts.append(f"viewed×{lesson['view_count']}")
+            if lesson["use_count"]:
+                parts.append(f"used×{lesson['use_count']}")
+            if lesson["last_used_at"]:
+                parts.append(
+                    f"last_recalled={fmt_age(now - lesson['last_used_at'])}_ago"
+                )
+            out.append(f"  {lesson['slug']}: {' '.join(parts)}")
 
     # ── consulted_skills (this session) ───────────────────────────────────
     # Surface which skills the agent actually invoked / viewed in the

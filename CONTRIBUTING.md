@@ -90,7 +90,10 @@ On macOS, combining `-n` with `--forked` also needs
 SQLite schema changes live in `threadkeeper/db.py` and must be versioned with
 `CURRENT_SCHEMA_VERSION`.
 
-1. Add new baseline tables/indexes to `SCHEMA` for fresh installs.
+1. Add new baseline tables/indexes/triggers to `SCHEMA`. Every `SCHEMA`
+   statement must be `CREATE ... IF NOT EXISTS`: bootstrap replays it on
+   current-version databases too, so a new table reaches existing installs
+   without a version bump.
 2. Add upgrade DDL/data backfills to the version-gated migration path, then
    bump `CURRENT_SCHEMA_VERSION`.
 3. Keep migrations idempotent by intent. For legacy `ALTER TABLE ... ADD
