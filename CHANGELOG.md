@@ -7,6 +7,8 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.20.0 — 2026-10-22
+
 - **Fixed: the lesson instructions only name tools agents can call.** The
   memory-admin profile now includes `lesson_neighbors` and `lesson_patch`, and
   Codex auto-approves the read-only `lesson_neighbors`.
