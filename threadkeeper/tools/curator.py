@@ -53,11 +53,16 @@ from ..curator import (
     lesson_promotion_telemetry,
     curator_pass_status,
     CURATOR_REPORT_COMPLETE_MARKER,
+    curator_report_name,
     record_merge_verdict,
     run_curator_pass,
 )
 from ..curator_snapshots import (
+    EVALUATE_PHASE,
+    PHASE_ENV,
+    VERIFY_PHASE,
     current_pass_id,
+    verifier_scope_refusal,
     restore_lesson,
     restore_skill,
     snapshots_root,
@@ -438,6 +443,7 @@ def curator_report_write(
     content: str = "",
     batch_index: int = 0,
     batch_total: int = 0,
+    phase: str = "",
 ) -> str:
     """Atomically write one Curator report inside the configured report dir.
 
@@ -450,6 +456,8 @@ def curator_report_write(
     plan before mutation and then add actual validation/rollback results. Only
     a parent-authorized spawned Curator carrying the matching pass ID may write
     a report; the final content hash is recorded for the report applier.
+    The verifier passes ``phase='verify'`` and writes its own ``VERIFY-*``
+    report; only a child launched in the verify phase may do so.
     """
     supplied_id = pass_id.strip()
     if supplied_id and not _PASS_ID_RE.fullmatch(supplied_id):
@@ -474,15 +482,20 @@ def curator_report_write(
         return "ERR report_write_pass_mismatch"
     if supplied_id and supplied_id != clean_id:
         return "ERR report_write_pass_mismatch"
+    child_phase = (
+        VERIFY_PHASE
+        if os.environ.get(PHASE_ENV, "").strip() == VERIFY_PHASE
+        else EVALUATE_PHASE
+    )
+    requested_phase = phase.strip().lower()
+    if requested_phase != (VERIFY_PHASE if child_phase == VERIFY_PHASE else ""):
+        return "ERR report_write_phase_mismatch"
     conn = get_db()
     _ensure_session(conn)
     CURATOR_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    if batch_index:
-        report_name = (
-            f"REPORT-{clean_id}-batch-{batch_index:03d}-of-{batch_total:03d}.md"
-        )
-    else:
-        report_name = f"REPORT-{clean_id}.md"
+    report_name = curator_report_name(
+        clean_id, batch_index, batch_total, phase=child_phase,
+    )
     if not _curator_writer_owns_launch(
         conn,
         child_cid=_detect_self_cid() or "",
@@ -559,6 +572,24 @@ def curator_restore(
     skill_name = skill_name.strip()
     if bool(lesson_slug) == bool(skill_name):
         return "ERR pass exactly one of lesson_slug or skill_name"
+    if refusal := _curator_restore_refusal(conn, lesson_slug, skill_name):
+        return refusal
     if lesson_slug:
         return restore_lesson(clean_id, lesson_slug, conn)
     return restore_skill(clean_id, skill_name, conn)
+
+
+def _curator_restore_refusal(conn, lesson_slug: str, skill_name: str) -> str:
+    """A restore overwrites the live entry, so curator phases get the same
+    limits as any other change to it."""
+    if skill_name:
+        from .skills import curator_skill_refusal
+
+        return curator_skill_refusal(skill_name, "restore")
+    from ..lessons import iter_lessons
+    from .lessons import _curator_lesson_refusal
+
+    current = next((it for it in iter_lessons() if it["slug"] == lesson_slug), None)
+    if current is None:
+        return verifier_scope_refusal(lesson_slug)
+    return _curator_lesson_refusal(conn, current, "curator_restore")

@@ -404,8 +404,8 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert calls["cwd"] == str(pkg["ea"]._repo_root())
     assert "Do not open a thread" in calls["append_system"]
     tools = calls["extra_allowed_tools"]
-    assert "lesson_remove" in tools
-    assert "lesson_append" in tools
+    assert "lesson_remove" not in tools
+    assert "lesson_patch" in tools
     assert "skill_manage" in tools
     assert "evolve_mark_curator_report_applied" in tools
     assert "Bash" not in tools and "Edit" not in tools
@@ -1679,30 +1679,45 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
 
 
 @pytest.mark.parametrize(
-    ("pr_state", "merged_at", "backup_prefix", "recovery_summary"),
+    (
+        "pr_state", "merged_at", "backup_prefix", "recovery_summary",
+        "repair_left_unstaged_edit",
+    ),
     [
         (
             "MERGED",
             "2026-07-12T10:28:56Z",
             "stale-merge-pr-7",
             "recovered_stale_merge pr=#7",
+            False,
         ),
         (
             "OPEN",
             None,
             "interrupted-open-pr-merge-pr-7",
             "recovered_open_pr_merge pr=#7",
+            False,
+        ),
+        (
+            "OPEN",
+            None,
+            "interrupted-open-pr-merge-pr-7",
+            "recovered_open_pr_merge pr=#7",
+            True,
         ),
     ],
 )
 def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
     tmp_path, monkeypatch, pr_state, merged_at, backup_prefix, recovery_summary,
+    repair_left_unstaged_edit,
 ):
     """A killed repair child must not leave the whole backlog blocked forever.
 
     Recovery is restricted to the auto-managed checkout and archives the
     tracked merge diff before returning the tree to the fresh configured base.
-    Open PR merges are aborted for a clean retry; merged PR leftovers are stale.
+    Open PR merges are reset for a clean retry; merged PR leftovers are stale.
+    A child killed after staging a resolution and editing it again leaves
+    unstaged changes on a merge-touched path, which `git merge --abort` refuses.
     """
     pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     conn = pkg["db"].get_db()
@@ -1757,6 +1772,10 @@ def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
     conflicted = git("merge", "origin/main", check=False)
     assert conflicted.returncode != 0
     assert git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+    if repair_left_unstaged_edit:
+        (repo / "shared.txt").write_text("resolved\n", encoding="utf-8")
+        git("add", "shared.txt")
+        (repo / "shared.txt").write_text("resolved again\n", encoding="utf-8")
 
     monkeypatch.setattr(
         pkg["ea"], "_prs_for_head_branch",
@@ -1786,7 +1805,10 @@ def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
         (tmp_path / "evolve-recovery").glob(f"{backup_prefix}-*.patch")
     )
     assert len(backups) == 1
-    assert "diff --git" in backups[0].read_text(encoding="utf-8")
+    backup_text = backups[0].read_text(encoding="utf-8")
+    assert "diff --git" in backup_text
+    if repair_left_unstaged_edit:
+        assert "+resolved again" in backup_text
     assert backups[0].stat().st_mode & 0o777 == 0o600
     row = conn.execute(
         "SELECT target, summary FROM events WHERE kind=? ORDER BY id DESC",

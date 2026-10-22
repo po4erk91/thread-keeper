@@ -271,11 +271,14 @@ struct LearningAgentDefinition: Decodable, Identifiable {
     let cliInherited: Bool
     let modelInherited: Bool
     let effortInherited: Bool
+    let routed: Bool?
+    let routedAt: Int?
 
     var id: String { role }
 
     enum CodingKeys: String, CodingKey {
-        case role, name, description, reads, writes, impact, cli, model, effort
+        case role, name, description, reads, writes, impact, cli, model, effort, routed
+        case routedAt = "routed_at"
         case intervalKey = "interval_key"
         case cliSource = "cli_source"
         case modelSource = "model_source"
@@ -692,6 +695,11 @@ final class EnvSettingsStore: ObservableObject {
         (catalog?.clis ?? []).map { ChoiceOption($0.id, label: $0.name) }
     }
 
+    func roleCLIChoices(for role: LearningAgentDefinition) -> [ChoiceOption] {
+        guard role.role != "model_router" else { return cliChoices }
+        return [ChoiceOption("auto", label: "Auto (model router)")] + cliChoices
+    }
+
     var allDefinitions: [EnvSettingDefinition] {
         var definitions = baseEnvSettingDefinitions
         let clis = catalog?.clis ?? []
@@ -748,9 +756,9 @@ final class EnvSettingsStore: ObservableObject {
                 group: "Learning Loop Agents",
                 key: "THREADKEEPER_SPAWN__LOOP__\(token)",
                 title: "\(role.name) CLI",
-                detail: "Default inherits the global CLI.",
+                detail: "Default inherits the global CLI. Auto lets the model router choose.",
                 defaultValue: role.cli.isEmpty ? activeCLI : role.cli,
-                kind: .choice(choices)
+                kind: .choice(roleCLIChoices(for: role))
             ))
             let roleCLI = draftCLI(for: role)
             let models = catalog?.clis.first(where: { $0.id == roleCLI })?.models ?? []
@@ -2830,6 +2838,7 @@ struct LearningAgentCard: View {
     private var token: String { role.role.uppercased() }
     private var roleModelKey: String { "THREADKEEPER_SPAWN__MODEL__\(token)" }
     private var draftCLI: String { envStore.draftCLI(for: role) }
+    private var isRouted: Bool { draftCLI == "auto" }
     private var cli: CLICatalogEntry? { envStore.cli(for: draftCLI) }
     private var runtimeCLI: CLICatalogEntry? { envStore.cli(for: role.cli) }
     private var runtimeCLIText: String {
@@ -2873,16 +2882,20 @@ struct LearningAgentCard: View {
             if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__LOOP__\(token)") {
                 EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
             }
-            if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__MODEL__\(token)") {
-                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
-            }
-            if cli?.effortMode == "independent",
-               let definition = envStore.definition(for: "THREADKEEPER_SPAWN__EFFORT__\(token)") {
-                EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
-            } else if let cli, !cli.effortNote.isEmpty {
-                Label(cli.effortNote, systemImage: "slider.horizontal.below.square.filled.and.square")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            if isRouted {
+                RouterAssignmentLine(role: role)
+            } else {
+                if let definition = envStore.definition(for: "THREADKEEPER_SPAWN__MODEL__\(token)") {
+                    EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+                }
+                if cli?.effortMode == "independent",
+                   let definition = envStore.definition(for: "THREADKEEPER_SPAWN__EFFORT__\(token)") {
+                    EnvSettingRow(definition: definition, envStore: envStore, showKey: false)
+                } else if let cli, !cli.effortNote.isEmpty {
+                    Label(cli.effortNote, systemImage: "slider.horizontal.below.square.filled.and.square")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
             if !role.intervalKey.isEmpty,
                let schedule = envStore.definition(for: role.intervalKey) {
@@ -2975,6 +2988,28 @@ struct LearningAgentCard: View {
         .settingsCardSurface()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(role.name) Learning Loop agent")
+    }
+}
+
+struct RouterAssignmentLine: View {
+    let role: LearningAgentDefinition
+
+    private var sinceText: String {
+        guard let routedAt = role.routedAt, routedAt > 0 else { return "" }
+        let date = Date(timeIntervalSince1970: TimeInterval(routedAt))
+        return " (since \(date.formatted(date: .abbreviated, time: .omitted)))"
+    }
+
+    private var text: String {
+        guard role.routed == true else { return "No decision yet — follows active CLI" }
+        let effort = role.effort.isEmpty ? "" : " · \(role.effort)"
+        return "Model router: \(role.cli) · \(role.model)\(effort)\(sinceText)"
+    }
+
+    var body: some View {
+        Label(text, systemImage: "arrow.triangle.branch")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -3104,6 +3139,7 @@ struct ImpactBadge: View {
             case "memory_write": return ("Memory write", .orange)
             case "external_write": return ("GitHub write", .purple)
             case "code_write": return ("Code & PR write", .red)
+            case "config_write": return ("Routing write", .teal)
             default: return (impact, .secondary)
             }
         }()

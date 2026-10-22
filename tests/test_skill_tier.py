@@ -316,3 +316,140 @@ def test_skill_list_shows_tier(tmp_path, monkeypatch):
     txt = _tool(pkg, "skill_list")()
     assert "tier=validated" in txt
     assert "fg_uses=5" in txt
+
+
+def test_curator_ages_every_loop_origin_and_ignores_maintenance_activity(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _seed_skill(pkg, "shadow-made")
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    old = now - 40 * 86400
+    conn.execute(
+        "UPDATE skill_usage SET created_by_origin='shadow_review', tier='observed', "
+        "created_at=?, last_used_at=?, last_viewed_at=?, last_patched_at=? "
+        "WHERE name='shadow-made'",
+        (old, old, old, now),
+    )
+    conn.commit()
+
+    result = _tool(pkg, "curator_run")(dry_run=True)
+
+    assert "shadow-made: active → stale" in result
+
+
+def test_archiving_a_skill_removes_its_mirrors(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _seed_skill(pkg, "forgotten-loop-skill")
+    _force_agent_origin(pkg, "forgotten-loop-skill", last_used_offset_days=200)
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET state='stale', stale_since=? "
+        "WHERE name='forgotten-loop-skill'",
+        (int(time.time()) - 100 * 86400,),
+    )
+    conn.commit()
+    import threadkeeper.tools.skills as skills_mod
+
+    unmirrored: list[str] = []
+    monkeypatch.setattr(skills_mod, "_unmirror_skill", unmirrored.append)
+
+    result = _tool(pkg, "curator_run")(dry_run=False)
+
+    assert "forgotten-loop-skill: stale → archived" in result
+    assert unmirrored == ["forgotten-loop-skill"]
+    state = conn.execute(
+        "SELECT state FROM skill_usage WHERE name='forgotten-loop-skill'"
+    ).fetchone()["state"]
+    assert state == "archived"
+
+
+def _aged_loop_skill(pkg, name, *, idle_days):
+    _seed_skill(pkg, name)
+    _force_agent_origin(pkg, name, last_used_offset_days=idle_days)
+
+
+def test_long_idle_skill_is_not_archived_on_the_run_after_it_goes_stale(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _aged_loop_skill(pkg, "idle-skill", idle_days=200)
+    cur = _tool(pkg, "curator_run")
+
+    first = cur(dry_run=False)
+    second = cur(dry_run=False)
+
+    assert "idle-skill: active → stale" in first
+    assert second == "nothing_to_do"
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT state, stale_since FROM skill_usage WHERE name='idle-skill'"
+    ).fetchone()
+    assert row["state"] == "stale" and row["stale_since"]
+
+
+def test_skill_archives_after_dwelling_in_stale(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _aged_loop_skill(pkg, "dwelled-skill", idle_days=200)
+    cur = _tool(pkg, "curator_run")
+    cur(dry_run=False)
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET stale_since=? WHERE name='dwelled-skill'",
+        (int(time.time()) - 100 * 86400,),
+    )
+    conn.commit()
+
+    assert "dwelled-skill: stale → archived" in cur(dry_run=False)
+
+
+def test_renewed_use_moves_a_stale_skill_back_to_active(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _aged_loop_skill(pkg, "revived-skill", idle_days=200)
+    cur = _tool(pkg, "curator_run")
+    cur(dry_run=False)
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET last_used_at=? WHERE name='revived-skill'",
+        (int(time.time()),),
+    )
+    conn.commit()
+
+    assert "revived-skill: stale → active" in cur(dry_run=False)
+    row = conn.execute(
+        "SELECT state, stale_since FROM skill_usage WHERE name='revived-skill'"
+    ).fetchone()
+    assert (row["state"], row["stale_since"]) == ("active", None)
+
+
+def test_recreating_an_archived_skill_starts_a_fresh_lifecycle(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _aged_loop_skill(pkg, "phoenix-skill", idle_days=200)
+    conn = pkg["db"].get_db()
+    conn.execute("UPDATE skill_usage SET state='archived' WHERE name='phoenix-skill'")
+    conn.commit()
+    import shutil
+
+    shutil.rmtree(pkg["skills_root"] / "phoenix-skill")
+
+    _seed_skill(pkg, "phoenix-skill")
+
+    row = conn.execute(
+        "SELECT state, created_by_origin, created_at FROM skill_usage WHERE name='phoenix-skill'"
+    ).fetchone()
+    assert row["state"] == "active"
+    assert row["created_by_origin"] == "foreground"
+    assert row["created_at"] > int(time.time()) - 60
+
+
+def test_loop_views_do_not_count_as_skill_activity(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    _seed_skill(pkg, "viewed-skill")
+    import threadkeeper.tools.skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "WRITE_ORIGIN", "shadow_review")
+    _tool(pkg, "skill_record")(name="viewed-skill", kind="view")
+
+    row = pkg["db"].get_db().execute(
+        "SELECT view_count, last_viewed_at FROM skill_usage WHERE name='viewed-skill'"
+    ).fetchone()
+    assert (row["view_count"], row["last_viewed_at"]) == (0, None)

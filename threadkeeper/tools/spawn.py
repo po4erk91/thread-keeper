@@ -63,6 +63,8 @@ _EVOLVE_BYPASS_CAPABILITY = object()
 _CURATOR_CAPABILITY_ENV = frozenset({
     "THREADKEEPER_CURATOR_PASS_ID",
     "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_CURATOR_PHASE",
+    "THREADKEEPER_CURATOR_VERIFY_BATCH",
 })
 
 # Default allowlist for every spawned child: thread-keeper tools so the child
@@ -839,6 +841,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 _curator_launch.batch_total,
                 role=_curator_launch.role,
                 write_origin=_curator_launch.write_origin,
+                phase=_curator_launch.phase,
+                verify_batch=_curator_launch.verify_batch,
             )
         except (TypeError, ValueError):
             return "ERR invalid_curator_launch"
@@ -898,6 +902,11 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         if curator_launch.snapshot_dir is not None:
             child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"] = str(
                 curator_launch.snapshot_dir
+            )
+        child_env["THREADKEEPER_CURATOR_PHASE"] = curator_launch.phase
+        if curator_launch.verify_batch:
+            child_env["THREADKEEPER_CURATOR_VERIFY_BATCH"] = str(
+                curator_launch.verify_batch
             )
     inherited_wrapper_dir = child_env.pop("THREADKEEPER_GH_WRAPPER_DIR", "")
     child_env.pop("THREADKEEPER_REAL_GH", None)
@@ -1163,6 +1172,16 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 env_pairs.append(
                     ("THREADKEEPER_CURATOR_SNAPSHOT_DIR",
                      child_env["THREADKEEPER_CURATOR_SNAPSHOT_DIR"])
+                )
+            if "THREADKEEPER_CURATOR_PHASE" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_PHASE",
+                     child_env["THREADKEEPER_CURATOR_PHASE"])
+                )
+            if "THREADKEEPER_CURATOR_VERIFY_BATCH" in child_env:
+                env_pairs.append(
+                    ("THREADKEEPER_CURATOR_VERIFY_BATCH",
+                     child_env["THREADKEEPER_CURATOR_VERIFY_BATCH"])
                 )
             if _permission_mode_is_bypass(permission_mode):
                 env_pairs.extend([

@@ -468,6 +468,21 @@ def _parse_spawned_task_id(result: str) -> Optional[str]:
     return None
 
 
+# Roles whose loop re-runs a failed child itself (with the pass identity a
+# blind continuation would lack); a watchdog continuation would double-spawn.
+_SELF_RETRYING_ROLES = frozenset({"model_router"})
+
+
+def _record_retry_skipped(conn, task_id: str, summary: str) -> None:
+    try:
+        from .identity import _emit, _ensure_session
+        _ensure_session(conn)
+        _emit(conn, "spawn_timeout_retry_skipped", target=task_id, summary=summary)
+        conn.commit()
+    except Exception:
+        pass
+
+
 def _respawn_timed_out(conn, row, age: int) -> None:
     """Immediately re-launch a watchdog-killed task with continuation context.
 
@@ -477,34 +492,23 @@ def _respawn_timed_out(conn, row, age: int) -> None:
     infinite kill/restart loop on pathological prompts.
     """
     if SPAWN_TIMEOUT_RETRY_LIMIT <= 0:
-        try:
-            from .identity import _emit, _ensure_session
-            _ensure_session(conn)
-            _emit(conn, "spawn_timeout_retry_skipped", target=row["id"],
-                  summary="disabled limit=0")
-            conn.commit()
-        except Exception:
-            pass
+        _record_retry_skipped(conn, row["id"], "disabled limit=0")
+        return
+
+    role = str(_row_get(row, "role", "") or "")
+    if role in _SELF_RETRYING_ROLES:
+        _record_retry_skipped(conn, row["id"], f"loop_retries_itself role={role}")
         return
 
     current_attempt = int(_row_get(row, "retry_attempt", 0) or 0)
     next_attempt = current_attempt + 1
     if next_attempt > SPAWN_TIMEOUT_RETRY_LIMIT:
-        try:
-            from .identity import _emit, _ensure_session
-            _ensure_session(conn)
-            _emit(
-                conn,
-                "spawn_timeout_retry_skipped",
-                target=row["id"],
-                summary=(
-                    f"attempts_exhausted attempt={current_attempt} "
-                    f"limit={SPAWN_TIMEOUT_RETRY_LIMIT}"
-                ),
-            )
-            conn.commit()
-        except Exception:
-            pass
+        _record_retry_skipped(
+            conn,
+            row["id"],
+            f"attempts_exhausted attempt={current_attempt} "
+            f"limit={SPAWN_TIMEOUT_RETRY_LIMIT}",
+        )
         return
 
     if SPAWN_TIMEOUT_RETRY_DELAY_S > 0:
@@ -512,9 +516,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
 
     root_id = _retry_chain_root(conn, row)
     prompt = _continuation_prompt(conn, row, age, next_attempt, root_id)
-    curator_launch = None
-    role = str(_row_get(row, "role", "") or "")
     write_origin = str(_row_get(row, "write_origin", "") or "")
+    curator_launch = None
     if (role, write_origin) in {
         ("curator", "curator"),
         ("curator_researcher", "curator_research"),
@@ -523,17 +526,11 @@ def _respawn_timed_out(conn, row, age: int) -> None:
 
         curator_launch = _curator_launch_for_continuation(conn, str(row["id"]))
         if curator_launch is None:
-            try:
-                from .identity import _emit
-                _emit(
-                    conn,
-                    "spawn_timeout_retry_skipped",
-                    target=row["id"],
-                    summary="curator_launch_authorization_missing",
-                )
-                conn.commit()
-            except Exception:
-                pass
+            _record_retry_skipped(
+                conn,
+                row["id"],
+                "curator_launch_authorization_missing",
+            )
             return
     try:
         from .tools.spawn import _retry_bypass_capability, _spawn_impl
