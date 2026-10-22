@@ -10,10 +10,15 @@ keys (double-underscore), dict keys lowercased:
     THREADKEEPER_SPAWN__MODEL__CLAUDE=sonnet            # cli or role -> model
 
 Agent resolution per role (highest first):
-    spawn.loop[role] -> spawn.default -> active CLI -> "claude"
+    spawn.loop[role] -> ROLE_DEFAULTS[role] -> spawn.default -> active CLI -> "claude"
 `"auto"` in loop/default explicitly defers to the active CLI.
 
-Model and effort resolution: role override -> CLI default -> "".
+Model and effort resolution: role override -> role default (same CLI only)
+-> CLI default -> "".
+
+A role whose loop value is `auto` first uses the model router's latest valid
+decision (`model_routes.active_route`); all three values then come from that
+decision. Without one, `auto` keeps the active-CLI meaning.
 
 Roles map to LLM-backed spawn() call-sites: shadow_observer, archivist,
 candidate_reviewer, curator, dialectic_validator, probe_runner,
@@ -29,7 +34,7 @@ import re
 from typing import Optional
 
 from . import config
-from .agent_metadata import AGENT_ROLE_NAMES
+from .agent_metadata import AGENT_ROLE_NAMES, ROUTER_ROLE
 
 # A model name that clearly belongs to Anthropic's Claude family. Used only to
 # warn when such a model is routed to a non-Claude CLI (e.g. `opus` on codex),
@@ -88,6 +93,13 @@ EFFORT_OPTIONS = {
     "antigravity": (),
 }
 
+# Code-level defaults for roles whose right model differs from the CLI default.
+# Model and effort apply only while the role still resolves to `cli`, so
+# pinning another CLI never inherits a model that CLI would reject.
+ROLE_DEFAULTS: dict[str, dict[str, str]] = {
+    ROUTER_ROLE: {"cli": "claude", "model": "opus", "effort": "max"},
+}
+
 
 def _spawn():
     """Live read of spawn settings (re-read each call so tests that reload
@@ -102,6 +114,46 @@ def _norm(v) -> str:
 def _norm_cli(v) -> str:
     cli = _norm(v)
     return CLI_ALIASES.get(cli, cli)
+
+
+def _role_cli_unset(role: str) -> bool:
+    return not _norm(_spawn().loop.get(_norm(role)))
+
+
+def _role_default(role: str, cli: str, field: str) -> str:
+    default = ROLE_DEFAULTS.get(_norm(role))
+    if default is None or default["cli"] != _norm_cli(cli):
+        return ""
+    return default[field]
+
+
+def roles_on_auto() -> list[str]:
+    """Agent roles whose CLI is set to `auto`, excluding the router itself."""
+    loop = _spawn().loop
+    return [
+        role for role in SUMMARY_ROLES
+        if role != ROUTER_ROLE and _norm(loop.get(role)) == "auto"
+    ]
+
+
+def route_for(role: str):
+    """The model router's decision for a role set to `auto`, or None."""
+    role_key = _norm(role)
+    if role_key == ROUTER_ROLE or _norm(_spawn().loop.get(role_key)) != "auto":
+        return None
+    from .model_routes import active_route
+
+    return active_route(role_key)
+
+
+def _routed_details(role_key: str, route) -> dict[str, str]:
+    source = "model router"
+    return {
+        "role": role_key,
+        "cli": route.cli, "cli_source": source, "cli_source_key": "",
+        "model": route.model, "model_source": source, "model_source_key": "",
+        "effort": route.effort, "effort_source": source, "effort_source_key": "",
+    }
 
 
 def _top_level_spawn_overrides(
@@ -183,12 +235,19 @@ def _process_override_key(*keys: str) -> str:
 
 def resolve_agent(role: str, active_cli: Optional[str] = None) -> str:
     """Which CLI runs the spawned child for this role. Priority:
-    spawn.loop[role] -> spawn.default -> active CLI -> 'claude'.
-    'auto' in loop/default defers to the active CLI."""
+    model-router route (role on auto) -> spawn.loop[role] -> role default
+    -> spawn.default -> active CLI -> 'claude'.
+    'auto' without a route defers to the active CLI."""
+    route = route_for(role)
+    if route is not None:
+        return route.cli
     sp = _spawn()
-    cli = _norm_cli(sp.loop.get((role or "").lower()))
+    role_key = _norm(role)
+    cli = _norm_cli(sp.loop.get(role_key))
     if cli and cli != "auto" and cli in SUPPORTED_CLIS:
         return cli
+    if _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        return ROLE_DEFAULTS[role_key]["cli"]
     default = _norm_cli(sp.default)
     if default and default != "auto" and default in SUPPORTED_CLIS:
         return default
@@ -202,63 +261,72 @@ def agent_cli_is_dynamic(role: str, active_cli: Optional[str] = None) -> bool:
     """Whether routing still depends on the host CLI selected at spawn time."""
     if _norm_cli(active_cli) in SUPPORTED_CLIS:
         return False
-    sp = _spawn()
-    role_cli = _norm_cli(sp.loop.get(_norm(role)))
-    if role_cli in SUPPORTED_CLIS:
+    if route_for(role) is not None:
         return False
-    default = _norm_cli(sp.default)
-    return default not in SUPPORTED_CLIS
+    sp = _spawn()
+    role_key = _norm(role)
+    if _norm_cli(sp.loop.get(role_key)) in SUPPORTED_CLIS:
+        return False
+    if _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        return False
+    return _norm_cli(sp.default) not in SUPPORTED_CLIS
+
+
+def _cli_value_keys(cli: str) -> list[str]:
+    keys = [_norm_cli(cli), _norm(cli)]
+    if _norm_cli(cli) == "antigravity":
+        keys.append("agy")
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def _role_value(values: dict, cli: str, role: str, field: str) -> str:
+    """Route (role on auto, same CLI) -> role pin -> role default."""
+    route = route_for(role)
+    if route is not None and route.cli == _norm_cli(cli):
+        return getattr(route, field)
+    pinned = values.get(role.lower())
+    if isinstance(pinned, str) and pinned.strip():
+        return pinned.strip()
+    return _role_default(role, cli, field)
+
+
+def _configured_value(values: dict, cli: str, role: str, field: str) -> str:
+    if role:
+        role_value = _role_value(values, cli, role, field)
+        if role_value:
+            return role_value
+    for key in _cli_value_keys(cli):
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def resolve_model(cli: str, role: str = "") -> str:
     """Configured model for this spawn, or "" (let the CLI use its default).
-    Priority: spawn.model[role] -> spawn.model[cli] -> "". `role` is optional so
-    legacy positional callers — resolve_model("claude") — keep working."""
-    models = _spawn().model
-    if role:
-        v = models.get(role.lower())
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    keys = [_norm_cli(cli), _norm(cli)]
-    for key in dict.fromkeys(k for k in keys if k):
-        v = models.get(key)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    if _norm_cli(cli) == "antigravity":
-        v = models.get("agy")
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return ""
+    Priority: route (role on auto) -> spawn.model[role] -> role default ->
+    spawn.model[cli] -> "". `role` is optional so legacy positional callers —
+    resolve_model("claude") — keep working."""
+    return _configured_value(_spawn().model, cli, role, "model")
 
 
 def resolve_effort(cli: str, role: str = "") -> str:
     """Configured effort for a spawn, or empty for the CLI-native default.
 
-    Priority mirrors model resolution: role override, then CLI default.  Agy's
-    ``AGY`` alias is accepted, but Antigravity does not support an independent
-    effort flag; validation warns and adapters intentionally ignore it.
+    Priority mirrors model resolution. Agy's ``AGY`` alias is accepted, but
+    Antigravity does not support an independent effort flag; validation warns
+    and adapters intentionally ignore it.
     """
-    efforts = _spawn().effort
-    if role:
-        value = efforts.get(role.lower())
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    keys = [_norm_cli(cli), _norm(cli)]
-    for key in dict.fromkeys(k for k in keys if k):
-        value = efforts.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    if _norm_cli(cli) == "antigravity":
-        value = efforts.get("agy")
-        if isinstance(value, str) and value.strip():
-            return value.strip().lower()
-    return ""
+    return _configured_value(_spawn().effort, cli, role, "effort").lower()
 
 
 def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str, str]:
     """Effective role settings plus the inheritance source for each value."""
-    sp = _spawn()
     role_key = _norm(role)
+    route = route_for(role_key)
+    if route is not None:
+        return _routed_details(role_key, route)
+    sp = _spawn()
     cli = resolve_agent(role_key, active_cli)
     role_cli = _norm_cli(sp.loop.get(role_key))
     role_cli_key = _env_suffix("THREADKEEPER_SPAWN__LOOP__", role_key)
@@ -271,6 +339,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     elif role_cli in SUPPORTED_CLIS:
         cli_source_key = ""
         cli_source = "role override"
+    elif _role_cli_unset(role_key) and role_key in ROLE_DEFAULTS:
+        cli_source_key = ""
+        cli_source = "role default"
     elif default_process_key:
         cli_source_key = default_process_key
         cli_source = "process environment"
@@ -295,6 +366,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     if role_key in sp.model and _norm(sp.model.get(role_key)):
         model_source_key = _process_override_key(role_model_key)
         model_source = "process environment" if model_source_key else "role override"
+    elif _role_default(role_key, cli, "model"):
+        model_source_key = ""
+        model_source = "role default"
     elif any(_norm(sp.model.get(key)) for key in (_norm_cli(cli), _norm(cli))):
         model_source_key = _process_override_key(*cli_model_keys)
         model_source = "process environment" if model_source_key else "CLI default"
@@ -316,6 +390,9 @@ def resolution_details(role: str, active_cli: Optional[str] = None) -> dict[str,
     if role_key in sp.effort and _norm(sp.effort.get(role_key)):
         effort_source_key = _process_override_key(role_effort_key)
         effort_source = "process environment" if effort_source_key else "role override"
+    elif _role_default(role_key, cli, "effort"):
+        effort_source_key = ""
+        effort_source = "role default"
     elif any(_norm(sp.effort.get(key)) for key in (_norm_cli(cli), _norm(cli))):
         effort_source_key = _process_override_key(*cli_effort_keys)
         effort_source = "process environment" if effort_source_key else "CLI default"
@@ -346,6 +423,44 @@ def _env_suffix(prefix: str, key: str) -> str:
     return f"{prefix}{str(key).upper()}"
 
 
+def _pinned_sections(sp, role: str) -> list[str]:
+    return [
+        section for section, values in (("MODEL", sp.model), ("EFFORT", sp.effort))
+        if _norm(values.get(role))
+    ]
+
+
+def _stale_route_warning(role: str) -> list[str]:
+    from .model_routes import stale_route
+
+    route = stale_route(role)
+    if route is None:
+        return []
+    return [
+        "  warning: model router decision for "
+        f"{role} ({route.cli} {route.model} {route.effort}) is no longer in the "
+        "model catalog; the role follows the active CLI until the next pass"
+    ]
+
+
+def _routed_role_warnings(sp) -> tuple[list[str], set[str]]:
+    """Warnings for pins a route overrides, plus the set of routed roles."""
+    warnings: list[str] = []
+    routed: set[str] = set()
+    for role in roles_on_auto():
+        if route_for(role) is None:
+            warnings.extend(_stale_route_warning(role))
+            continue
+        routed.add(role)
+        warnings.extend(
+            "  warning: "
+            f"{_env_suffix(f'THREADKEEPER_SPAWN__{section}__', role)} is ignored "
+            "while the role is on auto and routed by the model router"
+            for section in _pinned_sections(sp, role)
+        )
+    return warnings, routed
+
+
 def _spawn_warnings(
     active_cli: Optional[str],
     advertised_models: Optional[dict[str, list[str]]] = None,
@@ -353,6 +468,8 @@ def _spawn_warnings(
     """Warnings for configured spawn values that summary_table would ignore."""
     sp = _spawn()
     warnings = []
+    routed_warnings, routed_roles = _routed_role_warnings(sp)
+    warnings.extend(routed_warnings)
     default_raw = _norm(sp.default)
     default = _norm_cli(sp.default)
     if default_raw and default_raw != "auto" and default not in SUPPORTED_CLIS:
@@ -380,6 +497,8 @@ def _spawn_warnings(
     for key, model in sorted(sp.model.items()):
         model_key = _norm_cli(key)
         role_key = _norm(key)
+        if role_key in routed_roles:
+            continue
         if (
             role_key
             and model_key not in KNOWN_MODEL_KEYS
@@ -428,6 +547,8 @@ def _spawn_warnings(
     for key, raw_effort in sorted(sp.effort.items()):
         model_key = _norm_cli(key)
         role_key = _norm(key)
+        if role_key in routed_roles:
+            continue
         if model_key not in KNOWN_EFFORT_KEYS and role_key not in KNOWN_EFFORT_KEYS:
             warnings.append(
                 "  warning: "

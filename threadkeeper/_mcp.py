@@ -34,6 +34,7 @@ from .mcp_skills import (
     read_skill_resource,
     resource_catalog,
 )
+from .mcp_tasks import MCPTasksExtension
 from .protocol import ReplaySafeWrites, caller_principal
 from .read_context import read_only_call
 from .tool_profiles import environment_selection
@@ -88,7 +89,7 @@ mcp = ThreadKeeperMCPServer(
     "thread-keeper",
     version="0.19.0",
     instructions=SERVER_INSTRUCTIONS,
-    extensions=[SkillsExtension()],
+    extensions=[SkillsExtension(), MCPTasksExtension()],
     cache_hints=_CATALOG_CACHE_HINTS,
     request_state_security=RequestStateSecurity(
         keys=[secrets.token_bytes(32)],

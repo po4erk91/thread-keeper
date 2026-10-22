@@ -21,6 +21,7 @@ def _reset(monkeypatch, tmp_path, env=None, env_file=None):
         if k.startswith("THREADKEEPER_") or k in ("CLAUDE_SKILLS_DIR", "CLAUDE_PROJECTS_DIR"):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("THREADKEEPER_ENV_FILE", env_file or str(tmp_path / "none.env"))
+    monkeypatch.setenv("THREADKEEPER_MODEL_ROUTER_INTERVAL_S", "0")
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)
     import threadkeeper.config as c
@@ -521,3 +522,195 @@ def test_cross_provider_advertised_claude_models_are_not_rejected(
     })
     out = sc.summary_table(None)
     assert "Claude-family model" not in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# model_router role defaults
+# ──────────────────────────────────────────────────────────────────────
+
+def test_model_router_settings_defaults():
+    from threadkeeper.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["model_router_interval_s"].default == 604800.0
+    assert fields["model_router_fallback_cli"].default == "codex"
+    assert fields["model_router_fallback_model"].default == "gpt-6.1-sol"
+    assert fields["model_router_fallback_effort"].default == "xhigh"
+
+
+def test_model_router_derived_constants(tmp_path, monkeypatch):
+    _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_MODEL_ROUTER_INTERVAL_S": "3600",
+        "THREADKEEPER_MODEL_ROUTER_FALLBACK_CLI": " Codex ",
+        "THREADKEEPER_MODEL_ROUTER_FALLBACK_EFFORT": "HIGH",
+    })
+    import threadkeeper.config as c
+
+    assert c.MODEL_ROUTER_INTERVAL_S == 3600.0
+    assert c.MODEL_ROUTER_FALLBACK_CLI == "codex"
+    assert c.MODEL_ROUTER_FALLBACK_MODEL == "gpt-6.1-sol"
+    assert c.MODEL_ROUTER_FALLBACK_EFFORT == "high"
+
+
+def test_model_router_defaults_to_claude_opus_max(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path)
+    assert sc.resolve_agent("model_router", "codex") == "claude"
+    assert sc.resolve_model("claude", "model_router") == "opus"
+    assert sc.resolve_effort("claude", "model_router") == "max"
+    details = sc.resolution_details("model_router", "codex")
+    assert (
+        details["cli_source"], details["model_source"], details["effort_source"]
+    ) == ("role default", "role default", "role default")
+    assert sc.agent_cli_is_dynamic("model_router", None) is False
+
+
+def test_router_role_default_model_needs_matching_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "codex",
+    })
+    assert sc.resolve_agent("model_router", None) == "codex"
+    assert sc.resolve_model("codex", "model_router") == ""
+    assert sc.resolve_effort("codex", "model_router") == ""
+
+
+def test_router_role_pins_beat_role_default(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__MODEL__MODEL_ROUTER": "sonnet",
+        "THREADKEEPER_SPAWN__EFFORT__MODEL_ROUTER": "high",
+    })
+    assert sc.resolve_model("claude", "model_router") == "sonnet"
+    assert sc.resolve_effort("claude", "model_router") == "high"
+
+
+def test_router_role_on_auto_follows_active_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "auto",
+    })
+    assert sc.resolve_agent("model_router", "codex") == "codex"
+
+
+def test_roles_on_auto_normalizes_case_and_space(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": " Auto ",
+        "THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "auto",
+        "THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER": "codex",
+    })
+    assert sc.roles_on_auto() == ["curator"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# model-router routes for `auto` roles
+# ──────────────────────────────────────────────────────────────────────
+
+def _route(**overrides):
+    from threadkeeper.model_routes import Route
+
+    values = dict(role="curator", cli="codex", model="gpt-5.6-luna",
+                  effort="high", reason="cheaper", pass_id="mr-1", decided_at=1)
+    values.update(overrides)
+    return Route(**values)
+
+
+def _patch_routes(monkeypatch, routes):
+    import threadkeeper.model_routes as mr
+
+    monkeypatch.setattr(mr, "active_route", lambda role: routes.get(role))
+
+
+def test_auto_role_uses_router_decision(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"})
+    _patch_routes(monkeypatch, {"curator": _route()})
+    assert sc.resolve_agent("curator", "claude") == "codex"
+    assert sc.resolve_model("codex", "curator") == "gpt-5.6-luna"
+    assert sc.resolve_effort("codex", "curator") == "high"
+
+
+def test_padded_auto_is_routed(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": " AUTO "})
+    _patch_routes(monkeypatch, {"curator": _route()})
+    assert sc.resolve_agent("curator", "claude") == "codex"
+
+
+def test_auto_role_without_decision_follows_active_cli(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"})
+    _patch_routes(monkeypatch, {})
+    assert sc.resolve_agent("curator", "codex") == "codex"
+    assert sc.resolve_agent("curator", "claude") == "claude"
+
+
+def test_route_ignores_role_pins(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "auto",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "gpt-5.6-terra",
+        "THREADKEEPER_SPAWN__EFFORT__CURATOR": "xhigh",
+    })
+    _patch_routes(monkeypatch, {"curator": _route()})
+    assert sc.resolve_model("codex", "curator") == "gpt-5.6-luna"
+    assert sc.resolve_effort("codex", "curator") == "high"
+
+
+def test_explicit_cli_other_than_route_keeps_role_pins(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "auto",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "sonnet",
+    })
+    _patch_routes(monkeypatch, {"curator": _route()})
+    assert sc.resolve_model("claude", "curator") == "sonnet"
+
+
+def test_pinned_role_never_consults_router(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "claude"})
+    import threadkeeper.model_routes as mr
+
+    monkeypatch.setattr(mr, "active_route",
+                        lambda role: pytest.fail("router consulted for a pinned role"))
+    assert sc.resolve_agent("curator", None) == "claude"
+    assert sc.resolve_model("claude", "curator") == ""
+
+
+def test_router_role_is_never_routed(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__MODEL_ROUTER": "auto"})
+    import threadkeeper.model_routes as mr
+
+    monkeypatch.setattr(mr, "active_route",
+                        lambda role: pytest.fail("router consulted for itself"))
+    assert sc.resolve_agent("model_router", "codex") == "codex"
+
+
+def test_routed_details_and_not_dynamic(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"})
+    _patch_routes(monkeypatch, {"curator": _route()})
+    details = sc.resolution_details("curator", None)
+    assert (details["cli"], details["model"], details["effort"]) == (
+        "codex", "gpt-5.6-luna", "high")
+    assert {details["cli_source"], details["model_source"], details["effort_source"]} == {
+        "model router"}
+    assert sc.agent_cli_is_dynamic("curator", None) is False
+    assert "(model router)" in sc.summary_table(None)
+
+
+def test_warns_when_routed_role_has_pins(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={
+        "THREADKEEPER_SPAWN__LOOP__CURATOR": "auto",
+        "THREADKEEPER_SPAWN__MODEL__CURATOR": "opus",
+        "THREADKEEPER_SPAWN__EFFORT__CURATOR": "max",
+    })
+    _patch_routes(monkeypatch, {"curator": _route()})
+    warnings = "\n".join(sc._spawn_warnings(None))
+    assert ("THREADKEEPER_SPAWN__MODEL__CURATOR is ignored while the role is on "
+            "auto and routed by the model router") in warnings
+    assert "THREADKEEPER_SPAWN__EFFORT__CURATOR is ignored" in warnings
+    assert "is invalid for CLI" not in warnings
+    assert "Claude-family model" not in warnings
+
+
+def test_warns_on_stale_route(tmp_path, monkeypatch):
+    sc = _reset(monkeypatch, tmp_path, env={"THREADKEEPER_SPAWN__LOOP__CURATOR": "auto"})
+    import threadkeeper.model_routes as mr
+
+    _patch_routes(monkeypatch, {})
+    monkeypatch.setattr(mr, "stale_route",
+                        lambda role: _route(model="gone") if role == "curator" else None)
+    warnings = "\n".join(sc._spawn_warnings(None))
+    assert ("model router decision for curator (codex gone high) is no longer in "
+            "the model catalog") in warnings

@@ -29,6 +29,7 @@ _ROLE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bEVOLVE REVIEWER\b", re.I), "evolve_reviewer"),
     (re.compile(r"\bEVOLVE APPLIER\b", re.I), "evolve_applier"),
     (re.compile(r"\bPROBE RUNNER\b", re.I), "probe_runner"),
+    (re.compile(r"\bMODEL ROUTER\b", re.I), "model_router"),
     (re.compile(r"\bCURATOR\b", re.I), "curator"),
     (re.compile(r"\bSHADOW LEARNING OBSERVER\b", re.I), "shadow_observer"),
     (re.compile(r"\bSHADOW REVIEW\b", re.I), "shadow_observer"),
@@ -52,6 +53,10 @@ _ROLE_DESCRIPTIONS: dict[str, str] = {
     "dialectic_validator": (
         "Turns buffered user-model observations into evidence-backed claims "
         "about preferences, constraints, and working style."
+    ),
+    "model_router": (
+        "Weekly reviews which CLI, model and effort each auto role runs on, "
+        "and re-assigns them."
     ),
     "evolve_applier": (
         "Repairs conflicted applier PRs first, then implements one roadmap "
@@ -182,6 +187,15 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "backlog_label": "pending observations",
     },
     {
+        "id": "model_router",
+        "name": "Model router",
+        "event": "model_router_pass",
+        "interval": "MODEL_ROUTER_INTERVAL_S",
+        "role": "model_router",
+        "description": _ROLE_DESCRIPTIONS["model_router"],
+        "work": "Re-assigns CLI, model and effort for roles set to auto",
+    },
+    {
         "id": "evolve_review",
         "name": "Evolve reviewer",
         "event": "evolve_review_pass",
@@ -277,6 +291,7 @@ _DAEMON_BINDINGS: dict[str, tuple[str, str, str]] = {
     "dialectic_validator": (
         "dialectic_validator", "dialectic_validator", "start_dialectic_validator_daemon",
     ),
+    "model_router": ("model_router", "model_router", "start_model_router_daemon"),
     "evolve_review": ("evolve_daemon", "evolve_daemon", "start_evolve_daemon"),
     "evolve_apply": (
         "evolve_applier_daemon", "evolve_applier", "start_evolve_applier_daemon",
@@ -908,7 +923,7 @@ def _is_result_line(line: str) -> bool:
     return False
 
 
-def _extract_useful_result(task_id: str) -> str:
+def extract_useful_result(task_id: str) -> str:
     sample = _read_log_sample(task_id)
     if not sample:
         return ""
@@ -981,7 +996,7 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
         loop = role_loop.get(role)
         if not loop:
             continue
-        summary = _extract_useful_result(row["id"])
+        summary = extract_useful_result(row["id"])
         if not summary:
             continue
         ended_at = int(row["ended_at"] or now)

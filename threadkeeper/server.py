@@ -57,6 +57,7 @@ from .tools import candidate_reviewer  # noqa: F401
 from .tools import evolve_research  # noqa: F401
 from .tools import evolve_applier  # noqa: F401
 from .tools import dialectic_feed  # noqa: F401
+from .tools import model_router  # noqa: F401
 from .tools import dashboard  # noqa: F401
 from .tools import agent_status  # noqa: F401
 from .tools import config_watch  # noqa: F401
