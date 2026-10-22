@@ -218,6 +218,7 @@ _LOOP_TASK_PREFIXES: dict[str, str] = {
     "evolve_review": "You are an EVOLVE REVIEWER",
     "evolve_apply": "You are an EVOLVE APPLIER",
     "probe": "You are a PROBE RUNNER",
+    "model_router": "You are a MODEL ROUTER",
 }
 
 # Outcome event kinds the loops are supposed to PRODUCE. Beyond the original

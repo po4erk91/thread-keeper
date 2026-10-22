@@ -19,8 +19,8 @@ jobs:
         # 3.11 is the floor (config.py uses tomllib + dict[str,...]).
         # 3.13 is current. 3.12 sits in between.
         python: ["3.11", "3.12", "3.13"]
-        # The stable Skills extension requires MCP 2.2's 2026-07-28 surface.
-        mcp: [">=2.2.0,<3"]
+        # Durable Tasks requires MCP 2.3's 2026-07-28 extension surface.
+        mcp: [">=2.3.0,<3"]
         # The suite is split into three deterministic shards (by test id)
         # that run as parallel jobs; see tests/conftest.py.
         shard: [1, 2, 3]

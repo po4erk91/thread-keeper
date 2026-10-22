@@ -94,6 +94,40 @@ def _current_origin() -> str:
     return _normalize_origin(WRITE_ORIGIN) or "unknown"
 
 
+def _creator_marker(file_body: str, target_begin: str) -> tuple[str, str] | None:
+    """(source, origin) of an existing section's BEGIN marker, or None."""
+    start = file_body.find(target_begin)
+    if start < 0:
+        return None
+    begin_line = file_body[start:file_body.find("-->", start)]
+    source = re.search(r"\bsource=([^\s>]*)", begin_line)
+    origin = re.search(r"\sorigin=([^\s>]+)", begin_line)
+    return (
+        source.group(1) if source else "",
+        _normalize_origin(origin.group(1)) if origin else "",
+    )
+
+
+def _replacement_marker(
+    file_body: str, target_begin: str, source: str,
+) -> tuple[str, str]:
+    """(source, origin) a write should stamp on its section.
+
+    A replacement keeps the creator's origin (a legacy marker without one gets
+    the origin the backfill would give it). A human-authored lesson also keeps
+    its source, so a loop rewrite never looks like a mislabeled loop lesson to
+    the backfill.
+    """
+    marker = _creator_marker(file_body, target_begin)
+    if marker is None:
+        return source, _current_origin()
+    creator_source, creator_origin = marker
+    origin = creator_origin or backfilled_origin(creator_source, "")
+    if origin in FOREGROUND_LESSON_ORIGINS:
+        return creator_source, origin
+    return source, origin
+
+
 def _format_section(slug: str, summary: str, body: str,
                     source: str, ts: int, origin: str) -> str:
     """One LESSON-BEGIN…LESSON-END block with the sentinel markers."""
@@ -168,13 +202,12 @@ def append_lesson(
     header. `source` is a free-text provenance tag — typically a thread
     id ("Tabc123") or "shadow" for shadow_review writes. `origin` is
     stamped from THREADKEEPER_WRITE_ORIGIN and is the protection boundary.
+    A replacement keeps the creator's origin, so rewriting a lesson never
+    moves it across that boundary.
     """
     fp = path or _LESSONS_PATH
     slug = _slugify(title)
     ts = int(time.time())
-    new_section = _format_section(
-        slug, summary, body, source or "", ts, _current_origin(),
-    )
 
     with _lessons_file_lock(fp):
         _ensure_file(fp)
@@ -183,6 +216,12 @@ def append_lesson(
         # (idempotent re-materialization of the same lesson).
         target_begin = f"<!-- LESSON:BEGIN slug={slug} "
         target_end = f"<!-- LESSON:END slug={slug} -->"
+        marker_source, marker_origin = _replacement_marker(
+            body_existing, target_begin, source or "",
+        )
+        new_section = _format_section(
+            slug, summary, body, marker_source, ts, marker_origin,
+        )
         if target_begin in body_existing and target_end in body_existing:
             head, _, rest = body_existing.partition(target_begin)
             # Find the matching END after the BEGIN.
@@ -345,8 +384,9 @@ def iter_lessons(path: Optional[Path] = None) -> Iterator[dict]:
     for m in _BLOCK_RE.finditer(body):
         slug = m.group("slug")
         block_body = m.group("body").strip()
-        # Parse ts and source out of the BEGIN line we already matched.
-        begin_line = body[m.start():m.start() + 200].split("\n", 1)[0]
+        # Parse ts, source and origin out of the whole BEGIN marker: a long
+        # slug can push origin= far past any fixed-width window.
+        begin_line = body[m.start():body.find("-->", m.start())]
         ts_match = re.search(r"ts=(\d+)", begin_line)
         source_match = re.search(r"source=([^\s>]+)", begin_line)
         origin_match = re.search(r"origin=([^\s>]+)", begin_line)
@@ -357,6 +397,85 @@ def iter_lessons(path: Optional[Path] = None) -> Iterator[dict]:
             "source": source_match.group(1) if source_match else "",
             "origin": origin_match.group(1) if origin_match else "",
         }
+
+
+_BEGIN_MARKER_RE = re.compile(r"<!-- LESSON:BEGIN [^>]*?-->")
+_MARKER_SOURCE_RE = re.compile(r"\bsource=([^\s>]*)")
+_MARKER_ORIGIN_RE = re.compile(r"\sorigin=([^\s>]+)")
+# Sources only the learning loop writes. Their lessons were sometimes stamped
+# without an origin (before origin markers existed) or with a scrubbed
+# environment's default "foreground", which wrongly made them human-authored.
+LOOP_SOURCE_ORIGINS = {
+    "shadow": "shadow_review",
+    "curator": "curator",
+    "curator-consolidate": "curator",
+}
+ORIGIN_BACKFILL_BACKUP_SUFFIX = ".pre-origin-backfill"
+
+
+def backfilled_origin(source: str, origin: str) -> str:
+    """The origin a marker should carry, or '' when it is already right.
+
+    A loop source always wins over a foreground stamp. A marker with no
+    origin and no loop source keeps the fail-closed foreground default.
+    """
+    loop_origin = LOOP_SOURCE_ORIGINS.get(source.strip().lower(), "")
+    origin_norm = _normalize_origin(origin)
+    if loop_origin and origin_norm in ("", "foreground"):
+        return loop_origin
+    if origin_norm:
+        return ""
+    return "foreground"
+
+
+def _backfill_marker(marker: str) -> tuple[str, str]:
+    """(rewritten marker, new origin) — the origin is '' when unchanged."""
+    source_match = _MARKER_SOURCE_RE.search(marker)
+    if source_match is None:
+        return marker, ""
+    origin_match = _MARKER_ORIGIN_RE.search(marker)
+    current = origin_match.group(1) if origin_match else ""
+    new_origin = backfilled_origin(source_match.group(1), current)
+    if not new_origin:
+        return marker, ""
+    if origin_match:
+        start, end = origin_match.span(1)
+        return marker[:start] + new_origin + marker[end:], new_origin
+    return marker[:-len("-->")].rstrip() + f" origin={new_origin} -->", new_origin
+
+
+def backfill_lesson_origins(
+    path: Optional[Path] = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Correct legacy and mislabeled origin markers in place.
+
+    Idempotent: a second run finds nothing to change. Before the first real
+    rewrite the original file is kept next to it with
+    ORIGIN_BACKFILL_BACKUP_SUFFIX. Returns the count per new origin.
+    """
+    fp = path or _LESSONS_PATH
+    counts: dict[str, int] = {}
+
+    def rewrite(match: re.Match) -> str:
+        marker, new_origin = _backfill_marker(match.group(0))
+        if new_origin:
+            counts[new_origin] = counts.get(new_origin, 0) + 1
+        return marker
+
+    with _lessons_file_lock(fp):
+        if not fp.exists():
+            return counts
+        original = fp.read_text()
+        updated = _BEGIN_MARKER_RE.sub(rewrite, original)
+        if dry_run or updated == original:
+            return counts
+        backup = fp.with_name(fp.name + ORIGIN_BACKFILL_BACKUP_SUFFIX)
+        if not backup.exists():
+            backup.write_text(original)
+        fp.write_text(updated)
+    return counts
 
 
 def count_lessons(path: Optional[Path] = None) -> int:
@@ -407,11 +526,16 @@ def record_lesson_access(
 
     kind='view' records that the lesson appeared in lesson_list output.
     kind='use' records that lesson_get returned the lesson body.
+
+    Only foreground reads count, as for skills' foreground_use_count. The
+    curator and other loops read every lesson they audit; counting those
+    reads would make every lesson look recently useful and defeat the
+    retention score.
     """
     if kind not in {"view", "use"}:
         raise ValueError(f"unknown lesson access kind: {kind}")
     slug = item.get("slug") or ""
-    if not slug:
+    if not slug or _current_origin() != "foreground":
         return
     now_t = int(now or time.time())
     ensure_lesson_usage(conn, item, now=now_t)

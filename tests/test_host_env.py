@@ -6,7 +6,7 @@ make config.BACKGROUND_DAEMONS_ALLOWED false in the host too, so ~13 of its 18
 daemon starters would self-gate off — a loop-less zombie host that still binds
 the embed socket and heartbeats (looks alive, holds the election lock)."""
 from __future__ import annotations
-import sys, importlib
+import sys, importlib, uuid
 
 
 def _reimport(monkeypatch, tmp_path, **env_overrides):
@@ -76,3 +76,40 @@ def test_ensure_host_running_skips_when_daemons_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(host.subprocess, "Popen", _boom)
 
     assert host.ensure_host_running() is False
+
+
+_CHILD_CID = "11111111-2222-3333-4444-555555555555"
+_PER_CHILD_IDENTITY = {
+    "THREADKEEPER_CURATOR_PASS_ID": "20261012T101949",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR": "/tmp/curator-snapshot",
+    "THREADKEEPER_MODEL_ROUTER_PASS_ID": "mr-1-abc123",
+    "THREADKEEPER_EGRESS_CONSUMER": "codex",
+}
+
+
+def _host_spawn_env(monkeypatch, tmp_path, **env_overrides):
+    host = _reimport(monkeypatch, tmp_path, **env_overrides)
+    monkeypatch.setattr(host.config, "DISABLE_BG_DAEMONS", False)
+    monkeypatch.setattr(host, "_host_alive", lambda: False)
+    captured: dict = {}
+    monkeypatch.setattr(host.subprocess, "Popen",
+                        lambda args, **kwargs: captured.setdefault("env", kwargs["env"]))
+    assert host.ensure_host_running() is True
+    return captured["env"]
+
+
+def test_ensure_host_running_drops_per_child_identity(monkeypatch, tmp_path):
+    # A curator or router child's thin MCP server can be the process that
+    # spawns the host; its pass identity must not become the host's default.
+    env = _host_spawn_env(monkeypatch, tmp_path, **_PER_CHILD_IDENTITY)
+    leaked = sorted(key for key in _PER_CHILD_IDENTITY if key in env)
+    assert leaked == []
+    assert env["THREADKEEPER_DB"] == str(tmp_path / "db.sqlite")
+
+
+def test_ensure_host_running_gives_the_host_its_own_cid(monkeypatch, tmp_path):
+    env = _host_spawn_env(monkeypatch, tmp_path, THREADKEEPER_FORCE_CID=_CHILD_CID)
+    host_cid = env["THREADKEEPER_FORCE_CID"]
+    assert host_cid != _CHILD_CID
+    assert uuid.UUID(host_cid).version == 4
+

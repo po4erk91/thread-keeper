@@ -30,8 +30,8 @@ Evolve suggestions, and the October research digest. Four distinct gaps remain:
   in path-like inline code and repeated normalized paragraphs within one skill,
   with conservative exclusions for URLs, commands, examples, and boilerplate.
 
-The standard Tasks facade remains tracked in #370. General validity,
-supersession, and obsolete-evidence evaluation map to #371 and #372 on top of
+General validity, supersession, and obsolete-evidence evaluation map to #371
+and #372 on top of
 the completed authority lifecycle in #338. The mechanical issue gate treated
 the Evolve web-research data boundary as existing #355 work and the unified
 runtime process inventory as part of #364, so this pass did not file parallel
@@ -44,9 +44,6 @@ The resource-subscription (#345), privacy-safe tracing (#346), and
 outcome-evaluation (#347) items are complete. The remaining audit gaps are
 issue-backed and deliberately narrower:
 
-- **Standard MCP Tasks lifecycle (#370).** Give capable clients durable,
-  authorization-bound task handles with standard read and cooperative cancel
-  semantics, while preserving the current custom fallback for older hosts.
 - **Forgetting-aware store mutation evaluation (#371).** Exercise real
   correction, supersession, consolidation, source erasure, and restart paths;
   penalize obsolete evidence even when current evidence is also recalled.
@@ -64,6 +61,10 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
 
+- MCP Tasks extension for headless spawned work (#370): clients that advertise
+  `io.modelcontextprotocol/tasks` receive authorization-bound opaque handles
+  for `spawn(visible=False)` and can poll `tasks/get` or cooperatively cancel
+  with `tasks/cancel`; legacy clients retain the custom synchronous lifecycle.
 - MCP server instructions (#354): MCP initialization now advertises concise,
   static lifecycle guidance from the same fragments as the setup-managed block.
   Hooks and managed instruction files remain compatibility reinforcement for
@@ -1284,10 +1285,10 @@ verified gaps from the present code and test suite:
   architecture no longer carry hand-maintained test or tool totals; a docs
   test rejects them and checks the architecture tool table against the live
   MCP registry.
-- ✅ DONE (#279, #336). **MCP SDK 2.x migration and Skills distribution.**
-  The server requires `mcp>=2.2.0,<3` for the stable MCP 2026-07-28 Skills
-  extension; CI covers that supported surface and a subprocess stdio smoke
-  test.
+- ✅ DONE (#279, #336, #370). **MCP SDK 2.x migration and extension
+  distribution.** The server requires `mcp>=2.3.0,<3` for the stable MCP
+  2026-07-28 Skills and Tasks extensions; CI covers that supported surface and
+  a subprocess stdio smoke test.
 
 **2026-09-10 reviewer additions (issue-backed).**
 The current audit reconciled five late-August/September issues and added one
@@ -1445,9 +1446,9 @@ and Curator child-capability isolation:
   the owning task, role, and batch.
 
 The earlier mechanical issue gate linked the protocol-native Tasks/MRTR
-proposal to completed conformance issue #344. A later audit established the
-remaining lifecycle gap separately as open issue #370; #344 continues to cover
-dual-era request compatibility and replay-safe writes, not standard Tasks.
+proposal to completed conformance issue #344. The later Tasks lifecycle gap was
+completed as #370; #344 continues to cover dual-era request compatibility and
+replay-safe writes, not standard Tasks.
 The outcome-quality evaluator in #347 is complete. The remaining bounded
 action/recovery-memory experiment is #380, while obsolete-evidence mutation
 coverage remains #371. Tool-profile disclosure and project namespaces remain

@@ -327,11 +327,8 @@ DO, strictly in order:
 2. Apply only LOW-RISK, report-backed operations:
    - PATCH a skill only when the report gives a concrete fix and you can make
      an exact, validated skill_manage(action='patch'|'edit'|'write_file') call.
-   - CONSOLIDATE lessons by writing the merged lesson with lesson_append(
-     source='curator'), then lesson_remove only the superseded non-protected
-     lessons whose content you already carried over.
-   - PRUNE only clear background/system false positives, stale duplicate
-     lessons, or superseded non-protected skills. Skip anything ambiguous.
+   - PATCH a non-protected lesson with lesson_patch when the report quotes the
+     exact old and new text.
    - CONSOLIDATE_CONCEPT / PRUNE_CONCEPT: apply clear concept recommendations
      via concept_manage. CONSOLIDATE_CONCEPT → concept_manage(
      action='consolidate', concept_id=<kept-id>, merge_ids='<id-a>,<id-b>').
@@ -339,7 +336,12 @@ DO, strictly in order:
      expand_concept first if you need the full description to judge a merge.
 
 3. Hard safety gates:
-   - NEVER touch entries marked [PROTECTED] in the report.
+   - NEVER remove, consolidate, or delete lessons or skills: do not call
+     lesson_remove or skill_manage(action='delete'|'remove_file'). Removals
+     belong only to the Curator verifier, which re-checks every proposal
+     first; the server refuses them from this applier anyway.
+   - NEVER apply anything inside the report's VERIFY_PROPOSALS block.
+   - NEVER touch entries marked [PROTECTED] or [PINNED] in the report.
    - NEVER touch lessons whose source is foreground or user.
    - NEVER delete or patch skills with origin=foreground, pinned=1, or
      tier=validated in skill_list output.
@@ -1128,7 +1130,7 @@ def _recover_stale_managed_merge(
     child can otherwise block every future backlog item. This recovery is
     intentionally narrow: managed checkout, merge in progress, applier-owned
     branch, exact GitHub PR proven open or merged, archived tracked diff. An
-    open PR's interrupted merge is aborted so the conflict-repair child can
+    open PR's interrupted merge is reset so the conflict-repair child can
     restart it; an already-merged PR is discarded as stale. Any uncertain state
     remains fail-closed for a human.
     """
@@ -1193,16 +1195,11 @@ def _recover_stale_managed_merge(
     if backup_err or backup is None:
         return False, f"{backup_kind}_backup_failed={_short(backup_err)}"
 
-    if opened is not None:
-        reset_err = _run(["git", "merge", "--abort"], timeout=30, cwd=repo_root)
-        if reset_err:
-            return False, f"open_pr_merge_abort_failed={_short(reset_err)}"
-    else:
-        reset_err = _run(
-            ["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root
-        )
-        if reset_err:
-            return False, f"stale_merge_reset_failed={_short(reset_err)}"
+    # Not `git merge --abort`: it refuses when a killed repair child left
+    # unstaged edits on a merge-touched path. The archive already holds them.
+    reset_err = _run(["git", "reset", "--hard", "HEAD"], timeout=30, cwd=repo_root)
+    if reset_err:
+        return False, f"{backup_kind}_reset_failed={_short(reset_err)}"
     checkout_err = _run(
         [
             "git", "checkout", "-f", "-B", _base_branch_name(),
@@ -3933,8 +3930,7 @@ def apply_curator_report(report_path: str = "") -> str:
                     "Read,"
                     "mcp__thread-keeper__lesson_list,"
                     "mcp__thread-keeper__lesson_get,"
-                    "mcp__thread-keeper__lesson_append,"
-                    "mcp__thread-keeper__lesson_remove,"
+                    "mcp__thread-keeper__lesson_patch,"
                     "mcp__thread-keeper__skill_list,"
                     "mcp__thread-keeper__skill_manage,"
                     "mcp__thread-keeper__list_concepts,"

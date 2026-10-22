@@ -282,12 +282,45 @@ def _mirror_skill(name: str) -> None:
     _mirror_skill_dir(name)
 
 
+def _removal_time(name: str) -> int:
+    """When the primary copy of a skill was last deleted or archived, or 0."""
+    try:
+        row = get_db().execute(
+            "SELECT MAX(created_at) AS at FROM events WHERE target=? AND ("
+            "kind='skill_delete' OR "
+            "(kind='curator_transition' AND summary LIKE '%→archived%'))",
+            (name,),
+        ).fetchone()
+    except Exception:
+        return 0
+    return int(row["at"] or 0) if row else 0
+
+
+def _drop_stale_strays(name: str, copies: list[SkillCopy]) -> bool:
+    """Delete leftover copies of a deliberately removed skill.
+
+    A deletion or archive removes the primary copy; an older copy left in
+    another CLI root must not be imported back as the newest version. A copy
+    written after the removal is a new install and is left alone.
+    """
+    removed_at = _removal_time(name)
+    if not removed_at or any(copy.mtime > removed_at for copy in copies):
+        return False
+    for copy in copies:
+        if copy.path.is_symlink():
+            continue
+        _backup_skill_dir(copy.path)
+        shutil.rmtree(copy.path, ignore_errors=True)
+    return True
+
+
 def _sync_local_roots() -> dict[str, int]:
     counts = {
         "local_updates": 0,
         "mirrored": 0,
         "conflicts": 0,
         "local_checked": 0,
+        "removed_strays": 0,
     }
     grouped: dict[str, list[SkillCopy]] = {}
     for copy in _iter_skill_copies():
@@ -297,6 +330,9 @@ def _sync_local_roots() -> dict[str, int]:
     for name, copies in grouped.items():
         counts["local_checked"] += 1
         primary = next((c for c in copies if c.primary), None)
+        if primary is None and _drop_stale_strays(name, copies):
+            counts["removed_strays"] += 1
+            continue
         newest_mtime = max(c.mtime for c in copies)
         newest = [c for c in copies if c.mtime == newest_mtime]
         newest_hashes = {c.tree_sha256 for c in newest}
@@ -310,6 +346,10 @@ def _sync_local_roots() -> dict[str, int]:
 
         winner = newest[0]
         if primary and primary.tree_sha256 == winner.tree_sha256:
+            if err := _validate_skill_dir(primary.path, name):
+                logger.debug("skill_updater: not mirroring %s: %s", name, err)
+                counts["conflicts"] += 1
+                continue
             _mirror_skill(name)
             counts["mirrored"] += 1
             continue
@@ -597,6 +637,7 @@ def _run_update() -> str:
     return (
         f"local_updates={local['local_updates']} mirrored={local['mirrored']} "
         f"conflicts={local['conflicts']} local_checked={local['local_checked']} "
+        f"removed_strays={local['removed_strays']} "
         f"remote_updated={remote['remote_updated']} "
         f"remote_no_update={remote['remote_no_update']} "
         f"remote_skipped={remote['remote_skipped']} "

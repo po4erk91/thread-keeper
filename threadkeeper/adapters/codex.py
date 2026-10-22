@@ -96,6 +96,7 @@ _THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
     "lesson_get",
     "lesson_append",
     "lesson_patch",
+    "lesson_neighbors",
     "lesson_remove",
     "lesson_restore",
     "skill_list",

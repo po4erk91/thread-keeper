@@ -73,6 +73,8 @@ MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "lesson_append",
     "lesson_get",
     "lesson_list",
+    "lesson_neighbors",
+    "lesson_patch",
     "lesson_remove",
     "lesson_restore",
     "link",
