@@ -43,7 +43,7 @@ semantic = [
     # 0.8 switched this model to mean pooling. Keep one compatible runtime
     # family so stored document vectors and fresh query vectors share a space;
     # embeddings.py fingerprints the generation for resumable migration.
-    "fastembed>=0.8,<0.9",
+    "fastembed>=0.8,<0.10",
     # Used directly to resolve the pinned FastEmbed snapshot before model load.
     "huggingface-hub>=0.20",
     "numpy>=1.24.0",
