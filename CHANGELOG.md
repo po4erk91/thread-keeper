@@ -7,6 +7,23 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.0 — 2026-10-23
+
+- **Added: the brief shows which lessons this session consulted (#332).**
+  A `consulted_lessons` section lists each lesson listed or read since the
+  session started, with its view and use counts and the last full recall.
+
+- **Added: a worktree safety warning when other sessions are live (#335).**
+  With live peers, the brief's `worktree_safety` section tells the agent to
+  confirm it has its own git worktree before staging, committing or pushing.
+
+- **Durable preference-drift evaluation pilot (#339).** Added a fixed,
+  anonymized replay corpus and a read-only report for durable change,
+  task-local exception, high-impact ambiguity, and poisoning. The report
+  includes supersession precision/recall, false durable-flip and clarification
+  rates, poisoning containment, cited evidence IDs, and counterfactuals. It
+  does not alter the production supersession policy.
+
 - **Added: every session sees all lesson titles.** Each lesson write refreshes
   `~/.threadkeeper/lesson-index.md`, a sorted list of lesson titles, and the
   managed instructions import it, so Claude Code loads it with `CLAUDE.md`.
@@ -645,13 +662,6 @@ version bumps follow semver per the policy in
   their session before emitting telemetry.
 
 ## [Unreleased]
-
-- **Durable preference-drift evaluation pilot (#339).** Added a fixed,
-  anonymized replay corpus and a read-only report for durable change,
-  task-local exception, high-impact ambiguity, and poisoning. The report
-  includes supersession precision/recall, false durable-flip and clarification
-  rates, poisoning containment, cited evidence IDs, and counterfactuals. It
-  does not alter the production supersession policy.
 
 - **Dangling wikilink health check (#202).** `wikilink_health()` deterministically
   scans all materialized lesson and skill bodies for unresolved `[[slug]]`
