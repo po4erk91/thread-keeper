@@ -7,6 +7,22 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: every session sees all lesson titles.** Each lesson write refreshes
+  `~/.threadkeeper/lesson-index.md`, a sorted list of lesson titles, and the
+  managed instructions import it, so Claude Code loads it with `CLAUDE.md`.
+  Before, lessons reached a session only when the agent called `lesson_list`
+  itself. On 160 real user prompts, an agent that saw only the index opened
+  65-70% of the lessons judges marked relevant, and 51-59% of its picks were
+  relevant. Injecting the lessons closest to each prompt by embedding reached
+  25% recall at 12% precision, so prompt-time injection was not added.
+  `thread-keeper-setup` writes the index on install.
+
+- **Fixed: the session brief reaches the model again.** Claude Code replaces
+  hook output over 10 000 characters with a 2 KB preview and a file path. The
+  lean brief had grown past that, so new sessions saw only the first part of
+  the core rules. `tk-brief.sh` now caps the injection at 9 000 characters,
+  cut at a line break, with a pointer to `brief()` for the rest.
+
 - **Fixed: Curator child authority is no longer ambient process state (#366).**
   Pass and snapshot values are attached only to a private, task-bound Curator
   launch. Ordinary spawns strip inherited values, report/research writes verify

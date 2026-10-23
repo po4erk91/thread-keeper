@@ -254,6 +254,15 @@ def install_instructions(dry_run: bool) -> list[str]:
     return lines
 
 
+def install_lesson_index(dry_run: bool) -> str:
+    """Write the lesson index the managed instructions import."""
+    from .lessons import refresh_lesson_index
+
+    if dry_run:
+        return "lesson index: would refresh"
+    return "lesson index: written" if refresh_lesson_index() else "lesson index: current"
+
+
 def install_tk_dir(dry_run: bool) -> str:
     """Ensure ~/.threadkeeper/ exists. DB lives here; hooks subdir is
     handled separately by install_hooks."""
@@ -289,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in install_instructions(args.dry_run):
         print(f"  [{line.split(':', 1)[0]}] {line.split(':', 1)[1].strip()}"
               if ":" in line else f"  [md] {line}")
+    print(f"  [lessons] {install_lesson_index(args.dry_run)}")
     for line in install_hooks(args.dry_run):
         print(f"  [hooks] {line}")
     print()
