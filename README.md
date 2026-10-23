@@ -1012,6 +1012,18 @@ within an 8-second budget per call; a call that runs out falls back to the
 lexical ranking and the next call resumes. Each line shows the lesson's summary. Without a query a session
 would only ever see the newest few lessons, whatever the task.
 
+**Lesson index.** Agents rarely search lessons on their own, so every lesson
+write also refreshes `lesson-index.md` next to `lessons.md`
+(`~/.threadkeeper/lesson-index.md` by default), a sorted list of all lesson
+titles (about 35 000 characters for 550 lessons). The managed
+instructions import it (`@~/.threadkeeper/lesson-index.md`), so a CLI that
+supports imports, such as Claude Code, loads every title with its instructions;
+other CLIs are told to read the file at session start. Each title is the rule,
+and the agent opens the ones that apply with `lesson_get`. On 160 real user
+prompts an agent that saw only this index opened 65-70% of the lessons judged
+relevant, and 51-59% of its picks were relevant. Injecting the lessons whose
+embedding is closest to the prompt reached 25% recall at 12% precision.
+
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
 `lesson_usage.use_count` for the returned lesson. Only foreground reads count:

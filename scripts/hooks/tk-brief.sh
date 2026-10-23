@@ -128,16 +128,21 @@ CONTEXT_BODY=$(printf '%s\n' "$OUTPUT" | awk -F'\t' '
 #      a normal chat with no indication that memory is loaded. Toggle
 #      off by setting THREADKEEPER_VISIBLE_STATUS="" if it breaks any
 #      client.
-#   3. 32 KB cap on additionalContext — picky UI parsers choke on huge
-#      injections.
+#   3. A 9 000-character cap on additionalContext, cut at a line break.
+#      Claude Code replaces hook output over 10 000 characters with a
+#      2 KB preview and a file path, so an oversized brief would hide most
+#      of the core rules from the model.
 python3 -c '
 import json, os, sys
 status = sys.argv[1]
 ctx = sys.argv[2]
 combined = (f"[{status}]\n\n" if status else "") + ctx
-MAX = 32 * 1024
+MAX = 9000
+NOTE = "\n…[brief trimmed to the CLI hook limit; call brief() for the rest]"
 if len(combined) > MAX:
-    combined = combined[:MAX] + "\n…[truncated by tk-brief hook]"
+    limit = MAX - len(NOTE)
+    cut = combined.rfind("\n", 0, limit)
+    combined = combined[:cut if cut > limit // 2 else limit] + NOTE
 out = {
     "hookSpecificOutput": {
         "hookEventName": "SessionStart",

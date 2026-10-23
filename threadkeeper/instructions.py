@@ -67,8 +67,11 @@ enough context:
 
 ## Procedural lessons
 
-At session start, call `lesson_list(query=<the opening request>)` to find the
-lessons most relevant to it, then use `lesson_get(slug)` for the useful ones.
+Every stored lesson title is listed in @~/.threadkeeper/lesson-index.md (a
+CLI that supports imports loads it with this file; otherwise read that file at
+session start). Each title is the rule. Before acting on a task, open the
+lessons whose title applies with `lesson_get(slug)`; `lesson_list(query=...)`
+ranks lessons by relevance when a title is not enough.
 When a substantive task produces a reusable class-level lesson, first call
 `lesson_neighbors(title, body, summary)`. If a neighbour already covers the
 rule, extend it with `lesson_patch`; otherwise call

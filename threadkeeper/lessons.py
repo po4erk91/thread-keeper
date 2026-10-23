@@ -166,11 +166,60 @@ def _lessons_file_lock(path: Path) -> Iterator[None]:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             yield
+            # Under the lock, so a slower writer never replaces the index
+            # with an older rendering.
+            refresh_lesson_index(path)
         finally:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             except OSError:
                 pass
+
+
+LESSON_INDEX_NAME = "lesson-index.md"
+
+_INDEX_HEADER = """\
+# thread-keeper lessons ({count})
+
+Each title is a stored rule. Before acting on a task, open the lessons whose
+title applies with lesson_get(slug); usually none, sometimes one or two.
+
+"""
+
+
+def lesson_index_path(path: Optional[Path] = None) -> Path:
+    """The lesson index file that sits next to lessons.md."""
+    return (path or _LESSONS_PATH).with_name(LESSON_INDEX_NAME)
+
+
+def render_lesson_index(slugs: list[str]) -> str:
+    return _INDEX_HEADER.format(count=len(slugs)) + "".join(
+        f"{slug}\n" for slug in sorted(slugs)
+    )
+
+
+def refresh_lesson_index(path: Optional[Path] = None) -> bool:
+    """Rewrite the lesson index when lessons.md is newer; True when written.
+
+    The managed instructions import the index, so every session sees each
+    stored rule by its title and opens the ones that apply. Agents rarely
+    search lessons on their own, and a ranked search by the prompt's
+    embedding was measured too noisy to inject automatically.
+    """
+    fp = path or _LESSONS_PATH
+    index = lesson_index_path(fp)
+    try:
+        if not fp.exists():
+            return False
+        if index.exists() and index.stat().st_mtime >= fp.stat().st_mtime:
+            return False
+        text = render_lesson_index([item["slug"] for item in iter_lessons(fp)])
+        staged = index.with_name(f"{index.name}.{os.getpid()}.tmp")
+        staged.write_text(text)
+        os.replace(staged, index)
+    except OSError:
+        return False
+    return True
 
 
 LESSON_DECAY_TAU_DAYS = 45

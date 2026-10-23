@@ -1495,6 +1495,17 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   foreground uses, views, and patches. The `skill_watcher` daemon catches
   external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
 
+- **Lesson index** — `_lessons_file_lock` calls `refresh_lesson_index()` before
+  it releases the lock, so every lesson write (append, patch, remove, restore,
+  origin backfill, wikilink rewrite) refreshes `lesson-index.md` next to
+  `lessons.md` when the store is newer than the index. The index is the
+  sorted list of lesson titles; the managed instructions import it with
+  `@~/.threadkeeper/lesson-index.md`, so the agent sees every stored rule by
+  title and pulls the full body with `lesson_get` only when one applies. The
+  prompt's own embedding is not used for injection: on 160 judged real prompts
+  it reached 25% recall at 12% precision, while title-based picks by the agent
+  reached 65-70% recall at 51-59% precision.
+
 - **lesson_usage telemetry (passive reads)** — a foreground `lesson_list(k=...)`
   records a `view_count` bump for each displayed lesson row; a foreground
   `lesson_get(slug)` records a `use_count` bump for the returned body. Reads
@@ -1784,6 +1795,9 @@ deployment](#cross-cli-deployment) below). The canonical wiring lives in
   injected separately: its sess/sem/db/thread-count line already appears in
   brief's `ctx` header. Additionally prints status
   `thread-keeper: ok threads_open=N closed_recent=M live_peers=K`.
+  The injected text is capped at 9 000 characters, cut at a line break with a
+  pointer to `brief()`: Claude Code replaces hook output over 10 000
+  characters with a 2 KB preview, which hid most core rules from the model.
   This removes the need to call `brief()` manually every time — the new Claude
   sees it right away. Mid-session, call `brief(query=..., scope="query")` to
   refresh only the live working set without re-injecting the static memory.
