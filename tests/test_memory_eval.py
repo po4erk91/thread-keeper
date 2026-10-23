@@ -87,6 +87,19 @@ def test_judge_lexical_abstention_rejects_unrelated_candidates():
     assert run.judge_lexical(item, "no_matches")[0] is True
 
 
+def test_lifecycle_score_penalizes_obsolete_evidence_alongside_current_fact():
+    run = _load_run_module()
+    score = run.lifecycle_score(
+        "memory-eval-river-otter plan=gold; prior memory-eval-river-otter plan=silver",
+        "memory-eval-river-otter plan=gold",
+        ["memory-eval-river-otter plan=bronze", "memory-eval-river-otter plan=silver"],
+    )
+    assert score["retrieval_credit"] == 1.0
+    assert score["negative_credit"] == -0.5
+    assert score["score"] == 0.5
+    assert score["obsolete_retrieved"] == ["memory-eval-river-otter plan=silver"]
+
+
 def test_replay_keeps_evidence_and_final_answer_separate():
     run = _load_run_module()
     item = {"gold_all": ["Stripe", "Sentry"]}
@@ -176,6 +189,22 @@ def test_smoke_golden_baseline_is_perfect(smoke_report):
     assert r["abstention"]["n"] >= 10  # abstention is the high-payoff axis
 
 
+def test_smoke_forgetting_lifecycle_is_clean_after_erasure_and_restart(smoke_report):
+    lifecycle = smoke_report["forgetting_lifecycle"]
+    assert lifecycle["verdict"] == "PASS", lifecycle["failures"]
+    assert lifecycle["release_threshold"] == 1.0
+    assert lifecycle["negative_credit_per_obsolete_fact"] == -0.5
+    stages = {stage["name"]: stage for stage in lifecycle["stages"]}
+    assert {"correction_1", "supersession_2", "consolidation", "source_forgetting", "restart"} <= set(stages)
+    assert any(
+        row["negative_credit"] < 0
+        for row in stages["correction_1"]["rows"]
+    )
+    for name in ("source_forgetting", "restart"):
+        assert stages[name]["score"] == 1.0
+        assert all(row["obsolete_retrieved"] == [] for row in stages[name]["rows"])
+
+
 def test_fts_matrix_covers_state_and_egress_safety_variants():
     """The fixed CI-safe matrix proves removed/disallowed memory stays absent.
 
@@ -224,6 +253,10 @@ def test_semantic_smoke_uses_hybrid_and_keeps_golden_recall():
     assert health["dialog_current"] == health["dialog_total"] > 0
     note_rows = [r for r in report["rows"] if r["system"] == "search"]
     assert note_rows and all(r["correct"] for r in note_rows)
+    lifecycle = report["forgetting_lifecycle"]
+    assert lifecycle["backend"] == "hybrid"
+    assert lifecycle["release_threshold"] == 1.0
+    assert lifecycle["verdict"] == "PASS", lifecycle["failures"]
 
 
 def test_llm_judge_without_key_exits_cleanly():

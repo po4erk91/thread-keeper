@@ -300,6 +300,68 @@ def _source_tokens(plan: ForgetPlan) -> set[str]:
     return {t for t in tokens if t}
 
 
+def _include_supersede_descendants(
+    conn: sqlite3.Connection,
+    claim_ids: set[str],
+    evidence_ids: set[str],
+) -> None:
+    """Add claims derived only through a forgotten supersession chain.
+
+    A replacement claim's seeded evidence points to the claim it supersedes.
+    Older stores use ``supersede:<old-id>`` and current stores use
+    ``claim:<old-id>``. Delete the descendant when every one of its evidence
+    rows is already selected; otherwise erase only its inherited evidence and
+    retain the independently supported current claim.
+    """
+    pending = set(claim_ids)
+    while pending:
+        sources = [
+            f"{prefix}:{claim_id}"
+            for claim_id in sorted(pending)
+            for prefix in ("supersede", "claim")
+        ]
+        pending = set()
+        descendants = _fetch_where_in(
+            conn,
+            "dialectic_evidence",
+            "source",
+            sources,
+            "claim_id",
+            cast=str,
+        )
+        evidence_ids.update(
+            _fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "source",
+                sources,
+                "id",
+                cast=str,
+            )
+        )
+        for claim_id in set(descendants) - claim_ids:
+            all_evidence_ids = set(_fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "claim_id",
+                [claim_id],
+                "id",
+                cast=str,
+            ))
+            if all_evidence_ids and all_evidence_ids.issubset(evidence_ids):
+                claim_ids.add(claim_id)
+                pending.add(claim_id)
+        for claim_id in pending:
+            evidence_ids.update(_fetch_where_in(
+                conn,
+                "dialectic_evidence",
+                "claim_id",
+                [claim_id],
+                "id",
+                cast=str,
+            ))
+
+
 def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
     if not _table_exists(conn, "dialectic_observations"):
         return
@@ -371,8 +433,31 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
                 cast=str,
             )
         )
+    _include_supersede_descendants(conn, claim_ids, evidence_ids)
     plan.evidence_ids = sorted(evidence_ids)
     plan.claim_ids = sorted(claim_ids)
+
+
+def _claims_with_independent_evidence(
+    conn: sqlite3.Connection,
+    plan: ForgetPlan,
+) -> list[tuple[str, str]]:
+    """Keep a surviving claim visible when it has non-forgotten evidence."""
+    if not plan.evidence_ids or not _table_exists(conn, "dialectic_evidence"):
+        return []
+    selected = _placeholders(len(plan.evidence_ids))
+    filters = [f"id NOT IN ({selected})"]
+    params: list[str] = [*plan.evidence_ids]
+    if plan.claim_ids:
+        deleted_claims = _placeholders(len(plan.claim_ids))
+        filters.append(f"claim_id NOT IN ({deleted_claims})")
+        params.extend(plan.claim_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT claim_id FROM dialectic_evidence "
+        f"WHERE {' AND '.join(filters)}",
+        params,
+    ).fetchall()
+    return [("claim", str(row["claim_id"])) for row in rows]
 
 
 def _extract_candidate_ids(conn: sqlite3.Connection, plan: ForgetPlan) -> list[int]:
@@ -785,6 +870,9 @@ def _recompute_claims(conn: sqlite3.Connection, claim_ids: set[str]) -> None:
 
 def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
     deleted: dict[str, int] = {}
+    from .identity import _ensure_session
+
+    _ensure_session(conn)
     conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -795,7 +883,9 @@ def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
         )
         from .authority import invalidate_descendants
         deleted["memory_authority_invalidated"] = invalidate_descendants(
-            conn, plan.authority_roots,
+            conn,
+            plan.authority_roots,
+            preserve=_claims_with_independent_evidence(conn, plan),
         )
         deleted["task_spool_paths"] = sum(
             1 for path in plan.task_spool_paths if _unlink_spool_path(path)

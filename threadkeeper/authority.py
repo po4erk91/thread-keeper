@@ -293,13 +293,15 @@ def invalidate_descendants(
     roots: Iterable[tuple[str, str]],
     *,
     reason: str = "forget",
+    preserve: Iterable[tuple[str, str]] = (),
 ) -> int:
-    """Quarantine roots and every reachable derived artifact."""
+    """Quarantine a forgotten derivation graph without hiding corroboration."""
     pending = list(dict.fromkeys((k, str(v)) for k, v in roots))
+    preserved = set((k, str(v)) for k, v in preserve)
     seen: set[tuple[str, str]] = set()
     while pending:
         kind, artifact_id = pending.pop()
-        if (kind, artifact_id) in seen:
+        if (kind, artifact_id) in seen or (kind, artifact_id) in preserved:
             continue
         seen.add((kind, artifact_id))
         rows = conn.execute(

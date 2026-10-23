@@ -18,6 +18,8 @@ It reports, over a fixed ground-truth set:
   • tokens-per-retrieval — mean / median / max tokens of what each query
                           returned, so recall is never read apart from cost
   • retrieval latency   — mean / p50 / p95 / max wall-clock milliseconds
+  • forgetting lifecycle — a full-store mutation sequence with explicit
+                         negative credit for obsolete evidence
 
 The default judge is **lexical** (deterministic, offline, no API key, no
 embeddings) so a single command is reproducible and CI-safe. ``--matrix``
@@ -45,6 +47,7 @@ temp DB, so the command is fully self-contained.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -60,6 +63,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 DEFAULT_GROUND_TRUTH = HERE / "ground_truth.json"
+DEFAULT_LIFECYCLE_FIXTURE = HERE / "lifecycle_fixture.json"
 
 # Subprocess runs set ``sys.path[0]`` to ``scripts/memory_eval`` rather than
 # the checkout root.  Prefer this checkout over any unrelated editable install
@@ -148,15 +152,36 @@ def _prepare_env(db_path: Path, semantic: bool) -> None:
 def _import_threadkeeper():
     """Import after _prepare_env. Returns the handful of modules we touch."""
     import threadkeeper.server  # noqa: F401  (registers tools + inits schema)
-    from threadkeeper import db, config, brief as brief_mod, embeddings
-    from threadkeeper.tools import dialog as dialog_tool, threads as threads_tool
+    from threadkeeper import db, config, brief as brief_mod, embeddings, identity
+    from threadkeeper.tools import (
+        consolidate as consolidate_tool,
+        dialog as dialog_tool,
+        dialectic as dialectic_tool,
+        forget as forget_tool,
+        lessons as lessons_tool,
+        style as style_tool,
+        threads as threads_tool,
+    )
     return {
         "db": db,
         "config": config,
         "brief": brief_mod,
         "embeddings": embeddings,
+        "identity": identity,
+        "open_thread": threads_tool.open_thread,
+        "note": threads_tool.note,
+        "brief_tool": threads_tool.brief,
         "dialog_search": dialog_tool.dialog_search,
         "search": threads_tool.search,
+        "verbatim_user": style_tool.verbatim_user,
+        "dialectic_claim": dialectic_tool.dialectic_claim,
+        "dialectic_evidence": dialectic_tool.dialectic_evidence,
+        "dialectic_supersede": dialectic_tool.dialectic_supersede,
+        "dialectic_synthesis": dialectic_tool.dialectic_synthesis,
+        "lesson_append": lessons_tool.lesson_append,
+        "lesson_get": lessons_tool.lesson_get,
+        "consolidate": consolidate_tool.consolidate,
+        "forget": forget_tool.forget,
     }
 
 
@@ -286,6 +311,286 @@ def retrieve(tk: dict, item: dict) -> str:
             conn, query=query, k=k, consumer_cli=item.get("consumer_cli"))
     # default: dialog_search
     return tk["dialog_search"](query=query, k=k, mode=item.get("mode", "hybrid"))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Forgetting lifecycle fixture — real writes followed by real reads
+# ──────────────────────────────────────────────────────────────────────────
+_LIFECYCLE_PATHS = {
+    "thread_notes": "search",
+    "verbatim_memory": "brief",
+    "dialectic_claims": "dialectic_synthesis",
+    "lessons_or_skills": "lesson_get",
+}
+
+
+def _require_write(result: str, operation: str) -> str:
+    """Return a successful tool result or fail the fixture at its write."""
+    if result.startswith("ERR") or result.startswith("error"):
+        raise RuntimeError(f"lifecycle {operation} failed: {result}")
+    return result
+
+
+def _result_value(result: str, key: str) -> str:
+    match = re.search(rf"\b{re.escape(key)}=([^\s]+)", result)
+    if not match:
+        raise RuntimeError(f"lifecycle result missing {key}: {result}")
+    return match.group(1)
+
+
+def _start_lifecycle_session(tk: dict) -> str:
+    """Start a distinct real session so forgetting can target its source."""
+    identity = tk["identity"]
+    identity._session_id = None
+    identity._session_start = None
+    return identity.ensure_session_started(client="memory-eval")
+
+
+def _write_fact(tk: dict, fixture: dict, thread_id: str, fact: str,
+                source: str) -> str:
+    """Write one assertion through the normal note, verbatim, and lesson tools."""
+    _require_write(tk["note"](thread_id, fact, kind="insight"), "note")
+    _require_write(tk["verbatim_user"](fact, thread_id), "verbatim_user")
+    _require_write(
+        tk["lesson_append"](
+            title=fixture["lesson_title"],
+            body=fact,
+            summary="Current lifecycle fixture value.",
+            source=source,
+        ),
+        "lesson_append",
+    )
+    with tk["db"].read_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM verbatim WHERE content=? AND session_id=? "
+            "ORDER BY id DESC LIMIT 1",
+            (fact, source),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("lifecycle verbatim source was not persisted")
+    return f"verbatim:{row['id']}"
+
+
+def _add_evidence(tk: dict, claim_id: str, fact: str, source: str) -> None:
+    _require_write(
+        tk["dialectic_evidence"](
+            claim_id=claim_id,
+            quote=fact,
+            source=source,
+        ),
+        "dialectic_evidence",
+    )
+
+
+def _supersede(tk: dict, claim_id: str, fact: str, domain: str) -> str:
+    result = asyncio.run(
+        tk["dialectic_supersede"](
+            old_claim_id=claim_id,
+            new_claim=fact,
+            domain=domain,
+            quote=fact,
+        )
+    )
+    return _result_value(_require_write(result, "dialectic_supersede"), "new")
+
+
+def lifecycle_score(context: str, current_fact: str,
+                    obsolete_facts: list[str]) -> dict:
+    """Score one retrieval path, penalizing obsolete evidence explicitly."""
+    lowered = context.lower()
+    current_recalled = current_fact.lower() in lowered
+    obsolete_retrieved = [
+        fact for fact in obsolete_facts if fact.lower() in lowered
+    ]
+    retrieval_credit = 1.0 if current_recalled else 0.0
+    negative_credit = -0.5 * len(obsolete_retrieved)
+    return {
+        "current_recalled": current_recalled,
+        "obsolete_retrieved": obsolete_retrieved,
+        "retrieval_credit": retrieval_credit,
+        "negative_credit": negative_credit,
+        "score": round(retrieval_credit + negative_credit, 3),
+    }
+
+
+def _read_lifecycle_surfaces(tk: dict, fixture: dict) -> dict[str, str]:
+    """Read every user-facing retrieval path used by the lifecycle score."""
+    query = fixture["query"]
+    return {
+        "brief": tk["brief_tool"](query=query, k=12),
+        "search": tk["search"](query=query, k=12),
+        "dialectic_synthesis": tk["dialectic_synthesis"](
+            domain=fixture["domain"], include_history=True
+        ),
+        "lesson_get": tk["lesson_get"](
+            fixture["lesson_title"].lower().replace(" ", "-")
+        ),
+    }
+
+
+def _capture_lifecycle_stage(stages: list[dict], fixture: dict, name: str,
+                             fact_index: int, expect_clean: bool,
+                             surfaces: dict[str, str]) -> None:
+    facts = fixture["facts"]
+    current_fact = facts[fact_index]
+    obsolete_facts = facts[:fact_index]
+    rows = []
+    for memory_class, path in _LIFECYCLE_PATHS.items():
+        row = lifecycle_score(surfaces[path], current_fact, obsolete_facts)
+        row.update({
+            "stage": name,
+            "memory_class": memory_class,
+            "retrieval_path": path,
+            "expect_clean": expect_clean,
+        })
+        rows.append(row)
+    stages.append({
+        "name": name,
+        "current_fact": current_fact,
+        "expect_clean": expect_clean,
+        "retrieval_paths": list(surfaces),
+        "score": round(statistics.fmean(row["score"] for row in rows), 3),
+        "rows": rows,
+    })
+
+
+def _restart_lifecycle_surfaces(db_path: Path, fixture_path: Path,
+                                semantic: bool) -> dict[str, str]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--lifecycle-read",
+        str(db_path),
+        "--lifecycle-fixture",
+        str(fixture_path),
+    ]
+    if semantic:
+        command.append("--semantic")
+    proc = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env=os.environ.copy(),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"lifecycle restart failed: {proc.stderr.strip() or proc.stdout.strip()}"
+        )
+    return json.loads(proc.stdout)["surfaces"]
+
+
+def evaluate_forgetting_lifecycle(tk: dict, fixture: dict, *, db_path: Path,
+                                  fixture_path: Path, semantic: bool) -> dict:
+    """Exercise corrections, supersession, consolidation, erasure, and restart.
+
+    The fixture writes through the same tools an agent uses. It intentionally
+    scores intermediate stale reads below one, then requires a clean score
+    after source forgetting and in a fresh process.
+    """
+    facts = fixture["facts"]
+    if len(facts) != 3:
+        raise ValueError("lifecycle fixture requires exactly three fact versions")
+    stages: list[dict] = []
+
+    erased_source = _start_lifecycle_session(tk)
+    thread_id = _require_write(
+        tk["open_thread"]("Track the lifecycle subscription plan"), "open_thread"
+    )
+    first_source = _write_fact(
+        tk, fixture, thread_id, facts[0], erased_source
+    )
+    first_claim = _result_value(
+        _require_write(
+            tk["dialectic_claim"](facts[0], domain=fixture["domain"]),
+            "dialectic_claim",
+        ),
+        "id",
+    )
+    _add_evidence(tk, first_claim, facts[0], first_source)
+    _add_evidence(tk, first_claim, facts[0], first_source)
+    _capture_lifecycle_stage(
+        stages, fixture, "assert", 0, False, _read_lifecycle_surfaces(tk, fixture)
+    )
+
+    _write_fact(tk, fixture, thread_id, facts[1], erased_source)
+    _require_write(tk["verbatim_user"](facts[1], thread_id), "verbatim_duplicate")
+    _capture_lifecycle_stage(
+        stages, fixture, "correction_1", 1, False,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+    second_claim = _supersede(tk, first_claim, facts[1], fixture["domain"])
+    _add_evidence(tk, second_claim, facts[1], first_source)
+    _capture_lifecycle_stage(
+        stages, fixture, "supersession_1", 1, False,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+
+    current_source = _start_lifecycle_session(tk)
+    current_source_ref = _write_fact(
+        tk, fixture, thread_id, facts[2], current_source
+    )
+    _capture_lifecycle_stage(
+        stages, fixture, "correction_2", 2, False,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+    third_claim = _supersede(tk, second_claim, facts[2], fixture["domain"])
+    _add_evidence(tk, third_claim, facts[2], current_source_ref)
+    _add_evidence(tk, third_claim, facts[2], current_source_ref)
+    _capture_lifecycle_stage(
+        stages, fixture, "supersession_2", 2, False,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+
+    consolidation = _require_write(
+        tk["consolidate"](dry_run=False), "consolidate"
+    )
+    if "dedupe=1" not in consolidation:
+        raise RuntimeError(f"lifecycle consolidation did not dedupe: {consolidation}")
+    _capture_lifecycle_stage(
+        stages, fixture, "consolidation", 2, False,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+
+    forgotten = _require_write(
+        tk["forget"](
+            selector=erased_source,
+            selector_type="session_id",
+            dry_run=False,
+        ),
+        "forget",
+    )
+    if "mode=applied" not in forgotten:
+        raise RuntimeError(f"lifecycle forgetting did not apply: {forgotten}")
+    _capture_lifecycle_stage(
+        stages, fixture, "source_forgetting", 2, True,
+        _read_lifecycle_surfaces(tk, fixture),
+    )
+    restart_surfaces = _restart_lifecycle_surfaces(db_path, fixture_path, semantic)
+    _capture_lifecycle_stage(
+        stages, fixture, "restart", 2, True, restart_surfaces
+    )
+
+    backend = "hybrid" if tk["config"].SEMANTIC_AVAILABLE else "fts"
+    threshold = float(fixture["release_thresholds"][backend])
+    rows = [row for stage in stages for row in stage["rows"]]
+    failures = [
+        row for row in rows
+        if row["expect_clean"] and row["score"] < threshold
+    ]
+    return {
+        "fixture": fixture["id"],
+        "backend": backend,
+        "release_threshold": threshold,
+        "negative_credit_per_obsolete_fact": -0.5,
+        "score": round(
+            statistics.fmean(row["score"] for row in rows if row["expect_clean"]),
+            3,
+        ),
+        "verdict": "PASS" if not failures else "FAIL",
+        "failures": failures,
+        "stages": stages,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -716,6 +1021,20 @@ def format_report(report: dict) -> str:
         r for r in report.get("rows", [])
         if not r["correct"] or not r["final_answer_correct"]
     ]
+    lifecycle = report.get("forgetting_lifecycle")
+    if lifecycle:
+        out.append("")
+        out.append(
+            "forgetting lifecycle: "
+            f"{lifecycle['verdict']} score={lifecycle['score']:.1%} "
+            f"threshold={lifecycle['release_threshold']:.1%} "
+            f"backend={lifecycle['backend']}"
+        )
+        for failure in lifecycle["failures"]:
+            out.append(
+                f"  ✗ {failure['stage']} [{failure['memory_class']}] "
+                f"obsolete={len(failure['obsolete_retrieved'])}"
+            )
     if fails:
         out.append("")
         out.append(f"failures ({len(fails)}):")
@@ -728,6 +1047,13 @@ def format_report(report: dict) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────
+def _prepare_lifecycle_storage(db_path: Path) -> None:
+    """Keep the mutation fixture's file-backed lesson store inside its temp DB."""
+    os.environ["THREADKEEPER_LESSONS"] = str(
+        db_path.parent / "memory-eval-lifecycle-lessons.md"
+    )
+
+
 def evaluate_matrix(args: argparse.Namespace) -> dict:
     """Run the fixed migration matrix in isolated processes.
 
@@ -863,10 +1189,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="exit non-zero when stable corpus thresholds or safety checks fail.")
     ap.add_argument("--json", action="store_true",
                     help="emit the full report as JSON instead of a table.")
+    ap.add_argument("--lifecycle-fixture", type=Path,
+                    default=DEFAULT_LIFECYCLE_FIXTURE,
+                    help="frozen full-store mutation fixture.")
+    ap.add_argument("--lifecycle-read", type=Path, metavar="DB",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     if args.semantic and args.backend == "fts":
         ap.error("--semantic conflicts with --backend fts")
+    semantic = args.semantic or args.backend == "hybrid"
     if args.matrix:
         try:
             matrix = evaluate_matrix(args)
@@ -879,13 +1211,20 @@ def main(argv: list[str] | None = None) -> int:
             print(format_matrix_report(matrix))
         return 0 if not args.strict or matrix["thresholds_pass"] else 1
 
+    if args.lifecycle_read:
+        fixture = json.loads(args.lifecycle_fixture.read_text())
+        _prepare_lifecycle_storage(args.lifecycle_read)
+        _prepare_env(args.lifecycle_read, semantic=semantic)
+        tk = _import_threadkeeper()
+        print(json.dumps({"surfaces": _read_lifecycle_surfaces(tk, fixture)}))
+        return 0
+
     try:
         gt = json.loads(Path(args.ground_truth).read_text())
     except (OSError, json.JSONDecodeError) as e:
         message = "private holdout could not be read" if args.private_holdout else str(e)
         print(f"ERR: {message}", file=sys.stderr)
         return 2
-    semantic = args.semantic or args.backend == "hybrid"
 
     tmpdir = Path(tempfile.mkdtemp(prefix="tk-memeval-"))
     try:
@@ -902,6 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path = tmpdir / "demo.sqlite"
             seed = True
 
+        _prepare_lifecycle_storage(db_path)
         _prepare_env(db_path, semantic=semantic)
         tk = _import_threadkeeper()
         if semantic and not tk["config"].SEMANTIC_AVAILABLE:
@@ -933,10 +1273,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERR: {e}", file=sys.stderr)
             return 3
 
+        fixture = json.loads(args.lifecycle_fixture.read_text())
+        report["forgetting_lifecycle"] = evaluate_forgetting_lifecycle(
+            tk,
+            fixture,
+            db_path=db_path,
+            fixture_path=args.lifecycle_fixture,
+            semantic=semantic,
+        )
+
         if args.json:
             print(json.dumps(report, indent=2))
         else:
             print(format_report(report))
+        if report["forgetting_lifecycle"]["verdict"] != "PASS":
+            return 4
         return 0 if not args.strict or report["thresholds_pass"] else 1
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
