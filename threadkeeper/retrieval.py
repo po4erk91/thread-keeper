@@ -13,6 +13,7 @@ from typing import Literal
 from . import config
 from .embeddings import _cosine_search, _dialog_cosine_search, _fts_search
 from .helpers import _fts_query
+from .project_scope import current_project_id, recall_allowed
 
 # Normalized MiniLM cosine below this level is generally nearest-neighbour
 # noise. Apply the threshold to raw dense evidence (never to RRF scores), so a
@@ -31,6 +32,8 @@ class Candidate:
     session_id: str | None = None
     role: str | None = None
     project: str | None = None
+    project_id: str | None = None
+    memory_scope: str | None = None
     dense_score: float | None = None
     lexical_score: float | None = None
     fused_score: float | None = None
@@ -50,6 +53,7 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
     def _run(match_query: str):
         return conn.execute(
             "SELECT n.id, n.thread_id, n.kind, n.content, n.created_at, "
+            "       n.project_id, n.memory_scope, "
             "       bm25(notes_fts) AS lexical_score "
             # notes_fts is external-content keyed on notes.rowid (content_rowid);
             # join on rowid, NOT n.id — post-migration n.id is a TEXT ULID while
@@ -74,6 +78,8 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
             created_at=row["created_at"],
             thread_id=row["thread_id"],
             kind=row["kind"],
+            project_id=row["project_id"],
+            memory_scope=row["memory_scope"],
             lexical_score=float(row["lexical_score"]),
             matched_by={"fts"},
         )
@@ -93,6 +99,8 @@ def _notes_dense_search(conn: sqlite3.Connection, query: str,
             created_at=row["created_at"],
             thread_id=row["thread_id"],
             kind=row["kind"],
+            project_id=row.get("project_id"),
+            memory_scope=row.get("memory_scope", "project"),
             dense_score=float(row["score"]),
             matched_by={"dense"},
         )
@@ -113,6 +121,8 @@ def _dialogs_fts_search(conn: sqlite3.Connection, query: str, k: int,
             session_id=row.get("session_id"),
             role=row.get("role"),
             project=row.get("project"),
+            project_id=row.get("project_id"),
+            memory_scope=row.get("memory_scope", "project"),
             lexical_score=(float(row["lexical_score"])
                            if row.get("lexical_score") is not None else None),
             matched_by={"fts"},
@@ -135,6 +145,8 @@ def _dialogs_dense_search(conn: sqlite3.Connection, query: str, k: int,
             session_id=row.get("session_id"),
             role=row.get("role"),
             project=row.get("project"),
+            project_id=row.get("project_id"),
+            memory_scope=row.get("memory_scope", "project"),
             dense_score=float(row["score"]),
             matched_by={"dense"},
         )
@@ -170,8 +182,17 @@ def _fuse(lists: list[list[Candidate]], *, top_n: int,
     return out
 
 
+def _visible(candidates: list[Candidate], *, current: str | None,
+             cross_project: bool) -> list[Candidate]:
+    return [
+        candidate for candidate in candidates
+        if recall_allowed(candidate.memory_scope, candidate.project_id,
+                          current=current, cross_project=cross_project)
+    ]
+
+
 def retrieve_notes(conn: sqlite3.Connection, query: str, k: int = 5,
-                   mode: str = "hybrid") -> list[Candidate]:
+                   mode: str = "hybrid", cross_project: bool = False) -> list[Candidate]:
     mode = mode.strip().lower()
     if mode not in {"hybrid", "semantic", "fts"}:
         raise ValueError(f"unsupported retrieval mode: {mode}")
@@ -184,15 +205,18 @@ def retrieve_notes(conn: sqlite3.Connection, query: str, k: int = 5,
         _notes_fts_search(conn, query, over_fetch)
         if mode in {"hybrid", "fts"} else []
     )
+    current = current_project_id()
     if mode == "semantic":
-        return dense[:k]
+        return _visible(dense, current=current, cross_project=cross_project)[:k]
     if mode == "fts":
-        return lexical[:k]
-    return _fuse([dense, lexical], top_n=k)
+        return _visible(lexical, current=current, cross_project=cross_project)[:k]
+    return _visible(_fuse([dense, lexical], top_n=over_fetch),
+                    current=current, cross_project=cross_project)[:k]
 
 
 def retrieve_dialogs(conn: sqlite3.Connection, query: str, k: int = 5,
-                     role: str = "", mode: str = "hybrid") -> list[Candidate]:
+                     role: str = "", mode: str = "hybrid",
+                     cross_project: bool = False) -> list[Candidate]:
     mode = mode.strip().lower()
     if mode not in {"hybrid", "semantic", "fts"}:
         raise ValueError(f"unsupported retrieval mode: {mode}")
@@ -206,8 +230,10 @@ def retrieve_dialogs(conn: sqlite3.Connection, query: str, k: int = 5,
         _dialogs_fts_search(conn, query, over_fetch, role=role)
         if mode in {"hybrid", "fts"} else []
     )
+    current = current_project_id()
     if mode == "semantic":
-        return dense[:k]
+        return _visible(dense, current=current, cross_project=cross_project)[:k]
     if mode == "fts":
-        return lexical[:k]
-    return _fuse([dense, lexical], top_n=k)
+        return _visible(lexical, current=current, cross_project=cross_project)[:k]
+    return _visible(_fuse([dense, lexical], top_n=over_fetch),
+                    current=current, cross_project=cross_project)[:k]

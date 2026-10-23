@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 _FAKE_CID = "aaaa1111-2222-3333-4444-555566667777"
 
@@ -67,7 +69,20 @@ def _bootstrap(
         "_fetch_open_prs": evolve_applier._fetch_open_prs,
         "_comment_issue_claim": evolve_applier._comment_issue_claim,
         "_git_worktree_precondition": evolve_applier._git_worktree_precondition,
+        "_run_landing_gh": evolve_applier._run_landing_gh,
+        "_gh_viewer_login": evolve_applier._gh_viewer_login,
     }
+    # PR landing writes (merge / update-branch / branch delete) never reach a
+    # real gh in unit tests; landing tests install capturing fakes instead.
+    monkeypatch.setattr(
+        evolve_applier, "_run_landing_gh",
+        lambda cmd, repo_root, what: "gh_disabled_in_tests",
+    )
+    # The account `gh` acts as: the owner of the `_pr()` fixtures below.
+    monkeypatch.setattr(
+        evolve_applier, "_gh_viewer_login",
+        lambda repo_root=None: ("po4erk91", ""),
+    )
     monkeypatch.setattr(
         evolve_applier, "_fetch_open_issues",
         lambda repo_root=None: ([], ""),
@@ -160,7 +175,7 @@ def _add_evolve(conn, suggestion, rationale=None, applied=0, status="pending",
 def _mock_spawn(monkeypatch, calls):
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: calls.update(kw)
         or "ok task=tk_ap pid=1 child_cid=abcd1234 parent_cid=ef567890",
     )
@@ -236,27 +251,37 @@ def _rest_issue(number, title=None, labels=("roadmap",),
 
 
 def _pr(number, title=None, head=None, merge_state="DIRTY",
-        mergeable="CONFLICTING", cross_repo=False, draft=False):
+        mergeable="CONFLICTING", cross_repo=False, draft=False, base="main",
+        author="po4erk91"):
     return {
         "number": number,
         "title": title or f"PR {number}",
         "url": f"https://github.com/o/r/pull/{number}",
         "headRefName": head or f"roadmap/issue-{number}-thing-abcdef",
-        "baseRefName": "main",
+        "headRefOid": f"{number:040x}",
+        "baseRefName": base,
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "mergeable": mergeable,
         "isCrossRepository": cross_repo,
         "headRepository": {"nameWithOwner": "o/r"},
         "headRepositoryOwner": {"login": "o"},
-        "author": {"login": "po4erk91"},
+        "author": {"login": author},
     }
 
 
-def _claim_comment(created_at="2026-06-14T12:00:00Z"):
+def _claim_comment(
+    created_at="2026-06-14T12:00:00Z",
+    author_association="OWNER",
+    author_login="maintainer",
+    url="",
+):
     return {
         "body": "<!-- thread-keeper:evolve-applier-claim -->\nclaimed",
         "createdAt": created_at,
+        "authorAssociation": author_association,
+        "authorLogin": author_login,
+        "url": url,
     }
 
 
@@ -317,11 +342,12 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert 'git commit -m "<type>: <short imperative summary>"' in p
     assert 'gh pr create --title "<type>: <short>"' in p
     branch = pkg["ea"].branch_name(eid, "add a failed_paths field per thread")
+    base_ref = pkg["ea"]._base_ref()
     assert "git fetch origin" in p
     assert f"refs/heads/{branch}" in p
     assert f"refs/remotes/origin/{branch}" in p
-    assert f"git checkout -b {branch} origin/main" in p
-    assert f"git rebase origin/main" in p
+    assert f"git checkout -b {branch} {base_ref}" in p
+    assert f"git rebase {base_ref}" in p
     assert p.index("PREPARE OR RESUME THE FEATURE BRANCH") < p.index(
         "READ threadkeeper/brief.py"
     )
@@ -337,6 +363,21 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     assert conn.execute(
         "SELECT applied FROM evolve WHERE id=?", (eid,)
     ).fetchone()["applied"] == 0
+
+
+def test_apply_evolve_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    eid = _add_evolve(conn, "retry legacy evolve", status="promoted")
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_evolve(eid)
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
 
 
 def test_apply_curator_report_builds_evolve_applier_spawn(
@@ -363,12 +404,11 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert calls["cwd"] == str(pkg["ea"]._repo_root())
     assert "Do not open a thread" in calls["append_system"]
     tools = calls["extra_allowed_tools"]
-    assert "lesson_remove" in tools
-    assert "lesson_append" in tools
+    assert "lesson_remove" not in tools
+    assert "lesson_patch" in tools
     assert "skill_manage" in tools
     assert "evolve_mark_curator_report_applied" in tools
     assert "Bash" not in tools and "Edit" not in tools
-
     prompt = calls["prompt"]
     assert "Curator REPORT" in prompt
     assert str(report.resolve()) in prompt
@@ -377,6 +417,20 @@ def test_apply_curator_report_builds_evolve_applier_spawn(
     assert "NEVER touch entries marked [PROTECTED]" in prompt
     assert "Do not use Bash" in prompt
     assert "gh pr create" not in prompt
+
+
+def test_apply_curator_report_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    report = _write_report(pkg)
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_curator_report(str(report))
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
 
 
 def test_authorized_curator_report_writer_is_applied_once(
@@ -395,7 +449,19 @@ def test_authorized_curator_report_writer_is_applied_once(
     report_name = f"REPORT-{pass_id}.md"
     monkeypatch.setenv(PASS_ID_ENV, pass_id)
     conn = pkg["db"].get_db()
-    curator._authorize_curator_report(conn, int(time.time()), pass_id, report_name)
+    launch = curator._new_curator_launch(pass_id, None, 0, 0)
+    conn.execute(
+        "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
+        "started_at, role, write_origin) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "tk_curator_report", 1, "parent", _FAKE_CID, str(tmp_path),
+            "curator assignment", int(time.time()), "curator", "curator",
+        ),
+    )
+    curator._record_curator_child_launch(
+        conn, launch, "tk_curator_report", _FAKE_CID,
+    )
+    conn.commit()
     write_report = _tool(pkg, "curator_report_write")
     assert write_report(
         pass_id=pass_id,
@@ -416,6 +482,45 @@ def test_authorized_curator_report_writer_is_applied_once(
         f"ERR report_already_applied={report_name}"
     )
     assert f"REPORT_SHA256\n-------------\n{digest}" in calls["prompt"]
+
+
+def test_pending_curator_reports_enumerates_every_batch_in_one_pass(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    pass_id = "manifest-pass"
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO curator_passes "
+        "(pass_id, inventory_fingerprint, expected_batches, mode, "
+        "audit_manifest_path, created_at, updated_at, completed_at, endorsed_at) "
+        "VALUES (?, 'a', 2, 'advisory', '/tmp/audit.json', ?, ?, ?, ?)",
+        (pass_id, now, now, now, now),
+    )
+    conn.commit()
+    reports = [
+        _write_report(pkg, name=f"REPORT-{pass_id}-batch-{index:03d}-of-002.md")
+        for index in (1, 2)
+    ]
+    for index, report in enumerate(reports, start=1):
+        conn.execute(
+            "INSERT INTO curator_batches "
+            "(pass_id, batch_index, report_name, state, completed_at, "
+            "provenance_sha256) VALUES (?, ?, ?, 'complete', ?, ?)",
+            (
+                pass_id, index, report.name, now,
+                pkg["ea"].curator_report_sha256(report.read_text()),
+            ),
+        )
+    conn.commit()
+
+    assert pkg["ea"]._pending_curator_reports(conn) == reports
+    first_digest = pkg["ea"].curator_report_sha256(reports[0].read_text())
+    assert pkg["ea"].mark_curator_report_applied(
+        conn, str(reports[0]), first_digest, "handled first batch",
+    ).endswith("applied=1")
+    assert pkg["ea"]._pending_curator_reports(conn) == [reports[1]]
 
 
 def test_apply_curator_report_requires_complete_unapplied_report(
@@ -891,7 +996,7 @@ def test_apply_roadmap_issue_exact_reports_denylisted_label(
         raise AssertionError("denylisted exact issue must not spawn")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=1)
 
@@ -1049,6 +1154,7 @@ def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
     assert "mergeStateStatus" in joined
     assert "mergeable" in joined
     assert "isCrossRepository" in joined
+    assert "headRefOid" in joined
     assert "--limit 1000" in joined
 
 
@@ -1078,14 +1184,367 @@ def test_apply_conflicted_pr_builds_repair_spawn(tmp_path, monkeypatch):
     assert "git checkout -B roadmap/issue-44-fix origin/roadmap/issue-44-fix" in prompt
     assert "git merge --no-edit origin/main" in prompt
     assert "git push origin roadmap/issue-44-fix" in prompt
-    assert "gh pr checks 44 --watch --fail-fast" in prompt
-    assert "gh pr merge 44 --squash --delete-branch" in prompt
+    # Landing is the parent's job now: the child pushes and stops.
+    assert "Do NOT run `gh pr merge`" in prompt
+    assert "gh pr merge 44" not in prompt
+    assert "gh pr checks 44 --watch" not in prompt
     assert "--auto" not in prompt
     assert "gh pr create" not in prompt
-    assert "Never run `git push origin main` directly" in prompt
+    assert "Never push to main and never merge the PR" in prompt
     assert "evolve_mark_roadmap_issue_applied" not in tools
     assert "evolve_mark_applied" not in tools
     assert "Do NOT call" in prompt
+
+
+def test_apply_conflicted_pr_reports_returned_spawn_error(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_pr(44, "Resolve roadmap branch", head="roadmap/issue-44-fix")],
+            "",
+        ),
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_conflicted_pr()
+
+    assert out == "spawn_error conflicted_pr=#44: spawn_reservation_failed=busy"
+
+
+# ── PR landing sweep: merge green applier PRs, update behind ones ──────────
+
+def _green(number, **kw):
+    return _pr(number, merge_state="CLEAN", mergeable="MERGEABLE", **kw)
+
+
+def _behind(number, **kw):
+    return _pr(number, merge_state="BEHIND", mergeable="MERGEABLE", **kw)
+
+
+def _fake_landing_gh(monkeypatch, pkg, results=None):
+    """Capture landing `gh api` writes. `results` maps a substring of the
+    command to the error the fake returns; anything else succeeds."""
+    calls = []
+
+    def _fake(cmd, repo_root, what):
+        calls.append((what, cmd))
+        joined = " ".join(cmd)
+        for needle, err in (results or {}).items():
+            if needle in joined:
+                return err
+        return ""
+
+    monkeypatch.setattr(pkg["ea"], "_run_landing_gh", _fake)
+    return calls
+
+
+def test_pr_landing_action_lands_only_the_owners_prs(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+
+    def action(pr, owner="po4erk91"):
+        return pkg["ea"]._pr_landing_action(pr, owner)
+
+    assert action(_pr(1)) == "repair"
+    assert action(_behind(2)) == "update"
+    assert action(_green(3)) == "merge"
+    assert action(_pr(4, merge_state="HAS_HOOKS", mergeable="MERGEABLE")) == (
+        "merge"
+    )
+    # Pending/red checks, unstable, and not-yet-computed states wait.
+    for state in ("BLOCKED", "UNSTABLE", "UNKNOWN", ""):
+        assert action(_pr(5, merge_state=state, mergeable="MERGEABLE")) == (
+            "wait"
+        )
+    assert action(_green(6, draft=True)) == "wait"
+    assert action(_green(7, base="release")) == "wait"
+    headless = _green(8)
+    headless["headRefOid"] = ""
+    assert action(headless) == "wait"
+    # Any green own PR lands, not only applier branches; but the privileged
+    # repair child never takes a hand-made branch.
+    assert action(_green(9, head="docs/roadmap-audit-2026-10-10")) == "merge"
+    assert action(_green(10, head="fix/manual", cross_repo=True)) == "merge"
+    assert action(_pr(11, head="fix/manual")) == "wait"
+    assert action(_pr(12, cross_repo=True)) == "wait"
+    # Another account's PR is never touched, whatever its branch or state.
+    assert action(_green(13, author="collaborator")) == ""
+    assert action(_pr(14, author="collaborator")) == ""
+    assert action(_behind(15, author="app/dependabot")) == ""
+    assert action(_green(16, author="PO4ERK91")) == "merge"
+    assert action(_green(17), owner="") == ""
+
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTOLAND", False)
+    assert action(_green(3)) == "wait"
+    assert action(_behind(2)) == "wait"
+    assert action(_pr(1)) == "repair"
+
+
+def test_applier_pr_queue_fails_closed_without_the_owner_login(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(
+        ea, "_fetch_open_prs",
+        lambda repo_root=None: (
+            [_green(2), _pr(1), _green(3, author="collaborator")], "",
+        ),
+    )
+
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert [(a, int(pr["number"])) for a, pr in queue] == [
+        ("repair", 1), ("merge", 2),
+    ]
+
+    monkeypatch.setattr(
+        ea, "_gh_viewer_login",
+        lambda repo_root=None: ("", "gh_viewer_failed: HTTP 401"),
+    )
+    assert ea._applier_pr_queue() == ([], "gh_viewer_failed: HTTP 401")
+
+
+def test_gh_viewer_login_reads_and_caches_the_gh_account(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Po4erk91\n", "")
+
+    monkeypatch.setattr(ea.subprocess, "run", _run)
+    viewer = pkg["orig"]["_gh_viewer_login"]
+
+    assert viewer(tmp_path) == ("po4erk91", "")
+    assert viewer(tmp_path) == ("po4erk91", "")
+    gh_calls = [cmd for cmd in calls if cmd[:2] == ["gh", "api"]]
+    assert gh_calls == [["gh", "api", "user", "--jq", ".login"]]
+
+
+def test_land_applier_prs_merges_oldest_green_then_updates_next(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    queue = [
+        ("merge", _green(
+            10, title="feat: ten", head="roadmap/issue-10-x-aaaaaa",
+        )),
+        ("merge", _green(11, head="evolve/apply-11-y")),
+        ("update", _behind(12)),
+    ]
+
+    out = ea._land_applier_prs(conn, queue, tmp_path)
+
+    assert out == "merged=#10 updated=#11"
+    assert [what for what, _cmd in calls] == [
+        "merge", "delete_branch", "update_branch",
+    ]
+    merge_cmd = calls[0][1]
+    assert merge_cmd[:4] == ["gh", "api", "-X", "PUT"]
+    assert "repos/{owner}/{repo}/pulls/10/merge" in merge_cmd
+    assert "merge_method=squash" in merge_cmd
+    assert f"sha={10:040x}" in merge_cmd
+    assert "commit_title=feat: ten (#10)" in merge_cmd
+    assert calls[1][1][:4] == ["gh", "api", "-X", "DELETE"]
+    assert calls[1][1][-1] == (
+        "repos/{owner}/{repo}/git/refs/heads/roadmap/issue-10-x-aaaaaa"
+    )
+    # #11 was green before #10 merged; strict protection makes it behind now,
+    # and only one PR is updated per sweep.
+    update_cmd = calls[2][1]
+    assert "repos/{owner}/{repo}/pulls/11/update-branch" in update_cmd
+    assert f"expected_head_sha={11:040x}" in update_cmd
+    rows = conn.execute(
+        "SELECT target, summary FROM events WHERE kind=? ORDER BY id",
+        (ea.PR_LANDING_KIND,),
+    ).fetchall()
+    assert [(r["target"], r["summary"].split()[0]) for r in rows] == [
+        ("10", "merged"), ("11", "updated"),
+    ]
+
+
+def test_land_applier_prs_falls_through_refused_merge_and_current_branch(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _fake_landing_gh(monkeypatch, pkg, {
+        "pulls/20/merge": (
+            "gh_merge_failed: Base branch was modified. (HTTP 405)"
+        ),
+        "pulls/20/update-branch": (
+            "gh_update_branch_failed: There are no new commits on the base "
+            "branch. (HTTP 422)"
+        ),
+    })
+    queue = [
+        ("merge", _green(20)),
+        ("merge", _green(21)),
+        ("update", _behind(22)),
+    ]
+
+    out = pkg["ea"]._land_applier_prs(conn, queue, tmp_path)
+
+    # A refused merge does not starve the next green PR, and an update that
+    # finds the branch already current moves on to the next candidate.
+    assert out == "merge_failed=#20 merged=#21 updated=#22"
+
+
+def test_merge_never_deletes_a_fork_or_base_branch(tmp_path, monkeypatch):
+    """A fork's head branch is not ours: deleting `heads/<name>` here would
+    hit an unrelated same-named branch of this repository."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    merge = pkg["ea"]._merge_applier_pr
+
+    assert merge(_green(80, head="fix/x", cross_repo=True), tmp_path) == ""
+    assert merge(_green(81, head="main"), tmp_path) == ""
+    assert [what for what, _cmd in calls] == ["merge", "merge"]
+
+
+def test_land_applier_prs_stops_on_github_cooldown(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    calls = _fake_landing_gh(
+        monkeypatch, pkg, {"pulls/40/merge": "github_cooldown"}
+    )
+    queue = [("merge", _green(40)), ("update", _behind(41))]
+
+    out = pkg["ea"]._land_applier_prs(conn, queue, tmp_path)
+
+    assert out == "github_cooldown"
+    assert [what for what, _cmd in calls] == ["merge"]
+
+
+def test_run_landing_gh_maps_cooldown_and_gh_errors(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    results = iter([
+        subprocess.CompletedProcess([], ea.GITHUB_RATE_COOLDOWN_EXIT, "", ""),
+        subprocess.CompletedProcess(
+            [], 1, "",
+            "gh: There are no new commits on the base branch. (HTTP 422)\n",
+        ),
+        subprocess.CompletedProcess([], 0, "{}", ""),
+    ])
+    monkeypatch.setattr(ea.subprocess, "run", lambda cmd, **kw: next(results))
+    real = pkg["orig"]["_run_landing_gh"]
+    monkeypatch.setattr(ea, "_run_landing_gh", real)
+
+    assert real(["gh", "api"], tmp_path, "merge") == "github_cooldown"
+    assert ea._update_applier_pr_branch(_behind(70), tmp_path) == (
+        "no_new_commits"
+    )
+    assert real(["gh", "api"], tmp_path, "merge") == ""
+
+
+def test_run_apply_pass_lands_green_pr_and_still_takes_new_work(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: ([_green(50)], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+    assert [what for what, _cmd in landing] == ["merge", "delete_branch"]
+
+
+def test_run_apply_pass_repairs_from_snapshot_after_landing_merge(
+    tmp_path, monkeypatch,
+):
+    """Right after a landing merge GitHub may report UNKNOWN while it
+    recomputes mergeability; the repair must still dispatch this pass."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    snapshots = iter([
+        [_green(50), _pr(51, head="roadmap/issue-51-conflict-aaaaaa")],
+    ])
+    recomputing = [_pr(51, merge_state="UNKNOWN", mergeable="UNKNOWN")]
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs",
+        lambda repo_root=None: (next(snapshots, recomputing), ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert [what for what, _cmd in landing] == ["merge", "delete_branch"]
+    assert out.startswith("spawned conflicted_pr=#51"), out
+    assert "PULL REQUEST #51" in calls["prompt"]
+
+
+def test_run_evolve_landing_pass_gates_and_lands(tmp_path, monkeypatch):
+    import os
+
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        ea, "_fetch_open_prs", lambda repo_root=None: ([_green(60)], ""),
+    )
+    landing = _fake_landing_gh(monkeypatch, pkg)
+
+    monkeypatch.setattr(ea, "EVOLVE_AUTOLAND", False)
+    assert ea.run_evolve_landing_pass() == "autoland_off"
+    monkeypatch.setattr(ea, "EVOLVE_AUTOLAND", True)
+
+    # Never race a repair child that may be mid-push.
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at) "
+        "VALUES (?,?,?,?,?)",
+        ("tk_rep", os.getpid(), "/tmp",
+         ea.EVOLVE_APPLY_PROMPT_PREFIX + " repairing", int(time.time())),
+    )
+    conn.commit()
+    assert ea.run_evolve_landing_pass() == "git_writer_running n=1"
+    assert landing == []
+    conn.execute(
+        "UPDATE tasks SET ended_at=? WHERE id='tk_rep'", (int(time.time()),)
+    )
+    conn.commit()
+
+    assert ea.run_evolve_landing_pass() == "merged=#60"
+    monkeypatch.setattr(ea, "EVOLVE_APPLY_INTERVAL_S", 0)
+    assert ea.run_evolve_landing_pass() == "disabled"
+
+
+def test_serve_tick_runs_landing_sweep_between_due_passes(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    monkeypatch.setattr(
+        ea, "run_evolve_apply_pass", lambda force=False: "full",
+    )
+    monkeypatch.setattr(ea, "run_evolve_landing_pass", lambda: "landing")
+
+    monkeypatch.setattr(ea, "_pass_due", lambda conn, now_t: True)
+    assert ea._serve_tick() == "full"
+    monkeypatch.setattr(ea, "_pass_due", lambda conn, now_t: False)
+    assert ea._serve_tick() == "landing"
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
@@ -1123,15 +1582,52 @@ def test_apply_roadmap_issue_builds_evolve_applier_spawn(
     assert "evolve_mark_roadmap_issue_applied" in prompt
     assert "THREADKEEPER_NO_EMBEDDINGS" in prompt
     assert "<!-- thread-keeper:evolve-applier-claim -->" in prompt
+    assert "Releasing is part of EVERY implementation PR" in prompt
+    assert "fix/internal/docs-only change -> PATCH" in prompt
+    assert "new backwards-compatible functionality (`feat:`) -> MINOR" in prompt
+    assert "ground-up replacement or breaking new implementation -> MAJOR" in prompt
+    assert "both `server.json` version fields" in prompt
+    assert "Dockerfile" in prompt
+    assert "Never leave" in prompt and "only under `[Unreleased]`" in prompt
     branch = pkg["ea"].roadmap_issue_branch_name(6, "Telemetry dashboard")
+    base_ref = pkg["ea"]._base_ref()
     assert "git fetch origin" in prompt
     assert f"refs/heads/{branch}" in prompt
     assert f"refs/remotes/origin/{branch}" in prompt
-    assert f"git checkout -b {branch} origin/main" in prompt
-    assert f"git rebase origin/main" in prompt
+    assert f"git checkout -b {branch} {base_ref}" in prompt
+    assert f"git rebase {base_ref}" in prompt
     assert prompt.index("Prepare or resume the issue branch") < prompt.index(
         "Read the relevant code and docs"
     )
+
+
+def test_children_branch_from_fetched_tip_not_provisioning_pin(
+    tmp_path, monkeypatch,
+):
+    """The provisioning pin is not a branch base. Branching from it cut every
+    applier PR from one months-old commit, so each PR was born conflicted with
+    main and implemented against stale code."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    pin = "3580726833b6a3d7ed872aa2bc5512552ca94532"
+    monkeypatch.setattr(ea, "EVOLVE_REPO_COMMIT", pin)
+    sync = ".venv/bin/python -m pip install -q -e '.[semantic,dev]'"
+
+    assert ea._base_ref() == "origin/main"
+    assert ea._pinned_commit() == pin
+    prompts = [
+        ea.build_roadmap_issue_apply_prompt(_issue(9, "Thing"), tmp_path),
+        ea.build_apply_prompt(3, "suggestion", None, tmp_path),
+    ]
+    for prompt in prompts:
+        assert "git rebase origin/main" in prompt
+        assert pin not in prompt
+        assert sync in prompt
+    repair = ea.build_pr_conflict_repair_prompt(
+        _pr(44, head="roadmap/issue-44-fix"), tmp_path
+    )
+    assert repair.index("git merge --no-edit origin/main") < repair.index(sync)
+    assert repair.index(sync) < repair.index("Run the full suite")
 
 
 def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
@@ -1169,7 +1665,7 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
         raise AssertionError("must not spawn with a dirty checkout")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1182,13 +1678,46 @@ def test_apply_roadmap_issue_skips_dirty_worktree_and_records_event(
     assert row["summary"] == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_recovers_stale_merge_after_pr_merged(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize(
+    (
+        "pr_state", "merged_at", "backup_prefix", "recovery_summary",
+        "repair_left_unstaged_edit",
+    ),
+    [
+        (
+            "MERGED",
+            "2026-07-12T10:28:56Z",
+            "stale-merge-pr-7",
+            "recovered_stale_merge pr=#7",
+            False,
+        ),
+        (
+            "OPEN",
+            None,
+            "interrupted-open-pr-merge-pr-7",
+            "recovered_open_pr_merge pr=#7",
+            False,
+        ),
+        (
+            "OPEN",
+            None,
+            "interrupted-open-pr-merge-pr-7",
+            "recovered_open_pr_merge pr=#7",
+            True,
+        ),
+    ],
+)
+def test_managed_checkout_recovers_orphaned_merge_for_known_pr(
+    tmp_path, monkeypatch, pr_state, merged_at, backup_prefix, recovery_summary,
+    repair_left_unstaged_edit,
 ):
     """A killed repair child must not leave the whole backlog blocked forever.
 
     Recovery is restricted to the auto-managed checkout and archives the
     tracked merge diff before returning the tree to the fresh configured base.
+    Open PR merges are reset for a clean retry; merged PR leftovers are stale.
+    A child killed after staging a resolution and editing it again leaves
+    unstaged changes on a merge-touched path, which `git merge --abort` refuses.
     """
     pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
     conn = pkg["db"].get_db()
@@ -1235,17 +1764,25 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
     (repo / "shared.txt").write_text("main\n", encoding="utf-8")
     git("commit", "-am", "main change")
     git("push", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
     git("checkout", branch)
     conflicted = git("merge", "origin/main", check=False)
     assert conflicted.returncode != 0
     assert git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+    if repair_left_unstaged_edit:
+        (repo / "shared.txt").write_text("resolved\n", encoding="utf-8")
+        git("add", "shared.txt")
+        (repo / "shared.txt").write_text("resolved again\n", encoding="utf-8")
 
     monkeypatch.setattr(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "MERGED",
-            "mergedAt": "2026-07-12T10:28:56Z",
+            "state": pr_state,
+            "mergedAt": merged_at,
             "headRefName": branch,
             "url": "https://github.com/o/r/pull/7",
         }], ""),
@@ -1265,17 +1802,20 @@ def test_managed_checkout_recovers_stale_merge_after_pr_merged(
         "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
     ).returncode == 1
     backups = list(
-        (tmp_path / "evolve-recovery").glob("stale-merge-pr-7-*.patch")
+        (tmp_path / "evolve-recovery").glob(f"{backup_prefix}-*.patch")
     )
     assert len(backups) == 1
-    assert "diff --git" in backups[0].read_text(encoding="utf-8")
+    backup_text = backups[0].read_text(encoding="utf-8")
+    assert "diff --git" in backup_text
+    if repair_left_unstaged_edit:
+        assert "+resolved again" in backup_text
     assert backups[0].stat().st_mode & 0o777 == 0o600
     row = conn.execute(
         "SELECT target, summary FROM events WHERE kind=? ORDER BY id DESC",
         (pkg["ea"].EVOLVE_GIT_SAFETY_KIND,),
     ).fetchone()
     assert row["target"] == "roadmap_issue"
-    assert "recovered_stale_merge pr=#7" in row["summary"]
+    assert recovery_summary in row["summary"]
     assert backups[0].name in row["summary"]
 
 
@@ -1304,11 +1844,11 @@ def test_explicit_checkout_never_auto_recovers_dirty_merge(
     assert out == "skipped_dirty_worktree mode=git"
 
 
-def test_managed_checkout_keeps_open_pr_merge_fail_closed(
+def test_managed_checkout_keeps_closed_unmerged_pr_merge_fail_closed(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
-    branch = "roadmap/issue-7-still-open"
+    branch = "roadmap/issue-7-closed-unmerged"
     monkeypatch.setattr(
         pkg["ea"], "_managed_repo_auto_recovery_allowed", lambda repo: True,
     )
@@ -1318,7 +1858,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
         pkg["ea"], "_prs_for_head_branch",
         lambda head, repo_root=None: ([{
             "number": 7,
-            "state": "OPEN",
+            "state": "CLOSED",
             "mergedAt": None,
             "headRefName": branch,
         }], ""),
@@ -1326,7 +1866,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     monkeypatch.setattr(
         pkg["ea"], "_archive_stale_merge_diff",
         lambda *args: (_ for _ in ()).throw(
-            AssertionError("open PR state must never be reset")
+            AssertionError("closed-unmerged PR state must never be reset")
         ),
     )
 
@@ -1335,7 +1875,7 @@ def test_managed_checkout_keeps_open_pr_merge_fail_closed(
     )
 
     assert recovered is False
-    assert reason == "stale_merge_pr_not_merged=#7:OPEN"
+    assert reason == "stale_merge_pr_not_recoverable=#7:CLOSED"
 
 
 def test_prs_for_head_branch_filters_cross_repository_matches(
@@ -1439,7 +1979,7 @@ def test_apply_roadmap_issue_blocks_during_reviewer_audit_git_writer(
         raise AssertionError("must not spawn while reviewer audit writes git")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1475,7 +2015,7 @@ def test_apply_roadmap_issue_comments_before_spawn(
 
     monkeypatch.setattr(pkg["ea"], "_comment_issue_claim", _claim)
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _spawn)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _spawn)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1500,7 +2040,7 @@ def test_apply_roadmap_issue_queue_reports_no_startable_when_claim_fails(
         raise AssertionError("must not spawn without an issue claim")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
 
@@ -1560,7 +2100,7 @@ def test_apply_roadmap_issue_exact_issue_does_not_switch_tasks(
         raise AssertionError("exact issue mode must not spawn another issue")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=1)
 
@@ -1585,11 +2125,62 @@ def test_apply_roadmap_issue_aborts_when_issue_already_claimed(
         raise AssertionError("must not spawn for an already claimed issue")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=6)
 
     assert out == "ERR roadmap_issue_claimed=6"
+
+
+def test_apply_roadmap_issue_ignores_untrusted_claim_comment(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [_claim_comment(author_association="NONE", author_login="spoof")],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out.startswith("spawned roadmap_issue=#6"), out
+    assert "ISSUE #6: Telemetry dashboard" in calls["prompt"]
+
+
+def test_claim_comment_trust_requires_metadata_or_allowed_actor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    now_t = 1781438400.0
+
+    for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+        assert pkg["ea"]._issue_comment_is_active_claim(
+            _claim_comment(author_association=association), now_t,
+        )
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="NONE", author_login="spoof"), now_t,
+    )
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="", author_login=""), now_t,
+    )
+
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_CLAIM_AUTOMATION_ACTORS", ["claim-bot"],
+    )
+    assert pkg["ea"]._issue_comment_is_active_claim(
+        _claim_comment(author_association="NONE", author_login="Claim-Bot"),
+        now_t,
+    )
 
 
 def test_mark_roadmap_issue_applied_tool_requires_pr_url(
@@ -1675,7 +2266,7 @@ def test_apply_roadmap_issue_exact_mode_returns_open_pr_error(
         raise AssertionError("must not spawn when an open PR already exists")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue(issue_number=6)
 
@@ -1747,7 +2338,7 @@ def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
 
     import threadkeeper.tools.spawn as spawn_mod
     monkeypatch.setattr(
-        spawn_mod, "spawn",
+        spawn_mod, "_spawn_impl",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("spawn rejected")),
     )
 
@@ -1756,6 +2347,38 @@ def test_apply_roadmap_issue_retracts_claim_on_spawn_failure(
     assert out.startswith("spawn_error issue=#6"), out
     assert "spawn rejected" in out
     assert deleted == ["https://x/issues/6#issuecomment-mine"]
+
+
+def test_apply_roadmap_issue_retracts_claim_on_returned_spawn_error(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(6, "Telemetry dashboard")], ""),
+    )
+    comment_url = "https://x/issues/6#issuecomment-mine"
+    monkeypatch.setattr(
+        pkg["ea"], "_comment_issue_claim",
+        lambda issue, repo_root=None: (comment_url, ""),
+    )
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda url, repo_root=None: deleted.append(url) or "",
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "_spawn_impl",
+        lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+
+    out = pkg["ea"].apply_roadmap_issue(issue_number=6)
+
+    assert out == "spawn_error issue=#6: spawn_reservation_failed=busy"
+    assert deleted == [comment_url]
+    assert pkg["ea"]._roadmap_issue_attempt_state(conn, 6)[0] == 0
 
 
 def test_resolve_claim_race_wins_when_oldest_active_claim_is_ours(
@@ -1770,11 +2393,15 @@ def test_resolve_claim_race_wins_when_oldest_active_claim_is_ours(
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
                     "url": "https://x/issues/6#issuecomment-100",
                     "createdAt": "2026-06-14T12:00:00Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
                 {
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
                     "url": "https://x/issues/6#issuecomment-200",
                     "createdAt": "2026-06-14T12:00:03Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
             ],
             "",
@@ -1802,11 +2429,15 @@ def test_resolve_claim_race_loses_and_deletes_own_claim(
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nthem",
                     "url": "https://x/issues/6#issuecomment-100",
                     "createdAt": "2026-06-14T12:00:00Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
                 {
                     "body": "<!-- thread-keeper:evolve-applier-claim -->\nmine",
                     "url": "https://x/issues/6#issuecomment-200",
                     "createdAt": "2026-06-14T12:00:03Z",
+                    "authorAssociation": "OWNER",
+                    "authorLogin": "maintainer",
                 },
             ],
             "",
@@ -1827,6 +2458,83 @@ def test_resolve_claim_race_loses_and_deletes_own_claim(
     assert err == ""
     assert won is False
     assert deleted == ["https://x/issues/6#issuecomment-200"]
+
+
+def test_resolve_claim_race_ignores_untrusted_earlier_marker(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_issue_comments",
+        lambda issue_number, repo_root=None: (
+            [
+                _claim_comment(
+                    author_association="NONE",
+                    author_login="spoof",
+                    url="https://x/issues/6#issuecomment-spoof",
+                ),
+                _claim_comment(
+                    created_at="2026-06-14T12:00:03Z",
+                    url="https://x/issues/6#issuecomment-mine",
+                ),
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(pkg["ea"].time, "time", lambda: 1781438400.0)
+    monkeypatch.setattr(pkg["ea"].time, "sleep", lambda _s: None)
+
+    deleted = []
+    monkeypatch.setattr(
+        pkg["ea"], "_delete_issue_comment",
+        lambda url, repo_root=None: (deleted.append(url) or ""),
+    )
+
+    won, err = pkg["ea"]._resolve_claim_race(
+        6, "https://x/issues/6#issuecomment-mine",
+    )
+
+    assert err == ""
+    assert won is True
+    assert deleted == []
+
+
+def test_fetch_issue_comments_preserves_author_metadata(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    payload = [
+        {
+            "body": "<!-- thread-keeper:evolve-applier-claim -->\nclaimed",
+            "created_at": "2026-06-14T12:00:00Z",
+            "html_url": "https://x/issues/6#issuecomment-1",
+            "author_association": "MEMBER",
+            "user": {"login": "maintainer"},
+        },
+        {
+            "body": "<!-- thread-keeper:evolve-applier-claim -->\nspoof",
+            "created_at": "2026-06-14T12:00:01Z",
+        },
+    ]
+    calls = []
+
+    def _run_gh(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload),
+                                           stderr="")
+
+    monkeypatch.setattr(pkg["ea"], "_run_gh", _run_gh)
+
+    comments, err = pkg["orig"]["_fetch_issue_comments"](6)
+
+    assert err == ""
+    assert comments[0]["authorAssociation"] == "MEMBER"
+    assert comments[0]["authorLogin"] == "maintainer"
+    assert comments[1]["authorAssociation"] == ""
+    assert comments[1]["authorLogin"] == ""
+    assert not pkg["ea"]._issue_comment_is_active_claim(
+        comments[1], 1781438400.0,
+    )
+    assert calls[0][:4] == ["gh", "api", "--include", "--paginate"]
+    assert calls[0][-1].endswith("/issues/6/comments?per_page=100")
 
 
 def test_claim_body_redacts_host_identity_to_opaque_token(tmp_path, monkeypatch):
@@ -1932,7 +2640,7 @@ def test_apply_evolve_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while an applier runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "applier_running" in pkg["ea"].apply_evolve(eid)
 
 
@@ -1952,7 +2660,7 @@ def test_apply_evolve_single_flight_lock_busy(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while lock is held")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "single-flight lock" in pkg["ea"].apply_evolve(eid)
 
 
@@ -1971,7 +2679,7 @@ def test_apply_curator_report_single_flight_lock_busy(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while lock is held")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "single-flight lock" in pkg["ea"].apply_curator_report(str(report))
 
 
@@ -2136,7 +2844,7 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
 
     def _run_gh(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:2] == ["gh", "api"]:
+        if cmd[:2] == ["gh", "api"] and "/issues?state=open" in cmd[-1]:
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=json.dumps([
@@ -2146,9 +2854,9 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
                 ]),
                 stderr="",
             )
-        if cmd[:3] == ["gh", "issue", "view"]:
+        if cmd[:2] == ["gh", "api"] and "/issues/1/comments?" in cmd[-1]:
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps({"comments": []}), stderr="",
+                cmd, 0, stdout="[]", stderr="",
             )
         if cmd[:3] == ["gh", "issue", "comment"]:
             return subprocess.CompletedProcess(
@@ -2172,14 +2880,15 @@ def test_run_apply_pass_reuses_issue_snapshot_and_checks_claims_lazily(
         cmd for cmd in calls
         if cmd[:2] == ["gh", "api"] and "/issues?state=open" in cmd[-1]
     ]
-    claim_view_calls = [
-        cmd for cmd in calls if cmd[:3] == ["gh", "issue", "view"]
+    claim_comment_calls = [
+        cmd for cmd in calls
+        if cmd[:2] == ["gh", "api"] and "/comments?" in cmd[-1]
     ]
     assert len(issue_list_calls) == 1
     # The selected issue gets its initial and post-claim race checks; no other
     # backlog candidate has its comments read.
-    assert len(claim_view_calls) == 2
-    assert {cmd[3] for cmd in claim_view_calls} == {"1"}
+    assert len(claim_comment_calls) == 2
+    assert all("/issues/1/comments?" in cmd[-1] for cmd in claim_comment_calls)
 
 
 def test_run_apply_pass_repairs_conflicted_pr_before_new_work(
@@ -2238,7 +2947,7 @@ def test_run_apply_pass_blocks_new_work_when_pr_sweep_fails(
         raise AssertionError("must not take new work when PR sweep fails")
 
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].run_evolve_apply_pass(force=True)
 
@@ -2248,6 +2957,9 @@ def test_run_apply_pass_blocks_new_work_when_pr_sweep_fails(
         "ORDER BY id DESC LIMIT 1"
     ).fetchone()
     assert ev["summary"] == out
+    # A failed preflight has no child to account for, so it must not consume
+    # a long apply interval.
+    assert pkg["ea"]._last_apply_ts(conn) == 0
 
 
 def test_run_apply_pass_skips_unstartable_issue_and_spawns_next(
@@ -2319,6 +3031,220 @@ def test_run_apply_pass_picks_oldest_promoted(tmp_path, monkeypatch):
     assert "newer promoted" not in calls["prompt"]
     # pass was recorded
     assert pkg["ea"]._last_apply_ts(conn) > 0
+
+
+def test_apply_pass_transient_outcomes_preserve_cursor_and_edge_trigger(
+    tmp_path, monkeypatch,
+):
+    """No-child blockers keep the previous interval high-water intact."""
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+
+    for outcome in (
+        "applier_running n=1",
+        "ERR evolve_repo_provisioning_in_progress retry_later=1",
+        "conflicted_pr_fetch_error: gh_pr_list_failed: rate limited",
+        "roadmap_issue_fetch_error: gh_api_failed: timeout",
+        "roadmap_issue_fetch_error: no_roadmap_issue_startable "
+        "ERR roadmap_issue_lost_race=5",
+    ):
+        ea._record_transient_apply_pass(conn, outcome)
+        assert ea._last_apply_ts(conn) == 1000
+
+    count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_apply_pass'"
+    ).fetchone()[0]
+    ea._record_transient_apply_pass(
+        conn,
+        "roadmap_issue_fetch_error: no_roadmap_issue_startable "
+        "ERR roadmap_issue_lost_race=7",
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='evolve_apply_pass'"
+    ).fetchone()[0] == count
+
+
+def test_run_apply_pass_checkout_and_issue_fetch_failures_retry_without_cursor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+    monkeypatch.setattr(
+        ea, "_ensure_repo_ready", lambda: (Path("/x"), "ERR evolve_repo_failed"),
+    )
+
+    assert ea.run_evolve_apply_pass(force=True) == "ERR evolve_repo_failed"
+    assert ea._last_apply_ts(conn) == 1000
+
+    monkeypatch.setattr(ea, "_ensure_repo_ready", lambda: (tmp_path, ""))
+    monkeypatch.setattr(
+        ea, "_fetch_open_issues", lambda repo_root=None: ([], "gh timeout"),
+    )
+    out = ea.run_evolve_apply_pass(force=True)
+    assert out == "roadmap_issue_fetch_error: gh timeout"
+    assert ea._last_apply_ts(conn) == 1000
+
+
+def test_run_apply_pass_returned_spawn_refusal_retracts_claim_and_no_attempt(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+    monkeypatch.setattr(
+        ea, "_fetch_open_issues", lambda repo_root=None: ([_issue(5, "Retry")], ""),
+    )
+    monkeypatch.setattr(
+        ea, "_comment_issue_claim", lambda issue, repo_root=None: (
+            "https://x/issues/5#issuecomment-mine", ""
+        ),
+    )
+    deleted = []
+    monkeypatch.setattr(
+        ea, "_delete_issue_comment", lambda url, repo_root=None: deleted.append(url) or "",
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn budget cap would be exceeded",
+    )
+
+    out = ea.run_evolve_apply_pass(force=True)
+
+    assert "spawn_error issue=#5" in out
+    assert ea._last_apply_ts(conn) == 1000
+    assert deleted == ["https://x/issues/5#issuecomment-mine"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind=?", (ea.ROADMAP_ISSUE_ATTEMPT_KIND,)
+    ).fetchone()[0] == 0
+
+
+def test_run_apply_pass_busy_race_and_raised_spawn_keep_cursor(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+    monkeypatch.setattr(ea, "_running_applier_children", lambda conn: ["live"])
+
+    assert ea.run_evolve_apply_pass(force=True).startswith("applier_running")
+    assert ea._last_apply_ts(conn) == 1000
+
+    monkeypatch.setattr(ea, "_running_applier_children", lambda conn: [])
+    monkeypatch.setattr(
+        ea, "_fetch_open_issues", lambda repo_root=None: ([_issue(5, "Retry")], ""),
+    )
+    monkeypatch.setattr(
+        ea, "_resolve_claim_race", lambda number, url, repo_root=None: (False, ""),
+    )
+    assert "roadmap_issue_lost_race=#5" in ea.run_evolve_apply_pass(force=True)
+    assert ea._last_apply_ts(conn) == 1000
+
+    monkeypatch.setattr(
+        ea, "_resolve_claim_race", lambda number, url, repo_root=None: (True, ""),
+    )
+    import threadkeeper.tools.spawn as spawn_mod
+    monkeypatch.setattr(
+        spawn_mod,
+        "spawn",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("temporary refusal")),
+    )
+    assert "spawn_error issue=#5" in ea.run_evolve_apply_pass(force=True)
+    assert ea._last_apply_ts(conn) == 1000
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind=?", (ea.ROADMAP_ISSUE_ATTEMPT_KIND,)
+    ).fetchone()[0] == 0
+
+
+def test_apply_pass_recovery_dispatches_on_next_tick_and_consumes_once(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+    monkeypatch.setattr(
+        ea, "_ensure_repo_ready", lambda: (Path("/x"), "ERR evolve_repo_failed"),
+    )
+    assert ea.run_evolve_apply_pass(force=True) == "ERR evolve_repo_failed"
+    assert ea._last_apply_ts(conn) == 1000
+
+    monkeypatch.setattr(ea, "_ensure_repo_ready", lambda: (tmp_path, ""))
+    _add_evolve(conn, "recovered promoted change", status="promoted")
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = ea.run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned evolve_id="), out
+    assert ea._last_apply_ts(conn) > 1000
+    assert ea._last_apply_dispatch_ts(conn) > 0
+
+
+def test_apply_pass_empty_check_consumes_interval_but_not_dispatch(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+
+    assert ea.run_evolve_apply_pass(force=True) == "no_apply_work"
+    assert ea._last_apply_ts(conn) > 0
+    assert ea._last_apply_dispatch_ts(conn) == 0
+    assert ea.run_evolve_apply_pass() == "not_due"
+
+
+def test_apply_pass_label_only_queue_is_an_intentional_empty_check(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    ea = pkg["ea"]
+
+    assert ea._apply_pass_outcome(
+        "roadmap_issue_skipped_label: skipped: #5 label blocked"
+    ) == ea._APPLY_PASS_EMPTY
+
+
+def test_apply_pass_status_distinguishes_attempt_dispatch_and_retry(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    conn = pkg["db"].get_db()
+    ea = pkg["ea"]
+    ea._record_apply_pass(conn, 1000, "spawned roadmap_issue=#1 ok")
+    ea._record_transient_apply_pass(conn, "conflicted_pr_fetch_error: timeout")
+
+    out = _tool(pkg, "evolve_apply_status")()
+
+    assert "last_attempt_ts=" in out
+    assert "last_successful_dispatch_ts=" in out
+    assert "next_retry_ts=" in out and "next_retry_ts=0" not in out
+
+
+def test_apply_daemon_uses_short_sleep_for_transient_outcome(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="604800")
+    ea = pkg["ea"]
+    sleeps = []
+    monkeypatch.setattr(ea, "run_evolve_apply_pass", lambda: "applier_running n=1")
+
+    def _stop_after_sleep(delay):
+        sleeps.append(delay)
+        raise StopIteration
+
+    monkeypatch.setattr(ea, "daemon_sleep", _stop_after_sleep)
+    try:
+        ea._serve_loop()
+    except StopIteration:
+        pass
+
+    assert sleeps == [ea._TRANSIENT_APPLY_RETRY_S]
 
 
 # ── repo-root resolution + auto-provisioning ───────────────────────────────
@@ -2415,6 +3341,7 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     run("git", "commit", "-m", "advance base", cwd=source)
     run("git", "push", "origin", "main", cwd=source)
     upstream_head = run("git", "rev-parse", "HEAD", cwd=source).stdout.strip()
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_COMMIT", upstream_head)
 
     root, err = pkg["ea"]._ensure_repo_ready()
 
@@ -2423,6 +3350,49 @@ def test_managed_checkout_refreshes_to_latest_origin_base(tmp_path, monkeypatch)
     assert (repo / "upstream.txt").read_text(encoding="utf-8") == "new base\n"
     assert run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip() == upstream_head
     assert upstream_head != old_head
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["http://github.com/po4erk91/thread-keeper", "https://example.invalid/repo"],
+)
+def test_managed_provision_refuses_untrusted_source_before_clone(
+    tmp_path, monkeypatch, source,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    monkeypatch.setattr(pkg["ea"], "EVOLVE_REPO_URL", source)
+    monkeypatch.setattr(
+        pkg["ea"],
+        "_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not run git or install from an untrusted URL")
+        ),
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_url_refused"), out
+
+
+def test_managed_provision_aborts_on_pinned_ref_mismatch_before_venv(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    commands = []
+    monkeypatch.setattr(
+        pkg["ea"], "_run", lambda cmd, *args, **kwargs: commands.append(cmd) or ""
+    )
+    monkeypatch.setattr(
+        pkg["ea"], "_managed_repo_head", lambda dest: ("0" * 40, "")
+    )
+
+    out = pkg["ea"]._provision_managed_repo(tmp_path / "managed-repo")
+
+    assert out.startswith("ERR evolve_repo_pin_mismatch"), out
+    assert any(cmd[:2] == ["git", "clone"] for cmd in commands)
+    assert any(cmd[:3] == ["git", "checkout", "--detach"] for cmd in commands)
+    assert not any("venv" in " ".join(cmd) for cmd in commands)
+    assert not any("install" in cmd for cmd in commands)
 
 
 def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
@@ -2455,10 +3425,17 @@ def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
     run("git", "commit", "-m", "base", cwd=repo)
     run("git", "remote", "add", "origin", str(remote), cwd=repo)
     run("git", "push", "-u", "origin", "main", cwd=repo)
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip(),
+    )
 
     (repo / "shared.txt").write_text(
         "issue implementation left on main\n", encoding="utf-8"
     )
+    (repo / "tests").mkdir()
+    orphan = repo / "tests" / "test_other_issue.py"
+    orphan.write_text("raise AssertionError('unrelated unfinished feature')\n")
     monkeypatch.setattr(
         pkg["ea"], "_prs_for_head_branch",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -2487,6 +3464,67 @@ def test_ensure_repo_ready_recovers_dirty_managed_base_before_refresh(
     ).fetchone()
     assert row["target"] == "managed_repo_refresh"
     assert "recovered_abandoned_wip branch=main" in row["summary"]
+    assert not orphan.exists()
+    saved = list((tmp_path / "evolve-recovery").glob("untracked-*/tests/*.py"))
+    assert len(saved) == 1
+    assert "unrelated unfinished feature" in saved[0].read_text()
+
+
+@pytest.mark.parametrize("mode", ["recover", "explicit", "live", "copy_error"])
+def test_untracked_recovery_preserves_work_and_isolates_next_validation(
+    tmp_path, monkeypatch, mode,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, pin_repo=False)
+    ea = pkg["ea"]
+    repo = ea._managed_repo_dir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    # Use Git's actual ignore rules, including filenames with spaces/newlines.
+    (repo / ".git" / "info" / "exclude").write_text(".venv/\n")
+    (repo / ".venv").mkdir()
+    runtime = repo / ".venv" / "runtime"
+    runtime.write_text("keep runtime")
+    (repo / "tests").mkdir()
+    source = repo / "tests" / "test_orphan with\nnewline.py"
+    source.write_text("unfinished work\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external target")
+    link = repo / "orphan-link"
+    link.symlink_to(outside)
+    if mode == "explicit":
+        monkeypatch.setattr(ea, "EVOLVE_REPO_ROOT", str(repo))
+    if mode == "live":
+        monkeypatch.setattr(ea, "_running_git_writer_children", lambda conn: ["live"])
+    if mode == "copy_error":
+        def fail_copy(*args, **kwargs):
+            raise OSError("backup unavailable")
+        monkeypatch.setattr(ea.shutil, "copy2", fail_copy)
+
+    result = pkg["orig"]["_git_worktree_precondition"](
+        pkg["db"].get_db(), repo, "conflict_repair"
+    )
+
+    assert runtime.read_text() == "keep runtime"
+    assert outside.read_text() == "external target"
+    if mode == "recover":
+        assert result == ""
+        assert not source.exists() and not link.is_symlink()
+        backups = list((tmp_path / "evolve-recovery").glob("untracked-*"))
+        assert len(backups) == 1
+        assert backups[0].stat().st_mode & 0o777 == 0o700
+        assert (backups[0] / source.relative_to(repo)).read_text() == "unfinished work\n"
+        assert (backups[0] / "orphan-link").is_symlink()
+        assert pkg["orig"]["_git_worktree_precondition"](
+            pkg["db"].get_db(), repo, "conflict_repair"
+        ) == ""
+        assert len(list((tmp_path / "evolve-recovery").glob("untracked-*"))) == 1
+    else:
+        assert source.read_text() == "unfinished work\n" and link.is_symlink()
+        if mode == "live":
+            assert result.startswith("evolve_git_writer_running")
+        elif mode == "copy_error":
+            assert "untracked_quarantine_failed" in result
+        else:
+            assert result == ""
 
 
 def test_managed_refresh_checks_live_writer_before_dirty_recovery(
@@ -2671,7 +3709,7 @@ def test_apply_evolve_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_evolve(eid)
     assert out == "ERR evolve_repo_clone_failed=/x: network down"
@@ -2688,7 +3726,7 @@ def test_apply_roadmap_issue_blocks_when_repo_unavailable(tmp_path, monkeypatch)
     def _boom(**kw):
         raise AssertionError("must not spawn without a ready checkout")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
     assert out.startswith("ERR evolve_repo_unavailable="), out
@@ -2710,7 +3748,7 @@ def test_run_apply_pass_single_flight(tmp_path, monkeypatch):
     def _boom(**kw):
         raise AssertionError("must not spawn while an applier runs")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
     assert "applier_running" in pkg["ea"].run_evolve_apply_pass(force=True)
 
 
@@ -2853,7 +3891,7 @@ def test_apply_roadmap_issue_records_attempt_then_backs_off(
     def _boom(**kw):
         raise AssertionError("issue in backoff must not re-spawn a child")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out2 = pkg["ea"].apply_roadmap_issue()
     assert out2 == "no_roadmap_issue", out2
@@ -2884,7 +3922,7 @@ def test_apply_roadmap_issue_dead_letter_blocks_auto_but_exact_overrides(
     def _boom(**kw):
         raise AssertionError("dead-lettered issue must not auto-spawn")
     import threadkeeper.tools.spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn", _boom)
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
 
     out = pkg["ea"].apply_roadmap_issue()
     assert out == "no_roadmap_issue", out
@@ -2951,9 +3989,11 @@ def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
 
     out = _tool(pkg, "evolve_apply_status")()
 
+    assert "autoland=on" in out
     assert "conflicted_prs=1" in out
-    assert "conflicted PRs (next first):" in out
-    assert "#44  roadmap/issue-44-conflict-aaaaaa" in out
+    assert "landing_prs=0" in out
+    assert "own PRs (oldest first):" in out
+    assert "#44  repair  DIRTY  roadmap/issue-44-conflict-aaaaaa" in out
 
 
 def test_evolve_apply_status_surfaces_stale_merge_recovery(
@@ -3022,6 +4062,10 @@ def test_managed_checkout_recovers_abandoned_wip_without_merge(
     git("commit", "-m", "base")
     git("remote", "add", "origin", str(remote))
     git("push", "-u", "origin", "main")
+    monkeypatch.setattr(
+        pkg["ea"], "EVOLVE_REPO_COMMIT",
+        git("rev-parse", "origin/main").stdout.strip(),
+    )
 
     branch = "roadmap/issue-9-abandoned-wip"
     git("checkout", "-b", branch)

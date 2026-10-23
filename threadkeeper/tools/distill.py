@@ -18,6 +18,7 @@ from ..config import TASK_LOG_DIR
 from ..helpers import fmt_age, q, gen_distill_id
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..task_spool import append_spool_text
+from ..project_scope import recall_where, resolve_write_scope
 
 
 DISTILL_KINDS = ("insight", "pattern", "anti-pattern", "fix",
@@ -26,7 +27,8 @@ DISTILL_KINDS = ("insight", "pattern", "anti-pattern", "fix",
 
 @write_tool()
 def distill(content: str, kind: str = "insight",
-            confidence: str = "medium", source_thread: str = "") -> str:
+            confidence: str = "medium", source_thread: str = "",
+            memory_scope: str = "project") -> str:
     """Mark content as worth carrying forward (distillation channel).
 
     `kind` ∈ {insight, pattern, anti-pattern, fix, terminology, concept}.
@@ -41,18 +43,27 @@ def distill(content: str, kind: str = "insight",
         return "ERR empty_content"
     conn = get_db()
     _ensure_session(conn)
+    try:
+        scope, project_id = resolve_write_scope(memory_scope)
+    except ValueError as exc:
+        return f"ERR {exc}"
     src = source_thread.strip() or None
-    if src and not conn.execute(
-        "SELECT 1 FROM threads WHERE id=?", (src,)
-    ).fetchone():
-        return f"ERR source_thread_not_found={src}"
+    if src:
+        thread_filter, thread_params = recall_where("threads")
+        source = conn.execute(
+            f"SELECT project_id, memory_scope FROM threads WHERE id=? AND {thread_filter}",
+            (src, *thread_params),
+        ).fetchone()
+        if not source:
+            return f"ERR source_thread_not_found={src}"
+        project_id, scope = source["project_id"], source["memory_scope"]
     cid = _detect_self_cid()
     pid = gen_distill_id(conn)
     now_t = int(time.time())
     conn.execute(
         "INSERT INTO distill (id, content, kind, confidence, source_thread, "
-        "source_cid, created_at) VALUES (?,?,?,?,?,?,?)",
-        (pid, content, kind, confidence, src, cid, now_t),
+        "source_cid, created_at, project_id, memory_scope) VALUES (?,?,?,?,?,?,?,?,?)",
+        (pid, content, kind, confidence, src, cid, now_t, project_id, scope),
     )
     # Auto-vote +1 from author (still bounded by uniqueness)
     if cid:
@@ -86,7 +97,11 @@ def vote_distill(distill_id: str, weight: float) -> str:
     if not cid:
         return "ERR cannot_detect_self_cid"
     did = distill_id.strip()
-    if not conn.execute("SELECT 1 FROM distill WHERE id=?", (did,)).fetchone():
+    distill_filter, distill_params = recall_where("distill")
+    if not conn.execute(
+        f"SELECT 1 FROM distill WHERE id=? AND {distill_filter}",
+        (did, *distill_params),
+    ).fetchone():
         return f"ERR distill_not_found={did}"
     now_t = int(time.time())
     # upsert vote
@@ -114,12 +129,13 @@ def vote_distill(distill_id: str, weight: float) -> str:
 def pending_distillates(min_vote: float = 1.0, k: int = 10) -> str:
     """List distillates with vote_sum >= min_vote, not yet exported."""
     conn = get_db()
+    distill_filter, distill_params = recall_where("distill")
     rows = conn.execute(
         "SELECT id, kind, confidence, content, vote_sum, vote_count, "
         "source_thread, created_at "
-        "FROM distill WHERE vote_sum >= ? AND exported_at IS NULL "
+        f"FROM distill WHERE vote_sum >= ? AND exported_at IS NULL AND {distill_filter} "
         "ORDER BY vote_sum DESC, created_at DESC LIMIT ?",
-        (float(min_vote), max(1, int(k))),
+        (float(min_vote), *distill_params, max(1, int(k))),
     ).fetchall()
     if not rows:
         return f"no_pending min_vote={min_vote}"

@@ -15,6 +15,10 @@
 
 set -u
 
+# Spawned background children (spawn() sets THREADKEEPER_SPAWNED_CHILD=1) are
+# not user sessions: the session protocol this hook backs is not theirs.
+[ "${THREADKEEPER_SPAWNED_CHILD:-}" = "1" ] && exit 0
+
 # Resolve venv + package root. Order: env override → ~/.threadkeeper/path
 # config → caller's $0 traversal. Fail silently so a broken install never
 # blocks Claude Code session start.

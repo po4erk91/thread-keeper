@@ -9,6 +9,9 @@ from __future__ import annotations
 from typing import Final
 
 
+ROUTER_ROLE: Final[str] = "model_router"
+
+
 AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
     {
         "role": "shadow_observer",
@@ -59,6 +62,18 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
         "interval_key": "THREADKEEPER_CURATOR_INTERVAL_S",
     },
     {
+        "role": "curator_researcher",
+        "name": "Curator researcher",
+        "description": (
+            "Collects bounded external evidence for one Curator batch before "
+            "a separate web-free Curator can evaluate it."
+        ),
+        "reads": "One Curator inventory batch, audit manifest, and public sources",
+        "writes": "A destination-scoped research handoff only",
+        "impact": "read_only",
+        "interval_key": "THREADKEEPER_CURATOR_INTERVAL_S",
+    },
+    {
         "role": "dialectic_validator",
         "name": "Dialectic validator",
         "description": (
@@ -90,7 +105,7 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
             "evolve reviewer before a roadmap decision."
         ),
         "reads": "Repository code, documentation, and research sources",
-        "writes": "Research findings for the evolve review",
+        "writes": "One parent-authorized, pass-scoped research digest",
         "impact": "read_only",
         "interval_key": "THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S",
     },
@@ -117,6 +132,18 @@ AGENT_ROLES: Final[tuple[dict[str, str], ...]] = (
         "writes": "Code, documentation, commits, branches, and pull requests",
         "impact": "code_write",
         "interval_key": "THREADKEEPER_EVOLVE_APPLY_INTERVAL_S",
+    },
+    {
+        "role": ROUTER_ROLE,
+        "name": "Model router",
+        "description": (
+            "Weekly reviews which CLI, model and effort each auto role runs "
+            "on, and re-assigns them."
+        ),
+        "reads": "Spawn telemetry, recent run outcomes, and the local model catalog",
+        "writes": "Routing decisions for roles set to auto",
+        "impact": "config_write",
+        "interval_key": "THREADKEEPER_MODEL_ROUTER_INTERVAL_S",
     },
 )
 

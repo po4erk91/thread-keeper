@@ -205,3 +205,72 @@ def test_source_tracked_skill_skips_local_changes(tmp_path, monkeypatch):
     assert "local edit" in (
         pkg["claude_root"] / "remote-skill" / "SKILL.md"
     ).read_text(encoding="utf-8")
+
+
+def _record_skill_delete(pkg, name: str, at: int) -> None:
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('pytest', 'skill_delete', ?, 'trash=x', ?)",
+        (name, at),
+    )
+    conn.commit()
+
+
+def test_deleted_skill_is_not_revived_from_an_older_mirror(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_skill(pkg["codex_root"], "deleted-junk", "stale mirror", mtime=200)
+    _record_skill_delete(pkg, "deleted-junk", at=300)
+
+    out = pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert "removed_strays=1" in out
+    assert "local_updates=0" in out
+    assert not (pkg["claude_root"] / "deleted-junk").exists()
+    assert not (pkg["codex_root"] / "deleted-junk").exists()
+
+
+def test_reinstall_after_deletion_is_still_imported(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_skill(pkg["codex_root"], "reinstalled", "fresh install", mtime=400)
+    _record_skill_delete(pkg, "reinstalled", at=300)
+
+    out = pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert "local_updates=1" in out
+    assert "fresh install" in (
+        pkg["claude_root"] / "reinstalled" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_invalid_primary_skill_is_not_mirrored(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_skill(pkg["codex_root"], "broken-skill", "older valid mirror", mtime=100)
+    broken = pkg["claude_root"] / "broken-skill"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("no frontmatter at all\n", encoding="utf-8")
+    for path in (broken, broken / "SKILL.md"):
+        os.utime(path, (300, 300))
+
+    out = pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert "conflicts=1" in out
+    assert "older valid mirror" in (
+        pkg["codex_root"] / "broken-skill" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_removing_a_stray_keeps_a_backup(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_skill(pkg["codex_root"], "old-copy", "stale mirror", mtime=200)
+    _record_skill_delete(pkg, "old-copy", at=300)
+    backups: list[str] = []
+    monkeypatch.setattr(
+        pkg["skill_updater"], "_backup_skill_dir",
+        lambda path: backups.append(Path(path).name),
+    )
+
+    pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert backups == ["old-copy"]
+    assert not (pkg["codex_root"] / "old-copy").exists()

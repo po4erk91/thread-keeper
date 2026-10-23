@@ -42,12 +42,22 @@ from ..config import (
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
     WRITE_ORIGIN,
 )
+from ..authority import (
+    authority_for_origin,
+    can_derive,
+    derive,
+    record_origin_root,
+    source_is_live,
+    source_parent,
+)
+from ..memory_compat import memory_provenance
 from ..curator_snapshots import (
-    PASS_ID_ENV,
-    SNAPSHOT_DIR_ENV,
     admit_curator_destructive_action,
     capture_skill_tombstone,
+    is_curator_verifier,
     record_curator_action,
+    verification_required_error,
+    verifier_scope_refusal,
 )
 from ..db import get_db
 from ..helpers import q
@@ -62,6 +72,8 @@ from ..trash import (
     latest_skill_artifact,
     read_skill_artifact,
 )
+from ..lessons import get_path
+from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -71,6 +83,9 @@ from ..trash import (
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_CONTENT_CHARS = 100_000
+# Learning loops prefer patching an existing skill, so without a softer bound
+# every new rule lands in one SKILL.md and it grows past what an agent reads.
+SKILL_MD_SOFT_CAP_CHARS = 20_000
 MAX_SKILL_FILE_BYTES = 1_048_576  # 1 MiB
 
 _VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -392,6 +407,7 @@ def _recompute_skill_tier(conn: sqlite3.Connection, name: str,
             "UPDATE skill_usage SET tier=?, tier_changed_at=? WHERE name=?",
             (new_tier, now_t, name),
         )
+        _ensure_session(conn)
         order = {"hypothesis": 0, "observed": 1, "validated": 2}
         direction = (
             "skill_tier_promoted"
@@ -533,12 +549,22 @@ def _record_event(name: str, kind: str) -> None:
     now = int(time.time())
     cid = _detect_self_cid()
     if kind == "create":
+        # Re-creating an archived skill starts a fresh lifecycle; any other
+        # existing row (an earlier observation of the same name) is kept.
         conn.execute(
             "INSERT INTO skill_usage (name, created_at, created_by_cid, "
             "created_by_origin, state, tier, tier_changed_at) "
             "VALUES (?,?,?,?, 'active', 'hypothesis', ?) "
-            "ON CONFLICT(name) DO NOTHING",
+            "ON CONFLICT(name) DO UPDATE SET state='active', "
+            "created_at=excluded.created_at, created_by_cid=excluded.created_by_cid, "
+            "created_by_origin=excluded.created_by_origin, tier='hypothesis', "
+            "tier_changed_at=excluded.tier_changed_at, stale_since=NULL "
+            "WHERE skill_usage.state='archived'",
             (name, now, cid, WRITE_ORIGIN, now),
+        )
+        memory_provenance(
+            conn, "skill", name, source_event_kind="skill_create",
+            source_event_id=name,
         )
         conn.commit()
         return
@@ -550,7 +576,7 @@ def _record_event(name: str, kind: str) -> None:
         "ON CONFLICT(name) DO NOTHING",
         (name, now, cid, WRITE_ORIGIN, now),
     )
-    if kind == "view":
+    if kind == "view" and WRITE_ORIGIN == FOREGROUND_ORIGIN:
         conn.execute(
             "UPDATE skill_usage SET last_viewed_at=?, view_count=view_count+1, "
             "state=CASE WHEN state='stale' THEN 'active' ELSE state END "
@@ -652,7 +678,9 @@ def skill_manage(action: str,
                  new_string: str = "",
                  sub_path: str = "",
                  description: str = "",
-                 force: bool = False) -> str:
+                 source: str = "",
+                 force: bool = False,
+                 replacement_name: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -675,27 +703,35 @@ def skill_manage(action: str,
                     Requires `name`, `sub_path`.
       delete      — remove a skill entirely. Pinned skills (in skill_usage)
                     are refused. Foreground/unknown-origin skills require
-                    force from a foreground writer.
+                    force from a foreground writer. Pass replacement_name
+                    during consolidation to repoint inbound [[wikilinks]];
+                    otherwise the result lists dangling references.
       restore     — restore the latest trashed copy for `name`.
     """
     action = action.strip()
     name = name.strip()
     if action != "delete" and (err := _validate_name(name)):
         return f"ERR {err}"
+    if refusal := _guarded_skill_write_refusal(name, action):
+        return refusal
     if action == "create":
-        return _action_create(name, content, description)
+        return _action_create(name, content, description, source)
     if action == "edit":
-        return _action_edit(name, content)
+        return _action_edit(name, content, source)
     if action == "patch":
-        return _action_patch(name, old_string, new_string)
+        return _action_patch(name, old_string, new_string, source)
     if action == "write_file":
-        return _action_write_file(name, sub_path, content)
+        return _action_write_file(name, sub_path, content, source)
     if action == "remove_file":
         return _action_remove_file(name, sub_path)
     if action == "delete":
         if err := _validate_name(name):
             return f"ERR {err}"
-        return _action_delete(name, force=force)
+        return _action_delete(
+            name,
+            force=force,
+            replacement_name=replacement_name,
+        )
     if action == "restore":
         return _action_restore(name)
     return (
@@ -704,7 +740,92 @@ def skill_manage(action: str,
     )
 
 
-def _action_create(name: str, content: str, description: str) -> str:
+_REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file"})
+_MUTATING_SKILL_ACTIONS = frozenset({
+    "create", "edit", "patch", "write_file", "remove_file", "delete", "restore",
+})
+
+
+def _skill_is_protected(row: sqlite3.Row | None) -> bool:
+    """The same boundary the curator inventory marks [PROTECTED]."""
+    origin = ((row["created_by_origin"] if row else "") or "").strip().lower()
+    if origin == FOREGROUND_ORIGIN:
+        return not CURATOR_MANAGE_FOREGROUND_SKILLS
+    return origin not in CURATABLE_SKILL_ORIGINS
+
+
+def curator_skill_refusal(name: str, action: str) -> str:
+    """Why the current curator child may not change this skill, or ''.
+
+    Pinned skills are off-limits to every curator phase. The evaluator only
+    makes in-place edits to unprotected skills: creating, deleting, removing
+    support files and touching protected skills are verifier work. The
+    verifier may change only skills its proposals name.
+    """
+    if WRITE_ORIGIN != "curator" or action not in _MUTATING_SKILL_ACTIONS:
+        return ""
+    row = get_db().execute(
+        "SELECT pinned, created_by_origin FROM skill_usage WHERE name=?", (name,),
+    ).fetchone()
+    if row and row["pinned"]:
+        return f"ERR pinned={name}"
+    if is_curator_verifier():
+        return verifier_scope_refusal(name)
+    structural = action in _REMOVING_SKILL_ACTIONS or action == "create"
+    if structural or _skill_is_protected(row):
+        return verification_required_error(f"skill_{action}", name)
+    return ""
+
+
+def _guarded_skill_write_refusal(name: str, action: str) -> str:
+    """Server-side limits for automated skill writers.
+
+    The Evolve report applier may repair skills but never remove them: only
+    the curator verifier deletes, after failing to refute the proposal.
+    """
+    if WRITE_ORIGIN == "evolve_apply" and action in _REMOVING_SKILL_ACTIONS:
+        return verification_required_error(f"skill_{action}", name)
+    return curator_skill_refusal(name, action)
+
+
+def _stamp_skill_authority(conn: sqlite3.Connection, name: str, source: str) -> bool:
+    parent = source_parent(source)
+    if parent is not None:
+        return source_is_live(conn, parent) and derive(conn, "skill", name, [parent])
+    return authority_for_origin(WRITE_ORIGIN) is not None and record_origin_root(
+        conn, "skill", name, write_origin=WRITE_ORIGIN,
+        principal=_detect_self_cid() or "unknown-principal", channel="mcp:skill",
+    )
+
+
+def _authority_write_allowed(conn: sqlite3.Connection, name: str, source: str) -> bool:
+    parent = source_parent(source)
+    return (
+        can_derive(conn, "skill", name, parent)
+        if parent is not None
+        else authority_for_origin(WRITE_ORIGIN) is not None
+    )
+
+
+def _skill_md_growth_refusal(current: str, updated: str) -> str:
+    """Refuse a non-foreground write that grows SKILL.md past the soft cap.
+
+    Shrinking or same-size rewrites stay allowed, so an oversized skill can
+    always be split down. Foreground authors keep the hard limit only.
+    """
+    if WRITE_ORIGIN == FOREGROUND_ORIGIN:
+        return ""
+    if len(updated) <= SKILL_MD_SOFT_CAP_CHARS or len(updated) <= len(current):
+        return ""
+    return (
+        f"ERR skill_md_too_large chars={len(updated)} "
+        f"soft_cap={SKILL_MD_SOFT_CAP_CHARS}; move detail into "
+        "references/<topic>.md with skill_manage(action='write_file') and "
+        "link it from SKILL.md"
+    )
+
+
+def _action_create(name: str, content: str, description: str, source: str = "") -> str:
     sdir = _skill_dir(name)
     md = _skill_md_path(name)
     if md.exists():
@@ -725,14 +846,20 @@ def _action_create(name: str, content: str, description: str) -> str:
         )
     if err := _validate_skill_md(body, name):
         return f"ERR validate_failed: {err}"
+    if refusal := _skill_md_growth_refusal("", body):
+        return refusal
     if reason := _screen_synthesized_body(body):
         return f"ERR {reason}"
     conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     if reason := _skill_create_limit_error(conn):
         return f"ERR {reason}"
     sdir.mkdir(parents=True, exist_ok=True)
     md.write_text(body, encoding="utf-8")
     _record_event(name, "create")
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_create", target=name, summary=str(md))
     if WRITE_ORIGIN == "curator":
@@ -747,17 +874,23 @@ def _action_create(name: str, content: str, description: str) -> str:
     return f"ok path={md}"
 
 
-def _action_edit(name: str, content: str) -> str:
+def _action_edit(name: str, content: str, source: str = "") -> str:
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed: {err}"
+    if refusal := _skill_md_growth_refusal(md.read_text(encoding="utf-8"), content):
+        return refusal
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     md.write_text(content, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_edit", target=name, summary=str(md))
     if WRITE_ORIGIN == "curator":
@@ -772,7 +905,7 @@ def _action_edit(name: str, content: str) -> str:
     return f"ok path={md}"
 
 
-def _action_patch(name: str, old_string: str, new_string: str) -> str:
+def _action_patch(name: str, old_string: str, new_string: str, source: str = "") -> str:
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
@@ -789,14 +922,20 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     updated = cur.replace(old_string, new_string, 1)
     if err := _validate_skill_md(updated, name):
         return f"ERR validate_failed_after_patch: {err}"
+    if refusal := _skill_md_growth_refusal(cur, updated):
+        return refusal
     # Screen only the newly-introduced text — an existing skill that
     # already documents an injection marker (e.g. a security skill) must
     # stay patchable.
     if reason := _screen_synthesized_body(new_string):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     md.write_text(updated, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_patch", target=name)
     if WRITE_ORIGIN == "curator":
@@ -811,7 +950,7 @@ def _action_patch(name: str, old_string: str, new_string: str) -> str:
     return "ok"
 
 
-def _action_write_file(name: str, sub_path: str, content: str) -> str:
+def _action_write_file(name: str, sub_path: str, content: str, source: str = "") -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
@@ -833,11 +972,15 @@ def _action_write_file(name: str, sub_path: str, content: str) -> str:
         return f"ERR file_exceeds_{MAX_SKILL_FILE_BYTES}_bytes"
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    conn = get_db()
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
     target = sdir / sub_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     _record_event(name, "patch")
-    conn = get_db()
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
     _ensure_session(conn)
     _emit(conn, "skill_write_file", target=name, summary=sub_path)
     if WRITE_ORIGIN == "curator":
@@ -883,7 +1026,12 @@ def _action_remove_file(name: str, sub_path: str) -> str:
     return "ok"
 
 
-def _action_delete(name: str, *, force: bool = False) -> str:
+def _action_delete(
+    name: str,
+    *,
+    force: bool = False,
+    replacement_name: str = "",
+) -> str:
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
@@ -892,6 +1040,14 @@ def _action_delete(name: str, *, force: bool = False) -> str:
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
+    replacement_name = replacement_name.strip()
+    if replacement_name:
+        if err := _validate_name(replacement_name):
+            return f"ERR {err}"
+        if replacement_name == name:
+            return f"ERR replacement_same_as_removed name={name}"
+        if not _skill_md_path(replacement_name).is_file():
+            return f"ERR replacement_not_found name={replacement_name}"
     if row and row["pinned"]:
         return (
             f"ERR pinned={name} (unpin via UPDATE skill_usage SET pinned=0 "
@@ -905,15 +1061,8 @@ def _action_delete(name: str, *, force: bool = False) -> str:
         protected_reason = "unknown_origin"
     elif origin not in CURATABLE_SKILL_ORIGINS:
         protected_reason = f"unknown_origin:{origin}"
-    snapshotted_curator_authority = bool(
-        WRITE_ORIGIN == "curator"
-        and CURATOR_MANAGE_FOREGROUND_SKILLS
-        and os.environ.get(PASS_ID_ENV)
-        and os.environ.get(SNAPSHOT_DIR_ENV)
-    )
     effective_force = bool(
-        (force and WRITE_ORIGIN == FOREGROUND_ORIGIN)
-        or snapshotted_curator_authority
+        (force and WRITE_ORIGIN == FOREGROUND_ORIGIN) or is_curator_verifier()
     )
     if protected_reason and not effective_force:
         force_note = (
@@ -931,6 +1080,15 @@ def _action_delete(name: str, *, force: bool = False) -> str:
         key=name,
     ):
         return f"ERR {reason}"
+    try:
+        inbound_refs = rewrite_inbound_wikilinks(
+            name,
+            replacement_name,
+            lessons_path=get_path(),
+            skill_roots=_skill_roots(),
+        )
+    except OSError as e:
+        return f"ERR inbound_link_rewrite_failed name={name}: {e}"
     tombstone = ""
     if WRITE_ORIGIN == "curator":
         tombstone = capture_skill_tombstone("skill_deleted", name, sdir)
@@ -958,7 +1116,11 @@ def _action_delete(name: str, *, force: bool = False) -> str:
             snapshot_rel=tombstone,
         )
     conn.commit()
-    return "ok"
+    inbound = format_inbound_wikilinks(inbound_refs)
+    if not inbound:
+        return "ok"
+    outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
+    return f"ok {outcome}={inbound}"
 
 
 def _restore_skill_usage_row(
@@ -982,6 +1144,13 @@ def _restore_skill_usage_row(
         f"INSERT OR REPLACE INTO skill_usage ({quoted}) "
         f"VALUES ({placeholders})",
         [values[n] for n in names],
+    )
+    # A restore is a deliberate return: the aging clock starts again instead
+    # of resuming an old stale or archived state.
+    conn.execute(
+        "UPDATE skill_usage SET state='active', stale_since=NULL, created_at=? "
+        "WHERE name=?",
+        (int(time.time()), name),
     )
 
 
@@ -1017,12 +1186,17 @@ def _action_restore(name: str) -> str:
 # skill_list
 # ──────────────────────────────────────────────────────────────────────────
 
-@read_tool()
+@write_tool()
 def skill_list(include_archived: bool = False) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
             state=<active|stale|archived> uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
+
+    Listing is not consultation: it never touches ``view_count``,
+    ``last_viewed_at`` or the stale state. Autonomous loops list every skill
+    on each pass, so counting a listing would make every skill look recently
+    consulted and nothing could ever go stale.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -1040,6 +1214,11 @@ def skill_list(include_archived: bool = False) -> str:
     now = int(time.time())
     out: list[str] = []
     for r in rows:
+        if conn.execute(
+            "SELECT 1 FROM memory_authority WHERE artifact_kind='skill' "
+            "AND artifact_id=? AND invalidated_at IS NOT NULL", (r["name"],)
+        ).fetchone():
+            continue
         last = max(
             r["last_used_at"] or 0,
             r["last_viewed_at"] or 0,
@@ -1068,8 +1247,9 @@ def skill_list(include_archived: bool = False) -> str:
         )
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
-            f"state={r['state']} uses={r['use_count']} "
-            f"fg_uses={fg_uses} views={r['view_count']} "
+            f"state={r['state']} "
+            f"uses={r['use_count']} "
+            f"fg_uses={fg_uses} views={r['view_count'] or 0} "
             f"patches={r['patch_count']} wrong={wrong_n} "
             f"pinned={r['pinned']} last_active={age}_ago"
         )
@@ -1155,7 +1335,15 @@ def curator_run(stale_after_days: int = 30,
     Lifecycle:
       active  → stale     when last activity > stale_after_days
       stale   → archived  when last activity > archive_after_days
-                          (also moves primary directory to .archive/)
+                          (also moves primary directory to .archive/ and
+                          removes its mirrors, so a sync cannot revive it)
+
+    Activity is the last use, foreground view or creation. Patches do not
+    count: autonomous loops patch skills routinely, which is maintenance, not
+    proof that anyone relies on the skill. A skill must spend the gap between
+    the two windows in 'stale' before it is archived, and renewed activity
+    moves a stale skill back to 'active'. Every new curator pass runs this
+    with dry_run=False.
 
     Tier-aware adjustments (the discrete trust signal trumps raw activity):
       • tier='validated' skills are NEVER stale-aged or archived — proven
@@ -1164,7 +1352,7 @@ def curator_run(stale_after_days: int = 30,
         (default 15d instead of 30d). Unproven skills don't get to linger.
       • tier='observed' uses the standard windows.
 
-    NEVER touches:
+    Covers every learning-loop origin (CURATABLE_SKILL_ORIGINS). NEVER touches:
       • foreground (user-authored) skills — provenance check
       • pinned skills — opt-out flag
       • validated tier — proven externally
@@ -1176,18 +1364,25 @@ def curator_run(stale_after_days: int = 30,
     _ensure_session(conn)
     now = int(time.time())
 
+    if not dry_run:
+        # Rows that went stale before stale_since existed start their dwell now.
+        conn.execute(
+            "UPDATE skill_usage SET stale_since=? "
+            "WHERE state='stale' AND stale_since IS NULL",
+            (now,),
+        )
+        conn.commit()
+    origins = sorted(CURATABLE_SKILL_ORIGINS)
     rows = conn.execute(
-        "SELECT * FROM skill_usage "
-        "WHERE created_by_origin='background_review' AND pinned=0"
+        "SELECT * FROM skill_usage WHERE pinned=0 AND created_by_origin IN "
+        f"({','.join('?' for _ in origins)})",
+        origins,
     ).fetchall()
 
     plan: list[dict] = []
     for r in rows:
         last_activity = max(
-            r["last_used_at"] or 0,
-            r["last_viewed_at"] or 0,
-            r["last_patched_at"] or 0,
-            r["created_at"],
+            r["last_used_at"] or 0, r["last_viewed_at"] or 0, r["created_at"],
         )
         cur_state = r["state"]
         tier = r["tier"] if "tier" in r.keys() and r["tier"] else "hypothesis"
@@ -1204,14 +1399,18 @@ def curator_run(stale_after_days: int = 30,
         stale_thresh = now - int(stale_after_days * 86400 * scale)
         archive_thresh = now - int(archive_after_days * 86400 * scale)
 
-        if cur_state == "active" and last_activity < stale_thresh:
+        stale_dwell = int((archive_after_days - stale_after_days) * 86400 * scale)
+        dwelled = bool(r["stale_since"]) and now - int(r["stale_since"]) >= stale_dwell
+        transition = ""
+        if cur_state == "stale" and last_activity >= stale_thresh:
+            transition = "active"
+        elif cur_state == "active" and last_activity < stale_thresh:
+            transition = "stale"
+        elif cur_state == "stale" and last_activity < archive_thresh and dwelled:
+            transition = "archived"
+        if transition:
             plan.append({
-                "name": r["name"], "from": "active", "to": "stale",
-                "last": last_activity, "tier": tier,
-            })
-        elif cur_state == "stale" and last_activity < archive_thresh:
-            plan.append({
-                "name": r["name"], "from": "stale", "to": "archived",
+                "name": r["name"], "from": cur_state, "to": transition,
                 "last": last_activity, "tier": tier,
             })
 
@@ -1234,8 +1433,8 @@ def curator_run(stale_after_days: int = 30,
     arch.mkdir(parents=True, exist_ok=True)
     for p in plan:
         conn.execute(
-            "UPDATE skill_usage SET state=? WHERE name=?",
-            (p["to"], p["name"]),
+            "UPDATE skill_usage SET state=?, stale_since=? WHERE name=?",
+            (p["to"], now if p["to"] == "stale" else None, p["name"]),
         )
         if p["to"] == "archived":
             src = _skill_dir(p["name"])
@@ -1245,6 +1444,7 @@ def curator_run(stale_after_days: int = 30,
                     # collide — keep both with timestamp suffix
                     dst = arch / f"{p['name']}_{now}"
                 shutil.move(str(src), str(dst))
+            _unmirror_skill(p["name"])
         _emit(conn, "curator_transition", target=p["name"],
               summary=f"{p['from']}→{p['to']} tier={p['tier']}")
     conn.commit()
@@ -1348,6 +1548,7 @@ def review_thread(thread_id: str,
     # avoids a circular import on package load. slim=True loads ONLY
     # thread-keeper MCP for the child (no context7/figma/etc) — review
     # work doesn't need any of those, and it cuts startup RAM dramatically.
+    from ..spawn_result import parse_spawn_result
     from .spawn import spawn  # type: ignore
     result = spawn(
         prompt=full_prompt,
@@ -1369,6 +1570,10 @@ def review_thread(thread_id: str,
             "mcp__thread-keeper__skill_list"
         ),
     )
+    spawn_result = parse_spawn_result(result)
+    if not spawn_result.ok:
+        return f"spawn_error: {spawn_result.reason}"
+
     # The spawned child IS an application of the ai-memory-learning-loop
     # skill (review prompt = that skill's procedure baked in). The child
     # won't invoke Skill(...) explicitly, so bump the counter here so
@@ -1391,4 +1596,4 @@ def review_thread(thread_id: str,
         conn.commit()
     except sqlite3.OperationalError:
         pass  # skill_usage missing on this conn
-    return result
+    return spawn_result.text

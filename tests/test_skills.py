@@ -51,6 +51,7 @@ def _bootstrap_skills(tmp_path, monkeypatch, write_origin="foreground"):
         "THREADKEEPER_CLIENT": "pytest",
         "THREADKEEPER_FORCE_CID": _FAKE_CID,
         "CLAUDE_SKILLS_DIR": str(skills_root),
+        "THREADKEEPER_LESSONS": str(tmp_path / "lessons.md"),
         "THREADKEEPER_WRITE_ORIGIN": write_origin,
     }
     for k, v in env.items():
@@ -252,6 +253,32 @@ def test_delete_removes_skill_dir_and_usage_row(skills_pkg):
     assert (artifacts[0] / "skill" / "SKILL.md").exists()
 
 
+def test_skill_consolidation_rewrites_inbound_wikilinks(skills_pkg):
+    sm = _tool(skills_pkg, "skill_manage")
+    _seed_skill(skills_pkg, name="umbrella-skill")
+    _seed_skill(skills_pkg, name="retired-skill")
+    sm(
+        action="create",
+        name="consumer-skill",
+        description="Uses the retired skill in a test.",
+        content="# Consumer\n\nSee [[retired-skill|the old rule]].\n",
+    )
+
+    out = sm(
+        action="delete",
+        name="retired-skill",
+        force=True,
+        replacement_name="umbrella-skill",
+    )
+
+    assert out == "ok inbound_rewritten=skill:consumer-skill"
+    consumer = (
+        skills_pkg["skills_root"] / "consumer-skill" / "SKILL.md"
+    ).read_text()
+    assert "[[umbrella-skill|the old rule]]" in consumer
+    assert "[[retired-skill" not in consumer
+
+
 def test_delete_restore_recreates_skill_tree_and_usage_row(skills_pkg):
     sm = _tool(skills_pkg, "skill_manage")
     rec = _tool(skills_pkg, "skill_record")
@@ -324,11 +351,8 @@ def test_delete_refuses_unknown_origin_without_force(skills_pkg):
     assert sm(action="delete", name="unknown-origin", force=True) == "ok"
 
 
-@pytest.mark.parametrize("write_origin", ["curator", "spawned"])
-def test_loop_origin_cannot_force_delete_foreground_skill(
-    tmp_path, monkeypatch, write_origin,
-):
-    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin=write_origin)
+def test_loop_origin_cannot_force_delete_foreground_skill(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="spawned")
     _seed_skill(pkg, name="human-skill")
     _set_skill_origin(pkg, "human-skill", "foreground")
     sm = _tool(pkg, "skill_manage")
@@ -336,23 +360,58 @@ def test_loop_origin_cannot_force_delete_foreground_skill(
     result = sm(action="delete", name="human-skill", force=True)
 
     assert result.startswith("ERR protected_skill")
-    assert f"force_ignored_origin={write_origin}" in result
+    assert "force_ignored_origin=spawned" in result
     assert (pkg["skills_root"] / "human-skill").exists()
     assert not (pkg["tmp"] / "curator" / "trash").exists()
 
 
-def test_curator_can_delete_foreground_only_with_explicit_snapshot_authority(
-    tmp_path, monkeypatch,
-):
-    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
-    _seed_skill(pkg, name="foreground-duplicate")
-    _set_skill_origin(pkg, "foreground-duplicate", "foreground")
-    import threadkeeper.tools.skills as skills_mod
-    monkeypatch.setattr(skills_mod, "CURATOR_MANAGE_FOREGROUND_SKILLS", True)
+def _enter_curator_pass(tmp_path, monkeypatch, *, phase: str, scope: tuple = ()):
     snapshot = tmp_path / "curator" / "snapshots" / "pass-1"
     snapshot.mkdir(parents=True)
     monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "pass-1")
     monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snapshot))
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PHASE", phase)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_VERIFY_BATCH", "1")
+    from threadkeeper.curator_snapshots import write_verify_scope
+
+    write_verify_scope(snapshot, 1, "pass-1", "PROPOSAL 1: " + " ".join(scope))
+    return snapshot
+
+
+def _seed_skill_as_foreground(pkg, name):
+    """Seed through skill_manage without the curator write limits."""
+    import threadkeeper.tools.skills as skills_mod
+
+    original = skills_mod.WRITE_ORIGIN
+    skills_mod.WRITE_ORIGIN = "foreground"
+    try:
+        return _seed_skill(pkg, name)
+    finally:
+        skills_mod.WRITE_ORIGIN = original
+
+
+def test_curator_evaluator_must_propose_every_skill_delete(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill_as_foreground(pkg, "loop-duplicate")
+    _set_skill_origin(pkg, "loop-duplicate", "shadow_review")
+    _enter_curator_pass(tmp_path, monkeypatch, phase="evaluate")
+    sm = _tool(pkg, "skill_manage")
+
+    result = sm(action="delete", name="loop-duplicate", force=True)
+
+    assert result.startswith("ERR verification_required action=skill_delete")
+    assert (pkg["skills_root"] / "loop-duplicate").exists()
+
+
+def test_curator_verifier_can_delete_foreground_skill_in_snapshotted_pass(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill_as_foreground(pkg, "foreground-duplicate")
+    _set_skill_origin(pkg, "foreground-duplicate", "foreground")
+    snapshot = _enter_curator_pass(
+        tmp_path, monkeypatch, phase="verify", scope=("foreground-duplicate",),
+    )
     sm = _tool(pkg, "skill_manage")
 
     result = sm(action="delete", name="foreground-duplicate")
@@ -363,6 +422,19 @@ def test_curator_can_delete_foreground_only_with_explicit_snapshot_authority(
         snapshot / "tombstones" / "skills" / "skill_deleted"
         / "foreground-duplicate" / "SKILL.md"
     ).is_file()
+
+
+def test_curator_verifier_cannot_delete_pinned_skill(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill_as_foreground(pkg, "pinned-rule")
+    conn = pkg["db"].get_db()
+    conn.execute("UPDATE skill_usage SET pinned=1 WHERE name='pinned-rule'")
+    conn.commit()
+    _enter_curator_pass(tmp_path, monkeypatch, phase="verify", scope=("pinned-rule",))
+    sm = _tool(pkg, "skill_manage")
+
+    assert sm(action="delete", name="pinned-rule").startswith("ERR pinned=pinned-rule")
+    assert (pkg["skills_root"] / "pinned-rule").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -439,6 +511,32 @@ def test_skill_record_bumps_counters(skills_pkg):
     assert r["last_viewed_at"] is not None
 
 
+def test_skill_list_leaves_view_telemetry_and_stale_state_alone(skills_pkg):
+    _seed_skill(skills_pkg, name="listed-active")
+    _seed_skill(skills_pkg, name="listed-stale")
+    conn = skills_pkg["db"].get_db()
+    conn.execute("UPDATE skill_usage SET state='stale' WHERE name='listed-stale'")
+    conn.commit()
+
+    listed = _tool(skills_pkg, "skill_list")
+    rendered = listed()
+    rendered_again = listed(include_archived=True)
+
+    assert "listed-active" in rendered
+    assert "views=0" in rendered
+    assert "listed-stale tier=hypothesis origin=foreground state=stale" in rendered_again
+    rows = {
+        row["name"]: row
+        for row in conn.execute(
+            "SELECT name, view_count, last_viewed_at, state FROM skill_usage "
+            "WHERE name IN ('listed-active', 'listed-stale')"
+        ).fetchall()
+    }
+    assert rows["listed-active"]["view_count"] == 0
+    assert rows["listed-active"]["last_viewed_at"] is None
+    assert rows["listed-stale"]["state"] == "stale"
+
+
 def test_skill_list_omits_archived_by_default(skills_pkg):
     _seed_skill(skills_pkg, name="alive")
     _seed_skill(skills_pkg, name="ghost")
@@ -492,7 +590,10 @@ def test_curator_marks_stale_and_archives(skills_pkg):
     # 100 days idle but already stale → archived (default archive_after=90)
     _seed_agent_created_skill(skills_pkg, "old-stale", created_at_offset_days=100)
     conn = skills_pkg["db"].get_db()
-    conn.execute("UPDATE skill_usage SET state='stale' WHERE name='old-stale'")
+    conn.execute(
+        "UPDATE skill_usage SET state='stale', stale_since=? WHERE name='old-stale'",
+        (int(time.time()) - 70 * 86400,),
+    )
     conn.commit()
 
     cur = _tool(skills_pkg, "curator_run")
@@ -605,6 +706,31 @@ def test_review_thread_auto_bumps_learning_loop_counter(skills_pkg, monkeypatch)
         "SELECT use_count FROM skill_usage WHERE name='ai-memory-learning-loop'"
     ).fetchone()
     assert row["use_count"] == 2
+
+
+def test_review_thread_returned_spawn_error_does_not_record_skill_use(
+    skills_pkg, monkeypatch,
+):
+    import threadkeeper.config as cfg
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(cfg, "AUTO_REVIEW_ENABLED", False)
+    monkeypatch.setattr(
+        spawn_mod, "spawn", lambda **kw: "ERR spawn_reservation_failed=busy",
+    )
+    open_t = _tool(skills_pkg, "open_thread")
+    close = _tool(skills_pkg, "close_thread")
+    tid = open_t(question="review spawn failure")
+    close(thread_id=tid, outcome="done")
+
+    out = _tool(skills_pkg, "review_thread")(thread_id=tid, mode="auto")
+
+    assert out == "spawn_error: spawn_reservation_failed=busy"
+    conn = skills_pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT use_count FROM skill_usage WHERE name='ai-memory-learning-loop'"
+    ).fetchone()
+    assert row is None
 
 
 def test_review_thread_rejects_unknown_thread(skills_pkg):
@@ -831,3 +957,88 @@ def test_review_thread_rejects_bad_focus(skills_pkg):
     rev = _tool(skills_pkg, "review_thread")
     assert rev(thread_id=tid, focus="garbage",
                mode="inline").startswith("ERR invalid_focus")
+
+
+def test_loop_writer_cannot_grow_skill_md_past_soft_cap(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="shadow_review")
+    import threadkeeper.tools.skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "SKILL_MD_SOFT_CAP_CHARS", 400)
+    sm = _tool(pkg, "skill_manage")
+    assert sm(
+        action="create", name="growing-skill",
+        description="Use when testing the SKILL.md soft cap.",
+        content="# Growing\n\nShort body.",
+    ).startswith("ok")
+
+    grown = sm(
+        action="patch", name="growing-skill",
+        old_string="Short body.", new_string="Short body. " + "x" * 500,
+    )
+    shrunk = sm(action="patch", name="growing-skill", old_string="Short body.", new_string="Short.")
+
+    assert grown.startswith("ERR skill_md_too_large")
+    assert "references/<topic>.md" in grown
+    assert shrunk == "ok"
+
+
+def test_skill_roots_used_by_tests_stay_inside_the_test_home(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch)
+    import threadkeeper.tools.skills as skills_mod
+
+    import pwd
+
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    roots = [Path(root).resolve() for root in skills_mod._skill_roots()]
+
+    assert roots
+    assert all(str(root).startswith(str(tmp_path.resolve())) for root in roots), roots
+    assert not any(root == real_home / ".claude" / "skills" for root in roots)
+
+
+def test_curator_evaluator_cannot_edit_protected_or_pinned_skills(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill_as_foreground(pkg, "human-skill")
+    _seed_skill_as_foreground(pkg, "pinned-loop-skill")
+    _seed_skill_as_foreground(pkg, "loop-skill")
+    _set_skill_origin(pkg, "pinned-loop-skill", "shadow_review")
+    _set_skill_origin(pkg, "loop-skill", "shadow_review")
+    conn = pkg["db"].get_db()
+    conn.execute("UPDATE skill_usage SET pinned=1 WHERE name='pinned-loop-skill'")
+    conn.commit()
+    _enter_curator_pass(tmp_path, monkeypatch, phase="evaluate")
+    sm = _tool(pkg, "skill_manage")
+
+    def patch(name):
+        return sm(action="patch", name=name, old_string="Original body.", new_string="Changed.")
+
+    assert patch("human-skill").startswith("ERR verification_required action=skill_patch")
+    assert patch("pinned-loop-skill") == "ERR pinned=pinned-loop-skill"
+    assert patch("loop-skill") == "ok"
+    created = sm(action="create", name="new-umbrella", description="Use when testing.", content="# x")
+    assert created.startswith("ERR verification_required action=skill_create")
+
+
+def test_curator_verifier_only_changes_skills_its_proposals_name(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    _seed_skill_as_foreground(pkg, "named-skill")
+    _seed_skill_as_foreground(pkg, "bystander-skill")
+    _enter_curator_pass(tmp_path, monkeypatch, phase="verify", scope=("named-skill",))
+    sm = _tool(pkg, "skill_manage")
+
+    assert sm(action="delete", name="bystander-skill").startswith(
+        "ERR outside_verify_scope key=bystander-skill"
+    )
+    assert sm(action="delete", name="named-skill") == "ok"
+    assert (pkg["skills_root"] / "bystander-skill").exists()
+
+
+def test_evolve_report_applier_cannot_delete_skills(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="evolve_apply")
+    _seed_skill_as_foreground(pkg, "loop-skill")
+    _set_skill_origin(pkg, "loop-skill", "shadow_review")
+
+    out = _tool(pkg, "skill_manage")(action="delete", name="loop-skill")
+
+    assert out.startswith("ERR verification_required action=skill_delete")
+    assert (pkg["skills_root"] / "loop-skill").exists()

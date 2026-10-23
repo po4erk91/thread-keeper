@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from . import config
@@ -44,6 +45,7 @@ _DAEMON_STARTERS = [
     ("thread_janitor", "start_thread_janitor"),
     ("dialectic_miner", "start_dialectic_miner_daemon"),
     ("dialectic_validator", "start_dialectic_validator_daemon"),
+    ("model_router", "start_model_router_daemon"),
     # Must start after the monitored loops so its first observation is a
     # health snapshot, not a burst of startup retries.
     ("daemon_supervisor", "start_daemon_supervisor"),
@@ -120,15 +122,85 @@ def main() -> int:
             # confirmed empirically while building this).
             stop = threading.Event()
             signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            # Self-heal: a leaked write transaction elsewhere in this process
+            # (a legacy get_db() connection left mid-write) holds SQLite's
+            # single-writer lock, starving every run_write — including this
+            # heartbeat — indefinitely. The cross-host recovery in
+            # _recover_wedged_host only fires when ANOTHER host boots, so a
+            # solo host with no new sessions would stay wedged forever. When
+            # heartbeats have been starved for HOST_WEDGE_KILL_AFTER_S, exit so
+            # the supervisor respawns a clean host (process teardown drops the
+            # leaked connection and releases the lock).
+            starved_since: float | None = None
+            wedge_s = float(getattr(config, "HOST_WEDGE_KILL_AFTER_S", 0.0) or 0.0)
             while not stop.is_set():
-                _heartbeat()
+                _check_leaked_writes()
+                if _heartbeat():
+                    starved_since = None
+                else:
+                    if starved_since is None:
+                        starved_since = time.monotonic()
+                    if _wedge_deadline_passed(starved_since, time.monotonic(),
+                                              wedge_s):
+                        logger.error(
+                            "host: heartbeat starved >= %.0fs (DB writer wedged); "
+                            "self-terminating for a clean supervisor respawn",
+                            wedge_s,
+                        )
+                        break
                 stop.wait(min(30.0, config.HOST_HEARTBEAT_TTL_S / 2))
         finally:
             _clear_host_pidfile(only_pid=os.getpid())
     return 0
 
 
-def _heartbeat() -> None:
+# A legacy connection seen inside one write transaction for this long is
+# treated as leaked: every run_write in every process is waiting on it.
+_LEAKED_WRITE_WARN_S = 60.0
+
+
+def _check_leaked_writes(now: float | None = None) -> list[dict]:
+    """Log this process's get_db() connections that keep a write transaction
+    open across heartbeats, naming the call site that opened each (#293).
+
+    The heartbeat can only report the wedge; this names who holds it. Returns
+    the holders it logged. Never raises: the heartbeat loop must keep going.
+    """
+    try:
+        from .db import legacy_connection_stats
+        stats = legacy_connection_stats(now)
+    except Exception:
+        logger.debug("host: leaked-write check failed", exc_info=True)
+        return []
+    stale = [
+        h for h in stats["write_holders"] if h["held_s"] >= _LEAKED_WRITE_WARN_S
+    ]
+    for holder in stale:
+        logger.error(
+            "host: %s has held a SQLite write transaction for %.0fs; every "
+            "other writer waits on it (leaked get_db() transaction)",
+            holder["site"], holder["held_s"],
+        )
+    return stale
+
+
+def _wedge_deadline_passed(starved_since: float | None, now: float,
+                           wedge_s: float) -> bool:
+    """True when the host has gone without a successful heartbeat for at least
+    ``wedge_s`` seconds — i.e. the DB writer is wedged and this solo host should
+    self-terminate so the supervisor respawns a clean one. Disabled when
+    ``wedge_s`` <= 0 or no starvation streak is in progress."""
+    return (
+        wedge_s > 0
+        and starved_since is not None
+        and (now - starved_since) >= wedge_s
+    )
+
+
+def _heartbeat() -> bool:
+    """Write one host heartbeat. Returns True on success, False on any failure
+    (the sustained-failure case is a wedged DB writer — see the self-heal in
+    :func:`main`)."""
     from .db import run_write
     from . import identity
     try:
@@ -136,8 +208,10 @@ def _heartbeat() -> None:
         # Session initialization and recurring heartbeat are intentionally
         # separate: ordinary read tools no longer turn into writers.
         run_write("host-heartbeat", identity._heartbeat, deadline_s=2.0)
+        return True
     except Exception:
         logger.debug("host: heartbeat failed", exc_info=True)
+        return False
 
 
 def ensure_host_running() -> bool:
@@ -163,29 +237,52 @@ def ensure_host_running() -> bool:
             # survived SIGKILL): a spawn could not win the election anyway.
             return False
         log = open(config.HOST_LOCK_PATH.parent / "host.log", "ab", buffering=0)
-        # Sanitize the env for the detached host. If a spawned review child
-        # (THREADKEEPER_SPAWNED_CHILD=1, non-foreground THREADKEEPER_WRITE_ORIGIN)
-        # is the first process to call ensure_host_running(), a bare env
-        # inheritance would carry those markers into the host. Since
-        # config.BACKGROUND_DAEMONS_ALLOWED = not SPAWNED_CHILD and
-        # WRITE_ORIGIN=="foreground" and not DISABLE_BG_DAEMONS, that would make
-        # ~13 of the 18 daemon starters self-gate off in the host process — it
-        # would still bind the embed socket and heartbeat (looks alive, holds
-        # the election lock) while running almost none of its loops. Force a
-        # clean foreground-equivalent env instead, regardless of who spawned it.
-        env = os.environ.copy()
-        env.pop("THREADKEEPER_SPAWNED_CHILD", None)
-        env["THREADKEEPER_WRITE_ORIGIN"] = "foreground"
-        env.pop("THREADKEEPER_DISABLE_BG_DAEMONS", None)
-        env.pop("THREADKEEPER_NO_EMBEDDINGS", None)
-        env["THREADKEEPER_ROLE"] = "host"  # belt-and-suspenders; main() also sets this
         subprocess.Popen(
             [sys.executable, "-m", "threadkeeper.host"],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True,
-            env=env,
+            env=_host_env(),
         )
         return True
+
+
+# If a spawned review child (THREADKEEPER_SPAWNED_CHILD=1, non-foreground
+# THREADKEEPER_WRITE_ORIGIN) is the first process to call ensure_host_running(),
+# a bare env inheritance would carry those markers into the host. Since
+# config.BACKGROUND_DAEMONS_ALLOWED = not SPAWNED_CHILD and
+# WRITE_ORIGIN=="foreground" and not DISABLE_BG_DAEMONS, ~13 of the 18 daemon
+# starters would self-gate off in the host — it would still bind the embed
+# socket and heartbeat (looks alive, holds the election lock) while running
+# almost none of its loops.
+_DAEMON_GATE_ENV = (
+    "THREADKEEPER_SPAWNED_CHILD",
+    "THREADKEEPER_DISABLE_BG_DAEMONS",
+    "THREADKEEPER_NO_EMBEDDINGS",
+)
+# Per-child identity of whichever child's MCP server spawned the host. Inherited,
+# a stale pass id would become the host's default for every later child (the
+# curator restores its pass env var to the inherited value after each launch).
+_CHILD_IDENTITY_ENV = (
+    "THREADKEEPER_CURATOR_PASS_ID",
+    "THREADKEEPER_CURATOR_SNAPSHOT_DIR",
+    "THREADKEEPER_MODEL_ROUTER_PASS_ID",
+    "THREADKEEPER_EGRESS_CONSUMER",
+)
+
+
+def _host_env() -> dict[str, str]:
+    """Clean foreground-equivalent env for the detached host, regardless of
+    which process spawns it."""
+    env = os.environ.copy()
+    for key in _DAEMON_GATE_ENV + _CHILD_IDENTITY_ENV:
+        env.pop(key, None)
+    env["THREADKEEPER_WRITE_ORIGIN"] = "foreground"
+    env["THREADKEEPER_ROLE"] = "host"  # belt-and-suspenders; main() also sets this
+    # The host is nobody's conversation: its own cid keeps it from borrowing
+    # the spawning child's cid (or, without one, a ppid/mtime guess) as the
+    # parent identity of every child it launches.
+    env["THREADKEEPER_FORCE_CID"] = str(uuid.uuid4())
+    return env
 
 
 def _host_alive() -> bool:

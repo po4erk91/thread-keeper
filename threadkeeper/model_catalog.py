@@ -165,6 +165,12 @@ def _read_cache() -> dict[str, Any]:
         return {}
 
 
+def read_cached_clis() -> dict[str, Any]:
+    """Per-CLI entries from the on-disk catalog cache, without discovery."""
+    clis = _read_cache().get("clis")
+    return dict(clis) if isinstance(clis, dict) else {}
+
+
 def _write_cache(payload: dict[str, Any]) -> None:
     path = _cache_path()
     try:
@@ -389,6 +395,7 @@ def settings_catalog(refresh: bool = False) -> dict[str, Any]:
     roles: list[dict[str, Any]] = []
     for meta in AGENT_ROLES:
         role = meta["role"]
+        route = spawn_config.route_for(role)
         detail = spawn_config.resolution_details(role, active)
         cli_dynamic = spawn_config.agent_cli_is_dynamic(role, active)
         if cli_dynamic:
@@ -411,6 +418,8 @@ def settings_catalog(refresh: bool = False) -> dict[str, Any]:
             "cli_inherited": detail["cli_source"] != "role override",
             "model_inherited": detail["model_source"] != "role override",
             "effort_inherited": detail["effort_source"] != "role override",
+            "routed": route is not None,
+            "routed_at": route.decided_at if route is not None else 0,
         })
     return {
         "generated_at": int(time.time()),

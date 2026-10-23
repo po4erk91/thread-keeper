@@ -182,11 +182,12 @@ def test_ingest_file_bumps_skill_usage(tmp_path, monkeypatch):
     conn.commit()
     assert added == 1
     row = conn.execute(
-        "SELECT use_count, last_used_at, created_by_origin "
+        "SELECT use_count, foreground_use_count, last_used_at, created_by_origin "
         "FROM skill_usage WHERE name='swift-ios'"
     ).fetchone()
     assert row is not None
     assert row["use_count"] == 1
+    assert row["foreground_use_count"] == 1
     assert row["last_used_at"] is not None
     assert row["created_by_origin"] == "foreground"
 
@@ -372,3 +373,36 @@ def test_ingest_file_increments_use_count_across_calls(tmp_path, monkeypatch):
         "SELECT use_count FROM skill_usage WHERE name='repeated'"
     ).fetchone()
     assert row["use_count"] == 2
+
+
+def test_slash_command_of_a_known_skill_counts_as_use(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    skill_dir = tmp_path / "claude_skills" / "release-notes"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: release-notes\n---\n", encoding="utf-8")
+    fp = _write_jsonl(pkg["projects"], [
+        {
+            "uuid": "msg-slash",
+            "type": "user",
+            "timestamp": "2026-05-13T10:00:00Z",
+            "sessionId": "sess-s",
+            "message": {
+                "role": "user",
+                "content": (
+                    "<command-message>release-notes</command-message>\n"
+                    "<command-name>/release-notes</command-name>\n"
+                    "<command-name>/clear</command-name>"
+                ),
+            },
+        },
+    ])
+
+    pkg["ingest"]._ingest_file(conn, fp, max_msgs=100)
+    conn.commit()
+
+    names = {
+        row["name"]: row["use_count"]
+        for row in conn.execute("SELECT name, use_count FROM skill_usage").fetchall()
+    }
+    assert names == {"release-notes": 1}

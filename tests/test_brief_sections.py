@@ -146,6 +146,49 @@ def test_consulted_skills_silent_without_events(mp_with_cid):
     assert "consulted_skills" not in txt
 
 
+def test_consulted_lessons_surface_recall_telemetry_and_keep_brief_sections(
+    mp_with_cid,
+):
+    """A recalled lesson keeps its read telemetry visible without dropping
+    the existing thread, evolve, or user-facing brief sections."""
+    pkg = mp_with_cid(_FAKE_CID)
+    lesson_append = _tool(pkg, "lesson_append")
+    lesson_list = _tool(pkg, "lesson_list")
+    lesson_get = _tool(pkg, "lesson_get")
+    open_thread = _tool(pkg, "open_thread")
+
+    assert lesson_append(
+        title="Recall telemetry", body="Use this lesson for brief coverage.",
+        source="shadow",
+    ).startswith("ok")
+    lesson_list(k=1)
+    assert "Use this lesson for brief coverage." in lesson_get(
+        slug="recall-telemetry"
+    )
+    open_thread(question="keep the open section")
+
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO evolve (suggestion, rationale, applied, status, created_at) "
+        "VALUES (?, ?, 0, 'promoted', ?)",
+        ("seeded promoted suggestion", "brief coverage", int(time.time())),
+    )
+    conn.commit()
+
+    txt = _brief_text(pkg)
+
+    assert "consulted_lessons" in txt
+    assert "recall-telemetry" in txt
+    assert "viewed×1" in txt
+    assert "used×1" in txt
+    assert "last_recalled=" in txt
+    assert "open" in txt
+    assert "keep the open section" in txt
+    assert "evolve_pending" in txt
+    assert "★ \"seeded promoted suggestion\"" in txt
+    assert "⚠️ user-facing: paraphrase plain." in txt
+
+
 def test_skill_nudge_silent_after_materialization(mp_with_cid, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_SKILL_NUDGE_INTERVAL", "3")
     pkg = mp_with_cid(_FAKE_CID)

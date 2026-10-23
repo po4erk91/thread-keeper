@@ -50,6 +50,7 @@ class ForgetPlan:
     presence_ids: list[str] = field(default_factory=list)
     lesson_refs: list[ReviewRef] = field(default_factory=list)
     skill_refs: list[ReviewRef] = field(default_factory=list)
+    authority_roots: list[tuple[str, str]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -306,15 +307,19 @@ def _include_supersede_descendants(
 ) -> None:
     """Add claims derived only through a forgotten supersession chain.
 
-    A replacement claim's seeded evidence points to ``supersede:<old-id>``.
-    That provenance is a descendant of the erased source, not independent
-    evidence. Delete the descendant when every one of its evidence rows is
-    already selected; otherwise erase only its inherited evidence and retain
-    the independently supported current claim.
+    A replacement claim's seeded evidence points to the claim it supersedes.
+    Older stores use ``supersede:<old-id>`` and current stores use
+    ``claim:<old-id>``. Delete the descendant when every one of its evidence
+    rows is already selected; otherwise erase only its inherited evidence and
+    retain the independently supported current claim.
     """
     pending = set(claim_ids)
     while pending:
-        sources = [f"supersede:{claim_id}" for claim_id in sorted(pending)]
+        sources = [
+            f"{prefix}:{claim_id}"
+            for claim_id in sorted(pending)
+            for prefix in ("supersede", "claim")
+        ]
         pending = set()
         descendants = _fetch_where_in(
             conn,
@@ -431,6 +436,28 @@ def _dialectic_targets(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
     _include_supersede_descendants(conn, claim_ids, evidence_ids)
     plan.evidence_ids = sorted(evidence_ids)
     plan.claim_ids = sorted(claim_ids)
+
+
+def _claims_with_independent_evidence(
+    conn: sqlite3.Connection,
+    plan: ForgetPlan,
+) -> list[tuple[str, str]]:
+    """Keep a surviving claim visible when it has non-forgotten evidence."""
+    if not plan.evidence_ids or not _table_exists(conn, "dialectic_evidence"):
+        return []
+    selected = _placeholders(len(plan.evidence_ids))
+    filters = [f"id NOT IN ({selected})"]
+    params: list[str] = [*plan.evidence_ids]
+    if plan.claim_ids:
+        deleted_claims = _placeholders(len(plan.claim_ids))
+        filters.append(f"claim_id NOT IN ({deleted_claims})")
+        params.extend(plan.claim_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT claim_id FROM dialectic_evidence "
+        f"WHERE {' AND '.join(filters)}",
+        params,
+    ).fetchall()
+    return [("claim", str(row["claim_id"])) for row in rows]
 
 
 def _extract_candidate_ids(conn: sqlite3.Connection, plan: ForgetPlan) -> list[int]:
@@ -705,6 +732,14 @@ def _populate_counts(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
         "cursors": len(plan.cursor_ids),
         "presence": len(plan.presence_ids),
     }
+    try:
+        from .workflow_artifacts import selective_erase_count
+
+        counts["workflow_artifacts"] = selective_erase_count(
+            conn, plan.selector,
+        )
+    except sqlite3.Error:
+        counts["workflow_artifacts"] = 0
     plan.counts = counts
 
 
@@ -724,6 +759,13 @@ def build_forget_plan(
     plan.task_ids = _task_ids(conn, clean_selector, resolved)
     plan.task_spool_paths = _task_spool_paths(plan.task_ids)
     _dialectic_targets(conn, plan)
+    plan.authority_roots = [
+        *( ("dialog", uuid) for uuid in plan.dialog_uuids ),
+        *( ("note", note_id) for note_id in plan.note_ids ),
+        *( ("verbatim", verbatim_id) for verbatim_id in plan.verbatim_ids ),
+        *( ("evidence", evidence_id) for evidence_id in plan.evidence_ids ),
+        *( ("claim", claim_id) for claim_id in plan.claim_ids ),
+    ]
     plan.extract_candidate_ids = _extract_candidate_ids(conn, plan)
     plan.signal_ids = _signal_ids(conn, plan)
     _session_sidecar_ids(conn, plan)
@@ -828,9 +870,23 @@ def _recompute_claims(conn: sqlite3.Connection, claim_ids: set[str]) -> None:
 
 def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
     deleted: dict[str, int] = {}
+    from .identity import _ensure_session
+
+    _ensure_session(conn)
     conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
+        from .workflow_artifacts import selectively_erase_bodies
+
+        deleted["workflow_artifacts"] = selectively_erase_bodies(
+            conn, plan.selector,
+        )
+        from .authority import invalidate_descendants
+        deleted["memory_authority_invalidated"] = invalidate_descendants(
+            conn,
+            plan.authority_roots,
+            preserve=_claims_with_independent_evidence(conn, plan),
+        )
         deleted["task_spool_paths"] = sum(
             1 for path in plan.task_spool_paths if _unlink_spool_path(path)
         )

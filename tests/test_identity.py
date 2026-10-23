@@ -13,6 +13,17 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
+
+def test_emit_requires_session_setup(fresh_mp):
+    """A forgotten session setup must fail instead of dropping telemetry."""
+    identity = fresh_mp["identity"]
+    conn = fresh_mp["db"].get_db()
+
+    with pytest.raises(RuntimeError, match="requires session setup"):
+        identity._emit(conn, "test_missing_session")
+
 
 def test_session_id_set_after_ensure_session(fresh_mp):
     identity = fresh_mp["identity"]
@@ -30,6 +41,7 @@ def test_context_sees_live_session_id(fresh_mp):
     This is the exact regression from `name '_session_start' is not defined` /
     `sess=-` in production briefs.
     """
+    fresh_mp["identity"].ensure_session_started()
     mcp = fresh_mp["mcp"]
     res = mcp._tool_manager._tools["context"].fn()
     # context() now returns a CallToolResult (structuredContent + legacy text, #67)
@@ -50,6 +62,7 @@ def test_context_sees_live_session_id(fresh_mp):
 def test_brief_ctx_line_carries_live_session_id(fresh_mp):
     """The first line of brief() reads `ctx sess=...`. If the snapshot bug
     is present, that prints `sess=-`. Pin to the live id."""
+    fresh_mp["identity"].ensure_session_started()
     mcp = fresh_mp["mcp"]
     out = mcp._tool_manager._tools["brief"].fn()
     first = out.split("\n", 1)[0]
