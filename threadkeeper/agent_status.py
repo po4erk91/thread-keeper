@@ -152,7 +152,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "role": "curator",
         "description": _ROLE_DESCRIPTIONS["curator"],
         "work": "Audits lessons and skills for patch, prune, consolidate",
-        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage WHERE classification='production'",
         "backlog_label": "tracked skills",
     },
     {
@@ -268,7 +268,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "interval": "SKILL_UPDATE_INTERVAL_S",
         "description": _ROLE_DESCRIPTIONS["skill_update"],
         "work": "Checks installed skills for updates and mirrors them",
-        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage WHERE classification='production'",
         "backlog_label": "tracked skills",
     },
 )

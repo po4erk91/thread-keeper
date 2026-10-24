@@ -1765,6 +1765,38 @@ def test_skill_validate_tool_returns_post_change_contract(tmp_path, monkeypatch)
     }
 
 
+def test_skill_audit_and_validator_hide_fixtures_unless_requested(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    fixture = _write_audit_skill(
+        primary / ".fixtures", "audit-fixture", "# Fixture\nOnly for validation.",
+    )
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, classification) VALUES (?, ?, ?, ?)",
+        ("audit-fixture", int(time.time()), "foreground", "fixture"),
+    )
+    conn.commit()
+    import threadkeeper.tools.skills as skill_tools
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary])
+    from threadkeeper.skill_audit import build_skill_audit
+    from threadkeeper.tools.curator import skill_validate
+
+    assert build_skill_audit(conn)["skills"] == []
+    audit = build_skill_audit(conn, include_fixtures=True)
+    assert audit["summary"]["fixtures"] == 1
+    assert audit["skills"][0]["source_path"] == str(fixture)
+
+    assert skill_validate(name="audit-fixture") == "ERR hidden_fixture=audit-fixture"
+    explicit = json.loads(skill_validate(name="audit-fixture", include_fixtures=True))
+    assert explicit["skill"]["classification"] == "fixture"
+
+    inventory, _lessons, skill_count = pkg["curator"]._collect_inventory(conn)
+    assert skill_count == 0
+    assert "SKILLS (n=0)" in inventory
+
+
 def test_wikilink_health_reports_dangling_lesson_and_skill_links(
     tmp_path, monkeypatch,
 ):

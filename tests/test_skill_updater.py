@@ -110,6 +110,50 @@ def test_force_pass_imports_skill_installed_only_in_non_primary_root(
     ).read_text(encoding="utf-8")
 
 
+def test_force_pass_preserves_explicit_fixture_classification(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, classification) VALUES (?, ?, ?, ?)",
+        ("fixture-copy", 1, "foreground", "fixture"),
+    )
+    conn.commit()
+    _write_skill(
+        pkg["claude_root"] / ".fixtures", "fixture-copy", "old copy", mtime=100,
+    )
+    _write_skill(
+        pkg["codex_root"] / ".fixtures", "fixture-copy", "new copy", mtime=200,
+    )
+
+    out = pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert "local_updates=1" in out
+    assert "new copy" in (
+        pkg["claude_root"] / ".fixtures" / "fixture-copy" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "new copy" in (
+        pkg["codex_root"] / ".fixtures" / "fixture-copy" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert not (pkg["claude_root"] / "fixture-copy").exists()
+
+
+def test_force_pass_does_not_infer_a_fixture_from_a_hidden_path(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_skill(
+        pkg["codex_root"] / ".fixtures", "unknown-fixture", "not registered", mtime=200,
+    )
+
+    out = pkg["skill_updater"].run_skill_update_pass(force=True)
+
+    assert "local_checked=0" in out
+    assert not (pkg["claude_root"] / ".fixtures" / "unknown-fixture").exists()
+    row = pkg["db"].get_db().execute(
+        "SELECT 1 FROM skill_usage WHERE name='unknown-fixture'"
+    ).fetchone()
+    assert row is None
+
+
 def test_source_tracked_skill_updates_and_mirrors(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     updater = pkg["skill_updater"]

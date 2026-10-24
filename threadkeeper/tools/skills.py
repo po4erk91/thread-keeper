@@ -90,6 +90,10 @@ MAX_SKILL_FILE_BYTES = 1_048_576  # 1 MiB
 
 _VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+PRODUCTION_CLASSIFICATION = "production"
+FIXTURE_CLASSIFICATION = "fixture"
+SKILL_CLASSIFICATIONS = (PRODUCTION_CLASSIFICATION, FIXTURE_CLASSIFICATION)
+FIXTURE_DIRECTORY_NAME = ".fixtures"
 
 
 def _validate_name(name: str) -> Optional[str]:
@@ -178,12 +182,41 @@ def _validate_skill_md(content: str, expected_name: str) -> Optional[str]:
 # Path helpers
 # ──────────────────────────────────────────────────────────────────────────
 
-def _skill_dir(name: str) -> Path:
+def _normalize_classification(value: str | None) -> str:
+    return value if value in SKILL_CLASSIFICATIONS else PRODUCTION_CLASSIFICATION
+
+
+def _fixture_dir(name: str) -> Path:
+    return CLAUDE_SKILLS_DIR / FIXTURE_DIRECTORY_NAME / name
+
+
+def _skill_classification(name: str) -> str:
+    """Read a skill's durable class without treating an unknown name as a fixture."""
+    try:
+        row = get_db().execute(
+            "SELECT classification FROM skill_usage WHERE name=?", (name,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return PRODUCTION_CLASSIFICATION
+    return _normalize_classification(row["classification"] if row else None)
+
+
+def _skill_dir(name: str, classification: str | None = None) -> Path:
+    classification = _normalize_classification(classification or _skill_classification(name))
+    if classification == FIXTURE_CLASSIFICATION:
+        return _fixture_dir(name)
     return CLAUDE_SKILLS_DIR / name
 
 
-def _skill_md_path(name: str) -> Path:
-    return _skill_dir(name) / "SKILL.md"
+def _skill_md_path(name: str, classification: str | None = None) -> Path:
+    return _skill_dir(name, classification) / "SKILL.md"
+
+
+def _skill_exists(name: str) -> bool:
+    return any(
+        _skill_md_path(name, classification).is_file()
+        for classification in SKILL_CLASSIFICATIONS
+    )
 
 
 def _archive_dir() -> Path:
@@ -262,6 +295,15 @@ def _mirror_targets(name: str) -> list[Path]:
     return [root / name for root in _skill_roots() if root.resolve() != primary]
 
 
+def _fixture_mirror_targets(name: str) -> list[Path]:
+    primary = CLAUDE_SKILLS_DIR.resolve()
+    return [
+        root / FIXTURE_DIRECTORY_NAME / name
+        for root in _skill_roots()
+        if root.resolve() != primary
+    ]
+
+
 def _copy_skill_tree(src: Path, dst: Path) -> None:
     """Replace dst with a recursive copy of src unless they are identical."""
     if src.resolve() == dst.resolve():
@@ -273,18 +315,32 @@ def _copy_skill_tree(src: Path, dst: Path) -> None:
 
 
 def _mirror_skill_dir(name: str) -> None:
-    """Copy CLAUDE_SKILLS_DIR/<name>/ → every mirror target (recursive).
-    Pre-existing mirror is replaced atomically. Best-effort per target."""
+    """Copy a skill to the matching visible or hidden mirror location."""
     src = _skill_dir(name)
     if not src.exists():
         return
-    for dst in _mirror_targets(name):
+    classification = _skill_classification(name)
+    targets = (
+        _fixture_mirror_targets(name)
+        if classification == FIXTURE_CLASSIFICATION else _mirror_targets(name)
+    )
+    stale_targets = (
+        _mirror_targets(name)
+        if classification == FIXTURE_CLASSIFICATION else _fixture_mirror_targets(name)
+    )
+    for dst in targets:
         try:
             _copy_skill_tree(src, dst)
         except Exception:
             # Per-mirror failure (permission denied / disk full / etc.)
             # doesn't fail the canonical write. The user can re-sync
             # later via re-running skill_manage.
+            pass
+    for dst in stale_targets:
+        try:
+            if dst.exists():
+                shutil.rmtree(dst)
+        except Exception:
             pass
 
 
@@ -317,18 +373,32 @@ def mirror_skill_from_path(skill_path: str) -> Optional[str]:
         return None
     if err := _validate_skill_md(body, name):
         return None
+    source_classification = (
+        FIXTURE_CLASSIFICATION
+        if src.parent.name == FIXTURE_DIRECTORY_NAME
+        else PRODUCTION_CLASSIFICATION
+    )
+    conn = get_db()
+    row = conn.execute(
+        "SELECT classification FROM skill_usage WHERE name=?", (name,),
+    ).fetchone()
+    classification = _normalize_classification(
+        row["classification"] if row else source_classification
+    )
     try:
-        _copy_skill_tree(src, _skill_dir(name))
+        _copy_skill_tree(src, _skill_dir(name, classification))
     except Exception:
         return None
+    if row is None:
+        _record_event(name, "create", classification=classification)
     _mirror_skill_dir(name)
     return name
 
 
 def _unmirror_skill(name: str) -> None:
-    """Remove <name>/ from every mirror target. Best-effort per target."""
+    """Remove visible and hidden copies from every mirror target."""
     import shutil as _sh
-    for dst in _mirror_targets(name):
+    for dst in [*_mirror_targets(name), *_fixture_mirror_targets(name)]:
         try:
             if dst.exists():
                 _sh.rmtree(dst)
@@ -537,7 +607,12 @@ def _screen_synthesized_body(body: str) -> Optional[str]:
     )
 
 
-def _record_event(name: str, kind: str) -> None:
+def _record_event(
+    name: str,
+    kind: str,
+    *,
+    classification: str = PRODUCTION_CLASSIFICATION,
+) -> None:
     """Bump skill_usage counters/timestamps. Inserts a row if missing.
 
     `kind`: 'create' | 'use' | 'view' | 'patch'. Unknown kinds are ignored.
@@ -545,6 +620,7 @@ def _record_event(name: str, kind: str) -> None:
     Side effect for kind='use' under WRITE_ORIGIN='foreground': also bumps
     foreground_use_count and re-evaluates tier (may promote).
     """
+    classification = _normalize_classification(classification)
     conn = get_db()
     now = int(time.time())
     cid = _detect_self_cid()
@@ -553,14 +629,15 @@ def _record_event(name: str, kind: str) -> None:
         # existing row (an earlier observation of the same name) is kept.
         conn.execute(
             "INSERT INTO skill_usage (name, created_at, created_by_cid, "
-            "created_by_origin, state, tier, tier_changed_at) "
-            "VALUES (?,?,?,?, 'active', 'hypothesis', ?) "
+            "created_by_origin, state, tier, tier_changed_at, classification) "
+            "VALUES (?,?,?,?, 'active', 'hypothesis', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET state='active', "
             "created_at=excluded.created_at, created_by_cid=excluded.created_by_cid, "
             "created_by_origin=excluded.created_by_origin, tier='hypothesis', "
-            "tier_changed_at=excluded.tier_changed_at, stale_since=NULL "
+            "tier_changed_at=excluded.tier_changed_at, "
+            "classification=excluded.classification, stale_since=NULL "
             "WHERE skill_usage.state='archived'",
-            (name, now, cid, WRITE_ORIGIN, now),
+            (name, now, cid, WRITE_ORIGIN, now, classification),
         )
         memory_provenance(
             conn, "skill", name, source_event_kind="skill_create",
@@ -571,10 +648,10 @@ def _record_event(name: str, kind: str) -> None:
     # ensure row exists for upserts that aren't 'create'
     conn.execute(
         "INSERT INTO skill_usage (name, created_at, created_by_cid, "
-        "created_by_origin, state, tier, tier_changed_at) "
-        "VALUES (?,?,?,?,'active','hypothesis',?) "
+        "created_by_origin, state, tier, tier_changed_at, classification) "
+        "VALUES (?,?,?,?,'active','hypothesis',?,?) "
         "ON CONFLICT(name) DO NOTHING",
-        (name, now, cid, WRITE_ORIGIN, now),
+        (name, now, cid, WRITE_ORIGIN, now, classification),
     )
     if kind == "view" and WRITE_ORIGIN == FOREGROUND_ORIGIN:
         conn.execute(
@@ -680,7 +757,8 @@ def skill_manage(action: str,
                  description: str = "",
                  source: str = "",
                  force: bool = False,
-                 replacement_name: str = "") -> str:
+                 replacement_name: str = "",
+                 classification: str = PRODUCTION_CLASSIFICATION) -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -707,15 +785,30 @@ def skill_manage(action: str,
                     during consolidation to repoint inbound [[wikilinks]];
                     otherwise the result lists dangling references.
       restore     — restore the latest trashed copy for `name`.
+      set_classification — explicitly move a managed skill between
+                    production and hidden fixture storage. Requires `name`
+                    and `classification` (`production` or `fixture`).
+
+    `classification='fixture'` on create writes a hidden validation/probe
+    fixture. Fixtures never appear in normal discovery, routing, or Curator
+    production health; use the explicit include_fixtures options to inspect.
     """
     action = action.strip()
     name = name.strip()
+    classification = classification.strip().lower()
     if action != "delete" and (err := _validate_name(name)):
         return f"ERR {err}"
+    if action in {"create", "set_classification"} and classification not in SKILL_CLASSIFICATIONS:
+        return (
+            f"ERR invalid_classification={classification} "
+            f"({'|'.join(SKILL_CLASSIFICATIONS)})"
+        )
     if refusal := _guarded_skill_write_refusal(name, action):
         return refusal
     if action == "create":
-        return _action_create(name, content, description, source)
+        return _action_create(name, content, description, source, classification)
+    if action == "set_classification":
+        return _action_set_classification(name, classification, source)
     if action == "edit":
         return _action_edit(name, content, source)
     if action == "patch":
@@ -736,13 +829,14 @@ def skill_manage(action: str,
         return _action_restore(name)
     return (
         f"ERR unknown_action={action} "
-        "(create|edit|patch|write_file|remove_file|delete|restore)"
+        "(create|edit|patch|write_file|remove_file|delete|restore|set_classification)"
     )
 
 
 _REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file"})
 _MUTATING_SKILL_ACTIONS = frozenset({
     "create", "edit", "patch", "write_file", "remove_file", "delete", "restore",
+    "set_classification",
 })
 
 
@@ -771,7 +865,9 @@ def curator_skill_refusal(name: str, action: str) -> str:
         return f"ERR pinned={name}"
     if is_curator_verifier():
         return verifier_scope_refusal(name)
-    structural = action in _REMOVING_SKILL_ACTIONS or action == "create"
+    structural = action in _REMOVING_SKILL_ACTIONS or action in {
+        "create", "set_classification",
+    }
     if structural or _skill_is_protected(row):
         return verification_required_error(f"skill_{action}", name)
     return ""
@@ -825,10 +921,16 @@ def _skill_md_growth_refusal(current: str, updated: str) -> str:
     )
 
 
-def _action_create(name: str, content: str, description: str, source: str = "") -> str:
-    sdir = _skill_dir(name)
-    md = _skill_md_path(name)
-    if md.exists():
+def _action_create(
+    name: str,
+    content: str,
+    description: str,
+    source: str = "",
+    classification: str = PRODUCTION_CLASSIFICATION,
+) -> str:
+    sdir = _skill_dir(name, classification)
+    md = _skill_md_path(name, classification)
+    if _skill_exists(name):
         return f"ERR skill_exists={name}"
     if content and content.startswith("---"):
         body = content
@@ -857,7 +959,7 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
         return f"ERR {reason}"
     sdir.mkdir(parents=True, exist_ok=True)
     md.write_text(body, encoding="utf-8")
-    _record_event(name, "create")
+    _record_event(name, "create", classification=classification)
     if not _stamp_skill_authority(conn, name, source):
         return "ERR authority_derivation_failed"
     _ensure_session(conn)
@@ -872,6 +974,95 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
     conn.commit()
     _mirror_skill_dir(name)
     return f"ok path={md}"
+
+
+def _action_set_classification(name: str, classification: str, source: str = "") -> str:
+    conn = get_db()
+    row = conn.execute(
+        "SELECT classification FROM skill_usage WHERE name=?", (name,),
+    ).fetchone()
+    if row is None:
+        return f"ERR skill_not_found={name}"
+    previous = _normalize_classification(row["classification"])
+    if previous == classification:
+        return f"ok classification={classification}"
+    if not _authority_write_allowed(conn, name, source):
+        return "ERR authority_source_unknown"
+    src = _skill_dir(name, previous)
+    dst = _skill_dir(name, classification)
+    if not src.is_dir():
+        return f"ERR skill_not_found={name}"
+    if dst.exists():
+        return f"ERR classification_target_exists={name}"
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        return f"ERR classification_move_failed={type(exc).__name__}"
+    conn.execute(
+        "UPDATE skill_usage SET classification=? WHERE name=?",
+        (classification, name),
+    )
+    if not _stamp_skill_authority(conn, name, source):
+        return "ERR authority_derivation_failed"
+    _ensure_session(conn)
+    _emit(conn, "skill_classify", target=name, summary=classification)
+    conn.commit()
+    _mirror_skill_dir(name)
+    return f"ok classification={classification}"
+
+
+def fixture_migration_plan(names: list[str], conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Describe explicitly selected production skills before hiding them.
+
+    Names are maintainer input, never inferred from spelling, origin, or file
+    contents.  The result is deliberately machine-readable so the CLI can
+    show evidence before its separate ``--apply`` step writes anything.
+    """
+    conn = conn or get_db()
+    plan: list[dict] = []
+    for raw_name in dict.fromkeys(names):
+        name = raw_name.strip()
+        if error := _validate_name(name):
+            plan.append({"name": name, "status": "invalid", "evidence": [error]})
+            continue
+        row = conn.execute(
+            "SELECT classification, created_by_origin, state FROM skill_usage "
+            "WHERE name=?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            plan.append({"name": name, "status": "missing", "evidence": []})
+            continue
+        classification = _normalize_classification(row["classification"])
+        source = _skill_dir(name, classification)
+        status = "candidate" if classification == PRODUCTION_CLASSIFICATION else "already_fixture"
+        plan.append({
+            "name": name,
+            "status": status,
+            "evidence": [
+                "selected_by_maintainer",
+                f"classification={classification}",
+                f"origin={row['created_by_origin']}",
+                f"state={row['state']}",
+                f"source={'present' if source.is_dir() else 'missing'}",
+            ],
+        })
+    return plan
+
+
+def apply_fixture_migration(names: list[str]) -> list[dict]:
+    """Apply a reviewed fixture plan; callers must opt in outside this helper."""
+    outcomes: list[dict] = []
+    for item in fixture_migration_plan(names):
+        if item["status"] != "candidate":
+            outcomes.append(item)
+            continue
+        result = _action_set_classification(
+            item["name"], FIXTURE_CLASSIFICATION,
+        )
+        outcomes.append({**item, "result": result})
+    return outcomes
 
 
 def _action_edit(name: str, content: str, source: str = "") -> str:
@@ -1155,9 +1346,6 @@ def _restore_skill_usage_row(
 
 
 def _action_restore(name: str) -> str:
-    sdir = _skill_dir(name)
-    if sdir.exists():
-        return f"ERR skill_exists={name}"
     artifact = latest_skill_artifact(name)
     if artifact is None:
         return f"ERR no_trash skill={name}"
@@ -1171,6 +1359,12 @@ def _action_restore(name: str) -> str:
     content = md.read_text(encoding="utf-8")
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed_from_trash: {err}"
+    classification = _normalize_classification(
+        (meta.get("usage_row") or {}).get("classification")
+    )
+    sdir = _skill_dir(name, classification)
+    if sdir.exists():
+        return f"ERR skill_exists={name}"
     sdir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, sdir, copy_function=shutil.copy2)
     conn = get_db()
@@ -1187,10 +1381,14 @@ def _action_restore(name: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 
 @write_tool()
-def skill_list(include_archived: bool = False) -> str:
+def skill_list(
+    include_archived: bool = False,
+    include_fixtures: bool = False,
+) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
-            state=<active|stale|archived> uses=N fg_uses=N
+            state=<active|stale|archived> classification=<production|fixture>
+            uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
 
     Listing is not consultation: it never touches ``view_count``,
@@ -1200,15 +1398,15 @@ def skill_list(include_archived: bool = False) -> str:
     """
     conn = get_db()
     _ensure_session(conn)
-    if include_archived:
-        rows = conn.execute(
-            "SELECT * FROM skill_usage ORDER BY name"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM skill_usage WHERE state != 'archived' "
-            "ORDER BY state, name"
-        ).fetchall()
+    clauses = []
+    if not include_archived:
+        clauses.append("state != 'archived'")
+    if not include_fixtures:
+        clauses.append("classification != 'fixture'")
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        "SELECT * FROM skill_usage" + where + " ORDER BY state, name"
+    ).fetchall()
     if not rows:
         return "no_skills_tracked"
     now = int(time.time())
@@ -1248,6 +1446,7 @@ def skill_list(include_archived: bool = False) -> str:
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
             f"state={r['state']} "
+            f"classification={_normalize_classification(r['classification'])} "
             f"uses={r['use_count']} "
             f"fg_uses={fg_uses} views={r['view_count'] or 0} "
             f"patches={r['patch_count']} wrong={wrong_n} "
@@ -1298,7 +1497,7 @@ def _recent_active_skills_dump(
             "         COALESCE(last_patched_at, 0)"
             "       ) AS last_active "
             "FROM skill_usage "
-            "WHERE state='active' "
+            "WHERE state='active' AND classification='production' "
             "  AND last_active > ? "
             "ORDER BY last_active DESC "
             "LIMIT ?",
@@ -1368,13 +1567,15 @@ def curator_run(stale_after_days: int = 30,
         # Rows that went stale before stale_since existed start their dwell now.
         conn.execute(
             "UPDATE skill_usage SET stale_since=? "
-            "WHERE state='stale' AND stale_since IS NULL",
+            "WHERE state='stale' AND stale_since IS NULL "
+            "AND classification='production'",
             (now,),
         )
         conn.commit()
     origins = sorted(CURATABLE_SKILL_ORIGINS)
     rows = conn.execute(
-        "SELECT * FROM skill_usage WHERE pinned=0 AND created_by_origin IN "
+        "SELECT * FROM skill_usage WHERE pinned=0 "
+        "AND classification='production' AND created_by_origin IN "
         f"({','.join('?' for _ in origins)})",
         origins,
     ).fetchall()

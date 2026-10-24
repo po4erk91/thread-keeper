@@ -51,7 +51,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -550,6 +550,8 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
                       CHECK(state IN ('active','stale','archived')),
+    classification    TEXT NOT NULL DEFAULT 'production'
+                      CHECK(classification IN ('production','fixture')),
     project_id        TEXT,
     memory_scope      TEXT NOT NULL DEFAULT 'project'
                       CHECK(memory_scope IN ('project','global','shared','unresolved'))
@@ -1244,6 +1246,9 @@ LEGACY_COLUMN_MIGRATIONS = (
     "ALTER TABLE skill_usage ADD COLUMN tier "
     "TEXT NOT NULL DEFAULT 'hypothesis'",
     "ALTER TABLE skill_usage ADD COLUMN tier_changed_at INTEGER",
+    "ALTER TABLE skill_usage ADD COLUMN classification "
+    "TEXT NOT NULL DEFAULT 'production' "
+    "CHECK(classification IN ('production','fixture'))",
     # Weighted use counter on skills: foreground use counts separately from
     # system-authored review-fork activity.
     "ALTER TABLE skill_usage ADD COLUMN foreground_use_count "
@@ -1510,7 +1515,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3, 4):
+    if from_version not in (0, 1, 2, 3, 4, 5):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"

@@ -216,9 +216,20 @@ def skill_catalog() -> tuple[SkillEntry, ...]:
     except OSError:
         return ()
 
+    try:
+        from .db import get_db
+        rows = get_db().execute(
+            "SELECT name FROM skill_usage WHERE classification='fixture'"
+        ).fetchall()
+        fixture_names = {row["name"] for row in rows}
+    except Exception:
+        fixture_names = set()
+
     entries: list[SkillEntry] = []
     for skill_dir in skill_dirs:
         name = skill_dir.name
+        if name in fixture_names:
+            continue
         skill_md = skill_dir / "SKILL.md"
         frontmatter = _parse_skill_frontmatter(skill_md, name)
         if frontmatter is None:

@@ -240,13 +240,22 @@ def _preferred_external(paths: Iterable[Path]) -> Path | None:
     return max(candidates, key=rank)
 
 
-def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[str, dict]:
-    where = "" if include_archived else " WHERE state IN ('active', 'stale')"
+def _telemetry_rows(
+    conn: sqlite3.Connection,
+    include_archived: bool,
+    include_fixtures: bool,
+) -> dict[str, dict]:
+    clauses: list[str] = []
+    if not include_archived:
+        clauses.append("state IN ('active', 'stale')")
+    if not include_fixtures:
+        clauses.append("classification = 'production'")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     try:
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
             "last_viewed_at, last_patched_at, use_count, view_count, "
-            "patch_count, foreground_use_count, pinned, state, tier "
+            "patch_count, foreground_use_count, pinned, state, tier, classification "
             "FROM skill_usage" + where
             + " ORDER BY name"
         ).fetchall()
@@ -255,7 +264,11 @@ def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[st
     return {row["name"]: {key: row[key] for key in row.keys()} for row in rows}
 
 
-def _managed_names(telemetry: dict[str, dict]) -> list[str]:
+def _managed_names(
+    telemetry: dict[str, dict],
+    *,
+    include_fixtures: bool,
+) -> list[str]:
     names = set(telemetry)
     # Historical ThreadKeeper versions could materialize a skill before the
     # telemetry transaction completed.  Include untracked primary/fallback
@@ -266,6 +279,15 @@ def _managed_names(telemetry: dict[str, dict]) -> list[str]:
         for path in root.iterdir():
             if path.is_dir() and not path.name.startswith(".") and (path / "SKILL.md").is_file():
                 names.add(path.name)
+        if include_fixtures:
+            fixture_root = root / ".fixtures"
+            try:
+                fixture_dirs = fixture_root.iterdir()
+            except OSError:
+                fixture_dirs = ()
+            for path in fixture_dirs:
+                if path.is_dir() and not path.is_symlink() and (path / "SKILL.md").is_file():
+                    names.add(path.name)
     return sorted(names)
 
 
@@ -273,10 +295,13 @@ def _source_for(
     name: str,
     roots: Iterable[Path],
     state: str,
+    classification: str,
     external_index: dict[str, list[Path]],
 ) -> tuple[Path | None, str]:
-    candidates = [CLAUDE_SKILLS_DIR / name / "SKILL.md"]
-    candidates.extend(root / name / "SKILL.md" for root in roots)
+    fixture = classification == "fixture"
+    relative = Path(".fixtures") / name if fixture else Path(name)
+    candidates = [CLAUDE_SKILLS_DIR / relative / "SKILL.md"]
+    candidates.extend(root / relative / "SKILL.md" for root in roots)
     if state == "archived":
         candidates.append(CLAUDE_SKILLS_DIR / ".archive" / name / "SKILL.md")
     seen: set[Path] = set()
@@ -307,8 +332,11 @@ def _record_for(
 
     telemetry = telemetry or {}
     state = str(telemetry.get("state") or "untracked")
+    classification = str(telemetry.get("classification") or "production")
     origin = str(telemetry.get("created_by_origin") or "untracked")
-    source, source_kind = _source_for(name, roots, state, external_index)
+    source, source_kind = _source_for(
+        name, roots, state, classification, external_index,
+    )
     protected = bool(
         telemetry.get("pinned")
         or source_kind == "external_plugin"
@@ -322,6 +350,7 @@ def _record_for(
         "name": name,
         "origin": origin,
         "state": state,
+        "classification": classification,
         "tier": telemetry.get("tier") or "unknown",
         "protected": protected,
         "telemetry": {
@@ -427,7 +456,7 @@ def _record_for(
 
     canonical_tree_hash = _tree_hash(skill_dir)
     for root in roots:
-        mirror_dir = root / name
+        mirror_dir = root / ".fixtures" / name if classification == "fixture" else root / name
         if mirror_dir.resolve() == skill_dir.resolve():
             status = "canonical"
         elif not mirror_dir.exists():
@@ -449,14 +478,15 @@ def build_skill_audit(
     conn: sqlite3.Connection,
     *,
     include_archived: bool = True,
+    include_fixtures: bool = False,
 ) -> dict:
     """Return the complete deterministic audit manifest as JSON data."""
-    telemetry = _telemetry_rows(conn, include_archived)
+    telemetry = _telemetry_rows(conn, include_archived, include_fixtures)
     roots = _configured_roots()
     external_index = _external_skill_index()
     records = [
         _record_for(name, telemetry.get(name), roots, external_index)
-        for name in _managed_names(telemetry)
+        for name in _managed_names(telemetry, include_fixtures=include_fixtures)
     ]
     exact_groups: dict[str, list[str]] = defaultdict(list)
     for record in records:
@@ -480,6 +510,7 @@ def build_skill_audit(
             "total": len(records),
             "active_or_stale": active,
             "archived": sum(r["state"] == "archived" for r in records),
+            "fixtures": sum(r["classification"] == "fixture" for r in records),
             "protected": sum(bool(r["protected"]) for r in records),
             "external_plugin": sum(
                 r["source_kind"] == "external_plugin" for r in records
@@ -505,6 +536,7 @@ def audit_fingerprint_payload(conn: sqlite3.Connection) -> list[dict]:
         {
             "name": record["name"],
             "state": record["state"],
+            "classification": record["classification"],
             "source_path": record["source_path"],
             "source_kind": record["source_kind"],
             "content_sha256": record["content_sha256"],
@@ -547,6 +579,7 @@ def format_skill_checklist(manifest: dict) -> str:
         lines.append(
             f"{index}. SKILL {record['name']}{protected} "
             f"state={record['state']} origin={record['origin']} "
+            f"classification={record['classification']} "
             f"fg_uses={telemetry.get('foreground_use_count') or 0} "
             f"uses={telemetry.get('use_count') or 0} "
             f"views={telemetry.get('view_count') or 0} "

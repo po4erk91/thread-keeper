@@ -258,7 +258,11 @@ def curator_review_status() -> str:
 
 
 @read_tool()
-def skill_validate(name: str = "", include_archived: bool = True) -> str:
+def skill_validate(
+    name: str = "",
+    include_archived: bool = True,
+    include_fixtures: bool = False,
+) -> str:
     """Validate ThreadKeeper-managed skills across supported CLI consumers.
 
     With `name`, returns the complete deterministic record for one logical
@@ -270,7 +274,11 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
     """
     conn = get_db()
     _ensure_session(conn)
-    manifest = build_skill_audit(conn, include_archived=include_archived)
+    manifest = build_skill_audit(
+        conn,
+        include_archived=include_archived,
+        include_fixtures=include_fixtures,
+    )
     requested = name.strip()
     if requested:
         record = next(
@@ -278,6 +286,13 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             None,
         )
         if record is None:
+            hidden = conn.execute(
+                "SELECT 1 FROM skill_usage "
+                "WHERE name=? AND classification='fixture'",
+                (requested,),
+            ).fetchone()
+            if hidden:
+                return f"ERR hidden_fixture={requested}"
             return f"ERR skill_not_found={requested}"
         exact = [
             group for group in manifest["exact_duplicate_groups"]
@@ -305,6 +320,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "index": index,
             "name": record["name"],
             "state": record["state"],
+            "classification": record["classification"],
             "protected": record["protected"],
             "source_path": record["source_path"],
             "validators": record["validators"],

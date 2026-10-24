@@ -349,7 +349,8 @@ Steady-state access is split by intent:
 5. **skill_usage** — telemetry for mirrored Skill.md entries. Fields:
    `created_at`, `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
-   background_review vs shadow_review). Agent-created skills set `created_at`
+   background_review vs shadow_review), and a durable `classification`
+   (`production` or `fixture`). Agent-created skills set `created_at`
    directly through `skill_manage`; for skills first found by `skill_watcher`,
    it is the filesystem `st_birthtime` when available (macOS/Windows), falling
    back to `min(mtime, scan time)` on filesystems without a birth timestamp.
@@ -1459,6 +1460,17 @@ remains the only fingerprint eligible for `unchanged_inventory`.
 skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
+Fixtures use the separate `classification='fixture'` lifecycle rather than a
+production `state`: they live at `.fixtures/<name>/` in every mirror, remain
+available to `skill_validate(include_fixtures=True)`, and are omitted by
+default from the MCP Skills catalog, active-routing lists, usage/health totals,
+and Curator inventory. `skill_manage` creates one only when its caller passes
+`classification='fixture'`, or moves an existing managed skill after the
+explicit `set_classification` action. `tk-skill-fixtures` takes only named
+candidates, reports `selected_by_maintainer` plus origin/state/source evidence
+in its default dry run, and requires `--apply` for the move; no name pattern,
+unknown skill, or user-authored skill is auto-classified.
+
 - **skill_manage(action, …)** — a single atomic tool. Actions:
   `create | edit | patch | write_file | remove_file | delete | restore`.
   Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
@@ -1631,7 +1643,9 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   the two windows before it is archived, renewed activity moves it back to
   `active`, and re-creating or restoring an archived skill starts a fresh
   lifecycle. Never touches
-  `foreground`, `pinned=1`, or **`tier='validated'`** (proven externally).
+  `foreground`, `pinned=1`, **`tier='validated'`** (proven externally), or
+  fixture-classified skills. Fixtures are outside the production-health
+  denominator rather than stale candidates.
   Hypothesis-tier ages at half the configured window (unproven skills
   don't linger); observed-tier uses the default window. On apply,
   physically archives into `.archive/<name>` and removes the skill's mirrors,
