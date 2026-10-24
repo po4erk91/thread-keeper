@@ -802,7 +802,13 @@ findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
 their read-only caches rather than misreported as missing mirrors; telemetry
 rows with no real `SKILL.md` remain explicit orphans. The same inventory also
-flags a dense lesson subtopic when at least
+checks Markdown links and unambiguous slash-containing inline-code resource
+paths for missing local files. It ignores URLs, absolute or escaping paths,
+shell fragments, frontmatter, headings, and fenced examples. It also reports
+only substantial repeated prose: normalized paragraphs of at least 160
+characters that occur at least three times in the same skill. The same findings
+are returned by `skill_validate`, before a Curator repair is mirrored. The
+inventory also flags a dense lesson subtopic when at least
 `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
 concrete title terms and a non-generic body mechanism. Generic joins and
 domain-wide/high-document-frequency title words cannot form a candidate. The

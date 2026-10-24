@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-24
+
+- **Added: Curator skill audits detect missing inline resources and repeated
+  prose (#382).** Markdown links and conservative path-like inline-code spans
+  now report missing local resources without treating URLs, absolute paths,
+  shell fragments, headings, frontmatter, or fenced examples as files. The
+  audit also reports normalized paragraphs of at least 160 characters that
+  occur three or more times within one skill.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
