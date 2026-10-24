@@ -65,9 +65,10 @@ Evolve suggestions, and the October research digest. Four distinct gaps remain:
   fixtures an explicit lifecycle that remains available to validators but is
   excluded from normal discovery, routing, and Curator production-health
   counts.
-- **Skill validator coverage (#382).** Detect missing relative resources named
-  in path-like inline code and repeated normalized paragraphs within one skill,
-  with conservative exclusions for URLs, commands, examples, and boilerplate.
+- ✅ DONE (#382). **Skill validator coverage.** Curator audit and
+  `skill_validate` now detect missing local Markdown-link and path-like
+  inline-code resources, plus substantial repeated normalized paragraphs within
+  one skill, while excluding URLs, commands, examples, and boilerplate.
 
 General validity, supersession, and obsolete-evidence evaluation map to #371
 and #372 on top of

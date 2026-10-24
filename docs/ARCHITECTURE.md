@@ -624,7 +624,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The web-free evaluator
+  exact duplicates, repeated substantial paragraphs, and lexical semantic
+  candidates. Resource checks cover Markdown links and only unambiguous
+  slash-containing inline-code paths that remain inside the skill directory;
+  URLs, absolute or escaping paths, commands, frontmatter, headings, and
+  fenced examples are excluded. Repeated-prose findings require a normalized
+  paragraph of at least 160 characters to occur at least three times. The
+  web-free evaluator
   reads each full skill, writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
   External research is a separate opt-in capability: when
@@ -1477,6 +1483,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
   The scheduled `skill_updater` repairs drift in the same mirror set and can
   import newer copies that were installed into a non-primary CLI root.
+  Curator validation reports a missing local resource before a repair is
+  mirrored when it appears as a Markdown link or as an inline-code path with a
+  slash. Inline URLs, absolute or escaping paths, shell fragments, and other
+  non-path code are ignored. It also flags a normalized prose paragraph only
+  when it is at least 160 characters and appears at least three times; headings,
+  frontmatter, fenced examples, and short boilerplate are excluded.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
