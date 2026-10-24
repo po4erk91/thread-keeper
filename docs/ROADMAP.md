@@ -8,6 +8,28 @@ remains a live question.
 
 ---
 
+## 2026-10-24 reviewer audit
+
+This pass reconciled current `main`, the full issue history, and the five
+pending legacy Evolve suggestions. Two distinct gaps remain:
+
+- **Batch-scoped Curator skill manifests (#413).** Keep the canonical
+  pass-wide audit manifest for coordination and provenance, but give each
+  evaluator a deterministic slice for only its assigned skills. Lesson-only
+  batches should receive an explicit no-skills document instead of repeatedly
+  parsing unrelated consumer, mirror, link, and duplicate findings.
+- **Verified guard records for memory-insufficient lessons (#414).** The
+  violation tracker delivered by #228 identifies passive-memory failures, but
+  it does not bind a lesson to an exact host trigger or persist installation
+  and allow/deny/escape verification. Add that registry while reusing #390 for
+  consent and rollback of host-wide changes.
+
+The task-selection hook suggestion maps to open contract-test issue #399, and
+Curator-neutral lesson reads remain tracked in #402. Durable multi-batch state
+and task-bound report authority are already covered by completed issues #290
+and #366, so those legacy suggestions were not re-filed. No external research
+digest was available for this pass.
+
 ## 2026-10-21 reviewer audit
 
 This pass reconciled current `main`, the complete open/closed issue history,
