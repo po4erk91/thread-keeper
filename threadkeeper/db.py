@@ -1053,6 +1053,39 @@ CREATE TABLE IF NOT EXISTS lesson_vectors (
     created_at  INTEGER NOT NULL,
     PRIMARY KEY (text_sha256, fingerprint)
 );
+
+-- Offline-only operational recovery evaluation. The table has no raw tool
+-- arguments, output, transcript text, paths, or secret-bearing payload slot:
+-- every value is a bounded identifier validated by action_outcomes.py.
+CREATE TABLE IF NOT EXISTS action_outcome_events (
+    id                TEXT PRIMARY KEY,
+    objective_ref     TEXT NOT NULL,
+    action_name       TEXT NOT NULL,
+    outcome           TEXT NOT NULL CHECK(outcome IN ('success','failure','cancelled','skipped')),
+    error_fingerprint TEXT,
+    recovered_from    TEXT REFERENCES action_outcome_events(id),
+    sequence          INTEGER NOT NULL CHECK(sequence > 0),
+    source_kind       TEXT NOT NULL,
+    source_id         TEXT NOT NULL,
+    authority_class   TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    provenance_version INTEGER NOT NULL DEFAULT 1 CHECK(provenance_version = 1),
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL,
+    UNIQUE(objective_ref, sequence),
+    CHECK((outcome = 'failure' AND error_fingerprint IS NOT NULL)
+       OR (outcome != 'failure' AND error_fingerprint IS NULL)),
+    CHECK((recovered_from IS NULL) OR outcome = 'success')
+);
+CREATE INDEX IF NOT EXISTS idx_action_outcome_source
+    ON action_outcome_events(source_kind, source_id);
+CREATE INDEX IF NOT EXISTS idx_action_outcome_expiry
+    ON action_outcome_events(expires_at);
+CREATE TABLE IF NOT EXISTS action_outcome_candidates (
+    candidate_id INTEGER PRIMARY KEY REFERENCES extract_candidates(id),
+    event_id     TEXT NOT NULL UNIQUE REFERENCES action_outcome_events(id),
+    created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daemon_health (
     name              TEXT PRIMARY KEY,
     thread_alive      INTEGER NOT NULL,

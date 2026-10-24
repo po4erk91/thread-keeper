@@ -152,6 +152,13 @@ def _prune_probe_results(conn: sqlite3.Connection, cutoff: int | None) -> int:
     return deleted
 
 
+def _prune_action_outcomes(conn: sqlite3.Connection, now: int) -> int:
+    """Apply the per-record expiry of the offline operational prototype."""
+    from .action_outcomes import prune_expired
+
+    return prune_expired(conn, now)["events"]
+
+
 def _checkpoint_wal(conn: sqlite3.Connection) -> str:
     try:
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -323,6 +330,7 @@ def run_retention_pass(force: bool = False, *, scheduled: bool = False) -> str:
         "probe_results": _prune_probe_results(
             conn, _age_cutoff(now, PROBE_RESULT_RETENTION_DAYS)
         ),
+        "action_outcomes": _prune_action_outcomes(conn, now),
     }
     from .workflow_artifacts import run_workflow_retention
 

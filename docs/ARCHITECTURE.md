@@ -45,6 +45,7 @@ threadkeeper/
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
+├── action_outcomes.py  offline-only bounded action/recovery evaluation records
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
 ├── brief.py           render_brief() / render_context() — main digest
@@ -339,6 +340,14 @@ Steady-state access is split by intent:
    FTS/vector mirrors, plus directly sourced notes, verbatim, dialectic,
    extract, task, signal, and session-sidecar records. It defaults to dry-run
    and reports lessons/skills that cite the purged source for manual re-review.
+   The offline action/outcome prototype uses the same path: each record holds
+   only normalized action/outcome metadata, opaque objective/source references,
+   error fingerprints, sequence/recovery links, authority, provenance, and an
+   expiry. It has no argument, output, transcript, path, or secret field.
+   `tk-forget --selector-type objective <ref> --apply` removes the objective's
+   events; source erasure removes source-linked events. Both invalidate linked
+   candidate/lesson derivations. There is no live ingester or external export;
+   `export_events()` is an allowlisted internal reducer for offline evaluation.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`
