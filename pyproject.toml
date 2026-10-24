@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.21.0"
+version = "0.22.0"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Antigravity CLI, Copilot, and VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -104,6 +104,9 @@ tk-sync-migrate = "threadkeeper.sync.migrate:main"
 tk-sync-reset-node = "threadkeeper.sync.reset_node:main"
 # JSON/text status feed for menu-bar widgets and terminal monitors.
 tk-agent-status = "threadkeeper.agent_status:main"
+# Review named candidates without changing them, then pass --apply to move
+# confirmed probe/test skills into hidden fixture storage.
+tk-skill-fixtures = "threadkeeper.skill_fixtures:main"
 
 [tool.setuptools.packages.find]
 include = ["threadkeeper*"]

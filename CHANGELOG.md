@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-24
+
+- **Added: hidden managed-skill fixtures (#381).** Maintainers can explicitly
+  classify seed, probe, and test skills as fixtures. They remain available to
+  explicit validation but stay out of normal discovery, routing, production
+  usage/health totals, and Curator inventory. Hidden mirrors preserve the
+  class, and `tk-skill-fixtures` provides an evidence-rich dry run before an
+  explicit migration apply.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

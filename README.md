@@ -267,6 +267,26 @@ activate it, approve its tools, record use telemetry, or approve supporting
 files. Activation and any user approval remain responsibilities of the host's
 skill-loading path.
 
+### Managed-skill fixtures
+
+Maintainers can create a seed, probe, or test-only skill with
+`skill_manage(action="create", classification="fixture", ...)`. Fixtures are
+stored under the hidden `.fixtures/` directory in the canonical store and each
+mirror, so normal `skills/list`, filesystem discovery, routing, usage totals,
+and Curator health do not treat them as production guidance. Their
+`classification` is durable in `skill_usage` and stays attached when the skill
+is mirrored, imported from a hidden mirror, trashed, or restored.
+
+Use `skill_list(include_fixtures=True)` to list them and
+`skill_validate(name="…", include_fixtures=True)` for validation. Move an
+existing managed skill only with the explicit
+`skill_manage(action="set_classification", classification="fixture", name="…")`;
+names are never guessed from a fixture-like spelling. For a dry-run-first bulk
+migration, run `tk-skill-fixtures --name <name>` and inspect its evidence, then
+repeat with `--apply`. Move a confirmed fixture back to production with the
+same action and `classification="production"`; retire it with the ordinary
+`skill_manage(action="delete", name="…", force=True)` foreground flow.
+
 ### MCP Tasks for headless spawn
 
 Clients using MCP 2026-07-28 that advertise the

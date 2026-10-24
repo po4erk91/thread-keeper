@@ -185,3 +185,24 @@ def test_skill_delivery_is_side_effect_free_and_filesystem_mirrors_remain_fallba
     assert asyncio.run(fresh_mp["mcp"].read_resource(uri))[0].content.startswith(b"---")
     after = conn.execute("SELECT COUNT(*) AS count FROM events").fetchone()["count"]
     assert after == before
+
+
+def test_fixture_skills_are_not_published_by_the_normal_extension(fresh_mp):
+    from threadkeeper.mcp_skills import skill_catalog
+
+    create = _tool(fresh_mp, "skill_manage")
+    assert create(
+        action="create",
+        name="published-skill",
+        description="A production skill for the catalog test.",
+        content="# Production\n",
+    ).startswith("ok path=")
+    assert create(
+        action="create",
+        name="hidden-fixture",
+        description="A fixture that validators can inspect explicitly.",
+        content="# Fixture\n",
+        classification="fixture",
+    ).startswith("ok path=")
+
+    assert [entry.name for entry in skill_catalog()] == ["published-skill"]

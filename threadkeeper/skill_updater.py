@@ -66,6 +66,7 @@ class SkillCopy:
     root: Path
     path: Path
     name: str
+    classification: str
     tree_sha256: str
     mtime: int
     primary: bool
@@ -201,9 +202,26 @@ def _skill_roots() -> list[Path]:
     return roots
 
 
+def _managed_fixture_names() -> set[str]:
+    """Return explicitly classified fixtures without inferring from paths.
+
+    Hidden directories are not enough to classify an unknown skill. The
+    durable registry is the authority, so an untracked ``.fixtures`` entry
+    remains invisible to the updater until it is deliberately imported.
+    """
+    try:
+        rows = get_db().execute(
+            "SELECT name FROM skill_usage WHERE classification='fixture'"
+        ).fetchall()
+    except Exception:
+        return set()
+    return {str(row["name"]) for row in rows}
+
+
 def _iter_skill_copies() -> list[SkillCopy]:
     copies: list[SkillCopy] = []
     primary_root = CLAUDE_SKILLS_DIR.expanduser().resolve()
+    fixture_names = _managed_fixture_names()
     for root in _skill_roots():
         if not root.exists():
             continue
@@ -225,6 +243,26 @@ def _iter_skill_copies() -> list[SkillCopy]:
                     root=root,
                     path=child,
                     name=_skill_name(child),
+                    classification="production",
+                    tree_sha256=_tree_sha256(child),
+                    mtime=_tree_mtime(child),
+                    primary=is_primary,
+                )
+            )
+        for name in fixture_names:
+            child = root / ".fixtures" / name
+            if not _is_skill_dir(child):
+                continue
+            try:
+                is_primary = root.expanduser().resolve() == primary_root
+            except OSError:
+                is_primary = False
+            copies.append(
+                SkillCopy(
+                    root=root,
+                    path=child,
+                    name=name,
+                    classification="fixture",
                     tree_sha256=_tree_sha256(child),
                     mtime=_tree_mtime(child),
                     primary=is_primary,
@@ -322,12 +360,12 @@ def _sync_local_roots() -> dict[str, int]:
         "local_checked": 0,
         "removed_strays": 0,
     }
-    grouped: dict[str, list[SkillCopy]] = {}
+    grouped: dict[tuple[str, str], list[SkillCopy]] = {}
     for copy in _iter_skill_copies():
-        grouped.setdefault(copy.name, []).append(copy)
+        grouped.setdefault((copy.classification, copy.name), []).append(copy)
 
     primary_root = CLAUDE_SKILLS_DIR.expanduser()
-    for name, copies in grouped.items():
+    for (classification, name), copies in grouped.items():
         counts["local_checked"] += 1
         primary = next((c for c in copies if c.primary), None)
         if primary is None and _drop_stale_strays(name, copies):
@@ -358,7 +396,12 @@ def _sync_local_roots() -> dict[str, int]:
             counts["conflicts"] += 1
             continue
 
-        dst = primary_root / name
+        relative = (
+            Path(".fixtures") / name
+            if classification == "fixture"
+            else Path(name)
+        )
+        dst = primary_root / relative
         if err := _validate_skill_dir(winner.path, name):
             logger.debug("skill_updater: skip local %s: %s", name, err)
             counts["conflicts"] += 1
@@ -557,10 +600,17 @@ def _primary_skill_dirs() -> list[Path]:
         children = list(root.iterdir())
     except OSError:
         return []
-    return [
+    skills = [
         child for child in children
         if child.is_dir() and not child.name.startswith(".") and _is_skill_dir(child)
     ]
+    fixture_root = root / ".fixtures"
+    skills.extend(
+        fixture_root / name
+        for name in _managed_fixture_names()
+        if _is_skill_dir(fixture_root / name)
+    )
+    return skills
 
 
 def _apply_remote_update(
