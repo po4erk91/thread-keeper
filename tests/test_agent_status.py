@@ -899,3 +899,129 @@ def test_agent_status_tool_default_read_does_not_enforce_lifecycle(
     count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     assert count == 1
     assert "tk_overdue" in result or "agents=1" in result
+
+
+_CANDIDATE_PROMPT = "You are a CANDIDATE REVIEWER for thread-keeper's extract queue."
+_TASK_ROLE_CASES = [
+    pytest.param("curator", _CANDIDATE_PROMPT, "curator", "curator", "Curator",
+                 id="persisted-role-overrides-prompt"),
+    pytest.param("candidate_reviewer", "Review the supplied input.",
+                 "candidate_reviewer", "candidate_reviewer", "Candidate reviewer",
+                 id="known-role-without-prompt-hint"),
+    pytest.param(" shadow_observer ", "Inspect the supplied input.",
+                 "shadow_observer", "shadow_review", "Shadow review",
+                 id="trimmed-role-maps-to-loop"),
+    pytest.param("custom_auditor", _CANDIDATE_PROMPT,
+                 "custom_auditor", "child", "custom_auditor",
+                 id="custom-role-not-misclassified-by-prompt"),
+    pytest.param(None, _CANDIDATE_PROMPT,
+                 "candidate_reviewer", "candidate_reviewer", "Candidate reviewer",
+                 id="null-role-legacy-fallback"),
+    pytest.param("", _CANDIDATE_PROMPT,
+                 "candidate_reviewer", "candidate_reviewer", "Candidate reviewer",
+                 id="empty-role-legacy-fallback"),
+    pytest.param(" \t ", _CANDIDATE_PROMPT,
+                 "candidate_reviewer", "candidate_reviewer", "Candidate reviewer",
+                 id="whitespace-role-legacy-fallback"),
+]
+
+
+def _set_task_role(pkg, task_id, role):
+    conn = pkg["db"].get_db()
+    conn.execute("UPDATE tasks SET role=? WHERE id=?", (role, task_id))
+    conn.commit()
+
+
+@pytest.mark.parametrize("role,prompt,expected_role,loop_id,loop_name", _TASK_ROLE_CASES)
+def test_persisted_task_role_running_status(
+    mp_with_cid, monkeypatch, role, prompt, expected_role, loop_id, loop_name,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_task(pkg, "role_running", prompt, rss_mb=12)
+    _set_task_role(pkg, "role_running", role)
+    import threadkeeper.agent_status as status_mod
+
+    monkeypatch.setattr(status_mod, "alive", lambda pid: True)
+    snapshot = json.loads(_txt(_tool(pkg, "agent_status")(
+        json_output=True, refresh=False,
+    )))
+    agent = snapshot["agents"][0]
+    assert agent["role"] == expected_role
+    assert agent["name"] == expected_role
+    assert agent["status"] == "running"
+    active_loops = [loop for loop in snapshot["loops"] if loop["running_agent_count"]]
+    if loop_id == "child":
+        assert active_loops == []
+        assert agent["description"].startswith("Spawned child task")
+    else:
+        assert [loop["id"] for loop in active_loops] == [loop_id]
+        assert active_loops[0]["name"] == loop_name
+        assert active_loops[0]["status"] == "running"
+        assert active_loops[0]["running_agents"][0]["role"] == expected_role
+        assert active_loops[0]["rss_mb"] == 12
+
+    text = _txt(_tool(pkg, "agent_status")(json_output=False, refresh=False))
+    assert f"  {agent['name']} task=role_running " in text
+    running_loop_lines = [line for line in text.splitlines()
+                          if " status=running verdict=" in line]
+    if loop_id == "child":
+        assert running_loop_lines == []
+    else:
+        assert len(running_loop_lines) == 1
+        assert running_loop_lines[0].startswith(f"  {loop_name} status=running ")
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+@pytest.mark.parametrize("role,prompt,expected_role,loop_id,loop_name", _TASK_ROLE_CASES)
+def test_persisted_task_role_completion_status(
+    mp_with_cid, role, prompt, expected_role, loop_id, loop_name, outcome,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    pkg["config"].NOTIFY_POLL_S = 30
+    pkg["config"].NOTIFY_LOOP_FAILURE = True
+    task_id = f"role_{outcome}"
+    if outcome == "success":
+        _insert_completed_task(pkg, task_id, prompt,
+                               "Processed 2 candidates into durable notes.\n")
+        _set_task_role(pkg, task_id, role)
+    else:
+        _insert_failed_task(pkg, task_id, prompt,
+                            "starting run\nError: temporary provider failure\n", role=role)
+
+    snapshot = json.loads(_txt(_tool(pkg, "agent_status")(
+        json_output=True, refresh=False,
+    )))
+    results_key = "recent_results" if outcome == "success" else "recent_failures"
+    items = [item for item in snapshot[results_key] if item["task_id"] == task_id]
+    assert len(items) == 1
+    item = items[0]
+    assert item["role"] == expected_role
+    assert item["loop_id"] == loop_id
+    assert item["loop_name"] == loop_name
+    if outcome == "success":
+        assert item["title"] == f"{loop_name} completed"
+        assert item["summary"] == "Processed 2 candidates into durable notes."
+        assert item["notify"] is False
+    else:
+        assert item["title"] == f"{loop_name} failed (rc=1)"
+        assert "provider failure" in item["summary"]
+        assert item["notify"] is True
+        assert all(item["task_id"] != task_id for item in snapshot["recent_results"])
+
+
+@pytest.mark.parametrize("role", [None, "", " \t "])
+@pytest.mark.parametrize("prompt", [
+    "Perform the requested work.",
+    "You are an ARCHIVIST importing conversation history.",
+    "EXTRACT useful decisions from the supplied conversation.",
+])
+def test_legacy_unclassified_completion_is_not_promoted_to_a_loop(mp_with_cid, role, prompt):
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_completed_task(pkg, "legacy_generic", prompt,
+                           "Processed 2 candidates into durable notes.\n")
+    _set_task_role(pkg, "legacy_generic", role)
+
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    snapshot = agent_status_snapshot(refresh=False)
+    assert all(item["task_id"] != "legacy_generic" for item in snapshot["recent_results"])

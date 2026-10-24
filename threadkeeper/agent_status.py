@@ -323,6 +323,11 @@ def _detect_role(prompt: str) -> str:
     return ""
 
 
+def _resolve_task_role(role: str | None, prompt: str) -> str:
+    """Prefer stored task metadata; prompt hints only support legacy rows."""
+    return (role or "").strip() or _detect_role(prompt)
+
+
 def _compact_work(prompt: str, limit: int = 140) -> str:
     text = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
     text = re.sub(r"\s+", " ", text).strip()
@@ -363,7 +368,7 @@ def _refresh_rss(conn) -> None:
 
 def _running_agents(conn, now: int, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT id, pid, parent_cid, spawned_cid, cwd, prompt, started_at, "
+        "SELECT id, pid, parent_cid, spawned_cid, cwd, prompt, role, started_at, "
         "ended_at, return_code, rss_kb, rss_updated_at "
         "FROM tasks WHERE ended_at IS NULL "
         "ORDER BY started_at DESC LIMIT ?",
@@ -373,7 +378,7 @@ def _running_agents(conn, now: int, limit: int) -> list[dict[str, Any]]:
     agents: list[dict[str, Any]] = []
     for row in rows:
         prompt = row["prompt"] or ""
-        role = _detect_role(prompt)
+        role = _resolve_task_role(row["role"], prompt)
         cid = row["spawned_cid"] or ""
         name = role or (cid[:8] if cid else row["id"])
         rss_kb = row["rss_kb"] or 0
@@ -984,7 +989,7 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     materializations = _recent_materializations(conn, now, limit)
     role_loop = _role_to_loop()
     rows = conn.execute(
-        "SELECT id, prompt, ended_at, return_code FROM tasks "
+        "SELECT id, prompt, role, ended_at, return_code FROM tasks "
         "WHERE ended_at IS NOT NULL AND return_code=0 AND ended_at>=? "
         "ORDER BY ended_at DESC LIMIT ?",
         (now - _RESULT_WINDOW_S, int(limit) * 3),
@@ -992,10 +997,14 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for row in rows:
         prompt = row["prompt"] or ""
-        role = _detect_role(prompt)
+        role = _resolve_task_role(row["role"], prompt)
+        if not role:
+            continue
         loop = role_loop.get(role)
         if not loop:
-            continue
+            if not (row["role"] or "").strip():
+                continue
+            loop = {"id": "child", "name": role}
         summary = extract_useful_result(row["id"])
         if not summary:
             continue
@@ -1058,11 +1067,11 @@ def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     except Exception:
         rows = []
     for row in rows:
-        role = _detect_role(row["prompt"] or "")
+        role = _resolve_task_role(row["role"], row["prompt"] or "")
         loop = role_loop.get(role)
         label = (
             loop["name"] if loop
-            else (row["role"] or row["chosen_cli"] or "background agent")
+            else (role or row["chosen_cli"] or "background agent")
         )
         ended_at = int(row["ended_at"] or now)
         age_s = max(0, now - ended_at)
@@ -1070,6 +1079,8 @@ def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
             "id": f"fail:{row['id']}:{ended_at}",
             "task_id": row["id"],
             "kind": "failure",
+            "role": role,
+            "loop_id": loop["id"] if loop else "child",
             "loop_name": label,
             "title": f"{label} failed (rc={row['return_code']})",
             "summary": _reason_from_task_log(row["id"]),

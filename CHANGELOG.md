@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.1 — 2026-10-24
+
+### Fixed
+
+- **Agent status uses persisted task roles (#389).** Running agents, completed
+  task history, and child failure notifications use the stored role before
+  considering prompt hints. Custom roles remain visible as child tasks;
+  legacy rows without a role retain the prompt-based fallback.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
