@@ -30,7 +30,7 @@ from .config import (
 )
 
 
-AUDIT_SCHEMA_VERSION = 1
+AUDIT_SCHEMA_VERSION = 2
 _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
@@ -246,7 +246,8 @@ def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[st
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
             "last_viewed_at, last_patched_at, use_count, view_count, "
-            "patch_count, foreground_use_count, pinned, state, tier "
+            "patch_count, foreground_use_count, pinned, state, tier, "
+            "availability, unavailable_since, unavailable_prior_state "
             "FROM skill_usage" + where
             + " ORDER BY name"
         ).fetchall()
@@ -297,6 +298,99 @@ def _source_for(
     return None, "missing"
 
 
+def find_any_skill_source(name: str) -> tuple[Path | None, str]:
+    """Find any source path before a registry-only cleanup.
+
+    An active row normally ignores ``.archive`` because it is not its current
+    source. Cleanup is stricter: it must preserve the registry whenever any
+    managed, archived, or external source still exists.
+    """
+    return _source_for(
+        name,
+        _configured_roots(),
+        "archived",
+        _external_skill_index(),
+    )
+
+
+def source_requires_recovery(record: dict) -> bool:
+    """Whether this record has no source a consumer can read."""
+    return (
+        record.get("source_kind") == "missing"
+        or any(
+            str(finding).startswith("source_unreadable:")
+            for finding in record.get("findings", [])
+        )
+    )
+
+
+def _apply_availability_contract(record: dict) -> None:
+    """Attach the source-availability and owner-recovery contract."""
+    missing_source = source_requires_recovery(record)
+    stored = str(record.get("availability") or "available")
+    availability = "unavailable" if missing_source else stored
+    record["availability"] = availability
+    record["compatible"] = bool(
+        availability == "available"
+        and record.get("validators")
+        and all(value == "PASS" for value in record["validators"].values())
+    )
+    if missing_source:
+        record["owner_action"] = "restore_source"
+    elif availability == "unavailable":
+        # The source is back, but validation must explicitly restore the
+        # registry's saved lifecycle state before it is compatible again.
+        record["owner_action"] = "validate_restore"
+    else:
+        record["owner_action"] = None
+
+
+def reconcile_source_availability(
+    conn: sqlite3.Connection,
+    records: Iterable[dict],
+) -> list[str]:
+    """Persist availability transitions and return only changed skill names.
+
+    Availability is separate from active/stale/archive. Remembering the prior
+    lifecycle state lets a later validation restore the record without creating
+    another repair item every time an unavailable source is checked.
+    """
+    changed: list[str] = []
+    now = int(time.time())
+    for record in records:
+        name = str(record.get("name") or "")
+        if not name:
+            continue
+        row = conn.execute(
+            "SELECT state, availability FROM skill_usage WHERE name=?", (name,),
+        ).fetchone()
+        if row is None:
+            continue
+        desired = "unavailable" if source_requires_recovery(record) else "available"
+        current = str(row["availability"] or "available")
+        if current == desired:
+            continue
+        if desired == "unavailable":
+            conn.execute(
+                "UPDATE skill_usage SET availability='unavailable', "
+                "unavailable_since=?, unavailable_prior_state=? WHERE name=?",
+                (now, row["state"], name),
+            )
+        else:
+            conn.execute(
+                "UPDATE skill_usage SET state=CASE "
+                "WHEN unavailable_prior_state IN ('active','stale','archived') "
+                "THEN unavailable_prior_state ELSE state END, "
+                "availability='available', unavailable_since=NULL, "
+                "unavailable_prior_state=NULL WHERE name=?",
+                (name,),
+            )
+        changed.append(name)
+    if changed:
+        conn.commit()
+    return changed
+
+
 def _record_for(
     name: str,
     telemetry: dict | None,
@@ -322,6 +416,9 @@ def _record_for(
         "name": name,
         "origin": origin,
         "state": state,
+        "availability": telemetry.get("availability") or "available",
+        "unavailable_since": telemetry.get("unavailable_since"),
+        "unavailable_prior_state": telemetry.get("unavailable_prior_state"),
         "tier": telemetry.get("tier") or "unknown",
         "protected": protected,
         "telemetry": {
@@ -353,6 +450,7 @@ def _record_for(
             "codex": "FAIL:source_missing",
             "agentskills": "FAIL:source_missing",
         }
+        _apply_availability_contract(record)
         return record
     try:
         content = source.read_text(encoding="utf-8")
@@ -364,6 +462,7 @@ def _record_for(
             "codex": "FAIL:source_unreadable",
             "agentskills": "FAIL:source_unreadable",
         }
+        _apply_availability_contract(record)
         return record
 
     fields, body, front_error = _frontmatter(content)
@@ -423,6 +522,7 @@ def _record_for(
             "status": "external_read_only",
         }]
         record["findings"] = sorted(set(record["findings"]))
+        _apply_availability_contract(record)
         return record
 
     canonical_tree_hash = _tree_hash(skill_dir)
@@ -442,6 +542,7 @@ def _record_for(
         if "missing" in mirror_states:
             record["findings"].append("mirror_missing")
     record["findings"] = sorted(set(record["findings"]))
+    _apply_availability_contract(record)
     return record
 
 
@@ -481,6 +582,8 @@ def build_skill_audit(
             "active_or_stale": active,
             "archived": sum(r["state"] == "archived" for r in records),
             "protected": sum(bool(r["protected"]) for r in records),
+            "unavailable": sum(r["availability"] == "unavailable" for r in records),
+            "compatible": sum(bool(r["compatible"]) for r in records),
             "external_plugin": sum(
                 r["source_kind"] == "external_plugin" for r in records
             ),
@@ -505,6 +608,9 @@ def audit_fingerprint_payload(conn: sqlite3.Connection) -> list[dict]:
         {
             "name": record["name"],
             "state": record["state"],
+            "availability": record["availability"],
+            "compatible": record["compatible"],
+            "owner_action": record["owner_action"],
             "source_path": record["source_path"],
             "source_kind": record["source_kind"],
             "content_sha256": record["content_sha256"],
@@ -546,7 +652,9 @@ def format_skill_checklist(manifest: dict) -> str:
         )
         lines.append(
             f"{index}. SKILL {record['name']}{protected} "
-            f"state={record['state']} origin={record['origin']} "
+            f"state={record['state']} availability={record['availability']} "
+            f"owner_action={record['owner_action'] or '-'} "
+            f"origin={record['origin']} "
             f"fg_uses={telemetry.get('foreground_use_count') or 0} "
             f"uses={telemetry.get('use_count') or 0} "
             f"views={telemetry.get('view_count') or 0} "

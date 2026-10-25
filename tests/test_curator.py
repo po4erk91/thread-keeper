@@ -874,7 +874,7 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert pkg["reports_dir"].is_dir()
     manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
     assert len(manifests) == 1
-    assert json.loads(manifests[0].read_text())["schema_version"] == 1
+    assert json.loads(manifests[0].read_text())["schema_version"] == 2
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert kw["_curator_launch"].pass_id not in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ

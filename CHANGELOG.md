@@ -7,6 +7,13 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-25
+
+- **Added: source-missing skill reconciliation (#373).** Validation now marks
+  registry records without a readable source unavailable and non-compatible,
+  preserves their lifecycle for a later source restore, and gives Curator a
+  snapshotted, verifier-only cleanup path for confirmed registry-only orphans.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

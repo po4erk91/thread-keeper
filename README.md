@@ -800,8 +800,13 @@ children start, a deterministic validator writes
 ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
-their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The same inventory also
+their read-only caches rather than misreported as missing mirrors. A telemetry
+row with no readable primary source becomes `unavailable`, is non-compatible,
+and shows only `restore_source` until validation sees a source again; repeated
+validation does not create duplicate repair work. A scoped Curator verifier can
+archive or remove a confirmed registry-only orphan only after rechecking every
+configured root, the primary archive, and external cache and saving its usage row plus
+audit evidence to recovery trash. The same inventory also
 flags a dense lesson subtopic when at least
 `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
 concrete title terms and a non-generic body mechanism. Generic joins and

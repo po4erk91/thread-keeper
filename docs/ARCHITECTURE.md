@@ -1460,7 +1460,10 @@ skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
-  `create | edit | patch | write_file | remove_file | delete | restore`.
+  `create | edit | patch | write_file | remove_file | delete | restore |
+  cleanup_orphan`. `cleanup_orphan` is scoped to a Curator verifier and can
+  archive or remove an already validated registry-only orphan with
+  `orphan_action='archive'|'remove'` after a recovery snapshot is written.
   Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
   `description` ≤1024 chars, total ≤100k chars. Generated frontmatter writes
   `name` and `description` as quoted YAML scalars so colon-containing
@@ -1494,6 +1497,15 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   explicit `skill_record(kind='view')`. The curator checklist shows raw uses,
   foreground uses, views, and patches. The `skill_watcher` daemon catches
   external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
+
+- **Source availability** — validation keeps `availability` separate from the
+  active/stale/archived lifecycle. If no configured root or external cache has
+  a readable primary source, the record becomes `unavailable`, is never
+  compatible, and exposes one owner action: `restore_source`. Revalidating a
+  restored source returns the record to its saved lifecycle state. Unavailable
+  records do not age into archive. Curator cleanup rechecks every configured
+  root, the primary archive, and external cache and refuses whenever a readable source is
+  present; its registry snapshot stores both usage telemetry and audit evidence.
 
 - **Lesson index** — `_lessons_file_lock` calls `refresh_lesson_index()` before
   it releases the lock, so every lesson write (append, patch, remove, restore,

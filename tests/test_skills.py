@@ -6,7 +6,9 @@ touch the real ~/.claude/skills/.
 """
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -437,6 +439,79 @@ def test_curator_verifier_cannot_delete_pinned_skill(tmp_path, monkeypatch):
     assert (pkg["skills_root"] / "pinned-rule").exists()
 
 
+def test_curator_archives_confirmed_registry_only_orphan(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    import threadkeeper.tools.skills as skill_tools
+
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [pkg["skills_root"]])
+    _seed_skill_as_foreground(pkg, "registry-orphan")
+    shutil.rmtree(pkg["skills_root"] / "registry-orphan")
+    validate = _tool(pkg, "skill_validate")
+    assert json.loads(validate(name="registry-orphan"))["skill"]["availability"] == "unavailable"
+    _enter_curator_pass(
+        tmp_path, monkeypatch, phase="verify", scope=("registry-orphan",),
+    )
+
+    manage = _tool(pkg, "skill_manage")
+    result = manage(
+        action="cleanup_orphan", name="registry-orphan", orphan_action="archive",
+    )
+
+    assert result.startswith("ok registry_orphan_archived=registry-orphan trash=")
+    conn = pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT state, availability FROM skill_usage WHERE name='registry-orphan'",
+    ).fetchone()
+    assert dict(row) == {"state": "archived", "availability": "unavailable"}
+    artifacts = list((tmp_path / "curator" / "trash").glob("*-skill-registry-registry-orphan"))
+    assert len(artifacts) == 1
+    meta = json.loads((artifacts[0] / "meta.json").read_text(encoding="utf-8"))
+    assert meta["kind"] == "skill_registry"
+    assert meta["usage_row"]["name"] == "registry-orphan"
+    assert meta["audit_record"]["source_path"] is None
+    assert manage(
+        action="cleanup_orphan", name="registry-orphan", orphan_action="archive",
+    ) == "ok registry_orphan_already_archived=registry-orphan"
+    assert manage(
+        action="cleanup_orphan", name="registry-orphan", orphan_action="remove",
+    ).startswith("ok registry_orphan_removed=registry-orphan trash=")
+    assert conn.execute(
+        "SELECT 1 FROM skill_usage WHERE name='registry-orphan'",
+    ).fetchone() is None
+    assert manage(
+        action="cleanup_orphan", name="registry-orphan", orphan_action="remove",
+    ) == "ok registry_orphan_already_removed=registry-orphan"
+
+
+def test_curator_orphan_cleanup_refuses_source_restored_after_validation(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    import threadkeeper.tools.skills as skill_tools
+
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [pkg["skills_root"]])
+    md = _seed_skill_as_foreground(pkg, "returned-source")
+    body = md.read_text(encoding="utf-8")
+    shutil.rmtree(md.parent)
+    validate = _tool(pkg, "skill_validate")
+    assert json.loads(validate(name="returned-source"))["skill"]["availability"] == "unavailable"
+    md.parent.mkdir()
+    md.write_text(body, encoding="utf-8")
+    _enter_curator_pass(
+        tmp_path, monkeypatch, phase="verify", scope=("returned-source",),
+    )
+
+    result = _tool(pkg, "skill_manage")(
+        action="cleanup_orphan", name="returned-source", orphan_action="remove",
+    )
+
+    assert result.startswith("ERR registry_orphan_source_present name=returned-source")
+    conn = pkg["db"].get_db()
+    assert conn.execute(
+        "SELECT 1 FROM skill_usage WHERE name='returned-source'",
+    ).fetchone()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # write_file
 # ──────────────────────────────────────────────────────────────────────
@@ -549,6 +624,59 @@ def test_skill_list_omits_archived_by_default(skills_pkg):
     assert "ghost" not in txt
     txt_all = sl(include_archived=True)
     assert "ghost" in txt_all
+
+
+def test_validation_marks_missing_source_unavailable_and_restores_lifecycle(
+    skills_pkg, monkeypatch,
+):
+    import threadkeeper.tools.skills as skill_tools
+
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [skills_pkg["skills_root"]])
+    md = _seed_skill(skills_pkg, name="missing-source")
+    body = md.read_text(encoding="utf-8")
+    conn = skills_pkg["db"].get_db()
+    conn.execute(
+        "UPDATE skill_usage SET state='stale' WHERE name='missing-source'",
+    )
+    conn.commit()
+    shutil.rmtree(md.parent)
+
+    validate = _tool(skills_pkg, "skill_validate")
+    first = json.loads(validate(name="missing-source"))
+    second = json.loads(validate(name="missing-source"))
+
+    assert first["reconciled"] is True
+    assert second["reconciled"] is False
+    assert first["skill"]["availability"] == "unavailable"
+    assert first["skill"]["compatible"] is False
+    assert first["skill"]["owner_action"] == "restore_source"
+    row = conn.execute(
+        "SELECT state, availability, unavailable_prior_state FROM skill_usage "
+        "WHERE name='missing-source'",
+    ).fetchone()
+    assert dict(row) == {
+        "state": "stale",
+        "availability": "unavailable",
+        "unavailable_prior_state": "stale",
+    }
+
+    md.parent.mkdir()
+    md.write_text(body, encoding="utf-8")
+    restored = json.loads(validate(name="missing-source"))
+
+    assert restored["reconciled"] is True
+    assert restored["skill"]["availability"] == "available"
+    assert restored["skill"]["compatible"] is True
+    assert restored["skill"]["owner_action"] is None
+    row = conn.execute(
+        "SELECT state, availability, unavailable_prior_state FROM skill_usage "
+        "WHERE name='missing-source'",
+    ).fetchone()
+    assert dict(row) == {
+        "state": "stale",
+        "availability": "available",
+        "unavailable_prior_state": None,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────

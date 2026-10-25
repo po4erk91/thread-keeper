@@ -550,6 +550,13 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
                       CHECK(state IN ('active','stale','archived')),
+    -- Source availability is independent of the aging lifecycle. A source
+    -- that disappears must not look compatible merely because its last valid
+    -- lifecycle state was active or stale.
+    availability      TEXT NOT NULL DEFAULT 'available'
+                      CHECK(availability IN ('available','unavailable')),
+    unavailable_since INTEGER,
+    unavailable_prior_state TEXT,
     project_id        TEXT,
     memory_scope      TEXT NOT NULL DEFAULT 'project'
                       CHECK(memory_scope IN ('project','global','shared','unresolved'))
@@ -1145,6 +1152,13 @@ ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     "ALTER TABLE tasks ADD COLUMN trace_workflow_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_parent_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_started_ns INTEGER",
+    # Source availability is separate from the active/stale/archive lifecycle,
+    # so an old registry row can be made visibly unavailable without a table
+    # rebuild or an irreversible lifecycle transition.
+    "ALTER TABLE skill_usage ADD COLUMN availability "
+    "TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','unavailable'))",
+    "ALTER TABLE skill_usage ADD COLUMN unavailable_since INTEGER",
+    "ALTER TABLE skill_usage ADD COLUMN unavailable_prior_state TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_queue_wait_ms INTEGER",
     "ALTER TABLE tasks ADD COLUMN trace_exported_at INTEGER",
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_sha256 TEXT",

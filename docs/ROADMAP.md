@@ -89,16 +89,17 @@ issue-backed and deliberately narrower:
 - **Protected-lesson freshness flags (#372).** Preserve protected lesson text
   while attaching source-linked verified, contradicted, or unsubstantiated
   states that are visible when the lesson is retrieved for a task.
-- **Source-missing skill reconciliation (#373).** Mark registry records without
-  a readable primary source unavailable, expose one recovery action, and allow
-  Curator to archive or remove a confirmed registry-only orphan after a
-  recoverable snapshot.
 
 The legacy task-gate suggestion was not re-filed because the setup matcher
 already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
 registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
+
+- Source-missing skill reconciliation (#373): validation marks registry
+  records without a readable source unavailable and non-compatible, preserves
+  the prior lifecycle for restoration, and gives the Curator verifier a
+  snapshotted registry-only cleanup path after an all-root/cache absence check.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.
