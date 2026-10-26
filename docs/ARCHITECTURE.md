@@ -188,6 +188,41 @@ runtime is fully on the package.
 
 ## Storage layers
 
+### Spawned-child memory capabilities
+
+Schema v6 adds `child_memory_grants` and `memory_proposals` without rewriting
+existing project/global/shared/unresolved scopes. Spawn reserves a grant with
+the task before launch and passes a fresh bearer token to both visible and
+headless children. Only its hash is stored. The server resolves access from the
+persisted child identity/token pair; environment mode labels and public
+`write_origin` arguments cannot elevate it. Missing or mismatched grants are
+read-only. Nested spawns inherit the parent's namespace and cannot gain write
+authority. Watchdog retries use the safe read-only default.
+
+Public spawn accepts `read_only` or `propose`; `write` requires a private
+in-process launcher capability. Curator evaluators and Evolve reviewer/applier
+launchers hold it. Web researchers and checkers do not. The tool decorator
+rejects durable mutations before handler side effects; proposal mode serializes
+supported requests into the review queue instead. SQLite authorizers also
+reject accepted-memory writes from read/propose connections, and lesson/skill
+filesystem writers check the same capability. Operational signals and bounded,
+parent-authorized report handoffs use their existing ownership checks.
+
+A foreground reviewer claims a pending proposal once, validates references
+against its launch namespace, and runs the original tool validation. Status
+moves through pending → applying → accepted/failed, or pending → rejected.
+Interrupted applications stay applying for inspection, avoiding automatic replay
+of partial filesystem writes. New accepted artifacts remain observed, including
+when they cite a trusted source; derivation links still support forgetting.
+Existing immutable authority stamps retain their original provenance.
+
+Restricted connections expose scoped SQL views for accepted-memory tables and
+refuse unfiltered main-table reads. FTS, staged vectors, Python cosine fallback,
+and vec0 payload queries also apply the child scope inside SQL before returning
+candidates. Discovery profiles and provenance remain independent controls.
+The process capability is an application boundary, not an operating-system
+sandbox against direct filesystem/database access by arbitrary child code.
+
 ### Project namespaces and scopes
 
 Every memory-bearing row has a `memory_scope` and, for project memory, a
@@ -2019,6 +2054,7 @@ below).
 | validate | validate_threads |
 | forget | forget |
 | authority | memory_authorize_action |
+| memory_proposals | memory_proposals, memory_proposal_decide |
 | capabilities | capability_search |
 | invariants | find_invariants |
 | missed_spawns | find_missed_spawns |

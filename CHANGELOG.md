@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-26
+
+- **Added: explicit spawned-child memory capabilities (#385).** Public children
+  default to read-only access. Proposal mode queues supported memory changes for
+  foreground review; only private Curator/Evolve launchers grant direct writes.
+  Tool and storage checks reject spoofed origins and missing grants. Generated
+  memory keeps observed authority, and SQL/FTS/vector candidate selection is
+  capped to the launch namespace. Existing memory scopes are preserved.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

@@ -44,7 +44,8 @@ class GateDecision:
 
 def authority_for_origin(origin: str) -> str | None:
     """Return the fixed class for a known write origin, else ``None``."""
-    return _ORIGIN_AUTHORITY.get((origin or "").strip().lower())
+    from .memory_access import effective_origin
+    return _ORIGIN_AUTHORITY.get((effective_origin(origin) or "").strip().lower())
 
 
 def _valid(authority: str) -> bool:
@@ -73,6 +74,14 @@ def record_root(
     ``INSERT OR IGNORE`` deliberately preserves an earlier stamp: no later
     writer can upgrade an artifact by restamping it with a stronger origin.
     """
+    from .memory_access import effective_origin, current_access, _review_origin
+    policy = current_access()
+    if policy.child or _review_origin.get():
+        if policy.access != "write":
+            return False
+        authority = OBSERVED
+        principal = "child:" + (policy.child_cid or _review_origin.get())
+        channel = effective_origin(channel)
     if not (_valid(authority) and authority != UNKNOWN and principal and channel):
         return False
     # A write-time record is fixed.  Do not append a second root to an old
@@ -146,6 +155,22 @@ def derive(
         if not rows:
             return False
         roots.extend(rows)
+    from .memory_access import current_access, _review_origin
+    policy = current_access()
+    if policy.child or _review_origin.get():
+        if not record_root(
+            conn, child_kind, str(child_id), authority=OBSERVED,
+            principal="child:" + (policy.child_cid or _review_origin.get()),
+            channel="spawned",
+        ):
+            return False
+        for parent_kind, parent_id, _ in parent_rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_derivations "
+                "(parent_kind,parent_id,child_kind,child_id,created_at) VALUES (?,?,?,?,?)",
+                (parent_kind, parent_id, child_kind, str(child_id), int(time.time())),
+            )
+        return True
     lowest = min(roots, key=lambda r: _LEVEL[r["authority_class"]])
     now = int(time.time())
     conn.execute(

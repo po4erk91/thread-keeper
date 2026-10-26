@@ -3593,6 +3593,7 @@ def _spawn_batch_child(
         extra_allowed_tools=allowed_tools,
         base_allowed_tools=base_allowed_tools,
         _curator_launch=launch,
+        memory_access="write" if role == "curator" else "read_only",
     )
 
 

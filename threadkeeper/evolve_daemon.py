@@ -1420,6 +1420,7 @@ def _spawn_research(repo_root: Path, now_t: int) -> str:
             permission_mode="auto",
             role="evolve_researcher",
             write_origin="evolve",
+            memory_access="read_only",
             slim=True,
             child_cid_override=child_cid,
             # Unlike normal children, the researcher does not inherit spawn's

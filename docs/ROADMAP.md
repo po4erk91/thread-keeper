@@ -8,6 +8,14 @@ remains a live question.
 
 ---
 
+## Spawned-child durable-memory access (#385)
+
+✅ DONE. Public children default to read-only memory; proposal mode queues
+supported writes for foreground review. Private Curator/Evolve launchers own
+direct-write capabilities. Durable tools and storage enforce task-bound grants,
+child/proposal content remains observed, and SQL candidate selection respects
+the launch namespace. Schema v6 preserves existing memory scopes.
+
 ## 2026-10-21 reviewer audit
 
 This pass reconciled current `main`, the complete open/closed issue history,
@@ -39,7 +47,7 @@ deprecated it in favor of direct provider integration, so ThreadKeeper's
 provider/CLI spawn adapters remain the deliberate execution boundary.
 
 The post-2026-10-14 open backlog is also now represented explicitly: spawned
-child memory authority (#385), validated host trace context (#386), contextual
+validated host trace context (#386), contextual
 index text for short memories (#387), verified skill-mirror convergence (#388),
 persisted task-role status (#389), consent and rollback for learned host-wide
 mutations (#390), semantic export/import (#395), lesson audit integrity (#396),

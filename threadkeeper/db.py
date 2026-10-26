@@ -51,7 +51,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -470,6 +470,29 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
     project_id     TEXT,
     memory_scope   TEXT NOT NULL DEFAULT 'project'
                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
+);
+
+CREATE TABLE IF NOT EXISTS child_memory_grants (
+    child_cid TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('read_only','propose','write')),
+    namespace TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    child_cid TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    project_id TEXT,
+    memory_scope TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','applying','accepted','rejected','failed')),
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    result TEXT NOT NULL DEFAULT ''
 );
 
 -- Immutable write-time authority.  It is separate from evidence weight,
@@ -1510,7 +1533,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3, 4):
+    if from_version not in (0, 1, 2, 3, 4, 5):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -1544,6 +1567,8 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     _backfill_schema_data(conn)
     if from_version < 5:
         _backfill_project_scopes(conn)
+    elif from_version == 5:
+        _ensure_project_namespaces(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
     if from_version < 2:
@@ -1878,6 +1903,8 @@ def get_db() -> sqlite3.Connection:
         autocommit=query_only,
         factory=_LegacyConnection,
     )
+    from .memory_access import protect_connection
+    protect_connection(conn)
     if query_only:
         conn.execute("PRAGMA query_only=ON")
     _track_legacy_connection(conn, _caller_site(2))
@@ -1890,7 +1917,28 @@ def read_db() -> Iterator[sqlite3.Connection]:
     bootstrap_db()
     conn, _ = _open_connection(autocommit=True)
     try:
+        from .memory_access import protect_connection
+        protect_connection(conn)
         conn.execute("PRAGMA query_only=ON")
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def proposal_db() -> Iterator[sqlite3.Connection]:
+    """A narrow storage path for appending untrusted proposal payloads."""
+    bootstrap_db()
+    conn, _ = _open_connection()
+    from .memory_access import resolve_access
+    try:
+        if resolve_access(conn).access != "propose":
+            raise PermissionError("memory_access_denied")
+        conn.set_authorizer(lambda action, table, column, database, source:
+            sqlite3.SQLITE_DENY
+            if action in (sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE)
+            or (action == sqlite3.SQLITE_INSERT and table != "memory_proposals")
+            else sqlite3.SQLITE_OK)
         yield conn
     finally:
         conn.close()
@@ -1930,6 +1978,8 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
             # Opening is inside the retry: connection setup can hit the same
             # transient lock as BEGIN IMMEDIATE.
             conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+            from .memory_access import protect_connection
+            protect_connection(conn)
             conn.execute("BEGIN IMMEDIATE")
             result = fn(conn)
             conn.commit()

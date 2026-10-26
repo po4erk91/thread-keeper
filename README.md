@@ -353,6 +353,27 @@ sent to another model provider.
 
 ### Spawn — primary parallelism primitive
 
+Public children have explicit durable-memory access. `spawn(...,
+memory_access="read_only")` is the default; `memory_access="propose"` queues
+supported memory-writing calls as pending candidates. A foreground reviewer
+uses `memory_proposals()` and `memory_proposal_decide(id, accept=True)` to
+apply one candidate. New generated artifacts keep **observed** authority.
+Only private Curator and Evolve launchers can grant direct `write` access.
+Curator researchers, probe runners, model routers, and general helpers remain
+read-only; learning reviewers submit proposals. Coordination and authorized
+research/report handoffs remain available.
+
+These are three separate controls: tool profiles decide which tools a child
+can discover; provenance labels describe where content came from; a persisted,
+task-bound memory capability decides whether it can write accepted memory.
+Changing `write_origin`, a role, or the advertised tool profile grants no memory
+authority. An omitted or forged child grant fails closed. Ordinary child reads
+are capped to the launch project's namespace plus global/shared memory, even
+with `cross_project=True`; a child outside a resolved project sees only
+global/shared memory. Existing memory keeps its current scope. This boundary protects server
+tools and storage helpers; it does not sandbox arbitrary code running under
+the same operating-system account with direct access to database files.
+
 `spawn(prompt, slim=True, role=..., visible=False, ...)` launches a child
 Claude session via a `claude -p` subprocess. By default `slim=True`: the
 child loads only the thread-keeper MCP, no embeddings, no third-party

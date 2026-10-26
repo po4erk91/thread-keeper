@@ -33,7 +33,7 @@ READ_TOOLS = {
     "model_router_status",
     "evolve_apply_status", "evolve_review", "expand_concept", "find_invariants",
     "find_missed_spawns", "list_concepts",
-    "memory_authorize_action", "memory_guard_status", "memory_scope_status",
+    "memory_authorize_action", "memory_guard_status", "memory_scope_status", "memory_proposals",
     "mp_dashboard", "mp_health", "neighbors", "open_dashboard", "peers",
     "pending_distillates", "pickup_candidates", "reliability_for",
     "review_candidates", "run_probe", "search", "shadow_review_status",
@@ -49,7 +49,7 @@ DELETE_CLASS_TOOLS = {
     "agent_memory_cleanup", "concept_manage", "consolidate", "core_remove",
     "curator_restore", "curator_run", "forget", "lesson_patch", "lesson_remove",
     "evolve_prune_managed_venv", "memory_guard_check", "mp_cleanup",
-    "skill_manage", "unlink",
+    "skill_manage", "unlink", "memory_proposal_decide",
 }
 
 # --- non-destructive mutating tools ------------------------------------------

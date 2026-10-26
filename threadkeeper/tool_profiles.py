@@ -63,6 +63,8 @@ COORDINATION_TOOLS = CORE_TOOLS | {
 
 MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "compost",
+    "memory_proposals",
+    "memory_proposal_decide",
     "concept_manage",
     "core_get",
     "core_list",

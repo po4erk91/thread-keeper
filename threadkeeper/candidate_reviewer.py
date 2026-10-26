@@ -420,6 +420,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 permission_mode="auto",
                 role="candidate_reviewer",
                 write_origin="candidate_review",
+                memory_access="propose",
                 slim=True,
                 # De-privileged (issue #76): path-scoped skill/lesson/
                 # candidate tools only — no bare Read/Write. Reference

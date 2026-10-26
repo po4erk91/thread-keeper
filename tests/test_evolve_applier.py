@@ -467,6 +467,11 @@ def test_authorized_curator_report_writer_is_applied_once(
         pass_id=pass_id,
         content="# Curator report\n\nPATCH: stale-skill\n\nCURATOR_PASS_COMPLETE",
     ).startswith("ok path=")
+    # The foreground daemon consumes the child report after the handoff.
+    from threadkeeper import config
+    monkeypatch.setattr(config, "SPAWNED_CHILD", False)
+    conn.close()
+    conn = pkg["db"].get_db()
     report = tmp_path / "curator" / report_name
     calls = {}
     _mock_spawn(monkeypatch, calls)

@@ -275,6 +275,8 @@ def _copy_skill_tree(src: Path, dst: Path) -> None:
 def _mirror_skill_dir(name: str) -> None:
     """Copy CLAUDE_SKILLS_DIR/<name>/ → every mirror target (recursive).
     Pre-existing mirror is replaced atomically. Best-effort per target."""
+    from ..memory_access import require_write
+    require_write()
     src = _skill_dir(name)
     if not src.exists():
         return
@@ -297,6 +299,8 @@ def mirror_skill_from_path(skill_path: str) -> Optional[str]:
     or None if the path is absent/invalid. Best-effort mirrors are still
     handled by _mirror_skill_dir after the canonical copy lands.
     """
+    from ..memory_access import require_write
+    require_write()
     raw = skill_path.strip()
     if not raw:
         return None
@@ -327,6 +331,8 @@ def mirror_skill_from_path(skill_path: str) -> Optional[str]:
 
 def _unmirror_skill(name: str) -> None:
     """Remove <name>/ from every mirror target. Best-effort per target."""
+    from ..memory_access import require_write
+    require_write()
     import shutil as _sh
     for dst in _mirror_targets(name):
         try:
@@ -826,6 +832,8 @@ def _skill_md_growth_refusal(current: str, updated: str) -> str:
 
 
 def _action_create(name: str, content: str, description: str, source: str = "") -> str:
+    from ..memory_access import require_write
+    require_write()
     sdir = _skill_dir(name)
     md = _skill_md_path(name)
     if md.exists():
@@ -875,6 +883,8 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
 
 
 def _action_edit(name: str, content: str, source: str = "") -> str:
+    from ..memory_access import require_write
+    require_write()
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
@@ -906,6 +916,8 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
 
 
 def _action_patch(name: str, old_string: str, new_string: str, source: str = "") -> str:
+    from ..memory_access import require_write
+    require_write()
     md = _skill_md_path(name)
     if not md.exists():
         return f"ERR skill_not_found={name}"
@@ -951,6 +963,8 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
 
 
 def _action_write_file(name: str, sub_path: str, content: str, source: str = "") -> str:
+    from ..memory_access import require_write
+    require_write()
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
@@ -996,6 +1010,8 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "")
 
 
 def _action_remove_file(name: str, sub_path: str) -> str:
+    from ..memory_access import require_write
+    require_write()
     sdir = _skill_dir(name)
     if not sdir.exists():
         return f"ERR skill_not_found={name}"
@@ -1032,6 +1048,8 @@ def _action_delete(
     force: bool = False,
     replacement_name: str = "",
 ) -> str:
+    from ..memory_access import require_write
+    require_write()
     conn = get_db()
     _ensure_session(conn)
     row = conn.execute(
@@ -1155,6 +1173,8 @@ def _restore_skill_usage_row(
 
 
 def _action_restore(name: str) -> str:
+    from ..memory_access import require_write
+    require_write()
     sdir = _skill_dir(name)
     if sdir.exists():
         return f"ERR skill_exists={name}"
@@ -1557,6 +1577,7 @@ def review_thread(thread_id: str,
         permission_mode="auto",
         role="archivist",
         write_origin="background_review",
+        memory_access="propose",
         slim=True,
         # De-privileged (issue #76): path-scoped skill/lesson tools only —
         # no bare Edit/Read/Write. Reference files go through
