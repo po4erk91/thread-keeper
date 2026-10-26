@@ -44,6 +44,7 @@ threadkeeper/
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
+├── semantic_bundle.py versioned, privacy-selective semantic bundle CLI
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
@@ -231,6 +232,17 @@ verifies the backup, copies it next to the target DB, removes stale target
 again, and re-runs integrity_check. Restore still requires stopping live
 thread-keeper servers first; replacing a database under an open SQLite
 connection can strand that process on the old unlinked file.
+
+`tk-semantic-bundle` is a separate portability path. Its deterministic
+canonical JSONL records carry source namespace/ID, SHA-256 hash, provenance,
+authority, valid-time values, and tombstone or invalidation state. The default
+bundle excludes raw dialog, task logs, and personal-memory records; each class
+requires an explicit export option. Import is dry-run first, validates all
+schema versions and hashes before writing, records source IDs in the local
+namespace ledger, and treats a changed already-imported source record as a
+deterministic conflict. The format is informed by the W3C AI Agent Memory and
+IETF AIMEM bundle drafts, but is not a conformance implementation while those
+drafts remain in motion.
 
 ### Encrypted storage profile
 

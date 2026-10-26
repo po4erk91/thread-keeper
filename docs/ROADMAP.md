@@ -42,10 +42,17 @@ The post-2026-10-14 open backlog is also now represented explicitly: spawned
 child memory authority (#385), validated host trace context (#386), contextual
 index text for short memories (#387), verified skill-mirror convergence (#388),
 persisted task-role status (#389), consent and rollback for learned host-wide
-mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
+mutations (#390), lesson audit integrity (#396),
 installed Agent/Workflow gate tests (#399), and automation-owned Evolve
 autoland (#400). Curator launch-authority isolation remains #366, with its
 implementation PR under review.
+
+## Implemented after the audit
+
+- **Versioned semantic memory bundle (#395).** `tk-semantic-bundle` exports
+  deterministic, hash-checked JSONL records for portable semantic memory while
+  excluding raw dialog, task logs, and personal-memory records by default.
+  Import is dry-run first and retains source IDs under a local namespace.
 
 ## 2026-10-14 reviewer audit
 

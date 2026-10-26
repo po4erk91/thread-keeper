@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-26
+
+- **Added: versioned semantic memory bundles (#395).** `tk-semantic-bundle`
+  exports inspectable, deterministic JSONL records with hashes, source
+  namespaces, provenance, authority, temporal, and deletion metadata. Its
+  default export excludes raw dialog, task logs, and personal memory; import
+  validates before a dry-run conflict report or explicit apply.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

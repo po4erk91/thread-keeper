@@ -1136,6 +1136,20 @@ CREATE TABLE IF NOT EXISTS model_router_passes (
     started_at  INTEGER NOT NULL,
     ended_at    INTEGER
 );
+
+-- Source identity ledger for the portable semantic bundle importer.  The
+-- imported artifact stays in its native table while this local-only mapping
+-- retains its source namespace/id and makes replay detection deterministic.
+CREATE TABLE IF NOT EXISTS semantic_bundle_import_records (
+    source_namespace TEXT NOT NULL,
+    record_type      TEXT NOT NULL,
+    source_id        TEXT NOT NULL,
+    content_sha256   TEXT NOT NULL,
+    local_kind       TEXT NOT NULL,
+    local_id         TEXT NOT NULL,
+    imported_at      INTEGER NOT NULL,
+    PRIMARY KEY (source_namespace, record_type, source_id)
+);
 """
 
 # These columns are independently additive: current databases deliberately do

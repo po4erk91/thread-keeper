@@ -1914,6 +1914,56 @@ first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
 
+For a selective, human-inspectable migration or audit, use
+`tk-semantic-bundle`. It writes a versioned `manifest.json` and canonical
+`records.jsonl`; every record has a SHA-256 content hash, source namespace and
+ID, provenance/authority metadata, temporal fields, and deletion or
+invalidation state. It is not a disaster-recovery snapshot and does not
+replace active-active sync:
+
+| Need | Use |
+| --- | --- |
+| Recover an exact local store after loss | `tk-backup` |
+| Keep live, compatible instances converged | instance sync |
+| Move or inspect selected semantic memory | `tk-semantic-bundle` |
+
+```bash
+# Default: semantic threads, notes, concepts, distillations, lessons, skills,
+# and graph links. Raw dialog, task logs, and personal memory stay out.
+tk-semantic-bundle export ./memory.bundle --namespace laptop-2026
+
+# Opt in to each sensitive class independently when it is needed.
+tk-semantic-bundle export ./complete.bundle --namespace laptop-2026 \
+  --include-personal-memory --include-dialog --include-task-logs
+
+# Import is a dry run unless --apply is explicit.
+tk-semantic-bundle import ./memory.bundle
+tk-semantic-bundle import ./memory.bundle --apply
+```
+
+An import first validates the manifest schema and every hash, then reports
+additions, conflicts, invalid records, and its namespace choice without
+writing. Applied imports retain source IDs in the local
+`semantic_bundle_import_records` namespace ledger; an identical re-import is
+idempotent, while changed source content reports a deterministic conflict.
+The format has a documented crosswalk to the evolving
+[W3C AI Agent Memory Interoperability work](https://www.w3.org/groups/cg/ai-agent-memory-interop/)
+and [IETF AIMEM bundle draft](https://www.ietf.org/archive/id/draft-vu-aimem-bundle-00.html),
+but does not claim conformance to either draft. The crosswalk is deliberately
+conceptual, not a wire-format mapping:
+
+| ThreadKeeper bundle v1 | External direction | Deliberate difference |
+| --- | --- | --- |
+| versioned manifest + canonical JSONL | AIMEM envelope and versioning | Directory/JSONL rather than the draft's one JSON object |
+| `source.namespace` + source-ID ledger | AIMEM producer namespace and replay identity | Local namespace strings are not AIMEM URNs |
+| record and stream SHA-256 hashes | AIMEM checksum/content-hash concepts | No signature or authenticity claim |
+| typed records and graph links | AIMEM chunks and edges | ThreadKeeper types and relations remain local |
+| egress class, authority, valid time, tombstone | W3C work on memory metadata, sharing, and revocation | Local policy metadata; not an external profile |
+
+The IETF document is an Internet-Draft and the W3C group is still developing
+its protocol, so compatibility must be reviewed again before publishing an
+external-profile claim.
+
 ### Opt-in encrypted storage (experimental)
 
 The default `sqlite` profile is unchanged. For sensitive memory at rest, the
