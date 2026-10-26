@@ -24,14 +24,18 @@ Validator enforces the agentskills.io-compatible frontmatter shape:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import yaml
 
@@ -60,7 +64,7 @@ from ..curator_snapshots import (
     verifier_scope_refusal,
 )
 from ..db import get_db
-from ..helpers import q
+from ..helpers import q, single_flight_lock
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..review_prompts import (
@@ -200,9 +204,14 @@ def _row_to_dict(row) -> dict | None:
 # Multi-mirror — propagate a whole skill directory across every known
 # native skills/ root so a single materialization reaches Claude, Codex,
 # Antigravity, shared ~/.agents skills, and the canonical
-# ~/.threadkeeper/skills/ fallback at once. Best-effort: per-mirror
-# failures are logged but don't fail the canonical write.
+# ~/.threadkeeper/skills/ fallback at once.
 # ──────────────────────────────────────────────────────────────────────────
+
+_MIRROR_COPY_ATTEMPTS = 3
+_MIRROR_RETRY_DELAY_S = 0.02
+_skill_locks_guard = threading.Lock()
+_skill_locks: dict[str, threading.Lock] = {}
+_held_skill_locks = threading.local()
 
 def _extra_skill_roots() -> list[Path]:
     """Additional skills roots outside CLI adapters.
@@ -262,30 +271,226 @@ def _mirror_targets(name: str) -> list[Path]:
     return [root / name for root in _skill_roots() if root.resolve() != primary]
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.expanduser().resolve() == right.expanduser().resolve()
+    except OSError:
+        return left.expanduser() == right.expanduser()
+
+
+def _mirror_target_label(dst: Path) -> str:
+    """Return a stable, path-safe name for a mirror consumer."""
+    root = dst.parent
+    from ..adapters import ADAPTERS
+    from ..config import DB_PATH
+
+    if _same_path(root, DB_PATH.parent / "skills"):
+        return "threadkeeper"
+    if _same_path(root, Path("~/.agents/skills").expanduser()):
+        return "agents"
+    for adapter in ADAPTERS:
+        adapter_root = adapter.skills_dir()
+        if adapter_root is not None and _same_path(root, adapter_root):
+            return adapter.name or "adapter"
+    for index, extra_root in enumerate(_extra_skill_roots(), start=1):
+        if _same_path(root, extra_root):
+            return f"extra-{index}"
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+    return f"configured-{digest}"
+
+
+@contextmanager
+def _managed_skill_lock(name: str) -> Iterator[bool]:
+    """Serialize one managed skill across local threads and MCP processes."""
+    held = getattr(_held_skill_locks, "names", set())
+    if name in held:
+        yield True
+        return
+    with _skill_locks_guard:
+        lock = _skill_locks.setdefault(name, threading.Lock())
+    if not lock.acquire(blocking=False):
+        yield False
+        return
+    try:
+        lock_name = "skill-mirror-" + hashlib.sha256(
+            name.encode("utf-8"),
+        ).hexdigest()[:16]
+        with single_flight_lock(lock_name) as locked:
+            if not locked:
+                yield False
+                return
+            _held_skill_locks.names = held | {name}
+            try:
+                yield True
+            finally:
+                _held_skill_locks.names = held
+    finally:
+        lock.release()
+
+
+def _skill_tree_manifest(root: Path) -> tuple[dict[str, str] | None, str | None]:
+    """Return a deterministic relative-path/hash manifest without path leaks."""
+    if not root.is_dir() or root.is_symlink():
+        return None, "missing"
+    manifest: dict[str, str] = {}
+    try:
+        paths = sorted(root.rglob("*"))
+    except OSError:
+        return None, "read_failed"
+    for path in paths:
+        if path.is_dir():
+            continue
+        if path.is_symlink() or not path.is_file():
+            return None, "unsupported_entry"
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return None, "read_failed"
+        manifest[path.relative_to(root).as_posix()] = hashlib.sha256(content).hexdigest()
+    return manifest, None
+
+
+def _tree_difference(
+    expected: dict[str, str], actual: dict[str, str] | None,
+    error: str | None,
+) -> list[dict[str, str]]:
+    if actual is None:
+        return [{"path": "SKILL.md", "status": error or "read_failed"}]
+    differences: list[dict[str, str]] = []
+    for path in sorted(expected.keys() - actual.keys()):
+        differences.append({"path": path, "status": "missing"})
+    for path in sorted(actual.keys() - expected.keys()):
+        differences.append({"path": path, "status": "unexpected"})
+    for path in sorted(expected.keys() & actual.keys()):
+        if expected[path] != actual[path]:
+            differences.append({"path": path, "status": "hash_mismatch"})
+    return differences[:32]
+
+
 def _copy_skill_tree(src: Path, dst: Path) -> None:
-    """Replace dst with a recursive copy of src unless they are identical."""
-    if src.resolve() == dst.resolve():
+    """Atomically replace one mirror tree without publishing a partial copy."""
+    if _same_path(src, dst):
         return
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
-
-
-def _mirror_skill_dir(name: str) -> None:
-    """Copy CLAUDE_SKILLS_DIR/<name>/ → every mirror target (recursive).
-    Pre-existing mirror is replaced atomically. Best-effort per target."""
-    src = _skill_dir(name)
-    if not src.exists():
-        return
-    for dst in _mirror_targets(name):
+    stage_parent = Path(tempfile.mkdtemp(prefix=f".{dst.name}.mirror-", dir=dst.parent))
+    staged = stage_parent / dst.name
+    backup = stage_parent / "previous"
+    try:
+        shutil.copytree(src, staged, symlinks=False)
+        if dst.exists() or dst.is_symlink():
+            os.replace(dst, backup)
         try:
-            _copy_skill_tree(src, dst)
+            os.replace(staged, dst)
         except Exception:
-            # Per-mirror failure (permission denied / disk full / etc.)
-            # doesn't fail the canonical write. The user can re-sync
-            # later via re-running skill_manage.
-            pass
+            if backup.exists() or backup.is_symlink():
+                os.replace(backup, dst)
+            raise
+        if backup.exists() or backup.is_symlink():
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup)
+            else:
+                backup.unlink()
+    finally:
+        if stage_parent.exists():
+            shutil.rmtree(stage_parent, ignore_errors=True)
+
+
+def _remove_mirror_tree(dst: Path) -> None:
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+
+
+def _mirror_target_result(
+    *,
+    src: Path,
+    dst: Path,
+    expected: dict[str, str] | None,
+    remove: bool,
+) -> dict[str, object] | None:
+    """Converge and verify one target, returning only a safe failure detail."""
+    label = _mirror_target_label(dst)
+    last_files: list[dict[str, str]] = []
+    last_status = "copy_failed"
+    for attempt in range(1, _MIRROR_COPY_ATTEMPTS + 1):
+        try:
+            if remove:
+                _remove_mirror_tree(dst)
+                if not (dst.exists() or dst.is_symlink()):
+                    return {"consumer": label, "attempts": attempt} if attempt > 1 else None
+                actual, manifest_error = _skill_tree_manifest(dst)
+                last_files = _tree_difference({}, actual, manifest_error)
+                if not last_files:
+                    last_files = [{"path": ".", "status": "not_removed"}]
+                last_status = "not_removed"
+            else:
+                assert expected is not None
+                _copy_skill_tree(src, dst)
+                actual, manifest_error = _skill_tree_manifest(dst)
+                last_files = _tree_difference(expected, actual, manifest_error)
+                if not last_files:
+                    return {"consumer": label, "attempts": attempt} if attempt > 1 else None
+                last_status = "verification_failed"
+        except Exception as exc:  # A mirror error must become a visible result.
+            last_files = [{"path": "SKILL.md", "status": "copy_failed"}]
+            last_status = type(exc).__name__.lower()
+        if attempt < _MIRROR_COPY_ATTEMPTS:
+            time.sleep(_MIRROR_RETRY_DELAY_S)
+    return {
+        "consumer": label,
+        "attempts": _MIRROR_COPY_ATTEMPTS,
+        "status": last_status,
+        "files": last_files,
+    }
+
+
+def _mirror_outcome(name: str, *, remove: bool = False) -> dict[str, list[dict[str, object]]]:
+    """Converge all mirrors against one canonical revision or its deletion."""
+    expected: dict[str, str] | None = None
+    if not remove:
+        expected, error = _skill_tree_manifest(_skill_dir(name))
+        if expected is None:
+            return {
+                "failed": [{
+                    "consumer": "canonical",
+                    "attempts": 1,
+                    "status": error or "read_failed",
+                    "files": [{"path": "SKILL.md", "status": error or "read_failed"}],
+                }],
+                "retried": [],
+            }
+    failed: list[dict[str, object]] = []
+    retried: list[dict[str, object]] = []
+    source = _skill_dir(name)
+    for dst in _mirror_targets(name):
+        result = _mirror_target_result(
+            src=source, dst=dst, expected=expected, remove=remove,
+        )
+        if result is None:
+            continue
+        if "status" in result:
+            failed.append(result)
+        else:
+            retried.append(result)
+    return {"failed": failed, "retried": retried}
+
+
+def _result_with_mirror_outcome(result: str, outcome: dict[str, list[dict[str, object]]]) -> str:
+    """Keep successful responses compatible while making mirror failures explicit."""
+    if outcome["failed"]:
+        diagnostics = json.dumps(outcome["failed"], sort_keys=True, separators=(",", ":"))
+        return f"ERR mirror_partial_failure diagnostics={diagnostics}"
+    if outcome["retried"]:
+        retries = json.dumps(outcome["retried"], sort_keys=True, separators=(",", ":"))
+        return f"{result} mirror_retries={retries}"
+    return result
+
+
+def _mirror_skill_dir(name: str) -> dict[str, list[dict[str, object]]]:
+    """Copy and verify the canonical tree in every configured mirror."""
+    return _mirror_outcome(name)
 
 
 def mirror_skill_from_path(skill_path: str) -> Optional[str]:
@@ -325,15 +530,9 @@ def mirror_skill_from_path(skill_path: str) -> Optional[str]:
     return name
 
 
-def _unmirror_skill(name: str) -> None:
-    """Remove <name>/ from every mirror target. Best-effort per target."""
-    import shutil as _sh
-    for dst in _mirror_targets(name):
-        try:
-            if dst.exists():
-                _sh.rmtree(dst)
-        except Exception:
-            pass
+def _unmirror_skill(name: str) -> dict[str, list[dict[str, object]]]:
+    """Remove and verify every mirror copy of a managed skill."""
+    return _mirror_outcome(name, remove=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -684,7 +883,9 @@ def skill_manage(action: str,
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
-    best-effort mirror into every configured skill root.
+    copy-and-hash verification in every configured skill root. A failed
+    mirror leaves the canonical write recoverable and returns
+    ``ERR mirror_partial_failure`` with redacted per-consumer diagnostics.
 
     Actions:
       create      — write a brand-new skill. Requires `name` + `description`
@@ -707,6 +908,8 @@ def skill_manage(action: str,
                     during consolidation to repoint inbound [[wikilinks]];
                     otherwise the result lists dangling references.
       restore     — restore the latest trashed copy for `name`.
+      reconcile   — retry mirror convergence for the canonical skill, or
+                    finish removing mirrors when its canonical copy is gone.
     """
     action = action.strip()
     name = name.strip()
@@ -714,30 +917,35 @@ def skill_manage(action: str,
         return f"ERR {err}"
     if refusal := _guarded_skill_write_refusal(name, action):
         return refusal
-    if action == "create":
-        return _action_create(name, content, description, source)
-    if action == "edit":
-        return _action_edit(name, content, source)
-    if action == "patch":
-        return _action_patch(name, old_string, new_string, source)
-    if action == "write_file":
-        return _action_write_file(name, sub_path, content, source)
-    if action == "remove_file":
-        return _action_remove_file(name, sub_path)
-    if action == "delete":
-        if err := _validate_name(name):
-            return f"ERR {err}"
-        return _action_delete(
-            name,
-            force=force,
-            replacement_name=replacement_name,
+    with _managed_skill_lock(name) as locked:
+        if not locked:
+            return f"ERR skill_write_in_progress name={name}"
+        if action == "create":
+            return _action_create(name, content, description, source)
+        if action == "edit":
+            return _action_edit(name, content, source)
+        if action == "patch":
+            return _action_patch(name, old_string, new_string, source)
+        if action == "write_file":
+            return _action_write_file(name, sub_path, content, source)
+        if action == "remove_file":
+            return _action_remove_file(name, sub_path)
+        if action == "delete":
+            if err := _validate_name(name):
+                return f"ERR {err}"
+            return _action_delete(
+                name,
+                force=force,
+                replacement_name=replacement_name,
+            )
+        if action == "restore":
+            return _action_restore(name)
+        if action == "reconcile":
+            return _action_reconcile(name)
+        return (
+            f"ERR unknown_action={action} "
+            "(create|edit|patch|write_file|remove_file|delete|restore|reconcile)"
         )
-    if action == "restore":
-        return _action_restore(name)
-    return (
-        f"ERR unknown_action={action} "
-        "(create|edit|patch|write_file|remove_file|delete|restore)"
-    )
 
 
 _REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file"})
@@ -861,7 +1069,7 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
     if not _stamp_skill_authority(conn, name, source):
         return "ERR authority_derivation_failed"
     _ensure_session(conn)
-    _emit(conn, "skill_create", target=name, summary=str(md))
+    _emit(conn, "skill_create", target=name, summary="file=SKILL.md")
     if WRITE_ORIGIN == "curator":
         record_curator_action(
             conn,
@@ -870,8 +1078,8 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
             key=name,
         )
     conn.commit()
-    _mirror_skill_dir(name)
-    return f"ok path={md}"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome("ok path=SKILL.md", outcome)
 
 
 def _action_edit(name: str, content: str, source: str = "") -> str:
@@ -892,7 +1100,7 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
     if not _stamp_skill_authority(conn, name, source):
         return "ERR authority_derivation_failed"
     _ensure_session(conn)
-    _emit(conn, "skill_edit", target=name, summary=str(md))
+    _emit(conn, "skill_edit", target=name, summary="file=SKILL.md")
     if WRITE_ORIGIN == "curator":
         record_curator_action(
             conn,
@@ -901,8 +1109,8 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
             key=name,
         )
     conn.commit()
-    _mirror_skill_dir(name)
-    return f"ok path={md}"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome("ok path=SKILL.md", outcome)
 
 
 def _action_patch(name: str, old_string: str, new_string: str, source: str = "") -> str:
@@ -946,8 +1154,8 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
             key=name,
         )
     conn.commit()
-    _mirror_skill_dir(name)
-    return "ok"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome("ok", outcome)
 
 
 def _action_write_file(name: str, sub_path: str, content: str, source: str = "") -> str:
@@ -991,8 +1199,8 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "")
             key=name,
         )
     conn.commit()
-    _mirror_skill_dir(name)
-    return f"ok path={target}"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome(f"ok path={sub_path}", outcome)
 
 
 def _action_remove_file(name: str, sub_path: str) -> str:
@@ -1022,8 +1230,8 @@ def _action_remove_file(name: str, sub_path: str) -> str:
             key=name,
         )
         conn.commit()
-    _mirror_skill_dir(name)
-    return "ok"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome("ok", outcome)
 
 
 def _action_delete(
@@ -1101,7 +1309,7 @@ def _action_delete(
     except Exception as e:
         return f"ERR trash_failed skill={name}: {e}"
     shutil.rmtree(sdir)
-    _unmirror_skill(name)
+    mirror_outcome = _unmirror_skill(name)
     conn.execute("DELETE FROM skill_usage WHERE name=?", (name,))
     summary = f"trash={artifact.name}"
     if tombstone:
@@ -1118,9 +1326,11 @@ def _action_delete(
     conn.commit()
     inbound = format_inbound_wikilinks(inbound_refs)
     if not inbound:
-        return "ok"
-    outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
-    return f"ok {outcome}={inbound}"
+        return _result_with_mirror_outcome("ok", mirror_outcome)
+    inbound_outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
+    return _result_with_mirror_outcome(
+        f"ok {inbound_outcome}={inbound}", mirror_outcome,
+    )
 
 
 def _restore_skill_usage_row(
@@ -1178,8 +1388,16 @@ def _action_restore(name: str) -> str:
     _restore_skill_usage_row(conn, name, meta.get("usage_row"))
     _emit(conn, "skill_restore", target=name, summary=f"trash={artifact.name}")
     conn.commit()
-    _mirror_skill_dir(name)
-    return f"ok path={sdir}"
+    outcome = _mirror_skill_dir(name)
+    return _result_with_mirror_outcome("ok path=.", outcome)
+
+
+def _action_reconcile(name: str) -> str:
+    """Retry a failed mirror publication without changing canonical state."""
+    remove = not _skill_dir(name).exists()
+    outcome = _mirror_outcome(name, remove=remove)
+    mode = "removal" if remove else "copy"
+    return _result_with_mirror_outcome(f"ok mirror_reconciled={mode}", outcome)
 
 
 # ──────────────────────────────────────────────────────────────────────────

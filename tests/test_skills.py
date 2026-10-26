@@ -6,7 +6,9 @@ touch the real ~/.claude/skills/.
 """
 from __future__ import annotations
 
+import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -933,6 +935,235 @@ def test_skill_manage_delete_removes_mirrors(skills_pkg, monkeypatch):
     assert (mirror_dir / "will-be-deleted" / "SKILL.md").exists()
     assert sm(action="delete", name="will-be-deleted") == "ok"
     assert not (mirror_dir / "will-be-deleted").exists()
+
+
+def _mirror_failure_diagnostics(result: str) -> list[dict]:
+    assert result.startswith("ERR mirror_partial_failure diagnostics=")
+    return json.loads(result.split("diagnostics=", 1)[1])
+
+
+def test_mirror_failure_is_redacted_recoverable_and_reconcilable(
+    skills_pkg, monkeypatch,
+):
+    """A failed mirror never turns a canonical write into a false success."""
+    mirror_root = skills_pkg["tmp"] / "private-mirror-root"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_mirror_targets", lambda name: [mirror_root / name],
+    )
+    original_copy = st._copy_skill_tree
+    monkeypatch.setattr(
+        st, "_copy_skill_tree",
+        lambda src, dst: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    sm = _tool(skills_pkg, "skill_manage")
+
+    result = sm(
+        action="create",
+        name="recoverable-mirror",
+        description="Exercises mirror recovery.",
+        content="# Canonical content",
+    )
+
+    diagnostics = _mirror_failure_diagnostics(result)
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["attempts"] == 3
+    assert diagnostics[0]["files"] == [{"path": "SKILL.md", "status": "copy_failed"}]
+    assert diagnostics[0]["status"] == "permissionerror"
+    assert diagnostics[0]["consumer"].startswith("configured-")
+    assert str(mirror_root) not in result
+    assert str(skills_pkg["skills_root"]) not in result
+    canonical = skills_pkg["skills_root"] / "recoverable-mirror"
+    assert (canonical / "SKILL.md").exists()
+    assert not (mirror_root / "recoverable-mirror").exists()
+    conn = skills_pkg["db"].get_db()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM skill_usage WHERE name='recoverable-mirror'",
+    ).fetchone()[0] == 1
+    event_summary = conn.execute(
+        "SELECT summary FROM events WHERE kind='skill_create' ORDER BY id DESC LIMIT 1",
+    ).fetchone()[0]
+    assert event_summary == "file=SKILL.md"
+    assert str(skills_pkg["skills_root"]) not in event_summary
+
+    monkeypatch.setattr(st, "_copy_skill_tree", original_copy)
+    assert sm(action="reconcile", name="recoverable-mirror") == "ok mirror_reconciled=copy"
+    assert _file_tree_bytes(mirror_root / "recoverable-mirror") == _file_tree_bytes(canonical)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM skill_usage WHERE name='recoverable-mirror'",
+    ).fetchone()[0] == 1
+
+
+def test_mirror_retries_and_replaces_every_stale_file(skills_pkg, monkeypatch):
+    mirror_root = skills_pkg["tmp"] / "retry-mirror-root"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_mirror_targets", lambda name: [mirror_root / name],
+    )
+    original_copy = st._copy_skill_tree
+    attempts = 0
+
+    def flaky_copy(src, dst):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary copy failure")
+        original_copy(src, dst)
+
+    monkeypatch.setattr(st, "_copy_skill_tree", flaky_copy)
+    sm = _tool(skills_pkg, "skill_manage")
+    result = sm(
+        action="create",
+        name="retry-mirror",
+        description="Exercises bounded mirror retries.",
+        content="# First revision",
+    )
+    assert result.startswith("ok path=SKILL.md mirror_retries=")
+    assert '"attempts":2' in result
+    assert attempts == 2
+
+    mirror_skill = mirror_root / "retry-mirror"
+    (mirror_skill / "references").mkdir()
+    (mirror_skill / "references" / "stale.md").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(st, "_copy_skill_tree", original_copy)
+    updated = "---\nname: retry-mirror\ndescription: Exercises bounded mirror retries.\n---\n\n# Second revision\n"
+    assert sm(action="edit", name="retry-mirror", content=updated) == "ok path=SKILL.md"
+    assert not (mirror_skill / "references" / "stale.md").exists()
+    assert _file_tree_bytes(mirror_skill) == _file_tree_bytes(
+        skills_pkg["skills_root"] / "retry-mirror",
+    )
+
+
+def test_patch_and_remove_file_report_mirror_copy_failures(skills_pkg, monkeypatch):
+    mirror_root = skills_pkg["tmp"] / "patch-mirror-root"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_mirror_targets", lambda name: [mirror_root / name],
+    )
+    sm = _tool(skills_pkg, "skill_manage")
+    assert sm(
+        action="create", name="partial-writes",
+        description="Exercises partial mirror write errors.", content="# Before",
+    ).startswith("ok")
+    assert sm(
+        action="write_file", name="partial-writes",
+        sub_path="references/detail.md", content="Before removal.",
+    ).startswith("ok")
+    original_copy = st._copy_skill_tree
+    monkeypatch.setattr(
+        st, "_copy_skill_tree",
+        lambda src, dst: (_ for _ in ()).throw(OSError("copy interrupted")),
+    )
+
+    patch_result = sm(
+        action="patch", name="partial-writes",
+        old_string="# Before", new_string="# After",
+    )
+    remove_result = sm(
+        action="remove_file", name="partial-writes",
+        sub_path="references/detail.md",
+    )
+    assert _mirror_failure_diagnostics(patch_result)[0]["files"] == [
+        {"path": "SKILL.md", "status": "copy_failed"},
+    ]
+    assert _mirror_failure_diagnostics(remove_result)[0]["files"] == [
+        {"path": "SKILL.md", "status": "copy_failed"},
+    ]
+    canonical = skills_pkg["skills_root"] / "partial-writes"
+    assert "# After" in (canonical / "SKILL.md").read_text(encoding="utf-8")
+    assert not (canonical / "references" / "detail.md").exists()
+
+    monkeypatch.setattr(st, "_copy_skill_tree", original_copy)
+    assert sm(action="reconcile", name="partial-writes") == "ok mirror_reconciled=copy"
+    assert _file_tree_bytes(mirror_root / "partial-writes") == _file_tree_bytes(canonical)
+
+
+def test_delete_and_restore_report_mirror_failures_and_reconcile(
+    skills_pkg, monkeypatch,
+):
+    mirror_root = skills_pkg["tmp"] / "remove-mirror-root"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_mirror_targets", lambda name: [mirror_root / name],
+    )
+    sm = _tool(skills_pkg, "skill_manage")
+    assert sm(
+        action="create", name="remove-and-restore",
+        description="Exercises removal recovery.", content="# Body",
+    ).startswith("ok")
+    original_remove = st._remove_mirror_tree
+    monkeypatch.setattr(
+        st, "_remove_mirror_tree",
+        lambda dst: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    delete_result = sm(action="delete", name="remove-and-restore", force=True)
+    assert _mirror_failure_diagnostics(delete_result)[0]["status"] == "permissionerror"
+    assert not (skills_pkg["skills_root"] / "remove-and-restore").exists()
+    assert (mirror_root / "remove-and-restore").exists()
+
+    monkeypatch.setattr(st, "_remove_mirror_tree", original_remove)
+    assert sm(action="reconcile", name="remove-and-restore") == "ok mirror_reconciled=removal"
+    assert not (mirror_root / "remove-and-restore").exists()
+
+    original_copy = st._copy_skill_tree
+    monkeypatch.setattr(
+        st, "_copy_skill_tree",
+        lambda src, dst: (_ for _ in ()).throw(OSError("copy interrupted")),
+    )
+    restore_result = sm(action="restore", name="remove-and-restore")
+    assert _mirror_failure_diagnostics(restore_result)[0]["status"] == "oserror"
+    canonical = skills_pkg["skills_root"] / "remove-and-restore"
+    assert (canonical / "SKILL.md").exists()
+
+    monkeypatch.setattr(st, "_copy_skill_tree", original_copy)
+    assert sm(action="reconcile", name="remove-and-restore") == "ok mirror_reconciled=copy"
+    assert _file_tree_bytes(mirror_root / "remove-and-restore") == _file_tree_bytes(canonical)
+
+
+def test_concurrent_managed_writes_do_not_publish_mixed_revisions(
+    skills_pkg, monkeypatch,
+):
+    mirror_root = skills_pkg["tmp"] / "concurrent-mirror-root"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_mirror_targets", lambda name: [mirror_root / name],
+    )
+    original_copy = st._copy_skill_tree
+    copy_started = threading.Event()
+    release_copy = threading.Event()
+
+    def delayed_copy(src, dst):
+        copy_started.set()
+        assert release_copy.wait(timeout=2)
+        original_copy(src, dst)
+
+    monkeypatch.setattr(st, "_copy_skill_tree", delayed_copy)
+    sm = _tool(skills_pkg, "skill_manage")
+    create_result: list[str] = []
+    worker = threading.Thread(
+        target=lambda: create_result.append(sm(
+            action="create", name="concurrent-skill",
+            description="Exercises concurrent writes.", content="# Revision one",
+        )),
+    )
+    worker.start()
+    assert copy_started.wait(timeout=2)
+    assert sm(
+        action="patch", name="concurrent-skill",
+        old_string="# Revision one", new_string="# Revision two",
+    ) == "ERR skill_write_in_progress name=concurrent-skill"
+    release_copy.set()
+    worker.join(timeout=2)
+    assert create_result == ["ok path=SKILL.md"]
+    assert _file_tree_bytes(mirror_root / "concurrent-skill") == _file_tree_bytes(
+        skills_pkg["skills_root"] / "concurrent-skill",
+    )
 
 
 def test_review_thread_inline_skips_block_when_no_recent_skills(skills_pkg):

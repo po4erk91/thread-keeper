@@ -40,12 +40,13 @@ provider/CLI spawn adapters remain the deliberate execution boundary.
 
 The post-2026-10-14 open backlog is also now represented explicitly: spawned
 child memory authority (#385), validated host trace context (#386), contextual
-index text for short memories (#387), verified skill-mirror convergence (#388),
-persisted task-role status (#389), consent and rollback for learned host-wide
-mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
-installed Agent/Workflow gate tests (#399), and automation-owned Evolve
-autoland (#400). Curator launch-authority isolation remains #366, with its
-implementation PR under review.
+index text for short memories (#387), persisted task-role status (#389),
+consent and rollback for learned host-wide mutations (#390), semantic
+export/import (#395), lesson audit integrity (#396), installed Agent/Workflow
+gate tests (#399), and automation-owned Evolve autoland (#400). Managed-skill
+mirror convergence (#388) now verifies every consumer before success and has
+an idempotent reconciliation path. Curator launch-authority isolation remains
+#366, with its implementation PR under review.
 
 ## 2026-10-14 reviewer audit
 

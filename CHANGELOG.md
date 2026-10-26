@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.1 — 2026-10-26
+
+- **Fixed: managed skill writes now verify every mirror before success (#388).**
+  Each mirror uses a staged tree replacement followed by a complete relative
+  file-set and SHA-256 check. Failures retry three times and return redacted,
+  per-consumer diagnostics instead of a false success; canonical copies and
+  trash artifacts remain recoverable through `skill_manage(action='reconcile')`.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

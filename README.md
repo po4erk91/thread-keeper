@@ -54,7 +54,11 @@ make it more than a memory store:
   `~/.codex/skills/`, `~/.gemini/config/skills/` for Antigravity,
   existing `~/.agents/skills/`, extra roots from
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`), with
-  lessons.md as a fallback for CLIs without a native skills loader.
+  lessons.md as a fallback for CLIs without a native skills loader. A managed
+  skill write reports success only after every mirror has the expected file
+  set and hashes; `ERR mirror_partial_failure` keeps the canonical copy and
+  names only the affected consumer plus relative file. Retry safely with
+  `skill_manage(action="reconcile", name="<skill>")`.
 
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
