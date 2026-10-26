@@ -8,6 +8,28 @@ remains a live question.
 
 ---
 
+## 2026-10-26 reviewer audit
+
+- **Curator capability coverage after [#353](https://github.com/po4erk91/thread-keeper/issues/353).** The `curator` role selects the
+  `learning-loops` profile, which omits `lesson_get`, `lesson_patch`,
+  `concept_manage`, `curator_merge_verdict`, and `evolve_format` even though
+  the Curator contract requests them. Compose the required role/phase tool
+  set while preserving the parent allowlist and mutation authorization.
+  Check the final server and adapter grants before launching a child, and
+  return a capability error if its required operations are unavailable.
+  Cover the actual Codex child discovery/call path as well as profile sets.
+- **Mirror root policy ([#388](https://github.com/po4erk91/thread-keeper/issues/388)).** Define required supported consumer mirrors
+  separately from intentionally unmaterialized workspace roots. The current
+  audit marks each active skill `mirror_missing` when any listed root is
+  empty, even when persistent copies match. Keep per-skill failures for
+  required consumers and summarize an optional-root gap once. Writes and
+  audits must share that root policy.
+- **Curator-neutral lesson reads (#402) are implemented in v0.20.0.** Only
+  foreground lesson reads update consultation counters and access times.
+  Focused tests cover both neutral Curator reads and counted foreground
+  reads; the remaining capability gap above must not be confused with this
+  completed telemetry change.
+
 ## 2026-10-24 reviewer audit
 
 This pass reconciled current `main`, the full issue history, and the five
@@ -24,22 +46,21 @@ pending legacy Evolve suggestions. Two distinct gaps remain:
   and allow/deny/escape verification. Add that registry while reusing #390 for
   consent and rollback of host-wide changes.
 
-The task-selection hook suggestion maps to open contract-test issue #399, and
-Curator-neutral lesson reads remain tracked in #402. Durable multi-batch state
-and task-bound report authority are already covered by completed issues #290
+The task-selection hook suggestion maps to open contract-test issue #399.
+Curator-neutral lesson reads (#402) are implemented in v0.20.0. Durable
+multi-batch state and task-bound report authority are already covered by completed issues #290
 and #366, so those legacy suggestions were not re-filed. No external research
 digest was available for this pass.
 
 ## 2026-10-21 reviewer audit
 
 This pass reconciled current `main`, the complete open/closed issue history,
-the pending legacy Evolve queue, and the 2026-10-20 research digest. Four new,
-issue-backed gaps remain:
+the pending legacy Evolve queue, and the 2026-10-20 research digest. Four
+issue-backed items were identified:
 
-- **Curator-neutral lesson reads (#402).** Curator evaluators must be able to
-  read complete lesson bodies without incrementing consultation counters or
-  refreshing `last_used_at`; foreground/task reads must keep recording real
-  use.
+- ✅ DONE (#402). **Curator-neutral lesson reads.** Curator and other
+  non-foreground reads leave consultation counters and `last_used_at`
+  unchanged; foreground reads continue to record real use.
 - **Authenticated source-tracked skill updates (#403).** Resolve immutable
   commits, retain whole-directory provenance, verify supported detached
   publisher signatures, and make unsigned-source policy explicit before an
