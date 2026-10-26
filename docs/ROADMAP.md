@@ -43,9 +43,13 @@ child memory authority (#385), validated host trace context (#386), contextual
 index text for short memories (#387), verified skill-mirror convergence (#388),
 persisted task-role status (#389), consent and rollback for learned host-wide
 mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
-installed Agent/Workflow gate tests (#399), and automation-owned Evolve
-autoland (#400). Curator launch-authority isolation remains #366, with its
-implementation PR under review.
+and automation-owned Evolve autoland (#400). Curator launch-authority isolation
+remains #366, with its implementation PR under review.
+
+Installed task-gate contract coverage is complete (#399): tests replay
+current Claude Code `Agent` and legacy `Task` events through the managed
+script, pin the generated matcher and mode behavior, and keep unsupported
+`Workflow` and unrelated tools silent.
 
 ## 2026-10-14 reviewer audit
 

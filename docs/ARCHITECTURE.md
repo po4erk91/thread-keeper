@@ -1826,15 +1826,33 @@ deployment](#cross-cli-deployment) below). The canonical wiring lives in
   Note: Claude Code's `Stop` fires at the end of every turn (there is no
   model-actionable session-end event), hence the once-per-session throttle.
 
-- **PreToolUse → tk-task-gate.sh** (matcher `^(Task|Agent|Workflow)$`) —
-  steers the spawn-vs-native choice (see `core_memory.spawn_pattern`) with
-  two OPPOSITE heuristics, since the right default flipped with opus 4.8.
-  `Task` (legacy, non-opus-4.8 models): blocks fan-out lacking a synthesis
-  cue → push to `spawn()` (modes via `TK_TASK_GATE`: `deny`/`warn`/`off`).
-  `Agent`/`Workflow` (opus-4.8 native): native is the right default for
-  in-turn fan-out, so advisory `warn` ONLY on persistence signals
-  (cross-session, inter-agent channels, outlive-session, daemon) — never
-  hard-blocks. Claude-Code-specific; other CLIs ignore the unknown event.
+- **PreToolUse → tk-task-gate.sh** (matcher `^(Task|Agent)$`) —
+  steers the spawn-vs-native choice (see `core_memory.spawn_pattern`).
+  The tested host contract is Claude Code's JSON stdin envelope with
+  `hook_event_name: "PreToolUse"`, `tool_name`, and nested `tool_input.prompt`,
+  `tool_input.description`, and `tool_input.subagent_type`, as documented in
+  the [hooks reference](https://code.claude.com/docs/en/hooks#pretooluse-input).
+  Claude Code [renamed Task to Agent in version 2.1.63](https://code.claude.com/docs/en/sub-agents#restrict-which-subagents-can-be-spawned);
+  the names are tied to the host version, not the model.
+  Legacy `Task` blocks prompts longer than 600 characters with fan-out or
+  duration signals and no synthesis cue, except exempt subagent types.
+  `TK_TASK_GATE=deny` (default) exits 2 with a blocking reason on stderr;
+  `warn` exits 0 with stderr; `off` exits 0 silently for both tools.
+  Current `Agent` only writes a non-blocking stderr advisory for persistence
+  signals (cross-session, inter-agent channels, outlive-session, daemon),
+  including in `deny` mode. Ordinary in-turn fan-out stays silent.
+  Claude Code sends exit-0 stderr to its debug log, not model context.
+  Bash and `jq` are required; without `jq` the script exits 0 silently.
+  `tests/test_task_gate.py` installs the real setup spec and replays these
+  payloads through the copied executable without a live Claude session.
+  `Workflow` is unsupported: the inspected Claude Code 2.1.296 input schema
+  takes `script`, `name`, or `scriptPath`, has no Agent-style `prompt`, and
+  ignores `description`. The removed prompt-only branch could not inspect
+  that work. Setup does not match it and direct calls are silent, like
+  unrelated tools; tests cover both script input and the old prompt shape.
+  This gate is only validated for Claude Code; Copilot's installed spec has
+  no verified equivalent payload contract. Codex, Claude Desktop,
+  Antigravity, and VS Code do not run this managed hook.
 
 ### Cross-CLI deployment
 

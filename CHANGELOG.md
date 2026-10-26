@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.1 — 2026-10-26
+
+- **Tested: the installed Claude Code task gate (#399).** Contract tests pin
+  the generated matcher and managed script, replay current `Agent` and legacy
+  `Task` payloads, and cover blocking, advisory, disabled, exempt, and unrelated
+  tool behavior. Removed the `Workflow` branch and matcher entry because its
+  script/name input does not match the prompt-based guard; architecture docs
+  name the tested payload fields and unsupported hosts.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
