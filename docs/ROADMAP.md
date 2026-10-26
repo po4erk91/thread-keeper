@@ -66,8 +66,7 @@ index text for short memories (#387), verified skill-mirror convergence (#388),
 persisted task-role status (#389), consent and rollback for learned host-wide
 mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
 installed Agent/Workflow gate tests (#399), and automation-owned Evolve
-autoland (#400). Curator launch-authority isolation remains #366, with its
-implementation PR under review.
+autoland (#400). Curator launch-authority isolation is complete in #366.
 
 ## 2026-10-14 reviewer audit
 
@@ -105,9 +104,10 @@ The resource-subscription (#345), privacy-safe tracing (#346), and
 outcome-evaluation (#347) items are complete. The remaining audit gaps are
 issue-backed and deliberately narrower:
 
-- **Forgetting-aware store mutation evaluation (#371).** Exercise real
-  correction, supersession, consolidation, source erasure, and restart paths;
-  penalize obsolete evidence even when current evidence is also recalled.
+- ✅ DONE (#371). **Forgetting-aware store mutation evaluation.** The frozen
+  replay exercises real correction, supersession, consolidation, source erasure,
+  and restart paths, and penalizes obsolete evidence returned beside current
+  evidence.
 - **Protected-lesson freshness flags (#372).** Preserve protected lesson text
   while attaching source-linked verified, contradicted, or unsubstantiated
   states that are visible when the lesson is retrieved for a task.
@@ -1423,9 +1423,10 @@ transport, migration, memory-safety, and learning-quality gaps:
   the original principal/channel and propagated through derived artifacts;
   repeated evidence cannot manufacture independent corroboration, and the
   Write–Execute–Forget lifecycle invalidates descendants after erasure.
-- **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
-  and multi-timescale replay before changing supersession policy, so a one-off
-  task exception cannot silently replace a validated durable preference.
+- ✅ DONE (#339). **Preference-drift evaluation pilot.** The read-only replay
+  separates durable changes from task-local exceptions, ambiguity, and poisoning.
+  Production supersession policy remains unchanged pending a representative
+  pilot review.
 - ✅ DONE (#340). **Lesson-promotion precision.** Candidates now filter
   generic and high-document-frequency terms, require a shared body mechanism,
   keep one maximal cohesive cluster, and report emitted/rejected telemetry.
@@ -1523,19 +1524,18 @@ and Curator child-capability isolation:
   before a child launches. Preserve the cursor, collapse repeated blocker
   telemetry, and retry on a bounded short cadence while keeping real issue
   attempts and empty-queue throttling unchanged.
-- **Curator per-child capability isolation (#366).** Stop conveying Curator
-  pass/snapshot authority by temporarily mutating the server process
-  environment. Pass server-owned values explicitly to the intended child,
-  strip stale values from ordinary spawns, and bind report/research writers to
-  the owning task, role, and batch.
+- ✅ DONE (#366). **Curator per-child capability isolation.** Pass/snapshot
+  authority is private launch data for the intended child. Ordinary spawns strip
+  stale values, and report/research writers verify the owning task, child, pass,
+  role, origin, and batch; watchdog retries restore recorded launch context.
 
 The earlier mechanical issue gate linked the protocol-native Tasks/MRTR
 proposal to completed conformance issue #344. The later Tasks lifecycle gap was
 completed as #370; #344 continues to cover dual-era request compatibility and
 replay-safe writes, not standard Tasks.
 The outcome-quality evaluator in #347 is complete. The remaining bounded
-action/recovery-memory experiment is #380, while obsolete-evidence mutation
-coverage remains #371. Tool-profile disclosure and project namespaces are
+action/recovery-memory experiment is #380; obsolete-evidence mutation
+coverage is complete in #371. Tool-profile disclosure and project namespaces are
 complete in #353 and #359.
 
 ---
