@@ -24,6 +24,16 @@ hints, sealed continuation state is bound to the caller and expires after five
 minutes, and a caller-scoped replay ledger returns the first terminal result
 for a repeated modern mutation rather than running it twice.
 
+The release gate runs the pinned official MCP conformance requirement sets for
+both protocol versions. `threadkeeper.conformance_server` is a test-only,
+loopback Streamable HTTP entry point: it imports `threadkeeper.server` to use
+the exact same `mcp` tool, resource, prompt, extension, and schema registry as
+production stdio. It adds no production transport or test fixture handlers.
+Version-specific expected-failure baselines document intentional differences
+from the upstream `test_*` fixtures. The official runner rejects both a new
+failure and a stale baseline entry, while real-stdio tests retain legacy
+initialization, `server/discover`, per-request `_meta`, and replay coverage.
+
 ## Package map
 
 ```

@@ -52,10 +52,6 @@ implementation PR under review.
 This pass reconciled the full issue history, current implementation, legacy
 Evolve suggestions, and the October research digest. Four distinct gaps remain:
 
-- **Official MCP conformance release gate (#379).** Run pinned official
-  conformance requirement sets for both supported protocol versions through a
-  test-only transport backed by the production handler registry. Retain focused
-  stdio tests for ThreadKeeper-specific discovery, metadata, and replay rules.
 - **Privacy-safe action/outcome memory (#380).** Evaluate a bounded operational
   event stream that records normalized actions, coarse outcomes, stable error
   fingerprints, and recovery links without retaining raw arguments or tool
@@ -99,6 +95,13 @@ already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
 registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
+
+- **Official MCP conformance release gate (#379).** CI runs the pinned official
+  requirement sets for `2025-11-25` and `2026-07-28` over a loopback-only
+  Streamable HTTP view of the production stdio registry. Version-specific,
+  justified expected-failure baselines are stale-checked; focused real-stdio
+  coverage retains legacy initialization, `server/discover`, per-request
+  `_meta`, and replay behavior.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.
