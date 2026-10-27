@@ -18,15 +18,20 @@ import re
 import secrets
 import threading
 import time
-from typing import Iterator, Protocol
+from typing import Iterator, Mapping, Protocol
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
 TRACEPARENT_ENV = "THREADKEEPER_TRACEPARENT"
+TRACESTATE_ENV = "THREADKEEPER_TRACESTATE"
+BAGGAGE_ENV = "THREADKEEPER_BAGGAGE"
 _TRACEPARENT_RE = re.compile(
     r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$"
 )
+_TRACESTATE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_\-*/@]{0,255}$")
+_TRACESTATE_VALUE_RE = re.compile(r"^[\x20-\x2b\x2d-\x3c\x3e-\x7e]{1,256}$")
+_BAGGAGE_VALUE_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,64}$")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
 _SENSITIVE_IDENTIFIER_RE = re.compile(
     r"(?:api[_-]?key|authorization|credential|password|secret|token)", re.I
@@ -38,6 +43,14 @@ _MAX_MODEL_CHARS = 96
 _MAX_MODEL_VALUES = 64
 _MAX_TOKENS = 2_000_000_000
 _MAX_COST_USD = 1_000_000.0
+_MAX_TRACESTATE_CHARS = 512
+_MAX_TRACESTATE_MEMBERS = 32
+_MAX_BAGGAGE_CHARS = 256
+_ALLOWED_BAGGAGE_KEYS = frozenset({
+    "deployment.environment",
+    "service.namespace",
+    "threadkeeper.workflow_class",
+})
 
 _active_context: ContextVar["TraceContext | None"] = ContextVar(
     "threadkeeper_trace_context", default=None
@@ -51,6 +64,8 @@ class TraceContext:
     trace_id: str
     span_id: str
     trace_flags: str = "01"
+    tracestate: str = ""
+    baggage: str = ""
 
     def traceparent(self) -> str:
         return f"00-{self.trace_id}-{self.span_id}-{self.trace_flags}"
@@ -64,6 +79,8 @@ class ChildTrace:
     workflow_span_id: str
     parent_span_id: str
     started_ns: int
+    tracestate: str
+    baggage: str
 
 
 @dataclass(frozen=True)
@@ -267,7 +284,9 @@ def _configured_pipeline() -> BufferedSpanExporter | None:
 
 
 def _parse_traceparent(value: str | None) -> TraceContext | None:
-    match = _TRACEPARENT_RE.fullmatch((value or "").strip().lower())
+    if not isinstance(value, str):
+        return None
+    match = _TRACEPARENT_RE.fullmatch(value)
     if match is None:
         return None
     trace_id, span_id, flags = match.groups()
@@ -276,9 +295,109 @@ def _parse_traceparent(value: str | None) -> TraceContext | None:
     return TraceContext(trace_id, span_id, flags)
 
 
+def _parse_tracestate(value: object) -> str:
+    """Return canonical W3C tracestate or drop the whole optional field."""
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > _MAX_TRACESTATE_CHARS:
+        return ""
+    members = []
+    keys = set()
+    for item in value.split(","):
+        member = item.strip(" \t")
+        if not member:
+            continue
+        if len(member) > 256 or member.count("=") != 1:
+            return ""
+        key, member_value = member.split("=", 1)
+        if (
+            not _TRACESTATE_KEY_RE.fullmatch(key)
+            or not _TRACESTATE_VALUE_RE.fullmatch(member_value)
+            or member_value.endswith(" ")
+            or key in keys
+        ):
+            return ""
+        keys.add(key)
+        members.append(f"{key}={member_value}")
+        if len(members) > _MAX_TRACESTATE_MEMBERS:
+            return ""
+    return ",".join(members)
+
+
+def _parse_baggage(value: object) -> str:
+    """Keep the small, non-user-identifying baggage subset ThreadKeeper owns."""
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > _MAX_BAGGAGE_CHARS:
+        return ""
+    retained = []
+    seen = set()
+    for item in value.split(","):
+        member = item.strip(" \t")
+        if not member or ";" in member or member.count("=") != 1:
+            continue
+        key, member_value = (part.strip(" \t") for part in member.split("=", 1))
+        if (
+            key not in _ALLOWED_BAGGAGE_KEYS
+            or key in seen
+            or not _BAGGAGE_VALUE_RE.fullmatch(member_value)
+        ):
+            continue
+        seen.add(key)
+        retained.append(f"{key}={member_value}")
+    return ",".join(retained)
+
+
+def host_context_from_meta(meta: Mapping[str, object] | None) -> TraceContext | None:
+    """Read the negotiated MCP Trace Context fields without retaining metadata."""
+    if not isinstance(meta, Mapping):
+        return None
+    context = _parse_traceparent(meta.get("traceparent"))
+    if context is None:
+        return None
+    return TraceContext(
+        context.trace_id,
+        context.span_id,
+        context.trace_flags,
+        _parse_tracestate(meta.get("tracestate")),
+        _parse_baggage(meta.get("baggage")),
+    )
+
+
+@contextmanager
+def host_trace_context(meta: Mapping[str, object] | None) -> Iterator[None]:
+    """Use validated modern MCP metadata as the current trace parent."""
+    context = host_context_from_meta(meta)
+    if context is None:
+        yield
+        return
+    token = _active_context.set(context)
+    try:
+        yield
+    finally:
+        _active_context.reset(token)
+
+
 def current_context() -> TraceContext | None:
-    return _active_context.get() or _parse_traceparent(
-        os.environ.get(TRACEPARENT_ENV)
+    return _active_context.get() or _context_from_carrier(
+        os.environ.get(TRACEPARENT_ENV),
+        os.environ.get(TRACESTATE_ENV),
+        os.environ.get(BAGGAGE_ENV),
+    )
+
+
+def _context_from_carrier(
+    traceparent: object, tracestate: object = None, baggage: object = None,
+) -> TraceContext | None:
+    context = _parse_traceparent(traceparent)
+    if context is None:
+        return None
+    return TraceContext(
+        context.trace_id,
+        context.span_id,
+        context.trace_flags,
+        _parse_tracestate(tracestate),
+        _parse_baggage(baggage),
     )
 
 
@@ -287,6 +406,8 @@ def _new_context(parent: TraceContext | None) -> TraceContext:
         trace_id=parent.trace_id if parent else secrets.token_hex(16),
         span_id=secrets.token_hex(8),
         trace_flags=parent.trace_flags if parent else "01",
+        tracestate=parent.tracestate if parent else "",
+        baggage=parent.baggage if parent else "",
     )
 
 
@@ -436,12 +557,17 @@ def mcp_span(tool_name: str) -> Iterator[None]:
         ))
 
 
-def new_child_trace(traceparent_override: str = "") -> ChildTrace | None:
+def new_child_trace(
+    traceparent_override: str = "", tracestate_override: str = "",
+    baggage_override: str = "",
+) -> ChildTrace | None:
     """Create workflow → agent context without putting it in a prompt/argv."""
     if not _is_enabled():
         return None
     parent = (
-        _parse_traceparent(traceparent_override)
+        _context_from_carrier(
+            traceparent_override, tracestate_override, baggage_override,
+        )
         if traceparent_override
         else current_context()
     )
@@ -452,6 +578,8 @@ def new_child_trace(traceparent_override: str = "") -> ChildTrace | None:
         workflow_span_id=workflow.span_id,
         parent_span_id=parent.span_id if parent else "",
         started_ns=time.time_ns(),
+        tracestate=agent.tracestate,
+        baggage=agent.baggage,
     )
 
 

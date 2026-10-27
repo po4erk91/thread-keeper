@@ -35,7 +35,7 @@ from .mcp_skills import (
     resource_catalog,
 )
 from .mcp_tasks import MCPTasksExtension
-from .protocol import ReplaySafeWrites, caller_principal
+from .protocol import HostTraceContext, ReplaySafeWrites, caller_principal
 from .read_context import read_only_call
 from .tool_profiles import environment_selection
 from .instructions import SERVER_INSTRUCTIONS
@@ -96,7 +96,7 @@ mcp = ThreadKeeperMCPServer(
         ttl=300,
         bind_principal=caller_principal,
     ),
-    middleware=[ReplaySafeWrites(WRITE_TOOL_NAMES)],
+    middleware=[HostTraceContext(), ReplaySafeWrites(WRITE_TOOL_NAMES)],
 )
 
 _active_tool_names: frozenset[str] = frozenset()

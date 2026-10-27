@@ -1788,6 +1788,22 @@ private child environment (and its slim MCP config), never in a prompt or CLI
 argument. A watchdog continuation uses the prior agent span as its parent, so
 retries remain in the same trace.
 
+For MCP `2026-07-28`, a host can add W3C `traceparent`, `tracestate`, and
+`baggage` values to the request `_meta`. A valid `traceparent` becomes the
+parent of the MCP operation, so the host and child work appear in one trace.
+Older MCP clients keep the existing local behavior. A missing or malformed
+host traceparent starts a local trace and does not fail the tool call.
+
+ThreadKeeper accepts only the exact lowercase W3C `00` traceparent form. It
+keeps valid tracestate only when it has at most 32 entries and 512 characters,
+with W3C key and value characters. Baggage is more restrictive: it is capped
+at 256 characters and only forwards `deployment.environment`,
+`service.namespace`, and `threadkeeper.workflow_class` values made of up to 64
+safe identifier characters. All other baggage is dropped. These three values
+stay in private task tracing fields and child environment variables; they never appear
+in prompts, command arguments, memory, tool results, or exported span
+attributes.
+
 The exporter has a fixed allowlist: operation/tool identifier, latency and
 queue wait, provider/model identifiers, input/output/total tokens, USD cost,
 retry count, and terminal outcome. Operation names are fixed; tool/provider

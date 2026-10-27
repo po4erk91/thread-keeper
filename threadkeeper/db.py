@@ -694,6 +694,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     memory_scope  TEXT NOT NULL DEFAULT 'project'
                   CHECK(memory_scope IN ('project','global','shared','unresolved')),
     traceparent TEXT,
+    trace_tracestate TEXT,
+    trace_baggage TEXT,
     trace_workflow_span_id TEXT,
     trace_parent_span_id TEXT,
     trace_started_ns INTEGER,
@@ -1142,6 +1144,8 @@ CREATE TABLE IF NOT EXISTS model_router_passes (
 # not bump PRAGMA user_version for safe telemetry-only extensions.
 ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     "ALTER TABLE tasks ADD COLUMN traceparent TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_tracestate TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_baggage TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_workflow_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_parent_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_started_ns INTEGER",

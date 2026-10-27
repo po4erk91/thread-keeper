@@ -995,9 +995,17 @@ shadow/extract/curator/candidate-reviewer daemons from starting recursively.
 with a `THREADKEEPER_OTEL_ENDPOINT`, the server uses a bounded asynchronous
 OTLP/HTTP exporter. The parent MCP span starts a workflow span, the spawned
 child gets an agent span, and its MCP operations become child spans. The task
-row carries the opaque W3C `traceparent` plus workflow IDs; the child receives
-that context only through its process environment and slim MCP config. No
-trace state is put in prompts or command-line arguments. A watchdog
+row carries the opaque W3C trace context plus workflow IDs; the child receives
+that context only through its process environment and slim MCP config. Modern
+MCP (`2026-07-28`) requests may provide `traceparent`, `tracestate`, and
+`baggage` in `_meta`. A valid lowercase W3C `00` traceparent becomes the MCP
+span's parent. Tracestate is retained only with valid W3C syntax, at most 32
+members, and at most 512 characters. The 256-character baggage boundary keeps
+only the safe, bounded `deployment.environment`, `service.namespace`, and
+`threadkeeper.workflow_class` keys. A missing or invalid traceparent starts a
+local trace; malformed optional trace state is discarded. Legacy MCP requests
+retain their existing behavior. No trace state is put in prompts or command-line
+arguments. A watchdog
 continuation parents its replacement workflow to the timed-out agent span.
 
 Tracing accepts no generic attribute dictionary. Its typed allowlist is:

@@ -47,7 +47,9 @@ from ..identity import (
     _ensure_session, _detect_self_cid, _emit, ensure_session_started,
 )
 from ..ingest import _parse_ts
-from ..tracing import TRACEPARENT_ENV, new_child_trace
+from ..tracing import (
+    BAGGAGE_ENV, TRACEPARENT_ENV, TRACESTATE_ENV, new_child_trace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -682,6 +684,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 parent_cid_override: str = "",
                 cli: str = "",
                 traceparent_override: str = "",
+                tracestate_override: str = "",
+                baggage_override: str = "",
                 task_id_override: str = "",
                 child_cid_override: str = "",
                 allowed_tools_override: Optional[tuple[str, ...]] = None,
@@ -888,11 +892,19 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     child_env.update(
         child_profile_environment(active_tool_names(), role, configured_child_profile)
     )
-    child_trace = new_child_trace(traceparent_override)
+    for trace_env in (TRACEPARENT_ENV, TRACESTATE_ENV, BAGGAGE_ENV):
+        child_env.pop(trace_env, None)
+    child_trace = new_child_trace(
+        traceparent_override, tracestate_override, baggage_override,
+    )
     if child_trace is not None:
         # Trace context travels only in the private child environment and task
         # row; it is never copied into a user prompt or command-line argument.
         child_env[TRACEPARENT_ENV] = child_trace.traceparent
+        if child_trace.tracestate:
+            child_env[TRACESTATE_ENV] = child_trace.tracestate
+        if child_trace.baggage:
+            child_env[BAGGAGE_ENV] = child_trace.baggage
     if "THREADKEEPER_ENV_FILE" in os.environ:
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
@@ -1083,9 +1095,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt, project_id, memory_scope, traceparent, trace_workflow_span_id, "
-            "trace_parent_span_id, trace_started_ns, trace_queue_wait_ms) "
-            "VALUES (" + ",".join("?" for _ in range(30)) + ")",
+            "retry_attempt, project_id, memory_scope, traceparent, trace_tracestate, "
+            "trace_baggage, trace_workflow_span_id, trace_parent_span_id, "
+            "trace_started_ns, trace_queue_wait_ms) "
+            "VALUES (" + ",".join("?" for _ in range(32)) + ")",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -1095,6 +1108,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root or None, int(retry_attempt or 0),
                 namespace.project_id, task_scope,
                 child_trace.traceparent if child_trace else None,
+                child_trace.tracestate if child_trace else None,
+                child_trace.baggage if child_trace else None,
                 child_trace.workflow_span_id if child_trace else None,
                 child_trace.parent_span_id if child_trace else None,
                 child_trace.started_ns if child_trace else None,
@@ -1159,6 +1174,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             ]
             if child_trace is not None:
                 env_pairs.append((TRACEPARENT_ENV, child_trace.traceparent))
+                if child_trace.tracestate:
+                    env_pairs.append((TRACESTATE_ENV, child_trace.tracestate))
+                if child_trace.baggage:
+                    env_pairs.append((BAGGAGE_ENV, child_trace.baggage))
             if write_origin:
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)

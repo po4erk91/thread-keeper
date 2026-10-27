@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-27
+
+- **Added: connected trace views for supported MCP hosts (#386).** A valid
+  host trace now remains connected to the MCP request, spawned work, retries,
+  and child operations. Invalid or unsupported trace parents start a local trace
+  without interrupting the user's request. Optional trace state is tightly
+  checked, carries only a small safe baggage set, and stays out of user content.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
