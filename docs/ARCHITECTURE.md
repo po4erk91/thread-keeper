@@ -739,14 +739,30 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,headRefOid,author,...` and
   keeps only PRs authored by the account `gh` acts as (`gh api user`, cached
-  per auth context for an hour); another account's PR is never updated,
-  repaired, or merged. Each kept PR is classified (`_pr_landing_action`):
-  `repair` for a conflicted merge state (`DIRTY` / `CONFLICTING`) on a
-  same-repository `roadmap/…` or `evolve/…` head branch, `update` for `BEHIND`,
-  `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or
-  red checks, drafts, `UNKNOWN`, another base, a hand-made PR with conflicts,
-  or `EVOLVE_AUTOLAND=0`). This sweep is a hard preflight before new work: if
-  PR state or the `gh` account cannot be read, the pass records
+  per token auth context for an hour; default credentials are re-read each
+  sweep so account switches take effect). `_pr_landing_action` requires an
+  explicit same-repository flag and durable automation ownership: a generated
+  `roadmap/issue-<number>-<slug>[-<host>]` or `evolve/apply-<id>-<slug>` branch,
+  a reviewer `docs/roadmap-audit-YYYY-MM-DD` branch, or a standalone applier/
+  reviewer PR-body marker. Applier prompts include
+  `<!-- thread-keeper:evolve-applier-pr -->`; the reviewer keeps its
+  `<!-- thread-keeper:evolve-reviewer-roadmap-pr -->` marker. Repair preserves
+  the PR's branch/body. Curator application currently writes memory only;
+  an older maintenance PR can be explicitly adopted with the applier marker.
+  `_applier_pr_queue` checks the latest local issue/suggestion handoff when
+  present against the exact PR URL; a requeue, empty/mismatched handoff, or
+  ledger read error yields `wait`. No local record is required when a durable
+  branch/marker proves ownership across hosts. Unmarked manual PRs, all forks,
+  missing repository metadata, and ambiguous ownership remain read-only and
+  visible in status with `not_automation_owned` reasons. Operators may review
+  an older PR's provenance and add the appropriate standalone marker to its
+  body; contradictory handoffs must be reconciled or the PR landed manually.
+  Another account's PR is never updated, repaired, or merged. Each eligible
+  PR is classified: `repair` for an applier PR with `DIRTY` / `CONFLICTING`,
+  `update` for `BEHIND`, `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for pending
+  or red checks, `UNKNOWN`, drafts, a missing head SHA, another base, reviewer
+  conflicts, or `EVOLVE_AUTOLAND=0` (repair may still run). This sweep is a hard
+  preflight before new work: if PR state or the `gh` account cannot be read, the pass records
   `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
   report, or promoted evolve suggestion. Fork PRs are never fed to the
   privileged repair child. **Landing** (`_land_applier_prs`, parent only, no

@@ -14,9 +14,9 @@ Primary path:
   validates, and pushes the PR branch; it never merges.
 
   Landing sweep: each full pass, and every EVOLVE_LANDING_POLL_S between
-  passes, the parent squash-merges the oldest green non-draft PR authored by
-  the account `gh` acts as (GitHub `CLEAN`: up to date, required checks
-  passing) through the protected merge API, pinned to the head SHA it saw
+  passes, the parent squash-merges the oldest automation-owned green non-draft
+  PR authored by the account `gh` acts as (GitHub `CLEAN`: up to date, required
+  checks passing) through the protected merge API, pinned to the head SHA it saw
   green, then asks GitHub to update the oldest `BEHIND` one. PRs from any
   other account are never touched. Strict branch protection lets only one PR
   merge per base commit, so PRs land one at a time.
@@ -42,8 +42,8 @@ Fallback paths:
 
 All code-changing paths are PR-gated. Children never commit to main, merge, or
 mark work applied without a real PR URL; only the parent's landing sweep
-merges, and only PRs authored by the account `gh` acts as that GitHub reports
-up to date with required checks green. Before any git-writing child is spawned,
+merges, and only automation-owned PRs authored by the account `gh` acts as
+that GitHub reports up to date with required checks green. Before any git-writing child is spawned,
 the parent refuses dirty tracked files and refuses to overlap reviewer/applier
 git writers in the shared checkout. A stale interrupted merge in the dedicated
 managed checkout is recovered only after GitHub proves its applier PR is
@@ -204,6 +204,8 @@ DO, strictly in order:
        `gh pr create` bodies before the real GitHub CLI receives them, and
        refuses if unsafe content remains. Do not bypass it with an absolute
        gh path.
+     • Include this standalone line in the PR body:
+         {pr_marker}
      • Capture the PR URL that gh prints.
 
 7. RECORD COMPLETION — ONLY after gh pr create printed a real PR URL — call the
@@ -257,6 +259,15 @@ EVOLVE_SUGGESTION_DATA_TAG = "evolve_suggestion_data"
 ROADMAP_ISSUE_BODY_DATA_TAG = "github_issue_body_data"
 PR_METADATA_DATA_TAG = "github_pr_metadata_data"
 APPLIER_BRANCH_PREFIXES = ("roadmap/", "evolve/")
+APPLIER_PR_MARKER = "<!-- thread-keeper:evolve-applier-pr -->"
+ROADMAP_DOC_BRANCH_PREFIX = "docs/roadmap-audit-"
+ROADMAP_DOC_PR_MARKER = "<!-- thread-keeper:evolve-reviewer-roadmap-pr -->"
+_ROADMAP_ISSUE_BRANCH = re.compile(
+    r"roadmap/issue-([1-9][0-9]*)-[a-z0-9]+(?:-[a-z0-9]+)*"
+)
+_EVOLVE_APPLY_BRANCH = re.compile(
+    r"evolve/apply-([1-9][0-9]*)-[a-z0-9]+(?:-[a-z0-9]+)*"
+)
 CONFLICTING_PR_MERGE_STATES = {"DIRTY"}
 CONFLICTING_PR_MERGEABLE_STATES = {"CONFLICTING"}
 # GitHub merge states the parent lands without a child. Strict branch
@@ -270,8 +281,8 @@ PR_LANDING_KIND = "evolve_pr_landing"
 # sweep on this cadence, so a green PR lands minutes after its checks finish
 # instead of a whole EVOLVE_APPLY_INTERVAL_S later.
 EVOLVE_LANDING_POLL_S = 15 * 60
-# The account `gh` acts as rarely changes; re-read it hourly so an auth switch
-# on this host is picked up without a restart.
+# Token-authenticated account identities are stable for a given token. Default
+# gh credentials are re-read each sweep because `gh auth switch` can change them.
 GH_VIEWER_LOGIN_TTL_S = 60 * 60
 _gh_viewer_login_cache: dict[str, tuple[str, float]] = {}
 STALE_MERGE_BACKUP_MAX_BYTES = 10 * 1024 * 1024
@@ -457,7 +468,9 @@ the blocker/status so a later agent has enough context.
      gh pr create --title "<type>: <short>" --body "<body incl. Closes #{issue_number}>"
    Use an allowed Conventional Commit type (`feat`, `fix`, `docs`, `test`,
    etc.). The PR body MUST include `Closes #{issue_number}` so GitHub closes
-   the issue when the PR merges.
+   the issue when the PR merges. Include this standalone ownership marker
+   in the PR body:
+     {pr_marker}
    A thread-keeper `gh` safety wrapper is prepended to PATH for this privileged
    child. It mechanically redacts home-directory paths and common token shapes
    from `gh issue create`, `gh issue comment`, and `gh pr create` bodies before
@@ -2528,7 +2541,7 @@ def _fetch_open_prs(repo_root: Optional[Path] = None) -> tuple[list[dict], str]:
         (
             "number,title,url,headRefName,headRefOid,baseRefName,isDraft,"
             "mergeStateStatus,mergeable,isCrossRepository,headRepository,"
-            "headRepositoryOwner,author"
+            "headRepositoryOwner,author,body"
         ),
         "--limit", str(OPEN_PR_FETCH_LIMIT),
     ]
@@ -2557,17 +2570,76 @@ def _pr_head_branch(pr: dict) -> str:
     return str(pr.get("headRefName") or "").strip()
 
 
-def _pr_is_applier_owned(pr: dict) -> bool:
-    """Only repair PRs from this repo's autonomous applier branches.
+def _pr_has_body_marker(pr: dict, marker: str) -> bool:
+    return marker in str(pr.get("body") or "").splitlines()
 
-    A public fork PR contains untrusted code. The conflict-repair child runs
-    with code-editing/shell permissions, so the automatic sweep is deliberately
-    limited to same-repository branches created by thread-keeper's applier.
+
+def _pr_is_applier_owned(pr: dict) -> bool:
+    """Same-repository applier branch or explicit ownership marker.
+
+    Conflict repair preserves that branch and body, so it retains ownership.
+    A missing repository flag is ambiguous and must fail closed.
     """
-    if bool(pr.get("isCrossRepository")):
+    if pr.get("isCrossRepository") is not False:
         return False
     branch = _pr_head_branch(pr)
-    return branch.startswith(APPLIER_BRANCH_PREFIXES)
+    return bool(
+        _ROADMAP_ISSUE_BRANCH.fullmatch(branch)
+        or _EVOLVE_APPLY_BRANCH.fullmatch(branch)
+        or _pr_has_body_marker(pr, APPLIER_PR_MARKER)
+    )
+
+
+def _pr_ownership_wait_reason(pr: dict) -> str:
+    """Explain missing or conflicting durable automation ownership evidence."""
+    if pr.get("isCrossRepository") is not False:
+        return "not_automation_owned: fork_or_unknown_repository"
+    branch = _pr_head_branch(pr)
+    if not branch:
+        return "not_automation_owned: missing_head_branch"
+    reviewer_owned = bool(
+        re.fullmatch(ROADMAP_DOC_BRANCH_PREFIX + r"[0-9]{4}-[0-9]{2}-[0-9]{2}", branch)
+        or _pr_has_body_marker(pr, ROADMAP_DOC_PR_MARKER)
+    )
+    applier_owned = _pr_is_applier_owned(pr)
+    if applier_owned and reviewer_owned:
+        return "not_automation_owned: ambiguous_ownership"
+    if not applier_owned and not reviewer_owned:
+        return "not_automation_owned: missing_ownership_signal"
+    return ""
+
+
+def _pr_handoff_wait_reason(conn: sqlite3.Connection, pr: dict) -> str:
+    """A local handoff, when present, must still refer to this exact PR.
+
+    Branches/markers remain portable across hosts without a local ledger.
+    A superseded or mismatched local handoff is contradictory evidence.
+    """
+    branch = _pr_head_branch(pr)
+    issue = _ROADMAP_ISSUE_BRANCH.fullmatch(branch)
+    suggestion = _EVOLVE_APPLY_BRANCH.fullmatch(branch)
+    if not issue and not suggestion:
+        return ""
+    target = (issue or suggestion).group(1)
+    kinds = (
+        (ROADMAP_ISSUE_APPLIED_KIND, ROADMAP_ISSUE_REQUEUED_KIND)
+        if issue else ("evolve_applied", "evolve_applied")
+    )
+    try:
+        row = conn.execute(
+            "SELECT kind, summary FROM events WHERE target=? "
+            "AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
+            (target, *kinds),
+        ).fetchone()
+    except sqlite3.Error:
+        return "not_automation_owned: handoff_ledger_unavailable"
+    if row is None:
+        return ""
+    recorded_url = str(row["summary"] or "").strip().rstrip("/")
+    pr_url = str(pr.get("url") or "").strip().rstrip("/")
+    if row["kind"] != kinds[0] or not pr_url or recorded_url != pr_url:
+        return "not_automation_owned: stale_or_mismatched_handoff"
+    return ""
 
 
 def _pr_has_merge_conflicts(pr: dict) -> bool:
@@ -2590,11 +2662,13 @@ def _pr_author_login(pr: dict) -> str:
 
 def _gh_viewer_login(repo_root: Optional[Path] = None) -> tuple[str, str]:
     """Login of the GitHub account this host's `gh` acts as: the owner whose
-    PRs the sweep may land. Cached per auth context for GH_VIEWER_LOGIN_TTL_S.
+    PRs the sweep may land. Token identities are cached per auth context;
+    default gh credentials are re-read so an account switch takes effect.
     Returns (login, '') or ('', error)."""
     key = github_account_key()
     now = time.time()
-    cached = _gh_viewer_login_cache.get(key)
+    token_auth = ":token-" in key
+    cached = _gh_viewer_login_cache.get(key) if token_auth else None
     if cached and now - cached[1] < GH_VIEWER_LOGIN_TTL_S:
         return cached[0], ""
     repo = str(repo_root or _repo_root())
@@ -2615,35 +2689,30 @@ def _gh_viewer_login(repo_root: Optional[Path] = None) -> tuple[str, str]:
     login = (proc.stdout or "").strip().lower()
     if not login or any(ch.isspace() for ch in login):
         return "", "gh_viewer_bad_login"
-    _gh_viewer_login_cache[key] = (login, now)
+    if token_auth:
+        _gh_viewer_login_cache[key] = (login, now)
     return login, ""
 
 
 def _pr_landing_action(pr: dict, owner_login: str) -> str:
-    """Next step for one open PR on its way into the base branch.
+    """Classify an automation-owned PR; unrelated own PRs stay visible as wait.
 
-    Only PRs authored by `owner_login` (the account `gh` acts as) are ever
-    touched; a PR from any other account — a collaborator, a bot, a fork —
-    gets ''.
-
-    'repair' — an applier branch with conflicts; the repair child merges the
-               base, resolves, tests, and pushes.
-    'update' — behind the base; GitHub merges the base in server-side.
-    'merge'  — up to date with required checks green; land it now.
-    'wait'   — checks pending or red, draft, GitHub still computing, a
-               hand-made PR with conflicts, or autoland off.
-    ''       — another account's PR; never touched.
+    Another account's PR gets ''. Only recognized same-repository ownership
+    signals permit a repair, update, or merge. Drafts, another base, or an
+    unknown head always wait; autoland off still permits conflict repair.
     """
     owner = str(owner_login or "").strip().lower()
     if not owner or _pr_author_login(pr) != owner:
         return ""
-    if _pr_has_merge_conflicts(pr):
-        # The privileged repair child only ever works on the applier's own
-        # branches; a hand-made PR with conflicts waits for its author.
-        return "repair" if _pr_is_applier_owned(pr) else "wait"
-    if not EVOLVE_AUTOLAND or bool(pr.get("isDraft")) or not _pr_head_sha(pr):
+    if _pr_ownership_wait_reason(pr):
+        return "wait"
+    if bool(pr.get("isDraft")) or not _pr_head_sha(pr):
         return "wait"
     if str(pr.get("baseRefName") or "").strip() != _base_branch_name():
+        return "wait"
+    if _pr_has_merge_conflicts(pr):
+        return "repair" if _pr_is_applier_owned(pr) else "wait"
+    if not EVOLVE_AUTOLAND:
         return "wait"
     state = _pr_merge_state(pr)
     if state in BEHIND_PR_MERGE_STATES:
@@ -2669,10 +2738,19 @@ def _applier_pr_queue(
     owner, err = _gh_viewer_login(repo_root)
     if err:
         return [], err
-    queue = [
-        (action, pr) for pr in prs
-        if (action := _pr_landing_action(pr, owner))
-    ]
+    conn = get_db()
+    queue = []
+    for pr in prs:
+        action = _pr_landing_action(pr, owner)
+        if not action:
+            continue
+        reason = _pr_ownership_wait_reason(pr)
+        if not reason:
+            reason = _pr_handoff_wait_reason(conn, pr)
+        if reason:
+            action = "wait"
+        pr = {**pr, "automationOwnershipWaitReason": reason}
+        queue.append((action, pr))
     queue.sort(key=lambda item: int(item[1].get("number") or 0))
     return queue, ""
 
@@ -3314,6 +3392,7 @@ def build_apply_prompt(evolve_id: int, suggestion: str,
     return EVOLVE_APPLY_PROMPT.format(
         evolve_id=int(evolve_id),
         suggestion_block=suggestion_block,
+        pr_marker=APPLIER_PR_MARKER,
         repo=repo,
         branch=branch_name(evolve_id, suggestion),
         base_branch=_base_branch_name(),
@@ -3355,6 +3434,7 @@ def build_roadmap_issue_apply_prompt(
             str(issue.get("body") or "").strip() or "(no body)",
         ),
         claim_marker=ROADMAP_ISSUE_CLAIM_MARKER,
+        pr_marker=APPLIER_PR_MARKER,
         repo=repo,
         branch=roadmap_issue_branch_name(number, title),
         base_branch=_base_branch_name(),

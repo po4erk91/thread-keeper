@@ -1155,6 +1155,7 @@ def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
     assert "mergeable" in joined
     assert "isCrossRepository" in joined
     assert "headRefOid" in joined
+    assert "author,body" in joined
     assert "--limit 1000" in joined
 
 
@@ -1265,10 +1266,15 @@ def test_pr_landing_action_lands_only_the_owners_prs(tmp_path, monkeypatch):
     headless = _green(8)
     headless["headRefOid"] = ""
     assert action(headless) == "wait"
-    # Any green own PR lands, not only applier branches; but the privileged
-    # repair child never takes a hand-made branch.
+    # Reviewer branches carry ownership; manual and fork branches do not.
     assert action(_green(9, head="docs/roadmap-audit-2026-10-10")) == "merge"
-    assert action(_green(10, head="fix/manual", cross_repo=True)) == "merge"
+    assert action(_green(10, head="fix/manual", cross_repo=True)) == "wait"
+    assert action(_green(18, head="fix/manual")) == "wait"
+    assert action(_behind(19, head="fix/manual")) == "wait"
+    assert action(_green(20, cross_repo=True)) == "wait"
+    assert action(_behind(21, cross_repo=True)) == "wait"
+    assert action(_pr(22, draft=True)) == "wait"
+    assert action(_pr(23, base="release")) == "wait"
     assert action(_pr(11, head="fix/manual")) == "wait"
     assert action(_pr(12, cross_repo=True)) == "wait"
     # Another account's PR is never touched, whatever its branch or state.
@@ -1309,12 +1315,147 @@ def test_applier_pr_queue_fails_closed_without_the_owner_login(
     assert ea._applier_pr_queue() == ([], "gh_viewer_failed: HTTP 401")
 
 
+@pytest.mark.parametrize("state", ["CLEAN", "BEHIND", "DIRTY"])
+def test_automation_markers_control_manual_branch_ownership(
+    tmp_path, monkeypatch, state,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    action = ea._pr_landing_action
+    pr = _pr(30, head="maintenance/old-curator-pr", merge_state=state,
+             mergeable="CONFLICTING" if state == "DIRTY" else "MERGEABLE")
+    assert action(pr, "po4erk91") == "wait"
+    pr["body"] = ea.APPLIER_PR_MARKER
+    expected = {"CLEAN": "merge", "BEHIND": "update", "DIRTY": "repair"}
+    assert action(pr, "po4erk91") == expected[state]
+    pr["isCrossRepository"] = True
+    assert action(pr, "po4erk91") == "wait"
+    del pr["isCrossRepository"]
+    assert action(pr, "po4erk91") == "wait"
+    pr["isCrossRepository"] = False
+    pr["body"] = "Example marker: " + ea.APPLIER_PR_MARKER
+    assert action(pr, "po4erk91") == "wait"
+    pr["body"] = ea.ROADMAP_DOC_PR_MARKER
+    assert action(pr, "po4erk91") == ("wait" if state == "DIRTY" else expected[state])
+    pr["body"] += "\n" + ea.APPLIER_PR_MARKER
+    assert action(pr, "po4erk91") == "wait"
+
+
+@pytest.mark.parametrize("head", ["roadmap/manual", "evolve/manual", "evolve/apply-x-test"])
+def test_branch_prefix_alone_does_not_prove_ownership(tmp_path, monkeypatch, head):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["ea"]._pr_landing_action(_green(30, head=head), "po4erk91") == "wait"
+
+
+@pytest.mark.parametrize("head,kind,requeued", [
+    ("roadmap/issue-30-test-abcdef", "roadmap_issue_applied", "roadmap_issue_requeued"),
+    ("evolve/apply-30-test", "evolve_applied", None),
+])
+def test_pr_queue_cross_checks_available_handoff_ledger(
+    tmp_path, monkeypatch, head, kind, requeued,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    pr = _green(31, head=head)
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: ([pr], ""))
+
+    def queued_action():
+        queue, err = ea._applier_pr_queue()
+        assert err == ""
+        return queue[0]
+
+    # A deterministic branch is portable evidence on a host with no ledger.
+    assert queued_action()[0] == "merge"
+
+    def handoff(summary, event_kind=kind):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('test', ?, '30', ?, 1)", (event_kind, summary),
+        )
+        conn.commit()
+
+    handoff(pr["url"])
+    assert queued_action()[0] == "merge"
+    # Another repository's same PR number is not this handoff.
+    handoff(pr["url"].replace("/o/r/", "/other/repo/"))
+    action, skipped = queued_action()
+    assert action == "wait"
+    assert "stale_or_mismatched_handoff" in skipped["automationOwnershipWaitReason"]
+    handoff("")
+    assert queued_action()[0] == "wait"
+    handoff(pr["url"])
+    assert queued_action()[0] == "merge"
+    if requeued:
+        handoff(pr["url"], requeued)
+        assert queued_action()[0] == "wait"
+
+
+def test_pr_queue_ledger_failure_fails_closed(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: ([_green(30)], ""))
+    conn.execute("ALTER TABLE events RENAME TO unavailable_events")
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert queue[0][0] == "wait"
+    assert "handoff_ledger_unavailable" in queue[0][1]["automationOwnershipWaitReason"]
+
+
+def test_landing_sweep_keeps_unowned_prs_read_only_and_visible(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    prs = [_green(1, head="fix/manual"), _behind(2, head="fix/manual"),
+           _green(3, cross_repo=True), _behind(4, cross_repo=True)]
+    # Curator maintenance completion alone never grants ownership of a PR.
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('test', 'curator_report_applied', 'report', ?, 1)", (prs[0]["url"],),
+    )
+    conn.commit()
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: (prs, ""))
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert [action for action, _ in queue] == ["wait"] * 4
+    assert ea._land_applier_prs(conn, queue, tmp_path) == ""
+    assert calls == []
+    status = _tool(pkg, "evolve_apply_status")()
+    assert "#1  wait  CLEAN  fix/manual" in status
+    assert "#2  wait  BEHIND  fix/manual" in status
+    assert "not_automation_owned: missing_ownership_signal" in status
+    assert "not_automation_owned: fork_or_unknown_repository" in status
+
+
+def test_pr_queue_rechecks_current_account(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    prs = [_green(1), _green(2, author="collaborator")]
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: (prs, ""))
+    assert [pr["number"] for _, pr in ea._applier_pr_queue()[0]] == [1]
+    monkeypatch.setattr(ea, "_gh_viewer_login", lambda repo_root=None: ("collaborator", ""))
+    assert [pr["number"] for _, pr in ea._applier_pr_queue()[0]] == [2]
+
+
+def test_applier_prompts_retain_explicit_ownership_marker(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    assert ea.APPLIER_PR_MARKER in ea.build_apply_prompt(1, "test", "", repo_root=tmp_path)
+    assert ea.APPLIER_PR_MARKER in ea.build_roadmap_issue_apply_prompt(_issue(1, "Test"), tmp_path)
+    assert "roadmap/issue-30-test-abcdef" in ea.build_pr_conflict_repair_prompt(
+        _pr(30, head="roadmap/issue-30-test-abcdef"), tmp_path,
+    )
+
+
 def test_gh_viewer_login_reads_and_caches_the_gh_account(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
     ea = pkg["ea"]
     calls = []
+    monkeypatch.setattr(ea, "github_account_key", lambda: "github.com:token-test")
 
     def _run(cmd, **kwargs):
         calls.append(cmd)
@@ -1327,6 +1468,20 @@ def test_gh_viewer_login_reads_and_caches_the_gh_account(
     assert viewer(tmp_path) == ("po4erk91", "")
     gh_calls = [cmd for cmd in calls if cmd[:2] == ["gh", "api"]]
     assert gh_calls == [["gh", "api", "user", "--jq", ".login"]]
+
+
+def test_gh_viewer_login_refreshes_after_default_account_switch(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(ea, "github_account_key", lambda: "github.com:gh-default")
+    logins = iter(["po4erk91", "collaborator"])
+    monkeypatch.setattr(
+        ea, "_run_gh",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, next(logins), ""),
+    )
+    viewer = pkg["orig"]["_gh_viewer_login"]
+    assert viewer(tmp_path) == ("po4erk91", "")
+    assert viewer(tmp_path) == ("collaborator", "")
 
 
 def test_land_applier_prs_merges_oldest_green_then_updates_next(

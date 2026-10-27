@@ -48,6 +48,8 @@ from .config import (
 )
 from .db import get_db
 from .evolve_applier import (
+    ROADMAP_DOC_BRANCH_PREFIX,
+    ROADMAP_DOC_PR_MARKER,
     _base_branch_name,
     _base_ref,
     _ensure_repo_ready,
@@ -83,8 +85,6 @@ EVOLVE_AUDIT_PROMPT_PREFIX = f"{EVOLVE_PROMPT_PREFIX} (audit phase)"
 EVOLVE_RESEARCH_FENCE = "EVOLVE_RESEARCH_DATA"
 EVOLVE_LEGACY_QUEUE_TAG = "evolve_legacy_suggestions_data"
 ROADMAP_DOC_PATH = "docs/ROADMAP.md"
-ROADMAP_DOC_BRANCH_PREFIX = "docs/roadmap-audit-"
-ROADMAP_DOC_PR_MARKER = "<!-- thread-keeper:evolve-reviewer-roadmap-pr -->"
 ROADMAP_DOC_PR_FETCH_LIMIT = 100
 EVOLVE_ISSUE_FETCH_PAGE_SIZE = 100
 EVOLVE_ISSUE_FETCH_LIMIT = 1000

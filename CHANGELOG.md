@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.1 — 2026-10-27
+
+- **Fixed: Evolve autoland only changes automation-owned PRs (#400).**
+  Recognized applier/reviewer branches and standalone ownership markers now
+  gate merge, branch update, and automatic conflict repair. Manual and fork
+  PRs stay read-only and visible with a wait reason; contradictory local
+  handoffs fail closed. Applier prompts retain an explicit marker, and the
+  documentation describes recovery for older automation PRs.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

@@ -291,6 +291,7 @@ def test_agent_status_evolve_applier_ready_when_applier_pr_work_exists(
             "number": number,
             "title": f"PR {number}",
             "headRefName": f"roadmap/issue-{number}-x-aaaaaa",
+            "isCrossRepository": False,
             "headRefOid": f"{number:040x}",
             "baseRefName": "main",
             "mergeStateStatus": state,

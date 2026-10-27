@@ -1123,27 +1123,45 @@ with that name instead of minting overlapping roadmap PRs.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
-the automatic pass first sweeps the open PRs authored by the account
-thread-keeper's `gh` acts as — yours: applier, reviewer, and hand-made PRs
-alike. A PR from any other account (a collaborator, a bot, a fork) is never
-updated, repaired, or merged. If the PR sweep itself cannot read GitHub state
-or the `gh` account, the pass fails closed instead of taking fresh work blind.
-The sweep squash-merges the oldest non-draft PR GitHub reports `CLEAN` (up to
-date, required checks green) through the protected merge API, pinned to the
-head SHA it saw green, and then asks GitHub to update the oldest `BEHIND` one —
-the "Update branch" button — so CI reruns against the new base. Open
-work in progress as a draft: drafts are never merged. Strict branch
-protection lets only one PR merge per base commit, so PRs land one at a time,
-oldest first. Between full passes the daemon repeats only this cheap landing
-sweep every 15 minutes, so a green PR lands minutes after its checks finish;
+the automatic pass first sweeps open PRs authored by the account
+thread-keeper's `gh` acts as. Only same-repository, automation-owned PRs may
+be changed: `roadmap/issue-<number>-<slug>[-<host>]` issue branches,
+`evolve/apply-<id>-<slug>` legacy suggestion branches, reviewer
+`docs/roadmap-audit-YYYY-MM-DD` branches, or PRs with a standalone ownership
+marker in their body. Applier PRs carry
+`<!-- thread-keeper:evolve-applier-pr -->`; reviewer roadmap-doc PRs use
+`<!-- thread-keeper:evolve-reviewer-roadmap-pr -->`. Conflict repair keeps the
+existing branch and marker. Current Curator report application changes memory
+through MCP tools and creates no PR; older maintenance PRs can use the applier
+marker after operator review.
+
+Manual PRs without an ownership signal, all fork PRs, and PRs with missing or
+conflicting ownership evidence remain read-only. They remain visible as `wait`
+in `evolve_apply_status()`, with a `not_automation_owned` reason. When a local
+issue/suggestion handoff exists, its latest record must name this exact PR URL;
+a requeued, empty, or mismatched record blocks landing. A recognized branch or
+marker remains durable evidence on another host without local handoff history;
+a ledger read error fails closed. For an older automation PR with an unusual
+branch, review its author, repository, changes, and handoff, then add the
+appropriate standalone marker to its body. A marker does not override a
+conflicting local handoff; reconcile that handoff or land the PR manually.
+Another account's PR is never updated, repaired, or merged. If the PR sweep
+cannot read GitHub state or the `gh` account, the pass fails closed.
+
+Among eligible PRs, the sweep squash-merges the oldest non-draft PR GitHub
+reports `CLEAN` (up to date, required checks green) through the protected merge
+API, pinned to the head SHA it saw green, and then asks GitHub to update the
+oldest `BEHIND` one so CI reruns against the new base. Drafts, PRs targeting
+another base, and unknown heads always wait. Strict branch protection lets
+only one PR merge per base commit, so PRs land one at a time, oldest first.
+Between full passes the daemon repeats this landing sweep every 15 minutes;
 it skips while any reviewer/applier git writer runs. A conflicted applier PR
-(`roadmap/…` or `evolve/…` head branch in this repository) is repaired before
-any new issue/report/evolve work is started: the conflict-repair child checks
-out the existing PR branch, merges the current base branch, resolves
-conflicts, runs the full suite, and pushes back to the same branch, then
-stops; the landing sweep merges it once it is green. A hand-made PR with
-conflicts, and red or otherwise blocked PRs, wait for a human. Set
-`THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge to a human.
+is repaired before any new issue/report/evolve work starts: the child checks
+out the existing branch, merges the current base, resolves conflicts, runs
+the full suite, and pushes back to the same branch. The landing sweep merges
+it once it is green. Reviewer PR conflicts and red or otherwise blocked PRs
+wait for a human. Set `THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge to
+a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
@@ -1621,7 +1639,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
-| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
+| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land only same-repository automation-owned non-draft PRs authored by the account `gh` acts as: squash-merge one with required checks green, and update one behind the base. Manual and fork PRs remain read-only; status explains missing or conflicting ownership. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
