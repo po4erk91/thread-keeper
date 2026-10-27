@@ -22,6 +22,7 @@ import time
 from typing import Iterable
 
 import yaml
+from .consequential_state import skill_review_categories
 
 from .config import (
     CLAUDE_SKILLS_DIR,
@@ -378,6 +379,10 @@ def _record_for(
         "lines": len(content.splitlines()),
     })
     skill_dir = source.parent
+    record["findings"].extend(
+        f"owner_review_required:{category}"
+        for category in skill_review_categories(skill_dir)
+    )
     record["support_files"] = sorted(
         path.relative_to(skill_dir).as_posix()
         for path in skill_dir.rglob("*")

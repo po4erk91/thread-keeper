@@ -650,6 +650,33 @@ them without touching foreground-authored ones, and a write-time screen
 refuses loop-origin lesson/skill bodies that contain imperative-override /
 remote-exec idioms. See [`SECURITY.md`](SECURITY.md).
 
+**Host settings need consent and rollback (#390).** Background writers cannot
+save unconditional advice to reset a host proxy, remove credentials, change
+shell/global settings, control startup services, change home/system permissions,
+or alter global packages. Each procedure must state a narrow confirmed
+precondition, require the owner's consent, save the original state, and restore
+it during cleanup, including on failure. Read-only checks and project-local
+changes remain allowed. This is a conservative English text/command screen,
+separate from injection detection, rather than a semantic safety guarantee.
+
+Existing unsafe advice stays on disk with an **OWNER REVIEW REQUIRED** warning
+in lesson retrieval, skill listings, and Curator inventories. Skill manifests
+show the warning in their description; MCP resource delivery pauses with the
+same warning. Curator never rewrites protected records to clear it, including
+in its verifier phase. The skill watcher also flags direct file edits.
+
+To clear a warning, the owner reviews the procedure in a foreground session,
+then uses `lesson_patch` / `lesson_append` or `skill_manage` to remove the unsafe
+advice or add all three guards. For example: “Only when inspection has confirmed
+an observed test-owned proxy left by this test, ask the user for explicit consent
+before changing it. Save the original proxy settings, reset the proxy for the
+test, and restore the original settings in cleanup even if the test fails.” Keep
+the condition and guards together in each procedure paragraph. Retrieval checks
+the current content, so the warning clears after a safe repair; there is no
+blanket approval switch. Historical `host_state_review` telemetry keeps only
+fixed categories and a SHA-256 fingerprint, without host values, paths, titles,
+or command text.
+
 #### 1. Auto-review on close_thread
 
 When a closed thread is rich (≥5 notes, ≥2 insight/move),

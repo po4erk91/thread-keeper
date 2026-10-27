@@ -1430,6 +1430,27 @@ A near-duplicate whose new text debunks permissive incumbent guidance is
 refused for every writer (`ERR contradicts_existing_lesson`), and refusals are
 logged as `lesson_refused` events.
 
+`consequential_state.py` adds a separate host-state boundary (#390). The same
+pure category screen checks non-foreground lesson create/replace and full patch
+results, managed-skill create/edit/patch/support files, and restore paths. It
+recognizes network, credential, shell/global configuration, startup, permission,
+and global package changes. A procedure paragraph must identify a confirmed
+narrow precondition for that category, require consent, save the original state,
+and restore it. Unconditional advice is refused with `owner_review_required`.
+This deterministic English text/command screen is conservative and does not
+claim to prove arbitrary prose safe.
+
+Lesson reads/neighbors, skill listings/manifests, and Curator inventories compute
+owner-review warnings from current content, including skill text support files.
+Flagged skills are not delivered through MCP resource reads; their original file
+bytes and manifest digests remain unchanged. Protected flagged records cannot
+be rewritten or removed by autonomous writers, even a Curator verifier. Owners
+repair these through the foreground tools; a fresh screen clears the warning
+only when the unsafe advice is removed or its guards are complete. The watcher
+also flags externally edited SKILL.md files without changing them. New
+`host_state_review` events deduplicate by content SHA-256 and fixed categories;
+they store no artifact names, paths, command text, or host configuration values.
+
 Manual hook: `shadow_review_run(force=True)`, observability:
 `shadow_review_status()`. Beyond the last few passes, the status tool carries a
 production-validation rollup (24h / 7d): fire count, outcome mix

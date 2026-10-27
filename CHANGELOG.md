@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-27
+
+- **Added: learned changes to host settings need consent and rollback (#390).**
+  Background writers cannot save unconditional host proxy resets or similar
+  changes to credentials, global settings, startup services, permissions, or
+  packages. Existing unsafe advice shows an owner-review warning; protected
+  records stay unchanged until the owner repairs them. Lesson and skill writes,
+  Curator review, retrieval, and external skill-edit monitoring use the same
+  check. Review telemetry stores only categories and content fingerprints.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

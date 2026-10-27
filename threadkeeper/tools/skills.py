@@ -73,6 +73,9 @@ from ..trash import (
     read_skill_artifact,
 )
 from ..lessons import get_path
+from ..consequential_state import (
+    host_mutation_refusal, review_warning, skill_review_categories,
+)
 from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
 
 
@@ -710,7 +713,7 @@ def skill_manage(action: str,
     """
     action = action.strip()
     name = name.strip()
-    if action != "delete" and (err := _validate_name(name)):
+    if err := _validate_name(name):
         return f"ERR {err}"
     if refusal := _guarded_skill_write_refusal(name, action):
         return refusal
@@ -725,8 +728,6 @@ def skill_manage(action: str,
     if action == "remove_file":
         return _action_remove_file(name, sub_path)
     if action == "delete":
-        if err := _validate_name(name):
-            return f"ERR {err}"
         return _action_delete(
             name,
             force=force,
@@ -783,6 +784,11 @@ def _guarded_skill_write_refusal(name: str, action: str) -> str:
     The Evolve report applier may repair skills but never remove them: only
     the curator verifier deletes, after failing to refute the proposal.
     """
+    if WRITE_ORIGIN != FOREGROUND_ORIGIN and action in _MUTATING_SKILL_ACTIONS:
+        row = get_db().execute("SELECT * FROM skill_usage WHERE name=?", (name,)).fetchone()
+        protected = not row or row["pinned"] or _skill_is_protected(row)
+        if protected and (categories := skill_review_categories(_skill_dir(name))):
+            return f"ERR owner_review_required {review_warning(categories)}"
     if WRITE_ORIGIN == "evolve_apply" and action in _REMOVING_SKILL_ACTIONS:
         return verification_required_error(f"skill_{action}", name)
     return curator_skill_refusal(name, action)
@@ -850,6 +856,8 @@ def _action_create(name: str, content: str, description: str, source: str = "") 
         return refusal
     if reason := _screen_synthesized_body(body):
         return f"ERR {reason}"
+    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), body)):
+        return refusal
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -884,6 +892,8 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
         return refusal
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), content)):
+        return refusal
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -929,6 +939,8 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
     # stay patchable.
     if reason := _screen_synthesized_body(new_string):
         return f"ERR {reason}"
+    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), updated)):
+        return refusal
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -972,6 +984,8 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "")
         return f"ERR file_exceeds_{MAX_SKILL_FILE_BYTES}_bytes"
     if reason := _screen_synthesized_body(content):
         return f"ERR {reason}"
+    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), content)):
+        return refusal
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -1171,6 +1185,8 @@ def _action_restore(name: str) -> str:
     content = md.read_text(encoding="utf-8")
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed_from_trash: {err}"
+    if _SCREENED_WRITE and (categories := skill_review_categories(src)):
+        return f"ERR owner_review_required {review_warning(categories)}"
     sdir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, sdir, copy_function=shutil.copy2)
     conn = get_db()
@@ -1251,7 +1267,8 @@ def skill_list(include_archived: bool = False) -> str:
             f"uses={r['use_count']} "
             f"fg_uses={fg_uses} views={r['view_count'] or 0} "
             f"patches={r['patch_count']} wrong={wrong_n} "
-            f"pinned={r['pinned']} last_active={age}_ago"
+            f"pinned={r['pinned']} last_active={age}_ago "
+            f"{review_warning(skill_review_categories(_skill_dir(r['name'])))}".rstrip()
         )
     return "\n".join(out)
 
