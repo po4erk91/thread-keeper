@@ -8,6 +8,29 @@ remains a live question.
 
 ---
 
+## 2026-10-27 reviewer audit
+
+- **Protect shared memory during branch development.** The database guard
+  currently rejects only the managed `evolve-repo` layout. Ordinary and
+  task worktrees can still reach the shared store and run forward schema
+  migrations, leaving installed clients unable to start. Extend the guard to
+  unmerged and locally modified source checkouts before any database or file
+  mutation. Require an explicit disposable database for development, including
+  when a caller explicitly names or aliases the live store. Keep released
+  packages and the documented merged editable-install path working. Cover all
+  connection entry points with disposable repository and database tests.
+- **Unavailable skill routing ([#373](https://github.com/po4erk91/thread-keeper/issues/373)).** The source-missing repair lifecycle
+  already requires active records without a readable source to become
+  unavailable. Apply that state before routing an agent to a skill, with one
+  clear restore, archive, or remove action. This belongs to the existing issue.
+
+The Curator capability and mirror-root gaps recorded below remain open. A
+controlled profile check confirms that `curator_report_write` is present, while
+five required read, repair, concept, merge-verdict, and escalation tools are
+filtered out. Mirror checks pass for matching persistent copies and add
+`mirror_missing` when an empty workspace root is included; required consumer
+failures must remain visible when optional roots are classified separately.
+
 ## 2026-10-26 reviewer audit
 
 - **Curator capability coverage after [#353](https://github.com/po4erk91/thread-keeper/issues/353).** The `curator` role selects the
