@@ -1026,10 +1026,12 @@ embedding is closest to the prompt reached 25% recall at 12% precision.
 
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
-`lesson_usage.use_count` for the returned lesson. Only foreground reads count:
-the curator and other loops read every lesson they audit, and counting those
-reads would make every lesson look recently useful. Curator dry runs include a
-ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+`lesson_usage.use_count` for the returned lesson. Foreground and ordinary task
+reads count as consultations. Curator evaluator and verifier reads are neutral
+only while the caller owns a live task with a server-issued Curator launch
+record. This also applies to retries and every batch of a pass. An origin label
+or a caller-supplied pass ID cannot suppress normal usage. Curator dry runs
+include a ranked `STALE LESSONS (dry-run decay ranking)` section computed as
 `access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
 lessons with no recent access and low pull-count. That decay list is advisory
 only; it never becomes an automatic `lesson_remove` path by itself, and pinned

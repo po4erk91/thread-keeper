@@ -576,15 +576,18 @@ def record_lesson_access(
     kind='view' records that the lesson appeared in lesson_list output.
     kind='use' records that lesson_get returned the lesson body.
 
-    Only foreground reads count, as for skills' foreground_use_count. The
-    curator and other loops read every lesson they audit; counting those
-    reads would make every lesson look recently useful and defeat the
-    retention score.
+    Server-authorized Curator evaluators and verifiers read neutrally. All
+    other reads count, including ordinary tasks with a maintenance-looking
+    origin label; callers cannot opt out of consultation telemetry.
     """
     if kind not in {"view", "use"}:
         raise ValueError(f"unknown lesson access kind: {kind}")
     slug = item.get("slug") or ""
-    if not slug or _current_origin() != "foreground":
+    if not slug:
+        return
+    from .curator import is_curator_audit_reader
+
+    if is_curator_audit_reader(conn):
         return
     now_t = int(now or time.time())
     ensure_lesson_usage(conn, item, now=now_t)

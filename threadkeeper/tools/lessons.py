@@ -1161,7 +1161,8 @@ def lesson_list(k: int = 20, query: str = "") -> str:
 @write_tool()
 def lesson_get(slug: str) -> str:
     """Return the full body of one lesson by slug. Useful when
-    `lesson_list` surfaced something you want to read in full."""
+    `lesson_list` surfaced something you want to read in full. Records a
+    consultation except for server-authorized Curator audit tasks."""
     conn = get_db()
     _ensure_session(conn)
     for it in iter_lessons():

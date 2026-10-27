@@ -221,7 +221,7 @@ def _bind_curator_writer(
 ):
     """Create the task-bound authority a real Curator launch records."""
     conn = pkg["db"].get_db()
-    task_id = f"tk_curator_{phase}_{batch_index or 'single'}_{verify_batch}"
+    task_id = f"tk_curator_{pass_id}_{phase}_{batch_index or 'single'}_{verify_batch}"
     conn.execute(
         "UPDATE tasks SET ended_at=? WHERE spawned_cid=? AND ended_at IS NULL",
         (int(time.time()), _FAKE_CID),
@@ -278,6 +278,96 @@ def _bind_curator_researcher(pkg, pass_id, *, batch_index, batch_total):
         conn, launch, task_id, _FAKE_CID,
     )
     conn.commit()
+
+
+@pytest.mark.parametrize("phase", ["evaluate", "verify"])
+def test_authorized_curator_reads_preserve_consultation_telemetry(
+    tmp_path, monkeypatch, phase,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 3)
+    from threadkeeper._mcp import mcp
+
+    conn = pkg["db"].get_db()
+    items = list(pkg["lessons"].iter_lessons())
+    for item in items[:2]:
+        pkg["lessons"].ensure_lesson_usage(conn, item)
+    conn.execute(
+        "UPDATE lesson_usage SET use_count=3, last_used_at=123, "
+        "view_count=2, last_viewed_at=122 WHERE slug=?", (items[1]["slug"],),
+    )
+    conn.commit()
+    before = pkg["lessons"].lesson_usage_map(conn)
+    ranking = pkg["lessons"].rank_stale_lessons(conn, now=1_900_000_000)
+    for pass_id in ("audit-one", "audit-two"):
+        snapshot = None
+        if phase == "verify":
+            snapshot = pkg["reports_dir"] / "snapshots" / pass_id
+            snapshot.mkdir(parents=True)
+        for batch_index, item in enumerate(items, 1):
+            _bind_curator_writer(
+                pkg, pass_id, batch_index=batch_index, batch_total=3,
+                phase=phase, verify_batch=batch_index if snapshot else 0,
+                snapshot_dir=snapshot,
+            )
+            for _ in range(2):
+                assert "body " in mcp._tool_manager._tools["lesson_get"].fn(
+                    slug=item["slug"],
+                )
+                mcp._tool_manager._tools["lesson_list"].fn(k=3)
+            assert pkg["lessons"].lesson_usage_map(conn) == before
+    assert pkg["lessons"].rank_stale_lessons(conn, now=1_900_000_000) == ranking
+
+
+@pytest.mark.parametrize("invalid_authority", ["missing_launch", "ended", "other_child"])
+def test_untrusted_curator_reads_still_record_consultations(
+    tmp_path, monkeypatch, invalid_authority,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 1)
+    from threadkeeper._mcp import mcp
+
+    _bind_curator_writer(pkg, "audit-pass")
+    conn = pkg["db"].get_db()
+    if invalid_authority == "missing_launch":
+        conn.execute(
+            "DELETE FROM events WHERE kind=?",
+            (pkg["curator"].CURATOR_CHILD_LAUNCH_KIND,),
+        )
+    elif invalid_authority == "ended":
+        conn.execute("UPDATE tasks SET ended_at=?", (int(time.time()),))
+    else:
+        conn.execute("UPDATE tasks SET spawned_cid='another-child'")
+    conn.commit()
+    assert "body " in mcp._tool_manager._tools["lesson_get"].fn(slug="bulk-lesson-0000")
+    row = conn.execute("SELECT use_count, last_used_at FROM lesson_usage").fetchone()
+    assert row["use_count"] == 1
+    assert row["last_used_at"] is not None
+
+
+def test_curator_continuation_reads_remain_telemetry_neutral(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 1)
+    from threadkeeper._mcp import mcp
+
+    _bind_curator_writer(pkg, "continued-pass")
+    conn = pkg["db"].get_db()
+    task = conn.execute("SELECT id FROM tasks WHERE ended_at IS NULL").fetchone()
+    launch = pkg["curator"]._curator_launch_for_continuation(conn, task["id"])
+    assert launch is not None
+    conn.execute("UPDATE tasks SET ended_at=?", (int(time.time()),))
+    retry_cid = "bbbb1111-2222-3333-4444-555566667777"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, spawned_cid, cwd, prompt, started_at, "
+        "role, write_origin) VALUES ('tk_retry', 1, ?, '/tmp', 'curator', ?, "
+        "'curator', 'curator')", (retry_cid, int(time.time())),
+    )
+    pkg["curator"]._record_curator_child_launch(conn, launch, "tk_retry", retry_cid)
+    conn.commit()
+    monkeypatch.setenv("THREADKEEPER_FORCE_CID", retry_cid)
+
+    assert "body " in mcp._tool_manager._tools["lesson_get"].fn(slug="bulk-lesson-0000")
+    assert pkg["lessons"].lesson_usage_map(conn) == {}
 
 
 # ──────────────────────────────────────────────────────────────────────

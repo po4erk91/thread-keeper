@@ -356,10 +356,10 @@ Steady-state access is split by intent:
    `last_patched_at` remains the external-edit mtime. This is the input for the
    curator.
 
-6. **lesson_usage** — telemetry for `lessons.md` slugs. A foreground
-   `lesson_list` bumps `view_count`, a foreground `lesson_get` bumps
-   `use_count` (loop and curator reads are not counted), and the curator uses
-   `last_used_at` / `last_viewed_at` / pull counts for decay scoring.
+6. **lesson_usage** — telemetry for `lessons.md` slugs. Foreground and ordinary
+   task `lesson_list` calls bump `view_count`; `lesson_get` bumps `use_count`.
+   Live, server-authorized Curator evaluator/verifier reads are excluded. The
+   curator uses `last_used_at` / `last_viewed_at` / pull counts for decay scoring.
    `pinned=1` and `tier='validated'` exclude a lesson from stale-compost
    recommendations.
 
@@ -1506,10 +1506,16 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   it reached 25% recall at 12% precision, while title-based picks by the agent
   reached 65-70% recall at 51-59% precision.
 
-- **lesson_usage telemetry (passive reads)** — a foreground `lesson_list(k=...)`
-  records a `view_count` bump for each displayed lesson row; a foreground
-  `lesson_get(slug)` records a `use_count` bump for the returned body. Reads
-  by the curator and other loops are not counted. The curator computes
+- **lesson_usage telemetry (passive reads)** — `lesson_list(k=...)` records a
+  `view_count` bump for each displayed lesson row; `lesson_get(slug)` records a
+  `use_count` bump and refreshes `last_used_at` for the returned body. Foreground
+  and ordinary task reads count regardless of their origin label. The server
+  excludes only live Curator evaluator/verifier tasks whose child identity,
+  role, origin, pass, phase, and batch match a private launch record. Missing,
+  ended, or mismatched authority falls back to counting the consultation; no
+  public read option disables it. Repeated passes, batches, and watchdog
+  continuations use this same check and leave consultation counters and
+  timestamps unchanged. The curator computes
   `access_frequency × exp(-days_since_access / tau)` over this table and
   surfaces a ranked `STALE LESSONS (dry-run decay ranking)` section for lessons
   with no recent access and low pull-count. The section is advisory only; it is
@@ -1553,6 +1559,9 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   server environment (Codex) still see them. Each child receives those values
   only from its private, task-bound Curator launch record; ordinary spawns
   strip inherited Curator values, and watchdog retries rebuild that record.
+  Full-body lesson reads use that recorded authority for telemetry neutrality
+  in both evaluator and verifier phases; pass/phase environment labels alone
+  never grant it.
   `curator_batches.eval_mode` records the mode an evaluator actually ran in;
   only a destructive evaluation can make a batch `pending` for the verifier.
 

@@ -11,13 +11,15 @@ remains a live question.
 ## 2026-10-21 reviewer audit
 
 This pass reconciled current `main`, the complete open/closed issue history,
-the pending legacy Evolve queue, and the 2026-10-20 research digest. Four new,
-issue-backed gaps remain:
+the pending legacy Evolve queue, and the 2026-10-20 research digest. Status of
+the four issue-backed findings:
 
-- **Curator-neutral lesson reads (#402).** Curator evaluators must be able to
-  read complete lesson bodies without incrementing consultation counters or
-  refreshing `last_used_at`; foreground/task reads must keep recording real
-  use.
+- **Curator-neutral lesson reads (#402).** DONE. Live evaluator and verifier
+  tasks with a server-issued Curator launch record read complete lesson bodies
+  without changing consultation counts or timestamps. Foreground and ordinary
+  task reads still count, even with a maintenance-looking origin label.
+  Repeated passes, multiple batches, and retries preserve the consultation
+  telemetry used for decay and stale-lesson ranking.
 - **Authenticated source-tracked skill updates (#403).** Resolve immutable
   commits, retain whole-directory provenance, verify supported detached
   publisher signatures, and make unsigned-source policy explicit before an
@@ -1257,7 +1259,8 @@ GitHub issues:
 - **Lesson consultation telemetry.** ✅ DONE (#160). `lesson_list` now
   records views and `lesson_get` records full-body consultations in
   `lesson_usage`; the curator inventory and stale-lesson decay score use those
-  counters and timestamps rather than registration age alone.
+  counters and timestamps rather than registration age alone. Server-authorized
+  Curator audit reads are excluded from these counters (#402).
 - **Surgical lesson patching.** ✅ DONE (#161). `lesson_patch(slug,
   old_string, new_string)` changes one unique lesson substring without
   reserializing its section. Overlong `source='shadow'` replacements may only

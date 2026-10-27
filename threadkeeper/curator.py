@@ -1132,6 +1132,29 @@ def _curator_launch_for_continuation(
     return launch if launch.authority_name() == payload.get("authority_name") else None
 
 
+def is_curator_audit_reader(conn: sqlite3.Connection) -> bool:
+    """Only live evaluator/verifier tasks with a private launch read neutrally."""
+    child_cid = identity._detect_self_cid()
+    if not child_cid:
+        return False
+    try:
+        task = conn.execute(
+            "SELECT id FROM tasks WHERE spawned_cid=? AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (child_cid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    if not task:
+        return False
+    launch = _curator_launch_for_continuation(conn, task["id"])
+    return bool(
+        launch is not None
+        and launch.role == "curator"
+        and launch.phase in {EVALUATE_PHASE, VERIFY_PHASE}
+    )
+
+
 def curator_report_sha256(content: str) -> str:
     """Digest report text exactly as the report writer persists it."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()

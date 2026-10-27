@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.21.1 — 2026-10-27
+
+- **Fixed: Curator audits cannot make lessons look recently consulted (#402).**
+  Only live evaluator and verifier tasks with a server-issued Curator launch
+  record read lessons without changing usage counts or access timestamps.
+  Ordinary task reads still count, even with a maintenance origin label.
+  Repeated audits, multiple batches, and retries preserve the consultation
+  history used to rank stale lessons.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
