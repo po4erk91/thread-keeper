@@ -183,6 +183,44 @@ def _context(meta: dict) -> ServerRequestContext:
     )
 
 
+@pytest.mark.parametrize("modern", [False, True])
+def test_search_evidence_links_round_trip_over_stdio_and_expire_after_forget(stdio_mcp, modern):
+    client, _ = stdio_mcp
+    meta = {"_meta": _modern_meta("evidence-owner")} if modern else {}
+    if not modern:
+        client.request(1, "initialize", {
+            "protocolVersion": LEGACY_PROTOCOL_VERSION, "capabilities": {},
+            "clientInfo": {"name": "evidence-owner", "version": "1"},
+        })
+        client.notify("notifications/initialized", {})
+    opened = client.request(2, "tools/call", {
+        "name": "open_thread", "arguments": {"question": "evidence wire test"}, **meta,
+    })
+    tid = opened["result"]["content"][0]["text"]
+    client.request(3, "tools/call", {
+        "name": "note", "arguments": {"thread_id": tid, "content": "wire-evidence needle"}, **meta,
+    })
+    result = client.request(4, "tools/call", {
+        "name": "search", "arguments": {"query": "wire-evidence"}, **meta,
+    })["result"]
+    uri = result["structuredContent"]["hits"][0]["resource_uri"]
+    assert result["content"][0]["type"] == "text"
+    assert result["content"][1]["type"] == "resource_link"
+    read = client.request(5, "resources/read", {"uri": uri, **meta})
+    assert "wire-evidence needle" in read["result"]["contents"][0]["text"]
+    if modern:
+        denied = client.request(6, "resources/read", {
+            "uri": uri, "_meta": _modern_meta("other-caller"),
+        })
+        assert "error" in denied
+    client.request(7, "tools/call", {
+        "name": "forget", "arguments": {
+            "selector": tid, "selector_type": "thread_id", "dry_run": False,
+        }, **meta,
+    })
+    assert "error" in client.request(8, "resources/read", {"uri": uri, **meta})
+
+
 def test_sealed_request_state_is_integrity_checked_caller_bound_and_expires():
     security = RequestStateSecurity(
         keys=[b"a" * 32],

@@ -2088,8 +2088,8 @@ the other two for the read/act split they fit naturally:
   session/presence/cursor state, start daemons, reap tasks, or refresh RSS.
   Reconciliation lives in explicit write tools (`tasks_refresh` and
   `agent_status_refresh`).
-  URIs are static: resource *templates* (`{param}`) are still unevenly supported
-  across hosts, so parameterized URIs are a later, host-gated step.
+  These snapshot URIs are static; exact search evidence uses opaque dynamic
+  references rather than enumerable resource templates (see below).
   Each snapshot advertises `cacheScope: private`, a 30-second TTL, priority,
   `lastModified`, and its rendered byte size. Hosts that send
   `resources/subscribe` are tracked per URI; a short poller reads only committed
@@ -2100,6 +2100,27 @@ the other two for the read/act split they fit naturally:
   core/style/verbatim/concept/distill memory → brief/dashboard. An unsupported
   or non-subscribing host remains pull-only, and rolled-back rows never appear in
   the event log so cannot produce a notification.
+- **Progressive evidence (#405)** (`evidence.py`) — `search` and `dialog_search`
+  advertise a `SearchResults` output schema and keep their original text as the
+  first content block. Structured hits carry IDs, snippets, ranking provenance,
+  scope, and optional exact-evidence URIs, also delivered as `resource_link`
+  blocks. A note can link to itself and a thread excerpt of at most ten notes;
+  a dialog link fixes the matching UUID plus at most two neighbors on each side
+  within the same source, session, project, and memory scope. No subsequent
+  ingest can expand that window.
+  The bounded process-local registry retains identifiers only, uses random
+  256-bit tokens, and binds each reference to the normalized MCP caller and
+  issuing project, including any explicit cross-project recall. It holds at
+  most 1024 links for five minutes; restart or eviction requires a new search.
+  Reads use one query-only database snapshot and the existing authority
+  visibility, project-scope, and dialog-retention policies. Missing, invalidated,
+  forgotten, expired, or newly inaccessible members make the reference
+  unavailable; cached bodies cannot survive erasure. Authority metadata remains
+  separate from relevance and does not grant consequential-use permission.
+  Responses contain at most 32 KiB of JSON with explicit body truncation, private
+  cache metadata and zero TTL. Dynamic references do not enter `resources/list`
+  or subscriptions and disclose no filesystem path. Text-only hosts keep the
+  existing fallback.
 - **Prompts** (`tools/prompts.py`, `@mcp.prompt`) — *user-controlled,
   parameterized* templates for the curation / audit / review flows:
   `review_recent_threads`, `run_library_curation`, `audit_threadkeeper`. Claude

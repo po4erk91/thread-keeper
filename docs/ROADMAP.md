@@ -12,7 +12,7 @@ remains a live question.
 
 This pass reconciled current `main`, the complete open/closed issue history,
 the pending legacy Evolve queue, and the 2026-10-20 research digest. Four new,
-issue-backed gaps remain:
+issue-backed gaps were identified:
 
 - **Curator-neutral lesson reads (#402).** Curator evaluators must be able to
   read complete lesson bodies without incrementing consultation counters or
@@ -26,9 +26,11 @@ issue-backed gaps remain:
   and `mcp.json` manifests plus a bootstrap skill from the same canonical
   setup metadata as `thread-keeper-setup`, while retaining current installers
   for hosts without plugin support.
-- **Progressive memory evidence links (#405).** Keep the text fallback from
-  `search` and `dialog_search`, but add structured hits and scoped
-  `resource_link` blocks for exact notes, threads, and bounded dialog windows.
+- **Progressive memory evidence links (done, #405).** `search` and
+  `dialog_search` preserve their text fallback and return structured hits plus
+  caller/project-bound `resource_link` blocks for notes, thread excerpts, and
+  fixed dialog windows. Bounded read-only resolution rechecks live authority,
+  erasure, scope, and retention; opaque links expire after five minutes.
 
 The standards leads for durable Tasks, live memory-resource subscriptions,
 and a portable read-only dashboard are already complete in #370, #345, and

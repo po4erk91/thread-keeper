@@ -207,6 +207,22 @@ surface memory as attachable / `@`-mentionable context through a mechanical
 channel. The brief resource renders lean and agent-status uses a cached snapshot,
 so an automatic host pull is **side-effect-free**.
 
+`search` and `dialog_search` also return structured hits and `resource_link`
+blocks. Read a hit's `resource_uri` with `resources/read` to inspect its evidence
+without a broader search. Notes can also provide a `thread_uri` for a bounded
+thread excerpt. Dialog links contain the matching message and up to two messages
+on each side from the same source, session, and scope. Windows have fixed
+membership; later messages do not expand an issued link.
+
+These opaque `memory://evidence/...` links are private to the requesting caller
+and project, expire after five minutes, and may be evicted sooner or lost on
+server restart. Search again for a fresh link. Evidence reads return at most
+32 KiB of JSON, mark shortened bodies with `truncated`, and recheck scope,
+authority invalidation, erasure, and dialog retention on every read. Thread
+excerpts include at most ten notes. Links are not listed in `resources/list`
+and must not be cached. Hosts that ignore links and structured output keep the
+same first text block and search behavior.
+
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 

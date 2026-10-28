@@ -295,22 +295,26 @@ def seed_embeddings(tk: dict) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 # Retrieval — call the REAL systems-under-test
 # ──────────────────────────────────────────────────────────────────────────
-def retrieve(tk: dict, item: dict) -> str:
-    """Issue the question's query to its system-under-test, return raw output.
+def _tool_text(result) -> str:
+    return "\n".join(block.text for block in result.content if block.type == "text")
 
-    The returned string is exactly what a downstream agent would receive, so
-    tokens-per-retrieval is measured on it and the judge reads it verbatim."""
+
+def retrieve(tk: dict, item: dict) -> str:
+    """Issue the question's query and return the text-only client fallback.
+
+    Tokens-per-retrieval measures this text, which the judge reads verbatim.
+    Evidence links and structured metadata do not change this baseline."""
     system = item.get("system", "dialog_search")
     query = item.get("query") or item.get("question", "")
     k = int(item.get("k", 5))
     if system == "search":
-        return tk["search"](query=query, k=k)
+        return _tool_text(tk["search"](query=query, k=k))
     if system == "brief":
         conn = tk["db"].get_db()
         return tk["brief"].render_brief(
             conn, query=query, k=k, consumer_cli=item.get("consumer_cli"))
     # default: dialog_search
-    return tk["dialog_search"](query=query, k=k, mode=item.get("mode", "hybrid"))
+    return _tool_text(tk["dialog_search"](query=query, k=k, mode=item.get("mode", "hybrid")))
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -418,7 +422,7 @@ def _read_lifecycle_surfaces(tk: dict, fixture: dict) -> dict[str, str]:
     query = fixture["query"]
     return {
         "brief": tk["brief_tool"](query=query, k=12),
-        "search": tk["search"](query=query, k=12),
+        "search": _tool_text(tk["search"](query=query, k=12)),
         "dialectic_synthesis": tk["dialectic_synthesis"](
             domain=fixture["domain"], include_history=True
         ),

@@ -55,6 +55,15 @@ class ThreadKeeperMCPServer(MCPServer):
 
     async def read_resource(self, uri: AnyUrl | str, context=None):
         value = str(uri)
+        if value.startswith("memory://evidence/"):
+            from .evidence import read_evidence
+
+            with read_only_call():
+                text = read_evidence(value, context)
+            return [ReadResourceContents(
+                content=text, mime_type="application/json",
+                meta={"cacheScope": "private", "ttl": 0},
+            )]
         if value.startswith(f"skill://{SKILL_URI_ORIGIN}/"):
             item = read_skill_resource(value)
             try:

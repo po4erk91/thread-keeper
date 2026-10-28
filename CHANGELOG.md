@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-28
+
+- **Inspect exact memory evidence from search results (#405).** Search tools
+  keep their current text and also return structured hits with private,
+  short-lived links to notes, thread excerpts, and bounded dialog windows.
+  Linked reads recheck access, invalidation, erasure, and retention without
+  changing stored memory. Hosts that ignore links keep the existing text.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
