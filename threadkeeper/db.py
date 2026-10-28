@@ -1043,6 +1043,24 @@ END;
 # an incompatible global schema version and breaking still-running clients.
 # Keep this block strictly backward-compatible: CREATE ... IF NOT EXISTS only.
 ADDITIVE_RUNTIME_SCHEMA = """
+-- Factual freshness is metadata; no lesson content is rewritten by an audit.
+CREATE TABLE IF NOT EXISTS lesson_verification_sources (
+    source_url TEXT PRIMARY KEY,
+    revision TEXT NOT NULL,
+    generation INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lesson_claim_verifications (
+    slug TEXT NOT NULL,
+    lesson_revision TEXT NOT NULL,
+    claim_fingerprint TEXT NOT NULL,
+    claim TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('verified','contradicted','unsubstantiated')),
+    source_url TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    source_generation INTEGER NOT NULL,
+    checked_at INTEGER NOT NULL,
+    PRIMARY KEY (slug, claim_fingerprint)
+);
 -- Lesson body vectors for the write-time duplicate gate and lesson_list(query).
 -- Keyed by body hash and embedding fingerprint, so a body is encoded once per
 -- install and a model change simply misses the cache.

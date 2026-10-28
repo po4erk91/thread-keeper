@@ -86,9 +86,6 @@ issue-backed and deliberately narrower:
 - **Forgetting-aware store mutation evaluation (#371).** Exercise real
   correction, supersession, consolidation, source erasure, and restart paths;
   penalize obsolete evidence even when current evidence is also recalled.
-- **Protected-lesson freshness flags (#372).** Preserve protected lesson text
-  while attaching source-linked verified, contradicted, or unsubstantiated
-  states that are visible when the lesson is retrieved for a task.
 - **Source-missing skill reconciliation (#373).** Mark registry records without
   a readable primary source unavailable, expose one recovery action, and allow
   Curator to archive or remove a confirmed registry-only orphan after a
@@ -99,6 +96,13 @@ already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
 registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
+
+- **Protected lesson freshness flags (#372).** Curator records verified,
+  contradicted, or unsubstantiated claim checks without editing protected text.
+  Reads and task-time lesson lists warn with the official source and check
+  time. Reaudits update one claim record; changed lesson revisions or observed
+  source revisions require a recheck. Content protection and approval rules
+  remain in force.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.

@@ -42,6 +42,7 @@ READ_TOOLS = {
     "task_thread", "tasks", "weak_spots", "whoami", "wikilink_health",
     "workflow_retention_preview",
     "lesson_neighbors",
+    "lesson_verifications",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------
@@ -57,6 +58,7 @@ WRITE_TOOLS = {
     "accept_candidate", "ask", "auto_review_trigger", "broadcast",
     "candidate_review_run", "claim_pickup", "close_thread", "config_reload",
     "convene_panel", "core_set", "curator_merge_verdict",
+    "curator_verify_lesson",
     "curator_report_write", "curator_research_write", "curator_review",
     "db_compact", "db_deduplicate_embeddings", "dialectic_claim",
     "dialectic_evidence", "dialectic_mine_run", "dialectic_observation_resolve",

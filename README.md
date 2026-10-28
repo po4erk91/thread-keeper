@@ -948,7 +948,26 @@ verifier) additionally lets the
 evaluator make in-place repairs to them. Lessons are
 stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
 appended; missing, legacy, or unknown lesson provenance is protected by
-default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
+default. Protection preserves authored content; it does not certify that every
+factual claim is current. `lesson_verifications(slug)` returns the current
+lesson revision and its factual checks. After reading an official source,
+Curator can call `curator_verify_lesson(slug, lesson_revision, claim, status,
+source_url, source_revision)` with an exact claim excerpt, `verified`,
+`contradicted`, or `unsubstantiated`, an official HTTPS URL, and its revision
+identifier or ETag. When no official revision is available, omit
+`source_revision` and pass the checked page text as `source_text`; the server
+hashes it without retaining the text. Use a consistent revision identifier or
+page text for each URL. The server records check time separately from lesson
+content. Repeated checks update the same claim record. `lesson_get` and
+`lesson_list(query=...)` show source-linked warnings for contradicted or
+unsubstantiated claims. A changed lesson or an observed source revision change
+makes old checks require a new audit; a verified recheck clears the warning.
+Sources are checked by the caller: these tools do not fetch pages, certify
+domains, or detect remote changes between audits. Unavailable research means
+defer the check, not declare the claim unsubstantiated. Content edits still
+follow the existing approval and verifier rules.
+
+`lesson_remove` and `skill_manage(action='delete')` refuse protected
 foreground/unknown-origin entries unless `force=True` is called from a
 foreground writer or the caller is the Curator verifier phase; curator/spawned
 children cannot elevate themselves with `force`. Before a destructive child is spawned, thread-keeper writes

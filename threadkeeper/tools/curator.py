@@ -88,6 +88,52 @@ logger = logging.getLogger(__name__)
 
 
 @write_tool(idempotent=True)
+def curator_verify_lesson(
+    slug: str,
+    lesson_revision: str,
+    claim: str,
+    status: str,
+    source_url: str,
+    source_revision: str = "",
+    source_text: str = "",
+) -> str:
+    """Record a protected lesson's factual freshness without editing its text.
+
+    Read lesson_verifications for the lesson revision. Check the exact claim
+    against an official HTTPS page. Pass its official revision/ETag as
+    source_revision, or its checked text as source_text for server-side hashing.
+    Status: verified, contradicted, or unsubstantiated.
+    The server stamps check time. Reaudits replace the same claim record;
+    a changed source invalidates other results based on its older revision.
+    This tool records supplied evidence; it does not fetch or certify a URL.
+    """
+    from ..lesson_freshness import checked_source_revision, record_verification
+    from ..lessons import _lessons_file_lock, get_path, iter_lessons, lesson_protection
+
+    conn = get_db()
+    _ensure_session(conn)
+    with _lessons_file_lock(get_path()):
+        item = next((item for item in iter_lessons() if item["slug"] == slug), None)
+        if item is None:
+            return f"ERR not_found slug={slug}"
+        usage = conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
+        if not lesson_protection(item, dict(usage) if usage else None)[0]:
+            return f"ERR lesson_not_protected slug={slug}"
+        try:
+            revision = checked_source_revision(source_revision, source_text)
+            result = record_verification(
+                conn, item, lesson_revision, claim, status, source_url, revision,
+            )
+        except ValueError as exc:
+            return f"ERR {exc}"
+        conn.commit()
+    return (
+        f"ok slug={slug} status={status} claim_fingerprint={result['claim_fingerprint']} "
+        f"checked_at={result['checked_at']}"
+    )
+
+
+@write_tool(idempotent=True)
 def curator_merge_verdict(slug_a: str, slug_b: str, reason: str) -> str:
     """Remember a curator-reviewed lesson pair that should remain separate.
 

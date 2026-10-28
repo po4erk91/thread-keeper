@@ -1516,6 +1516,29 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   not an automatic deletion path, and foreground/user, pinned, and validated
   lessons are excluded.
 
+- **Protected lesson factual freshness** — `lesson_freshness.py` stores checks
+  in the additive `lesson_claim_verifications` table, independently of
+  `lessons.md`. `lesson_verifications(slug)` reads the content-addressed lesson
+  revision and audit records without usage writes. `curator_verify_lesson`
+  accepts that revision, an exact claim excerpt, a verified/contradicted/
+  unsubstantiated status, an official HTTPS URL, and its official revision/ETag
+  as `source_revision`. Alternatively, `source_text` is hashed server-side
+  without storing the text. It stamps check time and upserts by
+  `(slug, claim_fingerprint)` under the lesson file lock; no content, pin,
+  provenance, or approval state changes. `lesson_verification_sources` tracks
+  the latest observed source
+  revision and a generation counter. A revision change expires other checks
+  using that URL; returning to an older revision cannot revive them. Reads
+  compare lesson and source revisions, displaying `needs_recheck` for expired
+  results instead of treating a past verdict as current. Removed claims keep
+  their audit history but produce no warning about the revised lesson.
+  `lesson_get`, ranked/unranked
+  `lesson_list`, and the Curator inventory display source-linked warnings.
+  Rechecking a claim replaces its result and clears a warning when verified.
+  The caller checks official evidence; no URL fetch or domain certification
+  occurs, and remote changes are known only when an audit observes them.
+  Curator's fixed public research boundary and content-edit gates still apply.
+
 - **Lesson-to-skill promotion** — the curator deterministically groups lessons
   only when a concrete title-term pair reaches
   `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` entries (default 3) and every
@@ -2002,10 +2025,10 @@ below).
 | concepts | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | link, unlink, neighbors |
 | pickup | pickup_candidates, claim_pickup, release_pickup |
-| lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation |
+| lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation, lesson_verifications |
 | shadow_review | shadow_review_run, shadow_review_status, shadow_review_snapshot |
 | candidate_reviewer | candidate_review_run, candidate_review_status |
-| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore |
+| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson |
 | evolve_research | evolve_research_handoff |
 | evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status, evolve_prune_managed_venv |
 | style | style_set, verbatim_user |

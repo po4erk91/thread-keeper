@@ -379,6 +379,21 @@ them. Entries marked [PROTECTED] (human-authored or legacy) still get a full
 review, but you never change them directly: every change you recommend for
 them, including PATCH, is a VERIFY proposal.
 
+FACTUAL FRESHNESS — content protection does not certify current facts. For a
+time-sensitive claim in a protected or pinned lesson, read lesson_verifications
+for its revision. If authorized official-source evidence is available, record
+the exact claim with curator_verify_lesson: verified, contradicted, or
+unsubstantiated, the official HTTPS URL, and its official revision/ETag as
+source_revision, or the checked page text as source_text for server-side
+hashing. Use a consistent revision identifier or page text for each URL.
+This writes only audit metadata, including check time;
+it never authorizes content edits or bypasses a VERIFY proposal. Reaudit the
+same claim to refresh its one record. An observed source revision change
+invalidates older checks using that URL. Do not infer unsubstantiated merely
+from unavailable research: DEFER instead. Do not expand the fixed public
+research topics or send local lesson text to the web. Record only evidence
+already available within the pass's authorized research scope.
+
 PRIORITY ORDER inside the REPORT.md:
   1. PATCH recommendations (low-risk, in-place improvements).
   2. KEEP entries summarised as a short list of slugs.
@@ -499,6 +514,8 @@ PROPOSALS
 _VERIFY_TOOLS = (
     "mcp__thread-keeper__lesson_list,"
     "mcp__thread-keeper__lesson_get,"
+    "mcp__thread-keeper__lesson_verifications,"
+    "mcp__thread-keeper__curator_verify_lesson,"
     "mcp__thread-keeper__lesson_append,"
     "mcp__thread-keeper__lesson_patch,"
     "mcp__thread-keeper__lesson_remove,"
@@ -2272,6 +2289,7 @@ def _collect_inventory_entry_groups(
         items = list(lessons.iter_lessons())
         adjacency = _lesson_adjacency(items)
         from .lesson_violations import violation_counts
+        from .lesson_freshness import verification_warnings
         violations = violation_counts(conn)
         for item in items:
             lesson_items.append(item)
@@ -2283,7 +2301,7 @@ def _collect_inventory_entry_groups(
                     _format_lesson(
                         item, usage.get(slug), adjacency.get(slug, ()),
                         violations.get(slug, 0),
-                    ),
+                    ) + "".join(f"\n    {warning}" for warning in verification_warnings(conn, item)),
                 )
             )
     except Exception as exc:
@@ -2971,6 +2989,8 @@ def _evaluation_contract(mode: str, snapshot_dir) -> tuple[str, str]:
         allowed_tools = (
             "mcp__thread-keeper__lesson_list,"
             "mcp__thread-keeper__lesson_get,"
+            "mcp__thread-keeper__lesson_verifications,"
+            "mcp__thread-keeper__curator_verify_lesson,"
             "mcp__thread-keeper__lesson_append,"
             "mcp__thread-keeper__lesson_patch,"
             "mcp__thread-keeper__skill_list,"
@@ -2991,14 +3011,18 @@ def _evaluation_contract(mode: str, snapshot_dir) -> tuple[str, str]:
         "THREADKEEPER_CURATOR_DESTRUCTIVE=0). Do NOT call lesson_append, "
         "lesson_patch, lesson_remove, skill_manage with action in "
         "{create,patch,delete,write_file}, or any other destructive tool. "
-        "Your output is the REPORT.md ONLY — the Evolve report applier "
-        "applies its safe recommendations. Unset the knob (or set it to 1) "
+        "Write the REPORT.md and factual freshness metadata only; "
+        "curator_verify_lesson may record official-source checks without "
+        "editing lesson content. The Evolve report applier applies safe "
+        "content recommendations. Unset the knob (or set it to 1) "
         "to let the curator and its verifier apply recommendations "
         "directly, the default."
     )
     allowed_tools = (
         "mcp__thread-keeper__lesson_list,"
         "mcp__thread-keeper__lesson_get,"
+        "mcp__thread-keeper__lesson_verifications,"
+        "mcp__thread-keeper__curator_verify_lesson,"
         "mcp__thread-keeper__skill_list,"
         "mcp__thread-keeper__skill_validate,"
         "mcp__thread-keeper__curator_report_write,"

@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-28
+
+- **Added: factual freshness checks for protected lessons (#372).** Curator can
+  record whether an exact claim is verified, contradicted, or unsubstantiated
+  against an official source without editing the lesson. Lesson reads and
+  task-time lists warn when a claim needs attention. Repeated audits update one
+  record, and changed lesson or observed source revisions require a recheck.
+  Existing content protection and approval rules still apply.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

@@ -83,6 +83,11 @@ from ..lessons import (
     remove_lesson,
     restore_lesson_section,
 )
+from ..lesson_freshness import (
+    lesson_revision,
+    verification_warnings,
+    verifications_for_lesson,
+)
 from ..trash import (
     capture_removed_lesson,
     latest_lesson_artifact,
@@ -1154,6 +1159,7 @@ def lesson_list(k: int = 20, query: str = "") -> str:
             f"  {age:>5s}  {it['slug']:30s}  src={src:8s}  {score_part}"
             f"{_lesson_snippet(it)}"
         )
+        out.extend(f"    {warning}" for warning in verification_warnings(conn, it))
     conn.commit()
     return "\n".join(out)
 
@@ -1174,8 +1180,34 @@ def lesson_get(slug: str) -> str:
                 return f"ERR invalidated slug={slug}"
             record_lesson_access(conn, it, kind="use")
             conn.commit()
-            return it["body"]
+            warnings = verification_warnings(conn, it)
+            return "\n\n".join([*warnings, it["body"]])
     return f"ERR not_found slug={slug}"
+
+
+@read_tool()
+def lesson_verifications(slug: str) -> str:
+    """Read the current lesson revision and source-linked factual checks.
+
+    Pass this revision to curator_verify_lesson after checking an official
+    source. Invalidated results are historical evidence, not current verdicts.
+    """
+    import json
+
+    conn = get_db()
+    item = next((item for item in iter_lessons() if item["slug"] == slug), None)
+    if item is None:
+        return f"ERR not_found slug={slug}"
+    if conn.execute(
+        "SELECT 1 FROM memory_authority WHERE artifact_kind='lesson' "
+        "AND artifact_id=? AND invalidated_at IS NOT NULL", (slug,),
+    ).fetchone():
+        return f"ERR invalidated slug={slug}"
+    return json.dumps({
+        "slug": slug,
+        "lesson_revision": lesson_revision(item),
+        "verifications": verifications_for_lesson(conn, item),
+    }, ensure_ascii=False)
 
 
 @write_tool(destructive=True, idempotent=True)
