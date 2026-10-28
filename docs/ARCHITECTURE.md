@@ -624,8 +624,15 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The web-free evaluator
-  reads each full skill, writes a numbered verdict, applies safe
+  exact duplicates, and lexical semantic candidates. This canonical manifest
+  stays with the parent for completion, provenance, and cross-batch decisions.
+  Before launch, the parent derives and hashes an `AUDIT-SLICE-…-batch-…`
+  file for each frozen batch. An evaluator reads only that slice: its assigned
+  skills and the relevant consumer, link, mirror, source, duplicate, and
+  candidate findings. A batch with no skills gets a small explicit no-skills
+  slice. Retries reuse the same slice and reject a missing, changed, or
+  mismatched file. The web-free evaluator reads each full assigned skill,
+  writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
   External research is a separate opt-in capability: when
   `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a Claude-only `curator_researcher`
@@ -643,9 +650,10 @@ moving the high-water forward; `force=True` bypasses this due gate.
   per-kind counts; multi-batch runs write
   `REPORT-<pass>-batch-NNN-of-MMM.md` files. The durable pass manifest records
   every expected batch before launch, separates dispatch from completion, and
-  retries only pending or failed batches. Each batch's rendered text is frozen
-  in the manifest, so a pass resumes on exactly its own entries even after the
-  live inventory changes, and a resume tick never re-reads the inventory. A
+  retries only pending or failed batches. Each batch's rendered text and
+  audit-slice hash are frozen in the manifest, so a pass resumes on exactly its
+  own entries even after the live inventory changes, and a resume tick never
+  re-reads the inventory. A
   batch gets three launched attempts; spawn budget refusals (memory, tokens,
   cost) leave it pending without using one. A pass whose batch exhausts its
   attempts, or that is older than `max(6h, 2 × CURATOR_INTERVAL_S)`, is

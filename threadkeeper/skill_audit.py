@@ -31,6 +31,7 @@ from .config import (
 
 
 AUDIT_SCHEMA_VERSION = 1
+AUDIT_BATCH_SLICE_SCHEMA_VERSION = 1
 _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
@@ -516,14 +517,73 @@ def audit_fingerprint_payload(conn: sqlite3.Connection) -> list[dict]:
 
 
 def write_skill_audit_manifest(manifest: dict, path: Path) -> Path:
+    """Write a manifest with the stable encoding used for digest checks."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    temp.write_text(serialized_skill_audit(manifest), encoding="utf-8")
     temp.replace(path)
     return path
+
+
+def serialized_skill_audit(manifest: dict) -> str:
+    """Return the one canonical on-disk representation for an audit document."""
+    return json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def build_batch_skill_audit_slice(
+    manifest: dict,
+    *,
+    pass_id: str,
+    batch_index: int,
+    batch_total: int,
+    inventory_fingerprint: str,
+    canonical_manifest_sha256: str,
+    assigned_skill_names: Iterable[str],
+) -> dict:
+    """Build the deterministic audit view needed by one Curator batch.
+
+    The canonical manifest remains the pass-wide source of truth.  A worker
+    receives only the records it owns and relationships that mention one of
+    those records, which keeps unrelated skill evidence out of its prompt.
+    """
+    names = sorted({name for name in assigned_skill_names if isinstance(name, str)})
+    name_set = set(names)
+    skills = [
+        record for record in manifest.get("skills", [])
+        if record.get("name") in name_set
+    ]
+    exact_duplicates = [
+        group for group in manifest.get("exact_duplicate_groups", [])
+        if name_set.intersection(group.get("skills", []))
+    ]
+    semantic_candidates = [
+        candidate for candidate in manifest.get("semantic_candidates", [])
+        if {candidate.get("left"), candidate.get("right")} & name_set
+    ]
+    return {
+        "schema_version": AUDIT_BATCH_SLICE_SCHEMA_VERSION,
+        "kind": "curator_batch_skill_audit_slice",
+        "pass": {
+            "pass_id": pass_id,
+            "batch_index": batch_index,
+            "batch_total": batch_total,
+            "inventory_fingerprint": inventory_fingerprint,
+        },
+        "canonical_manifest": {
+            "schema_version": manifest.get("schema_version"),
+            "sha256": canonical_manifest_sha256,
+        },
+        "assigned_skill_names": names,
+        "no_skills": not names,
+        "summary": {
+            "assigned_skills": len(skills),
+            "exact_duplicate_groups": len(exact_duplicates),
+            "semantic_candidates": len(semantic_candidates),
+        },
+        "skills": skills,
+        "exact_duplicate_groups": exact_duplicates,
+        "semantic_candidates": semantic_candidates,
+    }
 
 
 def format_skill_checklist(manifest: dict) -> str:

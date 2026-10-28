@@ -881,10 +881,15 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. It then persists a pass manifest with the
-expected reports and the rendered text of every batch before launching any
-child. A dispatch is not completion: every batch must exit successfully and
-have a final, matching provenance record before the inventory is endorsed.
+trees, validators, and mirror state. It persists the full pass audit manifest
+for parent coordination and provenance, then writes one smaller, hash-checked
+audit slice for every frozen batch. A worker reads only its slice: assigned
+skill records and their relevant consumer, link, mirror, source, duplicate, and
+candidate findings. A lesson-only batch receives an explicit no-skills slice
+instead of the full skill inventory. The scheduler stores the expected reports,
+slice hashes, and rendered text before launching any child. A dispatch is not
+completion: every batch must exit successfully and have a final, matching
+provenance record before the inventory is endorsed.
 Repeated manual calls over identical bytes return `unchanged_inventory` only
 after that endorsement; scheduled passes still run because CLI behavior,
 official guidance, and external alternatives can change without local file

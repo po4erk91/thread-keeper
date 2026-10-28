@@ -94,6 +94,7 @@ from .curator_snapshots import (
     write_verify_scope,
 )
 from .skill_audit import (
+    build_batch_skill_audit_slice,
     build_skill_audit,
     format_skill_checklist,
     write_skill_audit_manifest,
@@ -199,9 +200,12 @@ and freshness.
 
 DEEP SKILL VALIDATOR — complete every numbered skill in order. Read the full
 SKILL.md and relevant support files from `source_path`; the compact inventory
-line is never sufficient. Also read AUDIT_MANIFEST_PATH, which contains
+line is never sufficient. Also read AUDIT_MANIFEST_SLICE_PATH. It contains the
 deterministic ThreadKeeper/Claude Code/Codex/Agent Skills validation, mirror
-hashes, dangling links, exact-body duplicates, and lexical candidate pairs.
+hashes, dangling links, source findings, exact-body duplicates, and lexical
+candidate pairs relevant to this batch's assigned skills only. If it says
+`no_skills=true`, this batch has no skills to audit; do not read a pass-wide
+skill inventory.
 
 For EACH skill, put a numbered row in REPORT.md with:
   name | relevance/currentness | actual capability | uniqueness | consumer
@@ -539,6 +543,16 @@ class _InventoryBatch:
     skill_count: int
     concept_count: int
     char_count: int
+    skill_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _AuditManifestSlice:
+    """The frozen worker-specific audit file for one Curator batch."""
+
+    path: Path
+    sha256: str
+    skill_names_json: str
 
 
 @dataclass(frozen=True)
@@ -1487,6 +1501,50 @@ def curator_pass_status(conn: sqlite3.Connection) -> dict[str, object]:
     }
 
 
+def _audit_slice_name(pass_id: str, batch_index: int, batch_total: int) -> str:
+    pass_key = curator_report_sha256(pass_id)[:16]
+    return (
+        f"AUDIT-SLICE-{pass_key}-batch-{batch_index:03d}-of-"
+        f"{batch_total:03d}.json"
+    )
+
+
+def _write_batch_audit_slices(
+    manifest: dict,
+    *,
+    pass_id: str,
+    fingerprint: str,
+    manifest_sha256: str,
+    batches: list[_InventoryBatch],
+) -> dict[int, _AuditManifestSlice]:
+    """Freeze one minimal audit document for every batch before dispatch."""
+    slices: dict[int, _AuditManifestSlice] = {}
+    total = len(batches)
+    for batch in batches:
+        path = CURATOR_REPORTS_DIR / _audit_slice_name(
+            pass_id, batch.index, total,
+        )
+        payload = build_batch_skill_audit_slice(
+            manifest,
+            pass_id=pass_id,
+            batch_index=batch.index,
+            batch_total=total,
+            inventory_fingerprint=fingerprint,
+            canonical_manifest_sha256=manifest_sha256,
+            assigned_skill_names=batch.skill_names,
+        )
+        write_skill_audit_manifest(payload, path)
+        raw = path.read_text(encoding="utf-8")
+        slices[batch.index] = _AuditManifestSlice(
+            path=path,
+            sha256=curator_report_sha256(raw),
+            skill_names_json=json.dumps(
+                list(batch.skill_names), sort_keys=True, separators=(",", ":"),
+            ),
+        )
+    return slices
+
+
 def _create_pass_manifest(
     conn: sqlite3.Connection,
     *,
@@ -1494,6 +1552,8 @@ def _create_pass_manifest(
     fingerprint: str,
     batches: list[_InventoryBatch],
     audit_manifest_path: str,
+    audit_manifest_sha256: str,
+    audit_slices: dict[int, _AuditManifestSlice],
     snapshot_path: str | None,
     now: int,
 ) -> None:
@@ -1502,20 +1562,29 @@ def _create_pass_manifest(
     conn.execute(
         "INSERT INTO curator_passes "
         "(pass_id, inventory_fingerprint, expected_batches, mode, "
-        "audit_manifest_path, snapshot_path, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "audit_manifest_path, audit_manifest_sha256, snapshot_path, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pass_id, fingerprint, total,
             "destructive" if CURATOR_DESTRUCTIVE else "advisory",
-            audit_manifest_path, snapshot_path, now, now,
+            audit_manifest_path, audit_manifest_sha256, snapshot_path, now, now,
         ),
     )
     conn.executemany(
         "INSERT INTO curator_batches "
-        "(pass_id, batch_index, report_name, batch_text) VALUES (?, ?, ?, ?)",
+        "(pass_id, batch_index, report_name, batch_text, audit_slice_path, "
+        "audit_slice_sha256, audit_slice_skill_names) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
-            (pass_id, batch.index,
-             _report_name_for_batch(pass_id, batch.index, total), batch.text)
+            (
+                pass_id,
+                batch.index,
+                _report_name_for_batch(pass_id, batch.index, total),
+                batch.text,
+                str(audit_slices[batch.index].path),
+                audit_slices[batch.index].sha256,
+                audit_slices[batch.index].skill_names_json,
+            )
             for batch in batches
         ],
     )
@@ -2492,9 +2561,11 @@ def _entry_cost(entry: _InventoryEntry) -> int:
 def _chunk_inventory_entries(
     entries: list[_InventoryEntry],
     *,
-    max_entries: int = CURATOR_BATCH_MAX_ENTRIES,
-    max_chars: int = CURATOR_BATCH_MAX_CHARS,
+    max_entries: int | None = None,
+    max_chars: int | None = None,
 ) -> list[list[_InventoryEntry]]:
+    max_entries = CURATOR_BATCH_MAX_ENTRIES if max_entries is None else max_entries
+    max_chars = CURATOR_BATCH_MAX_CHARS if max_chars is None else max_chars
     entry_limit = max(1, int(max_entries))
     char_limit = max(1_000, int(max_chars))
     batches: list[list[_InventoryEntry]] = []
@@ -2607,6 +2678,7 @@ def _render_batch_inventory(
         skill_count=len(skill_entries),
         concept_count=len(concept_entries),
         char_count=len(text),
+        skill_names=tuple(sorted(entry.key for entry in skill_entries)),
     )
 
 
@@ -2893,16 +2965,25 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 f"AUDIT-{time.strftime('%Y%m%d')}-{secrets.token_hex(4)}.json"
             ),
         )
+        manifest_sha256 = curator_report_sha256(
+            Path(manifest_path).read_text(encoding="utf-8"),
+        )
+        audit_slices = _write_batch_audit_slices(
+            skill_audit,
+            pass_id=pass_id,
+            fingerprint=fingerprint,
+            manifest_sha256=manifest_sha256,
+            batches=batches,
+        )
         # The recovery snapshot is taken right before the pass's first
         # mutating child (_ensure_pass_snapshot), not here.
         _create_pass_manifest(
             conn, pass_id=pass_id, fingerprint=fingerprint, batches=batches,
             audit_manifest_path=str(manifest_path),
+            audit_manifest_sha256=manifest_sha256,
+            audit_slices=audit_slices,
             snapshot_path=None,
             now=now,
-        )
-        manifest_sha256 = curator_report_sha256(
-            Path(manifest_path).read_text(encoding="utf-8"),
         )
         for batch in batches:
             if CURATOR_WEB_RESEARCH:
@@ -3288,6 +3369,73 @@ def _snapshotted_pass(
     return refreshed, snapshot_dir
 
 
+def _verified_batch_audit_slice(
+    pass_row: sqlite3.Row,
+    row: sqlite3.Row,
+    total: int,
+) -> tuple[str | None, str | None]:
+    """Return a batch slice only when its frozen binding still matches.
+
+    The canonical manifest is parent-owned provenance. A worker gets the
+    smaller slice only after both files, the durable row, and the serialized
+    scope agree. This makes retrying cheap without allowing a swapped slice.
+    """
+    expected_digest = str(row["audit_slice_sha256"] or "")
+    canonical_digest = str(pass_row["audit_manifest_sha256"] or "")
+    try:
+        names = json.loads(row["audit_slice_skill_names"] or "")
+    except (TypeError, ValueError):
+        return None, "audit_slice_binding_invalid"
+    if (
+        not expected_digest
+        or not canonical_digest
+        or not isinstance(names, list)
+        or any(not isinstance(name, str) for name in names)
+        or names != sorted(set(names))
+    ):
+        return None, "audit_slice_binding_missing"
+
+    path = Path(row["audit_slice_path"] or "")
+    expected_path = CURATOR_REPORTS_DIR / _audit_slice_name(
+        pass_row["pass_id"], int(row["batch_index"]), total,
+    )
+    if path != expected_path:
+        return None, "audit_slice_path_mismatch"
+    try:
+        canonical_raw = Path(pass_row["audit_manifest_path"]).read_text(
+            encoding="utf-8",
+        )
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, TypeError):
+        return None, "audit_slice_missing"
+    if curator_report_sha256(canonical_raw) != canonical_digest:
+        return None, "canonical_manifest_mismatch"
+    if curator_report_sha256(raw) != expected_digest:
+        return None, "audit_slice_sha256_mismatch"
+    try:
+        canonical_manifest = json.loads(canonical_raw)
+        slice_manifest = json.loads(raw)
+    except ValueError:
+        return None, "audit_slice_malformed"
+    if (
+        not isinstance(canonical_manifest, dict)
+        or not isinstance(slice_manifest, dict)
+    ):
+        return None, "audit_slice_malformed"
+    expected_manifest = build_batch_skill_audit_slice(
+        canonical_manifest,
+        pass_id=pass_row["pass_id"],
+        batch_index=int(row["batch_index"]),
+        batch_total=total,
+        inventory_fingerprint=pass_row["inventory_fingerprint"],
+        canonical_manifest_sha256=canonical_digest,
+        assigned_skill_names=names,
+    )
+    if slice_manifest != expected_manifest:
+        return None, "audit_slice_content_mismatch"
+    return str(path), None
+
+
 def _evaluate_spec(
     conn: sqlite3.Connection,
     pass_row: sqlite3.Row,
@@ -3297,6 +3445,11 @@ def _evaluate_spec(
 ) -> _LaunchSpec | str:
     pass_id = pass_row["pass_id"]
     index = int(row["batch_index"])
+    audit_slice_path, slice_error = _verified_batch_audit_slice(
+        pass_row, row, total,
+    )
+    if slice_error:
+        return slice_error
     action, research_block = _evaluation_research_block(
         conn, pass_id, row, action, total,
     )
@@ -3317,7 +3470,7 @@ def _evaluate_spec(
         CURATOR_PROMPT.replace("{DESTRUCTIVE_CLAUSE}", destructive_clause)
         + row["batch_text"]
         + "\n\n"
-        + f"AUDIT_MANIFEST_PATH = {pass_row['audit_manifest_path']}\n"
+        + f"AUDIT_MANIFEST_SLICE_PATH = {audit_slice_path}\n"
         + "<curator_research_data>\n"
         + research_block
         + "\n</curator_research_data>\n"

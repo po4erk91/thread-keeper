@@ -872,14 +872,161 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Bash" not in allowed
     # REPORTS_DIR was created so the child has a place to write
     assert pkg["reports_dir"].is_dir()
-    manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
+    manifests = [
+        path for path in pkg["reports_dir"].glob("AUDIT-*.json")
+        if not path.name.startswith("AUDIT-SLICE-")
+    ]
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text())["schema_version"] == 1
-    assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
+    slices = list(pkg["reports_dir"].glob("AUDIT-SLICE-*.json"))
+    assert len(slices) == 1
+    assert f"AUDIT_MANIFEST_SLICE_PATH = {slices[0]}" in kw["prompt"]
+    assert str(manifests[0]) not in kw["prompt"]
     assert kw["_curator_launch"].pass_id not in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
     assert "THREADKEEPER_CURATOR_PHASE" not in os.environ
+
+
+def test_curator_batch_audit_slices_keep_only_assigned_skill_evidence(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", max_concurrent="999",
+    )
+    for title in ("first lesson", "second lesson"):
+        pkg["lessons"].append_lesson(title=title, body="body", source="shadow")
+    for name, body in {
+        "alpha-skill": "# Shared body\n\nSame duplicate procedure.\n",
+        "beta-skill": "# Shared body\n\nSame duplicate procedure.\n",
+        "gamma-skill": "# Gamma\n\n[Missing support](missing.md)\n",
+    }.items():
+        path = pkg["skills_dir"] / name
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{body}",
+            encoding="utf-8",
+        )
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    launches = []
+    monkeypatch.setattr(pkg["curator"], "CURATOR_BATCH_MAX_ENTRIES", 3)
+    monkeypatch.setattr(
+        spawn_mod,
+        "_spawn_impl",
+        lambda **kwargs: launches.append(kwargs) or "ok task=tk_slice pid=0",
+    )
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    conn = pkg["db"].get_db()
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    rows = conn.execute(
+        "SELECT * FROM curator_batches ORDER BY batch_index"
+    ).fetchall()
+    assert len(rows) == len(launches) == 2
+    canonical = json.loads(Path(pass_row["audit_manifest_path"]).read_text())
+    slices = [json.loads(Path(row["audit_slice_path"]).read_text()) for row in rows]
+    by_names = {tuple(item["assigned_skill_names"]): item for item in slices}
+
+    alpha_slice = by_names[("alpha-skill",)]
+    assert [record["name"] for record in alpha_slice["skills"]] == ["alpha-skill"]
+    assert alpha_slice["canonical_manifest"]["sha256"] == pass_row[
+        "audit_manifest_sha256"
+    ]
+    assert alpha_slice["exact_duplicate_groups"] == [{
+        "normalized_body_sha256": next(
+            group["normalized_body_sha256"]
+            for group in canonical["exact_duplicate_groups"]
+            if group["skills"] == ["alpha-skill", "beta-skill"]
+        ),
+        "skills": ["alpha-skill", "beta-skill"],
+    }]
+    gamma_slice = by_names[("beta-skill", "gamma-skill")]
+    gamma = next(
+        record for record in gamma_slice["skills"]
+        if record["name"] == "gamma-skill"
+    )
+    assert "dangling_relative_link:missing.md" in gamma["findings"]
+    assert gamma["source_path"]
+    assert gamma["validators"]
+    assert gamma["mirrors"]
+    assert all(
+        record["name"] in item["assigned_skill_names"]
+        for item in slices for record in item["skills"]
+    )
+
+
+def test_curator_reuses_verified_audit_slice_and_rejects_tampering(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _add_skill(pkg, "stable-slice-skill")
+    _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    conn = pkg["db"].get_db()
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    batch_row = conn.execute("SELECT * FROM curator_batches").fetchone()
+    slice_path = Path(batch_row["audit_slice_path"])
+    original = slice_path.read_text()
+    first = pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    )
+    second = pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    )
+    assert first.prompt == second.prompt
+    assert slice_path.read_text() == original
+
+    slice_path.write_text("{}\n", encoding="utf-8")
+    assert pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    ) == "audit_slice_sha256_mismatch"
+
+
+def test_worker_audit_input_scales_with_assigned_skill_records():
+    from threadkeeper.skill_audit import build_batch_skill_audit_slice
+
+    records = [
+        {
+            "name": f"skill-{index:03d}",
+            "source_path": f"/skills/skill-{index:03d}/SKILL.md",
+            "source_kind": "managed",
+            "validators": {"threadkeeper": "PASS"},
+            "mirrors": [{"root": "~/skills", "status": "canonical"}],
+            "findings": [],
+            "detail": "x" * 500,
+        }
+        for index in range(60)
+    ]
+    manifest = {
+        "schema_version": 1,
+        "skills": records,
+        "exact_duplicate_groups": [],
+        "semantic_candidates": [],
+    }
+    batches = [records[index:index + 6] for index in range(0, len(records), 6)]
+    slices = [
+        build_batch_skill_audit_slice(
+            manifest,
+            pass_id="pass",
+            batch_index=index,
+            batch_total=len(batches),
+            inventory_fingerprint="f" * 64,
+            canonical_manifest_sha256="a" * 64,
+            assigned_skill_names=[record["name"] for record in batch],
+        )
+        for index, batch in enumerate(batches, start=1)
+    ]
+    canonical_size = len(json.dumps(manifest))
+    worker_input_size = sum(len(json.dumps(item)) for item in slices)
+
+    assert sum(len(item["skills"]) for item in slices) == len(records)
+    assert worker_input_size < canonical_size * len(slices) // 2
 
 
 def test_web_research_receives_only_public_brief_and_narrow_tools(
@@ -2859,6 +3006,14 @@ def test_lesson_only_batch_skips_web_research(tmp_path, monkeypatch):
     prompt = launches[0]["kwargs"]["prompt"]
     assert "NO WEB RESEARCH FOR THIS BATCH" in prompt
     assert "DESTRUCTIVE MODE ENABLED" in prompt
+    slice_paths = list(pkg["reports_dir"].glob("AUDIT-SLICE-*.json"))
+    assert len(slice_paths) == 1
+    audit_slice = json.loads(slice_paths[0].read_text())
+    assert audit_slice["no_skills"] is True
+    assert audit_slice["skills"] == []
+    assert audit_slice["exact_duplicate_groups"] == []
+    assert audit_slice["semantic_candidates"] == []
+    assert str(slice_paths[0]) in prompt
 
 
 

@@ -711,6 +711,7 @@ CREATE TABLE IF NOT EXISTS curator_passes (
     expected_batches      INTEGER NOT NULL CHECK(expected_batches > 0),
     mode                  TEXT NOT NULL CHECK(mode IN ('advisory','destructive')),
     audit_manifest_path   TEXT NOT NULL,
+    audit_manifest_sha256 TEXT NOT NULL DEFAULT '',
     snapshot_path         TEXT,
     created_at            INTEGER NOT NULL,
     updated_at            INTEGER NOT NULL,
@@ -730,6 +731,11 @@ CREATE TABLE IF NOT EXISTS curator_batches (
     -- review exactly the entries the pass was created for even after the
     -- live inventory (and therefore every batch boundary) has moved on.
     batch_text            TEXT NOT NULL DEFAULT '',
+    -- Each evaluator reads only its deterministic subset of the canonical
+    -- audit. Both the path and digest are frozen before dispatch.
+    audit_slice_path      TEXT NOT NULL DEFAULT '',
+    audit_slice_sha256    TEXT NOT NULL DEFAULT '',
+    audit_slice_skill_names TEXT NOT NULL DEFAULT '[]',
     -- Phase one (#289): a read-only web research child writes a
     -- destination-scoped handoff before the web-free evaluator may run.
     research_state        TEXT NOT NULL DEFAULT 'pending'
@@ -1161,6 +1167,10 @@ ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     # downgrades one batch of a destructive pass to advisory, and its
     # proposals must then never reach the verifier.
     "ALTER TABLE curator_batches ADD COLUMN eval_mode TEXT",
+    "ALTER TABLE curator_passes ADD COLUMN audit_manifest_sha256 TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE curator_batches ADD COLUMN audit_slice_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE curator_batches ADD COLUMN audit_slice_sha256 TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE curator_batches ADD COLUMN audit_slice_skill_names TEXT NOT NULL DEFAULT '[]'",
     # When curator_run moved a skill to 'stale'; archiving needs a dwell time
     # in that state, so a long-idle skill is never archived on its first run.
     "ALTER TABLE skill_usage ADD COLUMN stale_since INTEGER",
