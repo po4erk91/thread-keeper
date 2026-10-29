@@ -61,10 +61,6 @@ Evolve suggestions, and the October research digest. Four distinct gaps remain:
   fingerprints, and recovery links without retaining raw arguments or tool
   output. Live ingestion stays gated on an offline comparison with the current
   dialogue-only pipeline.
-- **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
-  fixtures an explicit lifecycle that remains available to validators but is
-  excluded from normal discovery, routing, and Curator production-health
-  counts.
 - **Skill validator coverage (#382).** Detect missing relative resources named
   in path-like inline code and repeated normalized paragraphs within one skill,
   with conservative exclusions for URLs, commands, examples, and boilerplate.
@@ -99,6 +95,12 @@ already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
 registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
+
+- Hidden managed-skill fixtures (#381): explicitly classified seed, probe, and
+  test skills now live in hidden mirrored storage and stay available to
+  explicit validation. Normal discovery, routing, telemetry totals, and
+  Curator production-health inventory exclude them; migration is dry-run-first
+  and requires maintainer-selected names.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.

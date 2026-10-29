@@ -551,6 +551,138 @@ def test_skill_list_omits_archived_by_default(skills_pkg):
     assert "ghost" in txt_all
 
 
+def test_fixture_is_hidden_until_explicitly_listed_and_mirrored(skills_pkg, monkeypatch):
+    """Fixture skills use hidden storage and never enter normal discovery."""
+    mirror_root = skills_pkg["tmp"] / "fixture-mirror"
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(
+        st, "_skill_roots", lambda: [skills_pkg["skills_root"], mirror_root],
+    )
+    manage = _tool(skills_pkg, "skill_manage")
+    result = manage(
+        action="create",
+        name="probe-skill",
+        description="Use only in the fixture lifecycle test.",
+        content="# Probe\n",
+        classification="fixture",
+    )
+
+    assert result.startswith("ok path=")
+    assert not (skills_pkg["skills_root"] / "probe-skill").exists()
+    assert (
+        skills_pkg["skills_root"] / ".fixtures" / "probe-skill" / "SKILL.md"
+    ).exists()
+    assert (mirror_root / ".fixtures" / "probe-skill" / "SKILL.md").exists()
+
+    listed = _tool(skills_pkg, "skill_list")
+    assert "probe-skill" not in listed()
+    listed_fixtures = listed(include_fixtures=True)
+    assert "probe-skill" in listed_fixtures
+    assert "classification=fixture" in listed_fixtures
+
+
+def test_hidden_fixture_import_preserves_its_classification(skills_pkg, monkeypatch):
+    external_root = skills_pkg["tmp"] / "external" / ".fixtures"
+    external = external_root / "imported-fixture"
+    external.mkdir(parents=True)
+    (external / "SKILL.md").write_text(
+        "---\n"
+        "name: imported-fixture\n"
+        "description: Use only in the hidden fixture import test.\n"
+        "---\n\n"
+        "# Fixture\n",
+        encoding="utf-8",
+    )
+    from threadkeeper.tools import skills as st
+
+    monkeypatch.setattr(st, "_skill_roots", lambda: [skills_pkg["skills_root"]])
+
+    assert st.mirror_skill_from_path(str(external)) == "imported-fixture"
+    conn = skills_pkg["db"].get_db()
+    row = conn.execute(
+        "SELECT classification FROM skill_usage WHERE name='imported-fixture'"
+    ).fetchone()
+    assert row["classification"] == "fixture"
+    assert (skills_pkg["skills_root"] / ".fixtures" / "imported-fixture").is_dir()
+    assert not (skills_pkg["skills_root"] / "imported-fixture").exists()
+    assert "imported-fixture" not in _tool(skills_pkg, "skill_list")()
+
+
+def test_fixture_reclassification_is_explicit_and_never_name_inferred(skills_pkg):
+    _seed_skill(skills_pkg, "fixture-looking-name")
+    manage = _tool(skills_pkg, "skill_manage")
+    conn = skills_pkg["db"].get_db()
+
+    before = conn.execute(
+        "SELECT classification FROM skill_usage WHERE name='fixture-looking-name'"
+    ).fetchone()["classification"]
+    assert before == "production"
+    assert manage(
+        action="set_classification",
+        name="fixture-looking-name",
+        classification="fixture",
+    ) == "ok classification=fixture"
+    after = conn.execute(
+        "SELECT classification FROM skill_usage WHERE name='fixture-looking-name'"
+    ).fetchone()["classification"]
+    assert after == "fixture"
+    assert not (skills_pkg["skills_root"] / "fixture-looking-name").exists()
+    assert (skills_pkg["skills_root"] / ".fixtures" / "fixture-looking-name").exists()
+
+
+def test_fixture_migration_dry_run_requires_explicit_names_and_shows_evidence(skills_pkg):
+    _seed_skill(skills_pkg, "legacy-fixture-probe")
+    from threadkeeper.tools.skills import fixture_migration_plan
+
+    assert fixture_migration_plan([]) == []
+    plan = fixture_migration_plan(["legacy-fixture-probe"])
+    assert plan == [{
+        "name": "legacy-fixture-probe",
+        "status": "candidate",
+        "evidence": [
+            "selected_by_maintainer",
+            "classification=production",
+            "origin=foreground",
+            "state=active",
+            "source=present",
+        ],
+    }]
+    row = skills_pkg["db"].get_db().execute(
+        "SELECT classification FROM skill_usage WHERE name='legacy-fixture-probe'"
+    ).fetchone()
+    assert row["classification"] == "production"
+
+
+def test_fixture_migration_command_defaults_to_dry_run(skills_pkg, capsys):
+    _seed_skill(skills_pkg, "cli-migration-fixture")
+    from threadkeeper import skill_fixtures
+
+    assert skill_fixtures.main(["--name", "cli-migration-fixture"]) == 0
+    report = __import__("json").loads(capsys.readouterr().out)
+    assert report["dry_run"] is True
+    assert report["candidates"][0]["status"] == "candidate"
+    row = skills_pkg["db"].get_db().execute(
+        "SELECT classification FROM skill_usage WHERE name='cli-migration-fixture'"
+    ).fetchone()
+    assert row["classification"] == "production"
+
+
+def test_recent_production_routing_excludes_fixture(skills_pkg):
+    manage = _tool(skills_pkg, "skill_manage")
+    manage(
+        action="create",
+        name="routing-fixture",
+        description="Use only in a routing test fixture.",
+        content="# Fixture\n",
+        classification="fixture",
+    )
+    conn = skills_pkg["db"].get_db()
+    from threadkeeper.tools.skills import _recent_active_skills_dump
+
+    assert _recent_active_skills_dump(conn) == ""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # curator
 # ──────────────────────────────────────────────────────────────────────

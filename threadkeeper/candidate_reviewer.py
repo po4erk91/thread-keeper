@@ -220,7 +220,8 @@ def _active_skills_dump(conn: sqlite3.Connection, limit: int = 15,
             "       MAX(COALESCE(last_used_at,0), "
             "           COALESCE(last_viewed_at,0), "
             "           COALESCE(last_patched_at,0)) AS last_active "
-            "FROM skill_usage WHERE state='active' AND last_active > ? "
+            "FROM skill_usage WHERE state='active' "
+            "AND classification='production' AND last_active > ? "
             "ORDER BY last_active DESC LIMIT ?",
             (cutoff, limit),
         ).fetchall()

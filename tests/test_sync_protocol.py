@@ -143,6 +143,33 @@ def test_receive_advances_hlc_so_later_local_edit_wins(fresh_mp, tmp_path):
         a.close(); b.close()
 
 
+def test_skill_fixture_classification_is_preserved_by_sync(fresh_mp, tmp_path):
+    """The replicated skill_usage payload carries the hidden fixture class."""
+    from threadkeeper.sync import migrate, protocol
+    db = fresh_mp["db"]
+    pa = _build_db(db, migrate, tmp_path / "A.sqlite")
+    pb = _build_db(db, migrate, tmp_path / "B.sqlite")
+    a, b = _open(pa), _open(pb)
+    try:
+        a.execute(
+            "INSERT INTO skill_usage "
+            "(name, created_at, created_by_origin, classification) "
+            "VALUES (?, ?, ?, ?)",
+            ("synced-fixture", 1, "foreground", "fixture"),
+        )
+        a.commit()
+
+        protocol.sync_pair(a, b)
+
+        row = b.execute(
+            "SELECT classification FROM skill_usage WHERE name='synced-fixture'"
+        ).fetchone()
+        assert row["classification"] == "fixture"
+    finally:
+        a.close()
+        b.close()
+
+
 def test_sync_recomputes_missing_embeddings(fresh_mp, tmp_path):
     """F4 regression: embeddings are stripped from the wire, so a synced concept
     (or dialog row) lands with NULL embedding and must be re-embedded locally

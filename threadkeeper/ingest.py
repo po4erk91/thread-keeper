@@ -310,7 +310,8 @@ def _slash_skill_invocations(conn: sqlite3.Connection, text: str) -> list[str]:
     found: list[str] = []
     for name in _SLASH_COMMAND_RE.findall(text or ""):
         known = conn.execute(
-            "SELECT 1 FROM skill_usage WHERE name=?", (name,),
+            "SELECT 1 FROM skill_usage "
+            "WHERE name=? AND classification='production'", (name,),
         ).fetchone() or (CLAUDE_SKILLS_DIR / name / "SKILL.md").is_file()
         if known:
             found.append(name)

@@ -216,3 +216,7 @@ def test_v5_database_without_namespaces_gets_them_and_keeps_memory_global(tmp_pa
         "SELECT global_rows FROM project_scope_migration_report WHERE table_name='threads'"
     ).fetchone()
     assert report[0] == 1
+    skill_columns = {
+        row["name"] for row in live.execute("PRAGMA table_info(skill_usage)")
+    }
+    assert "classification" in skill_columns

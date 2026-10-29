@@ -533,7 +533,8 @@ def shadow_telemetry(conn: sqlite3.Connection,
         try:
             skill_writes = conn.execute(
                 "SELECT COUNT(*) FROM skill_usage "
-                "WHERE created_by_origin='shadow_review' AND created_at>=?",
+                "WHERE created_by_origin='shadow_review' "
+                "AND classification='production' AND created_at>=?",
                 (cut,),
             ).fetchone()[0]
         except sqlite3.OperationalError:
