@@ -23,12 +23,33 @@ remains a live question.
   bounded retry budget. Keep the existing privacy boundary, evidence checks,
   and non-mutating fallback. This complements the local manifest slices in
   #413; it does not replace per-batch evaluation or verification.
+- **Close lesson-read connections promptly (remaining cleanup after [#293](https://github.com/po4erk91/thread-keeper/issues/293)).** Large lesson
+  reviews leave one connection per read open until garbage collection. Give
+  `lesson_get` and `lesson_list` explicit connection ownership on success,
+  missing or invalidated lessons, empty listings, and errors. Preserve
+  foreground consultation counters and maintenance-read neutrality. A
+  disposable Curator-origin probe retained 40 connections with automatic
+  collection paused; explicit collection released them, and closing after
+  each read retained zero. This demonstrates delayed cleanup, not a permanent
+  leak or a held write transaction.
 
-Disposable probes confirmed both gaps. The existing worktree, task-retention,
+Disposable probes confirmed the worktree and research gaps. The existing worktree, task-retention,
 and Curator research checks passed all 10 focused tests. The branch-development
 database guard, Curator capability coverage, unavailable-skill routing, and
-mirror-root policy recorded below remain open. No external research digest or
-pending legacy suggestions were available for this pass.
+mirror-root policy recorded below remain open. A follow-up reviewed all five
+legacy suggestions: source availability belongs to #373, mirror-root policy
+belongs to #388, and connection cleanup is distinct from the neutral-read
+telemetry already delivered by #402. No external research digest was available.
+
+The follow-up's complete Curator phase-contract comparison found nine hidden
+operations: `lesson_list`, `lesson_get`, `lesson_append`, `lesson_patch`,
+`list_concepts`, `expand_concept`, `concept_manage`, `curator_merge_verdict`,
+and `evolve_format`. Report persistence is already exposed. An exact parent
+allowlist with the full profile exposed the required set without widening
+that allowlist; a production solution still needs phase-specific composition
+and the spawned-Codex integration coverage recorded below. All 33 focused
+profile, database-runtime, Evolve, and agent-status checks passed against a
+disposable database with background daemons disabled.
 
 ## 2026-10-27 reviewer audit
 
