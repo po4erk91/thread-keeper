@@ -8,6 +8,28 @@ remains a live question.
 
 ---
 
+## 2026-10-29 reviewer audit
+
+- **Reclaim finished task checkouts safely ([#431](https://github.com/po4erk91/thread-keeper/issues/431)).** People running background repository
+  tasks keep a full working copy and a temporary Git branch after every task.
+  Existing task retention cleans flat log files but skips those checkouts.
+  Add ownership-aware retention and dry-run size reporting, keep active tasks
+  and unpublished or dirty work recoverable, and remove eligible checkouts
+  through Git so its worktree records and temporary branches stay consistent.
+- **Reuse fixed public research within one Curator pass (follow-up to [#355](https://github.com/po4erk91/thread-keeper/issues/355)).** The privacy fix is complete:
+  researchers receive only two fixed public queries. Every skill-containing
+  batch still launches that same search independently. Gather one verified
+  digest per pass, authorize each evaluator's use separately, and share a
+  bounded retry budget. Keep the existing privacy boundary, evidence checks,
+  and non-mutating fallback. This complements the local manifest slices in
+  #413; it does not replace per-batch evaluation or verification.
+
+Disposable probes confirmed both gaps. The existing worktree, task-retention,
+and Curator research checks passed all 10 focused tests. The branch-development
+database guard, Curator capability coverage, unavailable-skill routing, and
+mirror-root policy recorded below remain open. No external research digest or
+pending legacy suggestions were available for this pass.
+
 ## 2026-10-27 reviewer audit
 
 - **Protect shared memory during branch development.** The database guard
