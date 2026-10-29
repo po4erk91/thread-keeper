@@ -641,15 +641,33 @@ def _spawn_worktree_plan(
 
 def _remove_spawn_worktree(worktree: _SpawnWorktree) -> None:
     """Best-effort cleanup for a worktree whose child never launched."""
-    _git_result(
-        ["worktree", "remove", "--force", str(worktree.path)],
-        worktree.repo_root,
-    )
-    _git_result(["branch", "-D", worktree.branch], worktree.repo_root)
+    from ..db import run_write
+    from ..task_worktrees import remove_worktree
+
+    def cleanup(conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE task_worktrees SET eligible=1 WHERE task_id=?",
+                     (worktree.path.name,))
+        # The reservation still looks live until _release deletes it. Leave
+        # the durable claim for consolidate if immediate removal is blocked.
+        remove_worktree(conn, TASK_LOG_DIR, worktree.path.name)
+
+    try:
+        run_write("spawn_worktree_cleanup", cleanup)
+    except (sqlite3.Error, OSError):
+        pass
 
 
 def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
     """Create the task's branch/worktree after the spawn budget is reserved."""
+    from ..db import run_write
+    from ..task_worktrees import register_worktree, confirm_worktree
+
+    try:
+        run_write("spawn_worktree_claim", lambda conn: register_worktree(
+            conn, worktree.path.name, worktree.repo_root, worktree.path, worktree.branch,
+        ))
+    except (sqlite3.Error, OSError) as error:
+        return f"ERR spawn_worktree_claim_failed={error}"
     _, err = _git_result(
         [
             "worktree", "add", "--quiet", "-b", worktree.branch,
@@ -660,6 +678,13 @@ def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
     if err:
         _remove_spawn_worktree(worktree)
         return f"ERR spawn_worktree_create_failed={err}"
+    try:
+        run_write("spawn_worktree_confirm", lambda conn: confirm_worktree(
+            conn, worktree.path.name, worktree.path,
+        ))
+    except (sqlite3.Error, OSError) as error:
+        _remove_spawn_worktree(worktree)
+        return f"ERR spawn_worktree_confirm_failed={error}"
     if not worktree.child_cwd.is_dir():
         _remove_spawn_worktree(worktree)
         return "ERR spawn_worktree_create_failed=cwd_not_in_clean_checkout"

@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.22.0 — 2026-10-29
+
+- **Added: safe cleanup for finished task checkouts (#431).** Task retention
+  can reclaim clean, expired checkouts and their owned temporary branches once
+  their commits are saved elsewhere. Preview reports size and reasons for
+  keeping work. Active tasks, changed files, unpublished commits, and uncertain
+  ownership stay protected. Cleanup can resume after history pruning or a
+  partial failure, with separate results for checkouts and branches.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

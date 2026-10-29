@@ -1178,10 +1178,50 @@ relative subdirectory in that worktree, and its task row records that isolated
 cwd. Thus parallel children can commit, switch branches, and update their Git
 index without touching each other's worktree or the caller's checkout.
 
-Directories outside a Git repository retain the normal spawn behavior. The
-per-task worktree is deliberately retained after launch so a completed child's
-work remains inspectable and recoverable; it is never deleted while a child may
-still be using it.
+Directories outside a Git repository retain the normal spawn behavior. Task
+checkouts remain available until their task expires under the age/count policy.
+Live tasks and checkouts used by another live task are protected.
+
+### Finished task worktree retention (#431)
+
+`task_worktrees` stores cleanup ownership independently of `tasks`, without a
+cascading foreign key. Spawn commits its intent before creating the checkout,
+then records directory device/inode identities, the common Git directory, the
+linked Git directory, and an ownership marker in the temporary branch's local
+Git config before launching a child. An incomplete claim cannot authorize
+removal of an existing checkout or an unrelated branch.
+
+`consolidate(dry_run=True)` uses the same retention decision as task history:
+either age or newest-count protection keeps the checkout; disabling both keeps
+all task rows. Previewing does not create/chmod spool directories, refresh Git
+indexes, alter references, or update task/ownership rows. It reports candidate
+counts and logical file bytes, plus a reason for every retained resource.
+Old checkouts without a recorded owner are reported and require manual review.
+Task rows pointing into their legacy per-task checkout are kept until ownership
+can be reviewed, even when the directory is missing; pruning must not discard
+the last history that could explain a leftover branch.
+
+Apply commits cleanup eligibility and task-row pruning together before Git
+removal. Ownership remains until checkout registration and the owned branch
+are both confirmed absent. A later pass can retry missing directories or a
+branch left after partial removal. Failed launches also leave cleanup intent
+eligible for retry. Forgetting task history without a terminal retention
+decision does not authorize deletion of an unknown checkout.
+
+Each removal rechecks owner UID, path containment, non-symlink spool/checkout
+directories, directory identities, Git registration and linked Git directory,
+branch ownership, active use, locks, and tracked/untracked/ignored files.
+Changed or detached branches are retained. The owned branch tip must remain
+reachable from a non-task local branch or a remote-tracking ref; cleanup never
+fetches or assumes that a task branch alone is a saved copy. Operators should
+refresh remote refs when they need current publication evidence. The same
+protection covers commits recoverable only through the owned branch or
+checkout HEAD reflogs, including work abandoned by a reset or branch switch.
+Removal uses `git worktree remove` without force, then deletes the branch ref with an
+expected old object ID so a concurrent commit cannot be lost. No global
+worktree prune runs. Output and `consolidate_apply` telemetry distinguish
+retained, removed, and failed cleanup, including separate checkout/branch
+results and bytes reclaimed after a partial failure.
 
 ### Background workspace
 

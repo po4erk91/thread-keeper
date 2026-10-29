@@ -9,11 +9,13 @@ reports (and optionally applies) several kinds of cleanup:
   release_orphan  : claim ≥ orphan_days old, no progress past claim mark
   prune_tasks     : ended tasks outside retention age/count bounds
   gc_task_spool   : task spool files with no retained tasks row
+  gc_worktrees    : safely disposable expired task checkouts and branches
 """
 
 import sqlite3
 import stat
 import time
+from pathlib import Path
 
 from .._mcp import read_tool, write_tool
 from ..db import get_db
@@ -31,7 +33,7 @@ from ..embeddings import (
     _vec_delete_note,
     _note_embedding_parts,
 )
-from ..task_spool import ensure_task_spool_dir
+from ..task_worktrees import worktree_candidates, remove_worktree, _owned_directory
 
 
 CONSOLIDATE_NOTE_COSINE = 0.95
@@ -50,6 +52,13 @@ def _task_retention_label() -> str:
     if count:
         parts.append(f"newest {count} ended")
     return " or ".join(parts) if parts else "row pruning disabled"
+
+
+def _legacy_worktree_history_needed(conn: sqlite3.Connection, task: str, cwd: str) -> bool:
+    expected = (TASK_LOG_DIR / "worktrees" / task).absolute()
+    if not Path(cwd).absolute().is_relative_to(expected):
+        return False
+    return conn.execute("SELECT 1 FROM task_worktrees WHERE task_id=?", (task,)).fetchone() is None
 
 
 def _task_rows_to_prune(conn: sqlite3.Connection, now: int) -> list[dict]:
@@ -76,12 +85,14 @@ def _task_rows_to_prune(conn: sqlite3.Connection, now: int) -> list[dict]:
     cutoff = now - days * 86400 if days > 0 else None
     out = []
     for r in conn.execute(
-        "SELECT id, prompt, started_at, ended_at FROM tasks "
+        "SELECT id, prompt, cwd, started_at, ended_at FROM tasks "
         "WHERE ended_at IS NOT NULL ORDER BY ended_at ASC, started_at ASC"
     ).fetchall():
         keep_age = cutoff is not None and int(r["ended_at"]) >= cutoff
         keep_count = r["id"] in keep_by_count
         if keep_age or keep_count:
+            continue
+        if _legacy_worktree_history_needed(conn, r["id"], r["cwd"]):
             continue
         out.append({
             "task": r["id"],
@@ -111,7 +122,7 @@ def _task_spool_gc_candidates(
         r["id"] for r in conn.execute("SELECT id FROM tasks").fetchall()
     } - pruned_task_ids
     try:
-        ensure_task_spool_dir(TASK_LOG_DIR)
+        _owned_directory(TASK_LOG_DIR)
         entries = sorted(TASK_LOG_DIR.iterdir(), key=lambda p: p.name)
     except (FileNotFoundError, OSError):
         return []
@@ -152,7 +163,8 @@ def consolidate(dry_run: bool = True,
       dedupe_verbatim : exact text + (if embeddings) cosine ≥ verbatim_cosine
       release_orphan  : claim ≥ orphan_days old, no progress past claim mark
       prune_tasks     : ended task rows outside retention bounds
-      gc_task_spool   : task spool files with no retained task row"""
+      gc_task_spool   : task spool files with no retained task row
+      gc_worktrees    : safely disposable expired task checkouts and branches"""
     conn = get_db()
     _ensure_session(conn)
     now = int(time.time())
@@ -276,6 +288,9 @@ def consolidate(dry_run: bool = True,
     findings["gc_task_spool"].extend(
         _task_spool_gc_candidates(conn, pruned_task_ids)
     )
+    worktrees = worktree_candidates(conn, TASK_LOG_DIR, pruned_task_ids)
+    candidates = [item for item in worktrees if item["status"] == "candidate"]
+    candidate_bytes = sum(item["bytes"] for item in candidates)
 
     applied = {
         "merge_dup_notes": 0, "idle_stale": 0,
@@ -305,11 +320,27 @@ def consolidate(dry_run: bool = True,
             )
             applied["release_orphan"] += 1
         for f in findings["prune_tasks"]:
+            conn.execute("UPDATE task_worktrees SET eligible=1 WHERE task_id=?",
+                         (f["task"],))
             conn.execute(
                 "DELETE FROM tasks WHERE id=? AND ended_at IS NOT NULL",
                 (f["task"],),
             )
             applied["prune_tasks"] += 1
+        # Commit ownership eligibility together with pruning before touching
+        # Git, so interruption cannot strand an untraceable checkout.
+        conn.commit()
+        worktrees = [remove_worktree(conn, TASK_LOG_DIR, item["task"])
+                     if item["status"] == "candidate" else item for item in worktrees]
+        for status in ("retained", "removed", "failed"):
+            applied[f"worktrees_{status}"] = sum(
+                item["status"] == status for item in worktrees)
+        applied["worktree_bytes_removed"] = sum(
+            item.get("bytes_removed", 0) for item in worktrees)
+        for resource, plural in (("checkout", "checkouts"), ("branch", "branches")):
+            for status in ("retained", "removed", "failed"):
+                applied[f"{plural}_{status}"] = sum(
+                    item.get(f"{resource}_status", "retained") == status for item in worktrees)
         for f in findings["gc_task_spool"]:
             try:
                 TASK_LOG_DIR.joinpath(f["name"]).unlink()
@@ -330,10 +361,20 @@ def consolidate(dry_run: bool = True,
         f"dedupe={len(findings['dedupe_verbatim'])} "
         f"orphan={len(findings['release_orphan'])} "
         f"task_prune={len(findings['prune_tasks'])} "
-        f"spool_gc={len(findings['gc_task_spool'])}"
+        f"spool_gc={len(findings['gc_task_spool'])} "
+        f"worktree_gc={len(candidates)} worktree_bytes={candidate_bytes} "
+        f"worktrees_retained={sum(item['status'] == 'retained' for item in worktrees)}"
     ]
     if not dry_run:
         out.append("applied " + " ".join(f"{k}={v}" for k, v in applied.items()))
+    if worktrees:
+        out.append("")
+        out.append("task_worktree_gc (owned checkouts; Git removal without force)")
+        for item in worktrees:
+            out.append(f"  task={item['task']} status={item['status']} "
+                       f"bytes={item['bytes']} reason={q(item['reason'])} "
+                       f"checkout={item.get('checkout_status', 'retained')} "
+                       f"branch={item.get('branch_status', 'retained')}")
     if findings["merge_dup_notes"]:
         out.append("")
         out.append("merge_dup_notes (keep oldest)")

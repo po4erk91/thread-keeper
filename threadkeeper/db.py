@@ -701,6 +701,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     trace_exported_at INTEGER
 );
 
+-- Independent of tasks: history pruning must not erase cleanup ownership.
+CREATE TABLE IF NOT EXISTS task_worktrees (
+    task_id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    repo_dev INTEGER NOT NULL,
+    repo_ino INTEGER NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL,
+    path_dev INTEGER,
+    path_ino INTEGER,
+    git_dir TEXT,
+    eligible INTEGER NOT NULL DEFAULT 0
+);
+
 -- Curator passes are durable work manifests. The event log remains useful
 -- human telemetry, but it cannot distinguish dispatch from a child that
 -- later failed or timed out. A fingerprint is endorsed only after every

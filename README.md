@@ -1745,6 +1745,17 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
   `THREADKEEPER_TASK_RETENTION_DAYS` defaults to `30` and
   `THREADKEEPER_TASK_RETENTION_COUNT` defaults to `1000`; a row is kept if it
   is protected by either bound. Set either knob to `0` to disable that bound.
+  With both bounds disabled, finished task rows and their checkouts are kept.
+  Expired tasks also release their owned Git worktrees and temporary branches
+  when the checkout is clean and its commits remain reachable from another
+  local branch or a remote-tracking branch. Other temporary task branches do
+  not count as a safe copy. Dry run reports checkout counts, bytes, and reasons
+  for keeping work. Cleanup preserves live tasks, changed or untracked files
+  (including ignored files), unpublished work, locked checkouts, changed
+  ownership, and branches checked out elsewhere. It never forces Git removal.
+  Commits saved only in the task's branch or checkout history are also kept,
+  including commits left behind by a reset or branch switch.
+  Ownership records survive task-history pruning, so a later cleanup can retry.
 - **`forget(selector, selector_type="auto", dry_run=True)`** — targeted
   privacy erasure for one session/cid/thread/dialog UUID. Dry-run reports the
   rows that would be removed from `dialog_messages`, FTS/vector sidecars,
@@ -2056,6 +2067,18 @@ current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
 and visible `.command` files with no-follow owner-only opens. Git-backed spawns
 also create their isolated worktrees there. `consolidate()` garbage-collects
 task spool files once their task row is no longer retained.
+
+Task worktrees use the same retention bounds. Before removing history,
+`consolidate()` saves cleanup eligibility in a separate ownership record.
+It uses `git worktree remove` and deletes only the recorded temporary branch,
+after checking that its tip is retained elsewhere. Failed or interrupted cleanup
+keeps that record; rerun the dry run after saving work on another branch,
+publishing commits, or resolving the reported block. Apply cleanup only after
+reviewing that report. A changed branch or checkout must be reviewed manually.
+Older checkouts without ownership records are reported as `ownership_unknown`
+and kept; their task rows also stay available for manual review. Verify their
+Git status and saved commits before removing them
+manually with Git; directory names alone never establish ownership.
 
 ---
 

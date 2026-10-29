@@ -959,6 +959,10 @@ Follow-up gaps from the 2026-06-17 audit:
   while preserving live rows, removes orphan `.log`/`.stdin.txt`/`.command`
   spools, and creates captured headless `.log` files with owner-only
   permissions.
+- DONE (#431). Finished task checkouts and owned temporary branches now
+  share task retention. Cleanup previews count and size, preserves active or
+  recoverable work and unknown owners, and keeps ownership evidence across
+  history pruning and partial Git failures so removal can be retried safely.
 - ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
   self-updates now verify PyPI Integrity API provenance before invoking `pip`,
   require the expected GitHub Trusted Publisher identity, check the attested
