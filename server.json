@@ -7,12 +7,12 @@
     "url": "https://github.com/po4erk91/thread-keeper",
     "source": "github"
   },
-  "version": "0.21.0",
+  "version": "0.22.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "threadkeeper",
-      "version": "0.21.0",
+      "version": "0.22.0",
       "transport": {
         "type": "stdio"
       }

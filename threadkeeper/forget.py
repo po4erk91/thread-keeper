@@ -13,7 +13,7 @@ import time
 from typing import Iterable, TypeVar
 
 
-SELECTOR_TYPES = {"auto", "session_id", "cid", "thread_id", "uuid"}
+SELECTOR_TYPES = {"auto", "session_id", "cid", "thread_id", "uuid", "objective"}
 _BATCH = 400
 T = TypeVar("T")
 
@@ -48,6 +48,7 @@ class ForgetPlan:
     session_ids: list[str] = field(default_factory=list)
     cursor_ids: list[str] = field(default_factory=list)
     presence_ids: list[str] = field(default_factory=list)
+    action_outcome_event_ids: list[str] = field(default_factory=list)
     lesson_refs: list[ReviewRef] = field(default_factory=list)
     skill_refs: list[ReviewRef] = field(default_factory=list)
     authority_roots: list[tuple[str, str]] = field(default_factory=list)
@@ -152,6 +153,11 @@ def _auto_selector_type(conn: sqlite3.Connection, selector: str) -> str:
         (selector,),
     ).fetchone():
         return "uuid"
+    if _table_exists(conn, "action_outcome_events") and conn.execute(
+        "SELECT 1 FROM action_outcome_events WHERE objective_ref=? LIMIT 1",
+        (selector.lower(),),
+    ).fetchone():
+        return "objective"
     return "session_id"
 
 
@@ -530,6 +536,28 @@ def _session_sidecar_ids(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
         )
 
 
+def _action_outcome_event_ids(conn: sqlite3.Connection, plan: ForgetPlan) -> list[str]:
+    """Find operational rows by their pointer-only source provenance."""
+    from .action_outcomes import event_ids_for_sources
+
+    if plan.selector_type == "objective":
+        rows = conn.execute(
+            "SELECT id FROM action_outcome_events WHERE objective_ref=?",
+            (plan.selector.lower(),),
+        ).fetchall()
+        return [str(row["id"]) for row in rows]
+    sources: list[tuple[str, str]] = [
+        *(("dialog", value) for value in plan.dialog_uuids),
+        *(("thread", value) for value in plan.thread_ids),
+        *(("note", value) for value in plan.note_ids),
+        *(("verbatim", value) for value in plan.verbatim_ids),
+        *(("task", value) for value in plan.task_ids),
+    ]
+    if plan.selector_type == "session_id":
+        sources.append(("session", plan.selector))
+    return event_ids_for_sources(conn, sources)
+
+
 def _scan_lessons(plan: ForgetPlan) -> list[ReviewRef]:
     tokens = _source_tokens(plan)
     if not tokens:
@@ -731,6 +759,7 @@ def _populate_counts(conn: sqlite3.Connection, plan: ForgetPlan) -> None:
         "sessions": len(plan.session_ids),
         "cursors": len(plan.cursor_ids),
         "presence": len(plan.presence_ids),
+        "action_outcomes": len(plan.action_outcome_event_ids),
     }
     try:
         from .workflow_artifacts import selective_erase_count
@@ -759,16 +788,18 @@ def build_forget_plan(
     plan.task_ids = _task_ids(conn, clean_selector, resolved)
     plan.task_spool_paths = _task_spool_paths(plan.task_ids)
     _dialectic_targets(conn, plan)
-    plan.authority_roots = [
-        *( ("dialog", uuid) for uuid in plan.dialog_uuids ),
-        *( ("note", note_id) for note_id in plan.note_ids ),
-        *( ("verbatim", verbatim_id) for verbatim_id in plan.verbatim_ids ),
-        *( ("evidence", evidence_id) for evidence_id in plan.evidence_ids ),
-        *( ("claim", claim_id) for claim_id in plan.claim_ids ),
-    ]
     plan.extract_candidate_ids = _extract_candidate_ids(conn, plan)
     plan.signal_ids = _signal_ids(conn, plan)
     _session_sidecar_ids(conn, plan)
+    plan.action_outcome_event_ids = _action_outcome_event_ids(conn, plan)
+    plan.authority_roots = [
+        *(("dialog", uuid) for uuid in plan.dialog_uuids),
+        *(("note", note_id) for note_id in plan.note_ids),
+        *(("verbatim", verbatim_id) for verbatim_id in plan.verbatim_ids),
+        *(("evidence", evidence_id) for evidence_id in plan.evidence_ids),
+        *(("claim", claim_id) for claim_id in plan.claim_ids),
+        *(("action_outcome", event_id) for event_id in plan.action_outcome_event_ids),
+    ]
     plan.lesson_refs = _scan_lessons(plan)
     plan.skill_refs = _scan_skills(plan)
     _populate_counts(conn, plan)
@@ -887,6 +918,13 @@ def _apply_forget(conn: sqlite3.Connection, plan: ForgetPlan) -> dict[str, int]:
             plan.authority_roots,
             preserve=_claims_with_independent_evidence(conn, plan),
         )
+        from .action_outcomes import _forget_events
+
+        action_outcomes = _forget_events(
+            conn, plan.action_outcome_event_ids, reason="forget",
+        )
+        deleted["action_outcomes"] = action_outcomes["events"]
+        deleted["action_outcome_candidates"] = action_outcomes["candidates"]
         deleted["task_spool_paths"] = sum(
             1 for path in plan.task_spool_paths if _unlink_spool_path(path)
         )
@@ -1169,10 +1207,13 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="tk-forget",
         description=(
             "Dry-run or apply targeted erasure for one thread-keeper "
-            "session/cid/thread/dialog UUID."
+            "session/cid/thread/dialog UUID/objective."
         ),
     )
-    parser.add_argument("selector", help="session id, cid, thread id, or dialog uuid")
+    parser.add_argument(
+        "selector",
+        help="session id, cid, thread id, dialog uuid, or objective reference",
+    )
     parser.add_argument(
         "--selector-type",
         choices=sorted(SELECTOR_TYPES),
