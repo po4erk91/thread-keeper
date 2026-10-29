@@ -1132,18 +1132,31 @@ The sweep squash-merges the oldest non-draft PR GitHub reports `CLEAN` (up to
 date, required checks green) through the protected merge API, pinned to the
 head SHA it saw green, and then asks GitHub to update the oldest `BEHIND` one —
 the "Update branch" button — so CI reruns against the new base. Open
-work in progress as a draft: drafts are never merged. Strict branch
-protection lets only one PR merge per base commit, so PRs land one at a time,
-oldest first. Between full passes the daemon repeats only this cheap landing
-sweep every 15 minutes, so a green PR lands minutes after its checks finish;
-it skips while any reviewer/applier git writer runs. A conflicted applier PR
-(`roadmap/…` or `evolve/…` head branch in this repository) is repaired before
-any new issue/report/evolve work is started: the conflict-repair child checks
-out the existing PR branch, merges the current base branch, resolves
-conflicts, runs the full suite, and pushes back to the same branch, then
-stops; the landing sweep merges it once it is green. A hand-made PR with
-conflicts, and red or otherwise blocked PRs, wait for a human. Set
-`THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge to a human.
+hand-made work in progress as a draft: those drafts are never merged. Strict
+branch protection lets only one PR merge per base commit, so PRs land one at a
+time, oldest first. Between full passes the daemon repeats only this cheap
+landing sweep every 15 minutes, so a green PR lands minutes after its checks
+finish; it skips while any reviewer/applier git writer runs.
+
+The applier keeps one applier PR (`roadmap/…` or `evolve/…` head branch in
+this repository) in flight at a time. While any is open it starts no new
+issue, Curator report, or evolve suggestion, and works on the oldest one until
+it lands. A conflicted PR gets a conflict-repair child that checks out the
+existing PR branch, merges the current base branch, resolves conflicts, runs
+the full suite, and pushes back to the same branch. A PR whose finished checks
+include a red one is first updated onto the newest base, which clears failures
+already fixed there. If it stays red while up to date, a fix child reads the
+failing logs, fixes the cause on the same branch (or re-runs a job that failed
+outside the code), runs the full suite, and pushes. A green applier draft is
+marked ready. Children never merge: the landing sweep lands the PR once it is
+green. When that PR needs a child, or the last open applier PR has just
+landed, the 15-minute sweep runs the full pass right away. After three repair
+or fix children one PR waits for a human and the next open applier PR moves
+ahead. When every open applier PR waits for a human, the pass records
+`ERR applier_prs_need_human=…`, which the notifier reports as a failure. A
+hand-made PR with conflicts or red checks waits for its author and does not
+hold back new work. Set `THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge
+to a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
@@ -1295,9 +1308,9 @@ the prior cursor and retries on a bounded short cadence; repeated identical
 blockers are recorded once until the blocker changes. `evolve_apply_status()`
 shows the last attempt, last successful dispatch, and any pending retry time.
 Manual tools such as `evolve_apply_conflicted_pr()` and
-`evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
-or roadmap issue is startable, the pass falls back to Curator reports and then
-legacy promoted `evolve_format(...)` suggestions.
+`evolve_apply_roadmap_issue()` dispatch immediately. If no applier PR is open
+and no roadmap issue is startable, the pass falls back to Curator reports and
+then legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
 
@@ -1621,7 +1634,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
-| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
+| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Applier PRs also get a green draft marked ready, and red checks retried on the newest base before a fix child starts. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |

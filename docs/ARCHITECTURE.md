@@ -743,9 +743,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   repaired, or merged. Each kept PR is classified (`_pr_landing_action`):
   `repair` for a conflicted merge state (`DIRTY` / `CONFLICTING`) on a
   same-repository `roadmap/…` or `evolve/…` head branch, `update` for `BEHIND`,
-  `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or
-  red checks, drafts, `UNKNOWN`, another base, a hand-made PR with conflicts,
-  or `EVOLVE_AUTOLAND=0`). This sweep is a hard preflight before new work: if
+  `fix` for such an applier branch whose finished `statusCheckRollup` holds a
+  red check run or commit status, `ready` for an applier draft whose checks
+  are all green, `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything
+  else (checks still running, `UNKNOWN`, another base, a hand-made PR with
+  conflicts, red checks or a draft, or `EVOLVE_AUTOLAND=0`). This sweep is a
+  hard preflight before new work: if
   PR state or the `gh` account cannot be read, the pass records
   `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
   report, or promoted evolve suggestion. Fork PRs are never fed to the
@@ -753,7 +756,7 @@ moving the high-water forward; `force=True` bypasses this due gate.
   child): squash-merge the oldest `merge` PR through `PUT /pulls/{n}/merge`
   with `sha=<headRefOid>`, so a head pushed after the green read is refused,
   then delete its same-repository head branch (never a fork's, never the
-  base); then call
+  base); then mark the oldest `ready` draft ready (`gh pr ready`); then call
   `PUT /pulls/{n}/update-branch` with `expected_head_sha` on the oldest PR that
   is behind (including green PRs that the merge just made behind). Strict branch
   protection allows one merge per base commit, so one merge and one update per
@@ -761,11 +764,25 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `evolve_pr_landing` event; the shared GitHub budget cooldown stops the sweep.
   Between due passes the daemon wakes every `EVOLVE_LANDING_POLL_S` (15 min) and
   runs only `run_evolve_landing_pass()`, which skips while any reviewer/applier
-  git writer runs. Then, if a `repair` PR exists, the repair child checks out
-  the existing PR branch, merges the current base branch, resolves conflicts,
-  runs the full suite, and pushes back to the same branch; it never merges, and
-  the landing sweep lands it once GitHub reports it green.
-  When no conflicted applier PR exists, it fetches open GitHub issues via the
+  git writer runs. **One applier PR at a time:** while any applier PR is open
+  (`_open_applier_prs`), the pass starts no new work and moves the oldest one
+  that does not wait for a human (`_next_applier_pr`) one step: a `repair` PR
+  gets the conflict-repair child (check out the existing PR branch, merge the
+  current base, resolve, run the full suite, push the same branch); a `fix` PR
+  is first updated onto the newest base through `update-branch`, and only when
+  GitHub says it is already up to date (or refuses the update) does a fix child
+  start (`PR_CHECK_REPAIR_PROMPT`: read the failing job logs, re-run a job that
+  failed outside the code or fix the cause, merge the base, run the full suite,
+  push the same branch). Children never merge; the landing sweep lands the PR
+  once GitHub reports it green. Each started child records an
+  `evolve_pr_repair_attempt` event; after `PR_REPAIR_MAX_ATTEMPTS` (3) a PR
+  waits for a human and the next open applier PR moves ahead. Otherwise the
+  pass records `waiting_on_open_prs n=… next=#… <action>` (an empty pass), or
+  `ERR applier_prs_need_human=…` (a transient blocker that the notifier
+  reports) when every open applier PR waits for a human. The landing sweep
+  runs the full pass at once when the next PR needs a child, or when the last
+  pass waited on open PRs and none is left.
+  When no applier PR is open, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
   response are filtered out). The fetch is explicit `--include --paginate`,

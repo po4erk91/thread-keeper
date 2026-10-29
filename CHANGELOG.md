@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: the Evolve applier finishes one pull request before it starts the
+  next task.** While any applier PR is open, no new roadmap issue, Curator
+  report, or evolve suggestion starts. The applier works on the oldest open PR
+  until it lands: a red PR is first updated onto the newest base, and if it
+  stays red a fix child reads the failing logs and pushes a fix to the same
+  branch; a green draft is marked ready. After three repair or fix children a
+  PR waits for a human, and a full stall is reported as a failure. Before
+  this, PRs with a red check waited forever while new tasks kept opening more
+  of them.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
