@@ -17,6 +17,17 @@ version bumps follow semver per the policy in
   this, PRs with a red check waited forever while new tasks kept opening more
   of them.
 
+## v0.22.0 — 2026-10-24
+
+- **Added: privacy-safe offline action/outcome evaluation (#380).** Bounded
+  recovery records retain normalized action names, opaque references, coarse
+  outcomes, stable error fingerprints, authority/provenance, expiry, and
+  ordered recovery links, never raw arguments, tool output, transcript text,
+  paths, or secrets. The memory-quality report compares recovery usefulness,
+  privacy leakage, storage, and false causal links against dialogue-only
+  evidence. Live ingestion remains disabled; targeted forgetting removes
+  source/objective records and invalidates derived lessons.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

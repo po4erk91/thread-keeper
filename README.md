@@ -2246,6 +2246,15 @@ It reports these headline groups over a fixed ground-truth set:
   process. It reports a separate score for thread notes, verbatim memory,
   dialectic claims, and lessons or skills.
 
+- **operational recovery comparison** — a second fully synthetic fixture
+  compares dialogue-only evidence with a bounded action/outcome record. Its
+  fixed thresholds require useful recovery links, zero forbidden-string leaks,
+  bounded storage relative to the dialogue baseline, and zero false causal
+  links. The record shape contains only normalized action names, opaque
+  objective/source references, coarse outcomes, error fingerprints, ordering,
+  recovery links, authority, provenance, and expiry. It has no raw arguments,
+  raw output, transcript text, paths, or secret field.
+
 - **outcome classification** — retrieval failure, reasoning failure,
   stale-memory use, removed-memory use, and privacy-policy violation.
 
@@ -2255,6 +2264,17 @@ memory egress policy (`all`, `same-vendor`, `work-only`). A hybrid row is marked
 unavailable when the optional semantic extra is not installed. `--strict`
 requires the versioned fixture thresholds and zero safety violations, making
 the same command suitable for retrieval/model migration gates.
+
+Action/outcome capture is an **offline-only prototype**. The runtime has no
+live producer or export route. Evaluation records expire after 30 days, and
+the retention pass removes them; `tk-forget --selector-type objective <ref>
+--apply` removes an objective's records and invalidates any linked lesson.
+Records sourced from a forgotten dialog/session/thread are removed by the
+same targeted-erasure path. The existing candidate reviewer may see only the
+bounded recovery candidate; a lesson must keep its
+`action_outcome_candidate:<id>` provenance so invalidation hides it. Live use
+requires a later explicit opt-in plus a passing offline comparison; this
+release provides neither.
 
 For DB concurrency, run the reproducible local gate:
 
