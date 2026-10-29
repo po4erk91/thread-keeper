@@ -217,3 +217,70 @@ Same change set:
 - Claude Code 2.1.278 reports `unrecognized_model` for `claude-opus-5-5` and accepts `opus`, so the router default is `opus`.
 - Codex children already call thread-keeper write tools from the existing Codex-routed loops; the new tool only needs to be in `extra_allowed_tools`.
 - The Swift `ImpactBadge` shows unknown values verbatim; a `config_write` case is added anyway.
+
+## Amendment — 2026-10-25: task results drive model selection
+
+The user's revised decision rule supersedes the keep-by-default prompt in
+section 5. Every pass compares available models and effort for each role on
+task effectiveness, cost and efficiency. A working current model, a small
+sample or a model's tier does not by itself justify retaining or choosing it.
+
+The digest now pairs previous task instructions with saved final assistant
+answers within that task's session and execution window. Structured Claude
+and Codex log results, then the existing result-line extractor, are fallbacks.
+Samples include failed executions and cover previous model/effort combinations.
+Long excerpts retain their beginning and conclusion. Redaction and the
+untrusted-data fence apply to instructions and results; deleted transcript
+messages are excluded. Size reduction retains task-result evidence.
+
+Recorded USD costs and their coverage accompany per-run time and tokens.
+Unknown costs remain unknown; subscription token use is a quota proxy.
+Execution success and task success are distinct. Self-reported results need
+supporting tests or reviews to establish quality; missing evidence and
+untested alternatives must be called out in the decision's reason. Each
+reason compares the three criteria for that role rather than waiting for
+the current setting to fail. The routing schedule and write authorization
+contract remain unchanged.
+
+The parent also loads official pricing automatically for available CLIs.
+Fixed Markdown sources cover OpenAI API prices and Codex credits, Anthropic
+prices and Claude alias resolution, GitHub Copilot prices, and Antigravity
+quota/overage terms. Rate-card data is cached atomically beside the database
+for 24 hours. Bounded fetches reject redirects; failed fetches or changed
+document layouts retain last-good data as stale, with its original fetch time.
+URLs and freshness are supplied as fenced evidence with reserved prompt space.
+The digest adds input/output token medians and coverage, per-task breakdowns
+and transcript-reported model IDs. The router matches exact models, billing
+scope, currency, context/cache/speed conditions and known alias overrides.
+It compares effort from observed task outcomes, time and consumption, without
+an invented effort multiplier. Missing breakdowns, alias versions or rates
+remain explicit uncertainties; API-equivalent estimates do not replace
+recorded USD spend or claim to measure subscription quota exactly.
+
+Live verification also found that generic child-profile selection assigned
+`core` to the router and hid its only write tool. Router children now use a
+dedicated `model-router` profile exposing `model_route_write`, intersected
+with the parent's permissions. The host registers that tool before launching
+the child; a parent that cannot expose it receives a clear spawn refusal.
+
+A further live pass exposed two separate problems. The MCP permission grant
+did not restrict native Claude tools, so the router expanded its bounded input
+into lengthy shell research. It now has only native `ToolSearch` plus its MCP
+writer and must decide from the supplied evidence. The direct Claude spawn
+path also lacked the adapter's streaming flags; captured hidden launches now
+reuse those flags to expose intermediate events in task logs.
+
+The completed proposal then hit a protocol replay-key collision: client software
+metadata and a numeric JSON-RPC ID were shared with an older CLI process.
+Replay keys now include a fresh stdio-connection namespace and retain ID types.
+Same-connection replay/mismatch checks and caller-bound continuation checks
+remain; the durable router pass still governs retry ownership.
+
+The digest also includes dated CLI/model/effort tuples from completed router
+passes with successful process exits. Later successful access supersedes older
+startup failures, without establishing quality on another role's tasks. This
+prevents a resolved client-version issue from remaining an assumed account block.
+Recent failed router attempts carry parsed terminal error text, keeping quota
+limits separate from model quality. Pending passes reconcile every 30 seconds;
+both the scheduler claim interval and loop sleep use that cadence, while normal
+due-pass checks remain hourly. This avoids a one-hour delay before fallback.

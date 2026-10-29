@@ -7,6 +7,43 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: notification causes remain available when macOS hides previews.**
+  The menu-bar app keeps a bounded local history with selectable details and
+  imports its own retained delivered notifications. `--notification-history`
+  reads that history as JSON without starting status polling. The daemon saves
+  sanitized notification payloads with their source before dispatch, so an
+  error can be traced independently of a banner or the selected log channel.
+
+- **Fixed: independent MCP clients no longer collide on reused request IDs.**
+  Modern write replay keys are scoped to each stdio connection and preserve
+  numeric/string ID types. Identical client software metadata no longer causes
+  a new agent's write to be rejected or replay an unrelated earlier result.
+  Same-connection replay checks and caller-bound continuation checks remain.
+- **Fixed: model routing stays within its prepared inputs.** Claude router
+  children can discover and call their writer without shell or skill research.
+  Captured headless Claude launches stream progress to the task log rather
+  than staying silent until the final result.
+  Dated successful router executions now resolve older model-access failures
+  in the decision input without treating access as proof of task quality.
+  Failed attempts retain parsed quota/error text. Running passes reconcile
+  every 30 seconds so fallback dispatch does not wait for the hourly due check.
+
+- **Added: model routing fetches official prices automatically.** OpenAI API
+  and Codex credit rates, Anthropic rates and alias rules, Copilot rates, and
+  Antigravity quota terms refresh with a 24-hour cache. Decisions receive
+  source URLs, fetch times, explicit stale/unavailable status, input/output
+  token coverage and reported model IDs. Cost comparisons distinguish API
+  prices, credits and subscription quotas; effort uses observed consumption
+  and task quality rather than an invented fixed surcharge.
+
+- **Changed: model routing compares previous task results, cost and efficiency.**
+  Every pass reassesses models and effort per role. The digest now includes
+  saved final answers with task context, failed and alternative-model runs,
+  recorded costs and missing-data coverage. A clean process exit or an
+  existing assignment no longer stands in for task quality.
+  Router children receive a dedicated profile exposing their route-write
+  tool; a missing parent permission prevents a doomed child launch.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**
