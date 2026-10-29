@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a test or eval run can no longer leave a live daemon host
+  behind.** A thread-keeper process whose database lives under the system
+  temp directory or `/tmp` no longer spawns a detached host. Such a host
+  dropped the daemon gates, read `~/.threadkeeper/.env`, and ran every
+  background loop against the throwaway database. One ran for four days,
+  taking roadmap issues in parallel with the real host and spending model
+  budget on reviews.
+
 ## v0.21.0 — 2026-10-23
 
 - **Added: the brief shows which lessons this session consulted (#332).**

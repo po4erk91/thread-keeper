@@ -1026,7 +1026,11 @@ With `THREADKEEPER_DAEMON_HOST` on (`1` — the default; `0` reverts to the
 legacy per-process daemon threads), the daemon block above moves out of the
 per-session server and into one always-on headless process per machine.
 An explicit `THREADKEEPER_DISABLE_BG_DAEMONS` pause gates `ensure_host_running`
-itself — a paused install spawns no host at all instead of a loop-less one:
+itself — a paused install spawns no host at all instead of a loop-less one.
+A database under the system temp directory or `/tmp` gates it too
+(`host._db_is_disposable`): that is a test or eval run, and a host spawned
+for it would drop the daemon gates, read `~/.threadkeeper/.env`, and run every
+loop against throwaway state long after the run ended:
 
 - **Election** — `python -m threadkeeper.host` (`host.main()`) takes
   `HOST_LOCK_PATH` (`<db dir>/host.lock`) via `single_flight_lock`. A second
