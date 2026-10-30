@@ -187,6 +187,7 @@ def source_parent(source: str) -> tuple[str, str] | None:
         "skill:": "skill",
         "note:": "note",
         "verbatim:": "verbatim",
+        "action_outcome_candidate:": "action_outcome_candidate",
     }
     for prefix, kind in prefixes.items():
         if raw.startswith(prefix) and raw[len(prefix):].strip():

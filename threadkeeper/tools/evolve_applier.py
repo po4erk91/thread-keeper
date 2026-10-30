@@ -48,6 +48,7 @@ from ..identity import _ensure_session
 from ..config import EVOLVE_APPLY_INTERVAL_S, EVOLVE_AUTOLAND
 from ..evolve_applier import (
     PR_LANDING_KIND,
+    PR_REPAIR_MAX_ATTEMPTS,
     apply_conflicted_pr,
     apply_curator_report,
     apply_evolve,
@@ -59,7 +60,10 @@ from ..evolve_applier import (
     roadmap_attempt_ledger,
     _applier_pr_queue,
     _format_label_skip,
+    _next_applier_pr,
     _open_roadmap_issue_candidates,
+    _pr_is_applier_owned,
+    _pr_repair_attempts,
     _pending_curator_reports,
     _promoted_unapplied,
     _running_applier_children,
@@ -216,9 +220,11 @@ def evolve_apply_status() -> str:
     pending = _promoted_unapplied(conn)
     pr_queue, pr_err = _applier_pr_queue()
     conflicted = sum(1 for action, _pr in pr_queue if action == "repair")
+    failing = sum(1 for action, _pr in pr_queue if action == "fix")
     landing = sum(
-        1 for action, _pr in pr_queue if action in ("merge", "update")
+        1 for action, _pr in pr_queue if action in ("merge", "update", "ready")
     )
+    next_pr = _next_applier_pr(conn, pr_queue)
     issues, issue_err, label_skipped = _open_roadmap_issue_candidates(conn)
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
@@ -234,6 +240,7 @@ def evolve_apply_status() -> str:
         f"interval_s={EVOLVE_APPLY_INTERVAL_S:.0f} "
         f"autoland={'on' if EVOLVE_AUTOLAND else 'off'} "
         f"conflicted_prs={conflicted} "
+        f"failing_prs={failing} "
         f"landing_prs={landing} "
         f"roadmap_issues={len(issues)} "
         f"roadmap_label_skipped={len(label_skipped)} "
@@ -265,14 +272,23 @@ def evolve_apply_status() -> str:
         lines.append(f"conflicted_pr_fetch_error={pr_err}")
     if pr_queue:
         lines.append("")
+        if next_pr is not None:
+            lines.append(
+                f"applier works on #{int(next_pr[1]['number'])} "
+                f"({next_pr[0]}); new work waits until no applier PR is open"
+            )
         lines.append("own PRs (oldest first):")
         for action, pr in pr_queue[:10]:
             title = str(pr.get("title") or "")[:90].replace("\n", " ")
             state = str(pr.get("mergeStateStatus") or "?").upper()
-            lines.append(
+            line = (
                 f"  #{int(pr['number'])}  {action}  {state}  "
                 f"{pr.get('headRefName') or '?'}  {title}"
             )
+            if _pr_is_applier_owned(pr):
+                used = _pr_repair_attempts(conn, int(pr["number"]))
+                line += f"  repairs={used}/{PR_REPAIR_MAX_ATTEMPTS}"
+            lines.append(line)
     if label_skipped:
         lines.append(f"roadmap_issue_label_skips={_format_label_skip(label_skipped)}")
     if issues:

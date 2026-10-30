@@ -21,8 +21,11 @@ The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
 and the `2026-07-28` per-request envelope. Business tools are shared across
 both paths. Modern static discovery catalogs advertise one-hour public cache
 hints, sealed continuation state is bound to the caller and expires after five
-minutes, and a caller-scoped replay ledger returns the first terminal result
-for a repeated modern mutation rather than running it twice.
+minutes, and a caller- and stdio-connection-scoped replay ledger returns the
+first terminal result for a repeated modern mutation rather than running it
+twice. Each stdio server instance gets a fresh namespace; client software
+metadata is not a unique running-client identity. Numeric and string JSON-RPC
+IDs remain distinct. Durable retries use application workflow handles.
 
 ## Package map
 
@@ -45,6 +48,7 @@ threadkeeper/
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
+├── action_outcomes.py  offline-only bounded action/recovery evaluation records
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
 ├── brief.py           render_brief() / render_context() — main digest
@@ -116,7 +120,15 @@ name; completed-task log summaries remain history-only. Child-log excerpts and
 spawn error reasons in `recent_results` and `recent_failures` are sanitized
 before the snapshot is returned: credential-shaped values and private home
 paths become redaction markers, while owner-only raw logs remain available
-through `task_logs`. Skill and lesson notification toggles apply independently
+through `task_logs`. The native app retains up to 200 notification payloads in
+its local preferences and imports its own delivered notifications through
+`UNUserNotificationCenter`; the popover shows their full text with a copy
+action. Its `--notification-history` diagnostic mode prints this history and
+exits before creating the status controller or requesting permission. The
+Python notifier separately journals sanitized title/body payloads as local
+`notification` events with an event/task source before channel dispatch. Both
+histories record attempts, not proof that macOS displayed a banner.
+Skill and lesson notification toggles apply independently
 to their respective write events. The
 popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
@@ -339,6 +351,14 @@ Steady-state access is split by intent:
    FTS/vector mirrors, plus directly sourced notes, verbatim, dialectic,
    extract, task, signal, and session-sidecar records. It defaults to dry-run
    and reports lessons/skills that cite the purged source for manual re-review.
+   The offline action/outcome prototype uses the same path: each record holds
+   only normalized action/outcome metadata, opaque objective/source references,
+   error fingerprints, sequence/recovery links, authority, provenance, and an
+   expiry. It has no argument, output, transcript, path, or secret field.
+   `tk-forget --selector-type objective <ref> --apply` removes the objective's
+   events; source erasure removes source-linked events. Both invalidate linked
+   candidate/lesson derivations. There is no live ingester or external export;
+   `export_events()` is an allowlisted internal reducer for offline evaluation.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`
@@ -610,13 +630,37 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` (default 3, 0 = uncapped) the row is
   terminally skipped as poison (`poison_skip` pass event) instead of respawning
   a fresh child against the same unresolvable batch every interval.
-- **model_router** — ticks hourly; starts a pass once per
+- **model_router** — checks due passes hourly and reconciles a running pass
+  every 30 seconds; starts a pass once per
   `MODEL_ROUTER_INTERVAL_S` (default 604800, weekly) or as soon as a role set to
   `auto` has no valid decision. The parent builds a fenced telemetry digest
   (`model_router_digest.py`) and spawns the router (`claude`/`opus`/`max` by
-  default). The child can only call `model_route_write`, which validates every
-  decision against the model catalog and writes `model_routes` atomically. A
-  child that exits without a decision triggers one fallback run
+  default). It compares task effectiveness, cost and efficiency using prior
+  task instructions and final transcript answers, failed and alternative-model
+  runs, durations, input/output tokens, reported model IDs and recorded costs.
+  Completed router attempts with successful exits supply dated CLI/model/effort
+  access evidence, superseding older startup errors without claiming task quality.
+  Recent failed router attempts include their parsed terminal error text, so
+  current quota/transport limits are visible separately from model quality.
+  `model_pricing.py` fetches fixed official Markdown sources in parallel for
+  available CLIs: OpenAI API/Codex credits, Anthropic API/Claude alias rules,
+  Copilot pricing and Antigravity quota/overage terms. Fetches have time and
+  response-size limits and do not follow redirects. An atomic private JSON
+  cache beside the database has a 24-hour TTL; fetch/layout failures preserve
+  the last good data with an explicit stale status. Source URLs, timestamps,
+  currencies and billing scopes accompany the fenced evidence. Pricing has
+  reserved space in the prompt budget. The child compares effort from observed
+  resource use and task results, without a fixed price multiplier; estimates
+  never overwrite recorded spend. Missing results or rates remain unknown;
+  execution success alone does not establish result quality. The
+  child's `model-router` MCP profile exposes only `model_route_write`; a
+  missing parent permission prevents the launch. That tool validates every
+  decision against the model catalog and writes `model_routes` atomically.
+  Claude router children have only native `ToolSearch` and the MCP writer;
+  their prompt requires decisions from the prepared evidence rather than new
+  filesystem, transcript or web investigations. Captured headless Claude
+  launches use streaming JSON output so task logs show intermediate progress.
+  A child that exits without a decision triggers one fallback run
   (`MODEL_ROUTER_FALLBACK_*`, default `codex`/`gpt-6.1-sol`/`xhigh`); two failures
   back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
@@ -624,7 +668,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The web-free evaluator
+  exact duplicates, repeated substantial paragraphs, and lexical semantic
+  candidates. Resource checks cover Markdown links and only unambiguous
+  slash-containing inline-code paths that remain inside the skill directory;
+  URLs, absolute or escaping paths, commands, frontmatter, headings, and
+  fenced examples are excluded. Repeated-prose findings require a normalized
+  paragraph of at least 160 characters to occur at least three times. The
+  web-free evaluator
   reads each full skill, writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
   External research is a separate opt-in capability: when
@@ -743,9 +793,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   repaired, or merged. Each kept PR is classified (`_pr_landing_action`):
   `repair` for a conflicted merge state (`DIRTY` / `CONFLICTING`) on a
   same-repository `roadmap/…` or `evolve/…` head branch, `update` for `BEHIND`,
-  `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (pending or
-  red checks, drafts, `UNKNOWN`, another base, a hand-made PR with conflicts,
-  or `EVOLVE_AUTOLAND=0`). This sweep is a hard preflight before new work: if
+  `fix` for such an applier branch whose finished `statusCheckRollup` holds a
+  red check run or commit status, `ready` for an applier draft whose checks
+  are all green, `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything
+  else (checks still running, `UNKNOWN`, another base, a hand-made PR with
+  conflicts, red checks or a draft, or `EVOLVE_AUTOLAND=0`). This sweep is a
+  hard preflight before new work: if
   PR state or the `gh` account cannot be read, the pass records
   `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
   report, or promoted evolve suggestion. Fork PRs are never fed to the
@@ -753,7 +806,7 @@ moving the high-water forward; `force=True` bypasses this due gate.
   child): squash-merge the oldest `merge` PR through `PUT /pulls/{n}/merge`
   with `sha=<headRefOid>`, so a head pushed after the green read is refused,
   then delete its same-repository head branch (never a fork's, never the
-  base); then call
+  base); then mark the oldest `ready` draft ready (`gh pr ready`); then call
   `PUT /pulls/{n}/update-branch` with `expected_head_sha` on the oldest PR that
   is behind (including green PRs that the merge just made behind). Strict branch
   protection allows one merge per base commit, so one merge and one update per
@@ -761,11 +814,25 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `evolve_pr_landing` event; the shared GitHub budget cooldown stops the sweep.
   Between due passes the daemon wakes every `EVOLVE_LANDING_POLL_S` (15 min) and
   runs only `run_evolve_landing_pass()`, which skips while any reviewer/applier
-  git writer runs. Then, if a `repair` PR exists, the repair child checks out
-  the existing PR branch, merges the current base branch, resolves conflicts,
-  runs the full suite, and pushes back to the same branch; it never merges, and
-  the landing sweep lands it once GitHub reports it green.
-  When no conflicted applier PR exists, it fetches open GitHub issues via the
+  git writer runs. **One applier PR at a time:** while any applier PR is open
+  (`_open_applier_prs`), the pass starts no new work and moves the oldest one
+  that does not wait for a human (`_next_applier_pr`) one step: a `repair` PR
+  gets the conflict-repair child (check out the existing PR branch, merge the
+  current base, resolve, run the full suite, push the same branch); a `fix` PR
+  is first updated onto the newest base through `update-branch`, and only when
+  GitHub says it is already up to date (or refuses the update) does a fix child
+  start (`PR_CHECK_REPAIR_PROMPT`: read the failing job logs, re-run a job that
+  failed outside the code or fix the cause, merge the base, run the full suite,
+  push the same branch). Children never merge; the landing sweep lands the PR
+  once GitHub reports it green. Each started child records an
+  `evolve_pr_repair_attempt` event; after `PR_REPAIR_MAX_ATTEMPTS` (3) a PR
+  waits for a human and the next open applier PR moves ahead. Otherwise the
+  pass records `waiting_on_open_prs n=… next=#… <action>` (an empty pass), or
+  `ERR applier_prs_need_human=…` (a transient blocker that the notifier
+  reports) when every open applier PR waits for a human. The landing sweep
+  runs the full pass at once when the next PR needs a child, or when the last
+  pass waited on open PRs and none is left.
+  When no applier PR is open, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
   response are filtered out). The fetch is explicit `--include --paginate`,
@@ -1480,6 +1547,12 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
   The scheduled `skill_updater` repairs drift in the same mirror set and can
   import newer copies that were installed into a non-primary CLI root.
+  Curator validation reports a missing local resource before a repair is
+  mirrored when it appears as a Markdown link or as an inline-code path with a
+  slash. Inline URLs, absolute or escaping paths, shell fragments, and other
+  non-path code are ignored. It also flags a normalized prose paragraph only
+  when it is at least 160 characters and appears at least three times; headings,
+  frontmatter, fenced examples, and short boilerplate are excluded.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,

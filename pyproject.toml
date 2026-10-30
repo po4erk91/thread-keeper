@@ -70,7 +70,9 @@ encrypted = [
 # not compose with --forked (collides on the xdist worker tmp dir) and a few
 # tests still race under it. See CONTRIBUTING → Running tests.
 dev = [
-    "pytest>=9.1.1",
+    # pytest 9.2.0 breaks pytest-forked 1.7.5: every forked test exits with
+    # status 3 before reporting. Lift the cap once pytest-forked supports it.
+    "pytest>=9.1.1,<9.2",
     "pytest-cov>=7.1.0",
     "pytest-forked>=1.6",
     "pytest-xdist>=3.5",

@@ -34,7 +34,16 @@ AUDIT_SCHEMA_VERSION = 2
 _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+_INLINE_CODE_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+_ATX_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
+_SETEXT_HEADING_RE = re.compile(r"^\s*(?:=+|-+)\s*$")
+_LIST_OR_QUOTE_RE = re.compile(r"^\s*(?:[-+*]\s+|\d+[.)]\s+|>)")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[a-z]:[\\/]", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9][a-zа-яё0-9_-]{2,}", re.IGNORECASE)
+_RESOURCE_DIR_NAMES = {"assets", "references", "scripts", "templates"}
+MIN_REPEATED_PARAGRAPH_CHARS = 160
+MIN_REPEATED_PARAGRAPH_OCCURRENCES = 3
 _STOPWORDS = {
     "about", "after", "also", "and", "are", "before", "but", "can",
     "does", "for", "from", "how", "into", "its", "not", "only", "or",
@@ -154,17 +163,132 @@ def _candidate_pairs(records: list[dict], limit: int = 200) -> list[dict]:
     return pairs[:limit]
 
 
-def _relative_link_findings(skill_dir: Path, content: str) -> list[str]:
-    findings: list[str] = []
-    for raw_target in _MARKDOWN_LINK_RE.findall(content):
-        target = raw_target.strip().strip("<>").split(maxsplit=1)[0]
-        target = target.split("#", 1)[0].split("?", 1)[0]
-        if not target or target.startswith("#") or _URI_SCHEME_RE.match(target):
+def _scanable_markdown(body: str) -> str:
+    """Exclude non-prose Markdown regions from resource and repeat checks."""
+    lines = body.splitlines()
+    result: list[str] = []
+    fence: str | None = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        marker = _FENCE_RE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            result.append("")
+            index += 1
             continue
-        decoded = target.replace("%20", " ")
-        if not (skill_dir / decoded).exists():
-            findings.append(f"dangling_relative_link:{target}")
+        if fence is not None:
+            result.append("")
+            index += 1
+            continue
+        if _ATX_HEADING_RE.match(line):
+            result.append("")
+            index += 1
+            continue
+        if (
+            line.strip()
+            and index + 1 < len(lines)
+            and _SETEXT_HEADING_RE.match(lines[index + 1])
+        ):
+            result.extend(("", ""))
+            index += 2
+            continue
+        result.append(line)
+        index += 1
+    return "\n".join(result)
+
+
+def _safe_relative_resource(target: str) -> tuple[str, str] | None:
+    """Return display and filesystem forms for a non-escaping relative path."""
+    display = target.strip().strip("<>").split(maxsplit=1)[0]
+    display = display.split("#", 1)[0].split("?", 1)[0]
+    if (
+        not display
+        or display.startswith(("#", "/", "\\", "~"))
+        or _URI_SCHEME_RE.match(display)
+        or _WINDOWS_ABSOLUTE_RE.match(display)
+    ):
+        return None
+    decoded = display.replace("%20", " ")
+    path = Path(decoded)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return display, decoded
+
+
+def _is_path_like_inline_code(target: str) -> bool:
+    """Keep inline-code detection conservative enough to avoid commands."""
+    if any(char.isspace() for char in target):
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9._/%+-]+", target):
+        return False
+    path = _safe_relative_resource(target)
+    if path is None:
+        return False
+    _display, decoded = path
+    normalized = decoded.removeprefix("./")
+    if "/" not in decoded or normalized.endswith("/"):
+        return False
+    parts = normalized.split("/")
+    return parts[0] in _RESOURCE_DIR_NAMES or "." in parts[-1]
+
+
+def _resource_exists_within_skill(skill_dir: Path, decoded: str) -> bool | None:
+    """Return None when a symlink would lead the audit outside the skill."""
+    candidate = skill_dir / decoded
+    try:
+        candidate.resolve().relative_to(skill_dir.resolve())
+    except ValueError:
+        return None
+    return candidate.exists()
+
+
+def _relative_resource_findings(skill_dir: Path, body: str) -> list[str]:
+    """Find missing local Markdown links and unambiguous inline resources."""
+    findings: list[str] = []
+    scanable = _scanable_markdown(body)
+    markdown = _INLINE_CODE_RE.sub("", scanable)
+    for raw_target in _MARKDOWN_LINK_RE.findall(markdown):
+        resource = _safe_relative_resource(raw_target)
+        if resource is None:
+            continue
+        display, decoded = resource
+        exists = _resource_exists_within_skill(skill_dir, decoded)
+        if exists is False:
+            findings.append(f"dangling_relative_link:{display}")
+    for raw_target in _INLINE_CODE_RE.findall(scanable):
+        if not _is_path_like_inline_code(raw_target):
+            continue
+        resource = _safe_relative_resource(raw_target)
+        if resource is None:
+            continue
+        display, decoded = resource
+        exists = _resource_exists_within_skill(skill_dir, decoded)
+        if exists is False:
+            findings.append(f"dangling_inline_resource:{display}")
     return sorted(set(findings))
+
+
+def _repeated_paragraph_findings(body: str) -> list[str]:
+    """Report substantial prose repeated at least three times in one skill."""
+    counts: Counter[str] = Counter()
+    for paragraph in re.split(r"\n\s*\n", _scanable_markdown(body)):
+        stripped = paragraph.strip()
+        if not stripped or _LIST_OR_QUOTE_RE.match(stripped):
+            continue
+        normalized = " ".join(_TOKEN_RE.findall(stripped.lower()))
+        if len(normalized) >= MIN_REPEATED_PARAGRAPH_CHARS:
+            counts[normalized] += 1
+    return [
+        "repeated_normalized_paragraph:"
+        f"occurrences={count}:sha256={_sha256(paragraph.encode('utf-8'))[:12]}"
+        for paragraph, count in sorted(counts.items())
+        if count >= MIN_REPEATED_PARAGRAPH_OCCURRENCES
+    ]
 
 
 def _root_label(root: Path) -> str:
@@ -482,7 +606,8 @@ def _record_for(
         for path in skill_dir.rglob("*")
         if path.is_file() and path.name != "SKILL.md"
     )
-    record["findings"].extend(_relative_link_findings(skill_dir, content))
+    record["findings"].extend(_relative_resource_findings(skill_dir, body))
+    record["findings"].extend(_repeated_paragraph_findings(body))
 
     expected_name = fm_name or source.parent.name
     tk_error = _validate_skill_md(content, expected_name)
