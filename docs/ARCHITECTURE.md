@@ -21,8 +21,11 @@ The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
 and the `2026-07-28` per-request envelope. Business tools are shared across
 both paths. Modern static discovery catalogs advertise one-hour public cache
 hints, sealed continuation state is bound to the caller and expires after five
-minutes, and a caller-scoped replay ledger returns the first terminal result
-for a repeated modern mutation rather than running it twice.
+minutes, and a caller- and stdio-connection-scoped replay ledger returns the
+first terminal result for a repeated modern mutation rather than running it
+twice. Each stdio server instance gets a fresh namespace; client software
+metadata is not a unique running-client identity. Numeric and string JSON-RPC
+IDs remain distinct. Durable retries use application workflow handles.
 
 ## Package map
 
@@ -117,7 +120,15 @@ name; completed-task log summaries remain history-only. Child-log excerpts and
 spawn error reasons in `recent_results` and `recent_failures` are sanitized
 before the snapshot is returned: credential-shaped values and private home
 paths become redaction markers, while owner-only raw logs remain available
-through `task_logs`. Skill and lesson notification toggles apply independently
+through `task_logs`. The native app retains up to 200 notification payloads in
+its local preferences and imports its own delivered notifications through
+`UNUserNotificationCenter`; the popover shows their full text with a copy
+action. Its `--notification-history` diagnostic mode prints this history and
+exits before creating the status controller or requesting permission. The
+Python notifier separately journals sanitized title/body payloads as local
+`notification` events with an event/task source before channel dispatch. Both
+histories record attempts, not proof that macOS displayed a banner.
+Skill and lesson notification toggles apply independently
 to their respective write events. The
 popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
@@ -619,13 +630,37 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` (default 3, 0 = uncapped) the row is
   terminally skipped as poison (`poison_skip` pass event) instead of respawning
   a fresh child against the same unresolvable batch every interval.
-- **model_router** — ticks hourly; starts a pass once per
+- **model_router** — checks due passes hourly and reconciles a running pass
+  every 30 seconds; starts a pass once per
   `MODEL_ROUTER_INTERVAL_S` (default 604800, weekly) or as soon as a role set to
   `auto` has no valid decision. The parent builds a fenced telemetry digest
   (`model_router_digest.py`) and spawns the router (`claude`/`opus`/`max` by
-  default). The child can only call `model_route_write`, which validates every
-  decision against the model catalog and writes `model_routes` atomically. A
-  child that exits without a decision triggers one fallback run
+  default). It compares task effectiveness, cost and efficiency using prior
+  task instructions and final transcript answers, failed and alternative-model
+  runs, durations, input/output tokens, reported model IDs and recorded costs.
+  Completed router attempts with successful exits supply dated CLI/model/effort
+  access evidence, superseding older startup errors without claiming task quality.
+  Recent failed router attempts include their parsed terminal error text, so
+  current quota/transport limits are visible separately from model quality.
+  `model_pricing.py` fetches fixed official Markdown sources in parallel for
+  available CLIs: OpenAI API/Codex credits, Anthropic API/Claude alias rules,
+  Copilot pricing and Antigravity quota/overage terms. Fetches have time and
+  response-size limits and do not follow redirects. An atomic private JSON
+  cache beside the database has a 24-hour TTL; fetch/layout failures preserve
+  the last good data with an explicit stale status. Source URLs, timestamps,
+  currencies and billing scopes accompany the fenced evidence. Pricing has
+  reserved space in the prompt budget. The child compares effort from observed
+  resource use and task results, without a fixed price multiplier; estimates
+  never overwrite recorded spend. Missing results or rates remain unknown;
+  execution success alone does not establish result quality. The
+  child's `model-router` MCP profile exposes only `model_route_write`; a
+  missing parent permission prevents the launch. That tool validates every
+  decision against the model catalog and writes `model_routes` atomically.
+  Claude router children have only native `ToolSearch` and the MCP writer;
+  their prompt requires decisions from the prepared evidence rather than new
+  filesystem, transcript or web investigations. Captured headless Claude
+  launches use streaming JSON output so task logs show intermediate progress.
+  A child that exits without a decision triggers one fallback run
   (`MODEL_ROUTER_FALLBACK_*`, default `codex`/`gpt-6.1-sol`/`xhigh`); two failures
   back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)

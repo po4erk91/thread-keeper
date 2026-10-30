@@ -49,6 +49,20 @@ popover does not wait for `tk-agent-status --json`.
 The first poll primes the seen-result list, so the app does not notify for old
 completed tasks that existed before it started.
 
+The popover's **Notification history** retains the last 200 notification
+attempts with their full banner text, date and time. Text can be selected, or
+copied with **Copy details** in an item's context menu. On startup, the app also
+imports its own delivered notifications still retained by macOS. This does not
+change preview settings or replay old banners. Dismissed older notifications
+that were never saved may no longer be available.
+
+To print the saved and currently delivered history as JSON without starting
+status polling or requesting notification permission:
+
+```sh
+~/Applications/ThreadKeeperAgentStatus.app/Contents/MacOS/ThreadKeeperAgentStatus --notification-history
+```
+
 The app also watches its own RSS and self-restarts when it crosses
 `THREADKEEPER_MENUBAR_RESTART_RSS_MB` (1024 MB default, `0` disables). That
 keeps the menu-bar helper from becoming the memory-pressure offender.
