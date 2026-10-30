@@ -60,7 +60,7 @@ def test_full_profile_preserves_the_complete_registry(tmp_path, monkeypatch):
     assert "capability_search" in names
 
 
-@pytest.mark.parametrize("profile", ["coordination", "memory-admin", "learning-loops"])
+@pytest.mark.parametrize("profile", ["coordination", "memory-admin", "learning-loops", "model-router"])
 def test_named_profile_membership_is_pinned(tmp_path, monkeypatch, profile):
     pkg = _load_profile(tmp_path, monkeypatch, profile)
     from threadkeeper.tool_profiles import PROFILE_TOOL_NAMES
@@ -118,11 +118,33 @@ def test_child_profile_is_intersected_with_its_parent_surface():
     ("probe_runner", "learning-loops"),
     ("evolve_researcher", "full"),
     ("memory_admin", "memory-admin"),
+    ("model_router", "model-router"),
 ])
 def test_spawn_roles_choose_their_smallest_profile(role, profile):
     from threadkeeper.tool_profiles import child_profile_for_role
 
     assert child_profile_for_role(role) == profile
+
+
+def test_model_router_child_can_write_routes_without_other_memory_tools():
+    from threadkeeper.tool_profiles import (
+        TOOL_PARENT_ALLOWLIST_ENV, TOOL_PROFILE_ENV,
+        child_profile_environment, resolve_tool_names,
+    )
+    available = {"brief", "model_route_write", "spawn", "note"}
+    child_env = child_profile_environment(available, "model_router")
+    selected = resolve_tool_names(
+        child_env[TOOL_PROFILE_ENV],
+        parent_allowlist=child_env[TOOL_PARENT_ALLOWLIST_ENV],
+        available_names=available,
+    )
+    assert selected == {"model_route_write"}
+
+
+def test_model_router_child_does_not_regain_a_write_tool_denied_by_parent():
+    from threadkeeper.tool_profiles import TOOL_PARENT_ALLOWLIST_ENV, child_profile_environment
+    child_env = child_profile_environment({"brief", "note"}, "model_router")
+    assert child_env[TOOL_PARENT_ALLOWLIST_ENV] == ""
 
 
 def test_setup_registers_new_hosts_with_core_profile(monkeypatch):

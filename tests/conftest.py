@@ -68,6 +68,16 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_AUTO_UPDATE_INTERVAL_S", "0")
     monkeypatch.setenv("THREADKEEPER_SKILL_UPDATE_INTERVAL_S", "0")
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
+    # Test fixtures need the foreground server defaults. A host process may
+    # pass child-only tool and writer settings that change the behavior under
+    # test or remove tools the fixture exercises.
+    monkeypatch.delenv("THREADKEEPER_TOOL_PROFILE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_INCLUDE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_EXCLUDE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_PARENT_ALLOWLIST", raising=False)
+    monkeypatch.delenv("THREADKEEPER_CHILD_TOOL_PROFILE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_SPAWNED_CHILD", raising=False)
+    monkeypatch.delenv("THREADKEEPER_WRITE_ORIGIN", raising=False)
 
 
 @pytest.fixture(autouse=True)
