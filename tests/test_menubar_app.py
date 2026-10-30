@@ -228,8 +228,6 @@ def test_menubar_env_settings_window_edits_env_and_presets():
 )
 def test_cold_catalog_hydration_preserves_role_effort_override(tmp_path):
     """Exercise the real Swift store with catalog arriving after raw .env."""
-    repo = Path(__file__).resolve().parents[1]
-    source = repo / "apps" / "macos-agent-status" / "ThreadKeeperAgentStatus.swift"
     harness = tmp_path / "SettingsHydrationRegression.swift"
     binary = tmp_path / "settings-hydration-regression"
     harness.write_text(
@@ -295,6 +293,11 @@ struct SettingsHydrationRegression {
 ''',
         encoding="utf-8",
     )
+    _run_swift_harness(harness, binary)
+
+
+def _run_swift_harness(harness, binary):
+    source = Path(__file__).resolve().parents[1] / "apps" / "macos-agent-status" / "ThreadKeeperAgentStatus.swift"
     target = f"{platform.machine()}-apple-macos13.0"
     subprocess.run(
         [
@@ -309,6 +312,60 @@ struct SettingsHydrationRegression {
         timeout=60,
     )
     subprocess.run([str(binary)], check=True, timeout=15)
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None,
+    reason="Swift/AppKit regression harness requires macOS",
+)
+def test_notification_history_preserves_details_and_bounds_deduplicated_history(tmp_path):
+    harness = tmp_path / "NotificationHistoryRegression.swift"
+    binary = tmp_path / "notification-history-regression"
+    harness.write_text(r'''
+import Foundation
+import UserNotifications
+
+@main
+struct NotificationHistoryRegression {
+    @MainActor
+    static func main() {
+        let suite = "threadkeeper-notification-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        precondition(NotificationHistory.load(defaults: defaults).isEmpty)
+
+        let body = "A complete failure reason\n" + String(repeating: "details ", count: 100)
+        func record(_ index: Int, body: String) -> NotificationRecord {
+            let content = UNMutableNotificationContent()
+            content.title = "Model router loop failed"
+            content.subtitle = "Model router"
+            content.body = body
+            let request = UNNotificationRequest(identifier: "event-\(index)", content: content, trigger: nil)
+            return NotificationRecord(request: request, date: Date(timeIntervalSince1970: Double(index)))
+        }
+
+        NotificationHistory.record([record(1, body: "old")], defaults: defaults)
+        NotificationHistory.record([record(1, body: body)], defaults: defaults)
+        let restored = NotificationHistory.load(defaults: defaults)
+        precondition(restored.count == 1)
+        precondition(restored[0].body == body)
+        precondition(restored[0].details == "Model router loop failed\nModel router\n" + body)
+
+        let many = (2...205).map { record($0, body: "reason \($0)") }
+        let history = NotificationHistory.record(many, defaults: defaults)
+        precondition(history.count == NotificationHistory.limit)
+        precondition(history.first?.id == "event-205")
+        precondition(history.last?.id == "event-6")
+        precondition(NotificationHistory.load(defaults: defaults).count == 200)
+
+        defaults.set(Data("broken".utf8), forKey: NotificationHistory.defaultsKey)
+        precondition(NotificationHistory.load(defaults: defaults).isEmpty)
+        NotificationHistory.record([record(1, body: body)], defaults: defaults)
+        precondition(NotificationHistory.load(defaults: defaults).first?.body == body)
+    }
+}
+''', encoding="utf-8")
+    _run_swift_harness(harness, binary)
 
 
 def test_settings_role_taxonomy_comes_from_shared_python_metadata():

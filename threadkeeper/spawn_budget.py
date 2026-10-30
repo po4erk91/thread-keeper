@@ -547,6 +547,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             visible=_as_bool(_row_get(row, "visible", 0), False),
             role=role,
             write_origin=write_origin,
+            memory_access="read_only",
             slim=_as_bool(_row_get(row, "slim", 1), True),
             retry_of=str(row["id"]),
             retry_root=root_id,
