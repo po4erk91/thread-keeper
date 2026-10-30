@@ -171,6 +171,36 @@ def test_modern_stdio_discovery_catalogs_and_replay_are_stable(stdio_mcp):
         assert conn.execute("SELECT COUNT(*) FROM mcp_replay_ledger").fetchone()[0] == 1
 
 
+def test_modern_clients_with_the_same_metadata_may_reuse_numeric_ids(tmp_path):
+    db_path = tmp_path / "independent-clients.sqlite"
+    meta = _modern_meta("same-cli-version")
+    for question in ("first client", "second client"):
+        client = StdioMcp(db_path)
+        try:
+            params = {"name": "open_thread", "arguments": {"question": question}, "_meta": meta}
+            first = client.request(42, "tools/call", params)
+            assert "result" in first, first
+            assert client.request(42, "tools/call", params) == first
+            changed = {**params, "arguments": {"question": "changed within same connection"}}
+            assert client.request(42, "tools/call", changed)["error"]["code"] == -32602
+        finally:
+            client.close()
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0] == 2
+
+
+def test_numeric_and_string_request_ids_are_distinct(stdio_mcp):
+    client, db_path = stdio_mcp
+    meta = _modern_meta("typed-request-id")
+    for request_id, question in ((9, "numeric id"), ("9", "string id")):
+        result = client.request(request_id, "tools/call", {
+            "name": "open_thread", "arguments": {"question": question}, "_meta": meta,
+        })
+        assert "result" in result, result
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0] == 2
+
+
 def _context(meta: dict) -> ServerRequestContext:
     session = SimpleNamespace(client_params=None, client_capabilities=None)
     return ServerRequestContext(

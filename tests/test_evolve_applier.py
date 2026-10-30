@@ -252,8 +252,8 @@ def _rest_issue(number, title=None, labels=("roadmap",),
 
 def _pr(number, title=None, head=None, merge_state="DIRTY",
         mergeable="CONFLICTING", cross_repo=False, draft=False, base="main",
-        author="po4erk91"):
-    return {
+        author="po4erk91", checks=None):
+    pr = {
         "number": number,
         "title": title or f"PR {number}",
         "url": f"https://github.com/o/r/pull/{number}",
@@ -268,6 +268,35 @@ def _pr(number, title=None, head=None, merge_state="DIRTY",
         "headRepositoryOwner": {"login": "o"},
         "author": {"login": author},
     }
+    if checks is not None:
+        pr["statusCheckRollup"] = checks
+    return pr
+
+
+def _checks(*results):
+    """`statusCheckRollup` entries: a (status, conclusion) pair is a check
+    run, a bare string is a commit status state."""
+    rollup = []
+    for result in results:
+        if isinstance(result, tuple):
+            status, conclusion = result
+            rollup.append({
+                "__typename": "CheckRun", "name": "pytest",
+                "status": status, "conclusion": conclusion,
+            })
+        else:
+            rollup.append({
+                "__typename": "StatusContext", "context": "ci",
+                "state": result,
+            })
+    return rollup
+
+
+_RED = _checks(("COMPLETED", "SUCCESS"), ("COMPLETED", "FAILURE"))
+_RUNNING = _checks(("COMPLETED", "FAILURE"), ("IN_PROGRESS", ""))
+_ALL_GREEN = _checks(
+    ("COMPLETED", "SUCCESS"), ("COMPLETED", "SKIPPED"), "SUCCESS",
+)
 
 
 def _claim_comment(
@@ -467,6 +496,11 @@ def test_authorized_curator_report_writer_is_applied_once(
         pass_id=pass_id,
         content="# Curator report\n\nPATCH: stale-skill\n\nCURATOR_PASS_COMPLETE",
     ).startswith("ok path=")
+    # The foreground daemon consumes the child report after the handoff.
+    from threadkeeper import config
+    monkeypatch.setattr(config, "SPAWNED_CHILD", False)
+    conn.close()
+    conn = pkg["db"].get_db()
     report = tmp_path / "curator" / report_name
     calls = {}
     _mock_spawn(monkeypatch, calls)
@@ -1155,6 +1189,8 @@ def test_fetch_open_prs_reads_mergeability_fields(tmp_path, monkeypatch):
     assert "mergeable" in joined
     assert "isCrossRepository" in joined
     assert "headRefOid" in joined
+    assert "statusCheckRollup" in joined
+    assert "author,body" in joined
     assert "--limit 1000" in joined
 
 
@@ -1260,15 +1296,22 @@ def test_pr_landing_action_lands_only_the_owners_prs(tmp_path, monkeypatch):
         assert action(_pr(5, merge_state=state, mergeable="MERGEABLE")) == (
             "wait"
         )
-    assert action(_green(6, draft=True)) == "wait"
+    # A green applier draft is taken out of draft; a hand-made draft waits.
+    assert action(_green(6, draft=True)) == "ready"
+    assert action(_green(18, draft=True, head="fix/manual")) == "wait"
     assert action(_green(7, base="release")) == "wait"
     headless = _green(8)
     headless["headRefOid"] = ""
     assert action(headless) == "wait"
-    # Any green own PR lands, not only applier branches; but the privileged
-    # repair child never takes a hand-made branch.
+    # Reviewer branches carry ownership; manual and fork branches do not.
     assert action(_green(9, head="docs/roadmap-audit-2026-10-10")) == "merge"
-    assert action(_green(10, head="fix/manual", cross_repo=True)) == "merge"
+    assert action(_green(10, head="fix/manual", cross_repo=True)) == "wait"
+    assert action(_green(18, head="fix/manual")) == "wait"
+    assert action(_behind(19, head="fix/manual")) == "wait"
+    assert action(_green(20, cross_repo=True)) == "wait"
+    assert action(_behind(21, cross_repo=True)) == "wait"
+    assert action(_pr(22, draft=True, head="fix/manual")) == "wait"
+    assert action(_pr(23, base="release")) == "wait"
     assert action(_pr(11, head="fix/manual")) == "wait"
     assert action(_pr(12, cross_repo=True)) == "wait"
     # Another account's PR is never touched, whatever its branch or state.
@@ -1281,7 +1324,39 @@ def test_pr_landing_action_lands_only_the_owners_prs(tmp_path, monkeypatch):
     monkeypatch.setattr(pkg["ea"], "EVOLVE_AUTOLAND", False)
     assert action(_green(3)) == "wait"
     assert action(_behind(2)) == "wait"
+    assert action(_green(6, draft=True)) == "wait"
+    assert action(_unstable(19, checks=_RED)) == "wait"
     assert action(_pr(1)) == "repair"
+
+
+def _unstable(number, **kw):
+    return _pr(number, merge_state="UNSTABLE", mergeable="MERGEABLE", **kw)
+
+
+def test_pr_landing_action_reads_check_results(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+
+    def action(pr):
+        return pkg["ea"]._pr_landing_action(pr, "po4erk91")
+
+    # A finished red check on an applier PR is fixed; a hand-made PR waits.
+    assert action(_unstable(1, checks=_RED)) == "fix"
+    assert action(_unstable(2, checks=_RED, head="docs/manual")) == "wait"
+    assert action(_unstable(3, checks=_checks("ERROR"))) == "fix"
+    assert action(_unstable(4, checks=_checks(("COMPLETED", "TIMED_OUT")))) == (
+        "fix"
+    )
+    # Checks still running wait, even when one has already failed.
+    assert action(_unstable(5, checks=_RUNNING)) == "wait"
+    assert action(_unstable(6, checks=_checks("PENDING"))) == "wait"
+    # Behind the base comes first: CI reruns on the newest base anyway.
+    assert action(_behind(7, checks=_RED)) == "update"
+    # Applier drafts: green is marked ready, red is fixed, running waits.
+    draft = {"merge_state": "BLOCKED", "mergeable": "MERGEABLE", "draft": True}
+    assert action(_pr(8, checks=_ALL_GREEN, **draft)) == "ready"
+    assert action(_pr(9, checks=_RED, **draft)) == "fix"
+    assert action(_pr(10, checks=_RUNNING, **draft)) == "wait"
+    assert action(_green(11, checks=_ALL_GREEN)) == "merge"
 
 
 def test_applier_pr_queue_fails_closed_without_the_owner_login(
@@ -1309,12 +1384,147 @@ def test_applier_pr_queue_fails_closed_without_the_owner_login(
     assert ea._applier_pr_queue() == ([], "gh_viewer_failed: HTTP 401")
 
 
+@pytest.mark.parametrize("state", ["CLEAN", "BEHIND", "DIRTY"])
+def test_automation_markers_control_manual_branch_ownership(
+    tmp_path, monkeypatch, state,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    action = ea._pr_landing_action
+    pr = _pr(30, head="maintenance/old-curator-pr", merge_state=state,
+             mergeable="CONFLICTING" if state == "DIRTY" else "MERGEABLE")
+    assert action(pr, "po4erk91") == "wait"
+    pr["body"] = ea.APPLIER_PR_MARKER
+    expected = {"CLEAN": "merge", "BEHIND": "update", "DIRTY": "repair"}
+    assert action(pr, "po4erk91") == expected[state]
+    pr["isCrossRepository"] = True
+    assert action(pr, "po4erk91") == "wait"
+    del pr["isCrossRepository"]
+    assert action(pr, "po4erk91") == "wait"
+    pr["isCrossRepository"] = False
+    pr["body"] = "Example marker: " + ea.APPLIER_PR_MARKER
+    assert action(pr, "po4erk91") == "wait"
+    pr["body"] = ea.ROADMAP_DOC_PR_MARKER
+    assert action(pr, "po4erk91") == ("wait" if state == "DIRTY" else expected[state])
+    pr["body"] += "\n" + ea.APPLIER_PR_MARKER
+    assert action(pr, "po4erk91") == "wait"
+
+
+@pytest.mark.parametrize("head", ["roadmap/manual", "evolve/manual", "evolve/apply-x-test"])
+def test_branch_prefix_alone_does_not_prove_ownership(tmp_path, monkeypatch, head):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    assert pkg["ea"]._pr_landing_action(_green(30, head=head), "po4erk91") == "wait"
+
+
+@pytest.mark.parametrize("head,kind,requeued", [
+    ("roadmap/issue-30-test-abcdef", "roadmap_issue_applied", "roadmap_issue_requeued"),
+    ("evolve/apply-30-test", "evolve_applied", None),
+])
+def test_pr_queue_cross_checks_available_handoff_ledger(
+    tmp_path, monkeypatch, head, kind, requeued,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    pr = _green(31, head=head)
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: ([pr], ""))
+
+    def queued_action():
+        queue, err = ea._applier_pr_queue()
+        assert err == ""
+        return queue[0]
+
+    # A deterministic branch is portable evidence on a host with no ledger.
+    assert queued_action()[0] == "merge"
+
+    def handoff(summary, event_kind=kind):
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES ('test', ?, '30', ?, 1)", (event_kind, summary),
+        )
+        conn.commit()
+
+    handoff(pr["url"])
+    assert queued_action()[0] == "merge"
+    # Another repository's same PR number is not this handoff.
+    handoff(pr["url"].replace("/o/r/", "/other/repo/"))
+    action, skipped = queued_action()
+    assert action == "wait"
+    assert "stale_or_mismatched_handoff" in skipped["automationOwnershipWaitReason"]
+    handoff("")
+    assert queued_action()[0] == "wait"
+    handoff(pr["url"])
+    assert queued_action()[0] == "merge"
+    if requeued:
+        handoff(pr["url"], requeued)
+        assert queued_action()[0] == "wait"
+
+
+def test_pr_queue_ledger_failure_fails_closed(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: ([_green(30)], ""))
+    conn.execute("ALTER TABLE events RENAME TO unavailable_events")
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert queue[0][0] == "wait"
+    assert "handoff_ledger_unavailable" in queue[0][1]["automationOwnershipWaitReason"]
+
+
+def test_landing_sweep_keeps_unowned_prs_read_only_and_visible(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    prs = [_green(1, head="fix/manual"), _behind(2, head="fix/manual"),
+           _green(3, cross_repo=True), _behind(4, cross_repo=True)]
+    # Curator maintenance completion alone never grants ownership of a PR.
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) "
+        "VALUES ('test', 'curator_report_applied', 'report', ?, 1)", (prs[0]["url"],),
+    )
+    conn.commit()
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: (prs, ""))
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    queue, err = ea._applier_pr_queue()
+    assert err == ""
+    assert [action for action, _ in queue] == ["wait"] * 4
+    assert ea._land_applier_prs(conn, queue, tmp_path) == ""
+    assert calls == []
+    status = _tool(pkg, "evolve_apply_status")()
+    assert "#1  wait  CLEAN  fix/manual" in status
+    assert "#2  wait  BEHIND  fix/manual" in status
+    assert "not_automation_owned: missing_ownership_signal" in status
+    assert "not_automation_owned: fork_or_unknown_repository" in status
+
+
+def test_pr_queue_rechecks_current_account(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    prs = [_green(1), _green(2, author="collaborator")]
+    monkeypatch.setattr(ea, "_fetch_open_prs", lambda repo_root=None: (prs, ""))
+    assert [pr["number"] for _, pr in ea._applier_pr_queue()[0]] == [1]
+    monkeypatch.setattr(ea, "_gh_viewer_login", lambda repo_root=None: ("collaborator", ""))
+    assert [pr["number"] for _, pr in ea._applier_pr_queue()[0]] == [2]
+
+
+def test_applier_prompts_retain_explicit_ownership_marker(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    assert ea.APPLIER_PR_MARKER in ea.build_apply_prompt(1, "test", "", repo_root=tmp_path)
+    assert ea.APPLIER_PR_MARKER in ea.build_roadmap_issue_apply_prompt(_issue(1, "Test"), tmp_path)
+    assert "roadmap/issue-30-test-abcdef" in ea.build_pr_conflict_repair_prompt(
+        _pr(30, head="roadmap/issue-30-test-abcdef"), tmp_path,
+    )
+
+
 def test_gh_viewer_login_reads_and_caches_the_gh_account(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
     ea = pkg["ea"]
     calls = []
+    monkeypatch.setattr(ea, "github_account_key", lambda: "github.com:token-test")
 
     def _run(cmd, **kwargs):
         calls.append(cmd)
@@ -1327,6 +1537,20 @@ def test_gh_viewer_login_reads_and_caches_the_gh_account(
     assert viewer(tmp_path) == ("po4erk91", "")
     gh_calls = [cmd for cmd in calls if cmd[:2] == ["gh", "api"]]
     assert gh_calls == [["gh", "api", "user", "--jq", ".login"]]
+
+
+def test_gh_viewer_login_refreshes_after_default_account_switch(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(ea, "github_account_key", lambda: "github.com:gh-default")
+    logins = iter(["po4erk91", "collaborator"])
+    monkeypatch.setattr(
+        ea, "_run_gh",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, next(logins), ""),
+    )
+    viewer = pkg["orig"]["_gh_viewer_login"]
+    assert viewer(tmp_path) == ("po4erk91", "")
+    assert viewer(tmp_path) == ("collaborator", "")
 
 
 def test_land_applier_prs_merges_oldest_green_then_updates_next(
@@ -1545,6 +1769,221 @@ def test_serve_tick_runs_landing_sweep_between_due_passes(
     assert ea._serve_tick() == "full"
     monkeypatch.setattr(ea, "_pass_due", lambda conn, now_t: False)
     assert ea._serve_tick() == "landing"
+
+
+# ── one open applier PR at a time ───────────────────────────────────────────
+
+_NO_NEW_COMMITS = (
+    "gh_update_branch_failed: There are no new commits on the base branch. "
+    "(HTTP 422)"
+)
+
+
+def _queue_prs(monkeypatch, pkg, prs):
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_prs", lambda repo_root=None: (list(prs), ""),
+    )
+
+
+def _last_pass_summary(conn):
+    row = conn.execute(
+        "SELECT summary FROM events WHERE kind='evolve_apply_pass' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["summary"] if row else ""
+
+
+def _no_spawn(monkeypatch):
+    import threadkeeper.tools.spawn as spawn_mod
+
+    def _boom(**kw):
+        raise AssertionError("no child may start while the PR only waits")
+
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", _boom)
+
+
+def test_land_applier_prs_marks_oldest_green_draft_ready(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    calls = _fake_landing_gh(monkeypatch, pkg)
+    draft = {"merge_state": "BLOCKED", "mergeable": "MERGEABLE", "draft": True}
+    queue = [
+        ("ready", _pr(30, checks=_ALL_GREEN, **draft)),
+        ("ready", _pr(31, checks=_ALL_GREEN, **draft)),
+        ("update", _behind(32)),
+    ]
+
+    out = pkg["ea"]._land_applier_prs(conn, queue, tmp_path)
+
+    assert out == "ready=#30 updated=#32"
+    assert calls[0] == ("ready", ["gh", "pr", "ready", "30"])
+    assert [what for what, _cmd in calls] == ["ready", "update_branch"]
+
+
+def test_open_applier_pr_holds_back_new_work(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "older promoted code change", status="promoted",
+                created_at=1000)
+    _write_report(pkg)
+    monkeypatch.setattr(
+        ea, "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    _queue_prs(monkeypatch, pkg, [
+        _unstable(61, checks=_RUNNING),
+        _unstable(62, checks=_RED, head="docs/manual-notes"),
+    ])
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    _no_spawn(monkeypatch)
+
+    out = ea.run_evolve_apply_pass(force=True)
+
+    # The applier PR with running checks blocks the issue, the Curator
+    # report, and the evolve suggestion; the hand-made red PR does not count.
+    assert out == "waiting_on_open_prs n=1 next=#61 wait"
+    assert landing == []
+    assert _last_pass_summary(conn) == out
+    assert ea._apply_pass_outcome(out) == ea._APPLY_PASS_EMPTY
+
+
+def test_hand_made_red_pr_does_not_hold_back_new_work(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        pkg["ea"], "_fetch_open_issues",
+        lambda repo_root=None: ([_issue(2, "Hot config")], ""),
+    )
+    _queue_prs(monkeypatch, pkg, [
+        _unstable(62, checks=_RED, head="docs/manual-notes"),
+    ])
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = pkg["ea"].run_evolve_apply_pass(force=True)
+
+    assert out.startswith("spawned roadmap_issue=#2"), out
+
+
+def test_red_applier_pr_is_retried_on_the_newest_base_first(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    _queue_prs(monkeypatch, pkg, [_unstable(63, checks=_RED)])
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    _no_spawn(monkeypatch)
+
+    out = ea.run_evolve_apply_pass(force=True)
+
+    assert out == "waiting_on_open_prs n=1 next=#63 fix updated=#63"
+    assert [what for what, _cmd in landing] == ["update_branch"]
+    assert ea._pr_repair_attempts(conn, 63) == 0
+
+
+def test_up_to_date_red_applier_pr_gets_a_fix_child(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    _queue_prs(monkeypatch, pkg, [
+        _unstable(64, title="feat: sixty-four", checks=_RED,
+                  head="roadmap/issue-64-red-aaaaaa"),
+        _pr(65, head="roadmap/issue-65-conflict-bbbbbb"),
+    ])
+    _fake_landing_gh(monkeypatch, pkg, {"pulls/64/update-branch": _NO_NEW_COMMITS})
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+
+    out = ea.run_evolve_apply_pass(force=True)
+
+    # Only the oldest open applier PR is worked on; #65 waits its turn.
+    assert out.startswith("spawned failing_pr=#64"), out
+    assert _last_pass_summary(conn).startswith("failing_pr spawned failing_pr=#64")
+    assert ea._pr_repair_attempts(conn, 64) == 1
+    assert ea._pr_repair_attempts(conn, 65) == 0
+    assert calls["role"] == "evolve_applier"
+    prompt = calls["prompt"]
+    assert "PULL REQUEST #64: feat: sixty-four" in prompt
+    assert "red\nchecks" in prompt
+    assert "gh run view <run-id> --job <job-id> --log-failed" in prompt
+    assert "gh run rerun <run-id> --failed" in prompt
+    assert "git merge --no-edit origin/main" in prompt
+    assert "git push origin roadmap/issue-64-red-aaaaaa" in prompt
+    assert "Never force-push" in prompt
+    assert "Do NOT run `gh pr merge`" in prompt
+    assert "gh pr create" not in prompt
+
+
+def test_applier_pr_waits_for_a_human_after_its_repair_children(
+    tmp_path, monkeypatch,
+):
+    from threadkeeper.notify import classify_summary
+
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    for _ in range(ea.PR_REPAIR_MAX_ATTEMPTS):
+        ea._record_pr_repair_attempt(conn, _unstable(66), "fix")
+    landing = _fake_landing_gh(monkeypatch, pkg)
+    _no_spawn(monkeypatch)
+
+    # The next open applier PR moves ahead of the one that needs a human.
+    _queue_prs(monkeypatch, pkg, [
+        _unstable(66, checks=_RED), _unstable(67, checks=_RUNNING),
+    ])
+    out = ea.run_evolve_apply_pass(force=True)
+    assert out == "waiting_on_open_prs n=2 next=#67 wait needs_human=#66"
+
+    # With nothing left to work on, the stall is reported as a failure.
+    _queue_prs(monkeypatch, pkg, [_unstable(66, checks=_RED)])
+    out = ea.run_evolve_apply_pass(force=True)
+    assert out == "ERR applier_prs_need_human=#66 open=1"
+    assert classify_summary(out) == "failure"
+    assert ea._apply_pass_outcome(out) == ea._APPLY_PASS_TRANSIENT
+    assert landing == []
+
+
+def test_landing_sweep_runs_the_full_pass_when_a_child_is_needed(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    _fake_landing_gh(monkeypatch, pkg)
+    monkeypatch.setattr(
+        ea, "run_evolve_apply_pass", lambda force=False: f"full force={force}",
+    )
+
+    _queue_prs(monkeypatch, pkg, [_unstable(68, checks=_RED)])
+    assert ea.run_evolve_landing_pass() == "full force=True"
+    _queue_prs(monkeypatch, pkg, [_pr(69)])
+    assert ea.run_evolve_landing_pass() == "full force=True"
+    # Checks still running: the cheap sweep only.
+    _queue_prs(monkeypatch, pkg, [_unstable(70, checks=_RUNNING)])
+    assert ea.run_evolve_landing_pass() == "no_landing_work"
+
+
+def test_landing_sweep_starts_the_next_task_once_the_last_pr_lands(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, interval="3600")
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    _fake_landing_gh(monkeypatch, pkg)
+    monkeypatch.setattr(
+        ea, "run_evolve_apply_pass", lambda force=False: "full",
+    )
+    _queue_prs(monkeypatch, pkg, [_green(71)])
+
+    # No pass waited on open PRs: landing the PR is all this sweep does.
+    assert ea.run_evolve_landing_pass() == "merged=#71"
+
+    ea._record_apply_outcome(
+        conn, int(time.time()), "waiting_on_open_prs n=1 next=#71 wait",
+    )
+    assert ea.run_evolve_landing_pass() == "full"
 
 
 def test_apply_roadmap_issue_builds_evolve_applier_spawn(
@@ -3991,9 +4430,12 @@ def test_evolve_apply_status_surfaces_conflicted_prs(tmp_path, monkeypatch):
 
     assert "autoland=on" in out
     assert "conflicted_prs=1" in out
+    assert "failing_prs=0" in out
     assert "landing_prs=0" in out
+    assert "applier works on #44 (repair)" in out
     assert "own PRs (oldest first):" in out
     assert "#44  repair  DIRTY  roadmap/issue-44-conflict-aaaaaa" in out
+    assert "repairs=0/3" in out
 
 
 def test_evolve_apply_status_surfaces_stale_merge_recovery(

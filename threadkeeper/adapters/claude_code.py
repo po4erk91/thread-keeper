@@ -18,6 +18,8 @@ from typing import Iterator
 from .base import CLIAdapter, NormalizedMessage, find_cli_executable
 from ..config_io import mutate_json_file
 
+STREAM_OUTPUT_ARGS = ("--output-format", "stream-json",
+                      "--include-partial-messages", "--verbose")
 
 def _clean_discovered_model(value: str) -> str:
     """Remove terminal-style fragments sometimes persisted in Claude metadata."""
@@ -167,10 +169,7 @@ class ClaudeCodeAdapter(CLIAdapter):
                       or find_cli_executable("claude"))
         if not claude_bin:
             return None
-        argv = [claude_bin, "-p", prompt,
-                "--output-format", "stream-json",
-                "--include-partial-messages",
-                "--verbose",
+        argv = [claude_bin, "-p", prompt, *STREAM_OUTPUT_ARGS,
                 "--permission-mode", permission_mode]
         if extra_allowed_tools:
             argv += ["--allowedTools", extra_allowed_tools]

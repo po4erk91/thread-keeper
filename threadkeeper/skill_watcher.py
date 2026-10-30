@@ -23,6 +23,7 @@ from .config import BACKGROUND_DAEMONS_ALLOWED, CLAUDE_SKILLS_DIR
 from .db import get_db
 from .helpers import daemon_sleep
 from .review_prompts import _INJECTION_MARKERS, screen_injection_markers
+from .consequential_state import record_review, screen_host_mutations, skill_text_files
 
 # Loop-authored skill bodies are re-screened for injection markers after the
 # write-time gate (#268). Screening is keyed by (mtime_ns, size, marker set),
@@ -32,6 +33,7 @@ SKILL_INJECTION_FLAG_KIND = "skill_injection_flag"
 _MARKERS_VERSION = hashlib.sha256(repr(_INJECTION_MARKERS).encode()).hexdigest()[:16]
 _SCREEN_MAX_BYTES = 256 * 1024
 _screened: dict[str, tuple[int, int, str]] = {}
+_host_screened: dict[str, tuple[int, int]] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +93,26 @@ def _scan_once(conn) -> int:
             )
             updates += 1
         _rescreen_if_loop_authored(conn, name, md, stat_result)
+        _rescreen_host_state(conn, skill_dir)
     # Always end the implicit write transaction the upsert above opened, even
     # when nothing changed: a legacy get_db() connection left mid-transaction
     # holds SQLite's single writer lock (#293).
     conn.commit()
     return updates
+
+
+def _rescreen_host_state(conn, skill_dir) -> None:
+    for path in skill_text_files(skill_dir):
+        try:
+            stat = path.stat()
+            key = (stat.st_mtime_ns, stat.st_size)
+            if _host_screened.get(str(path)) == key:
+                continue
+            body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        record_review(conn, body, screen_host_mutations(body))
+        _host_screened[str(path)] = key
 
 
 def _rescreen_if_loop_authored(conn, name: str, md, stat_result) -> None:
