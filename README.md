@@ -1381,9 +1381,7 @@ after an update shows a one-time permission prompt.
 `agent_status` feeds the app two lists — `recent_results` (named skill/lesson
 write events plus completed-task history) and `recent_failures` (the two failure
 sources above) — each item tagged with a `notify` flag computed from the toggles
-below. The app **lists**
-every item in its menu but only **posts a banner** for flagged ones, so turning a
-category off silences the banner without hiding the history. Each materialization
+below. The app only posts a banner for flagged items. Each materialization
 uses its own skill or lesson toggle; generic task reports are history-only.
 Foreground writes appear too, without waiting for a background child to finish.
 A pathless skill mark only silences its reminder and has no materialization
@@ -1392,6 +1390,26 @@ error reasons in both lists are bounded sanitized summaries: credential-shaped
 values and private home paths are redacted before they reach the MCP status
 response, menu, or notification; raw logs remain available only through
 `task_logs`.
+
+**Reading a hidden or truncated banner.** The menu-bar popover's **Notification
+history** keeps the last 200 notification attempts, with the full text supplied
+to macOS and **Copy details** in each item's context menu. The app also imports
+its own delivered notifications still retained by Notification Center, so an
+older banner can be recovered even if previews are hidden. This local history
+survives app restarts and category toggles; it does not replay notifications or
+change macOS privacy settings. For diagnostics, the installed app prints the
+same history as JSON:
+
+```bash
+~/Applications/ThreadKeeperAgentStatus.app/Contents/MacOS/ThreadKeeperAgentStatus --notification-history
+```
+
+The daemon also stores each sanitized title/body as a node-local `notification`
+event before dispatch, including its source event or task, regardless of the
+selected channels. `notify_pass` remains the aggregate cursor/counter record.
+These records describe notification attempts, not proof that macOS displayed a
+banner. Older dismissed notifications without a saved payload cannot be
+reconstructed from counters alone.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
@@ -1490,6 +1508,7 @@ the host after changing it:
 | `coordination` | `core` plus child spawning, task status, pickup, and delegated search |
 | `memory-admin` | `core` plus durable memory, concepts, lessons, graph links, and explicit erasure |
 | `learning-loops` | `core` plus extraction, validation, skills, Curator, probes, and dialectic workflows |
+| `model-router` | only the pass-authorized `model_route_write` tool |
 | `full` | every registered tool; the compatibility default when no profile is configured |
 
 New `thread-keeper-setup` registrations use `core`. Existing server entries
@@ -1500,7 +1519,9 @@ server rather than exposing an unintended surface.
 
 Spawned children default to `core`; archival, Curator, candidate-review,
 shadow-review, probe-runner, and dialectic-validator roles use
-`learning-loops`, while Evolve roles request `full`. The server receives the
+`learning-loops`, model-router children use `model-router`, and Evolve roles
+request `full`. A router refuses to spawn if its parent cannot expose the
+route-write tool. The server receives the
 parent’s resolved allowlist and intersects it with the child profile, so a
 child cannot regain a tool its parent did not expose.
 `THREADKEEPER_CHILD_TOOL_PROFILE` explicitly selects a different child profile,
@@ -1513,7 +1534,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, or `full`; read at server start |
+| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, `model-router`, or `full`; read at server start |
 | `THREADKEEPER_TOOL_INCLUDE` | "" | exact comma-separated tool names to add to the selected profile; unknown names fail closed |
 | `THREADKEEPER_TOOL_EXCLUDE` | "" | exact comma-separated tool names to remove from the selected profile; unknown or overlapping names fail closed |
 | `THREADKEEPER_CHILD_TOOL_PROFILE` | role default | spawned-child profile override; always intersected with the parent’s resolved tool surface |
@@ -1712,16 +1733,50 @@ model and effort:
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=auto
 ```
 
-The router reviews the last 30 days of that role's spawns (success rate,
-failures such as provider capacity errors, run time, tokens, recent outcomes)
-plus the local model catalog, and records one decision per `auto` role with a
-reason. Until it has decided, `auto` keeps its old meaning and follows the
+The router compares models and effort for each role using the results of its
+previous tasks: task effectiveness, cost, and efficiency. Its last-30-day
+digest includes task instructions and final answers from saved transcripts,
+with structured CLI results or log summaries as a fallback. Samples cover
+different model/effort combinations and include failed executions. Time,
+tokens, recorded USD costs and missing-cost coverage accompany the results;
+subscription token use is a quota proxy, not an invented dollar price.
+
+Before each decision pass, the parent fetches official OpenAI API and Codex
+credit rates, Anthropic API rates and Claude alias rules, GitHub Copilot rates,
+and Antigravity quota/overage rules for available CLIs. Rate cards are cached
+for 24 hours in `model_pricing.json` beside the database, with source URLs and
+fetch times. Network or document-layout failures retain the last good card
+as **stale**; absent rates remain unknown. Published API USD rates, Codex
+credits, GitHub AI credits and subscription quotas keep their own billing
+scope. The router uses observed input/output tokens, duration and results to
+compare effort; effort has no fixed invented price multiplier. Estimates
+state missing cache/reasoning or alias details and never replace recorded spend.
+Completed router executions also supply dated CLI/model/effort access evidence,
+so an older startup rejection is not treated as unresolved after a later success.
+Access evidence does not establish quality on other roles' tasks.
+Recent failed router attempts also carry their parsed error text, including
+temporary quota limits, separately from evidence of task quality.
+
+Every pass reassesses alternatives, even when the current model runs without
+errors. Exit code zero does not prove task success, and missing results leave
+quality unknown. Each decision explains the task-specific tradeoff and its
+uncertainty. Until it has decided, `auto` keeps its old meaning and follows the
 active CLI. While a role is routed, its `SPAWN__MODEL__<ROLE>` and
 `SPAWN__EFFORT__<ROLE>` pins are ignored and `spawn_status()` warns about them.
 
 The router runs on `claude` / `opus` / `max` (override with the usual
 `SPAWN__LOOP|MODEL|EFFORT__MODEL_ROUTER` keys). If that run fails, the same pass
 reruns on the fallback below; a pass that fails twice retries after 6 hours.
+Due-pass checks run hourly; unfinished passes reconcile every 30 seconds so
+a finished or failed child does not wait an hour for its next state transition.
+It decides from the prepared evidence and prices, rather than starting new
+research. Claude router children expose only native `ToolSearch` plus the MCP
+route writer. Captured headless Claude launches stream intermediate events
+to the task log so an active analysis is distinguishable from a stalled run.
+If the CLI rejects a model shown in the shared model cache, check
+`codex --version` and update the CLI before changing model pins. The desktop
+app and the CLI on `PATH` can use different releases. Verify access with a
+short call through the CLI that thread-keeper actually launches.
 `model_router_status()` shows current decisions and `model_router_run()` runs a
 pass now. Set `THREADKEEPER_MODEL_ROUTER_INTERVAL_S=0` to disable the router.
 
@@ -2233,6 +2288,15 @@ It reports these headline groups over a fixed ground-truth set:
   process. It reports a separate score for thread notes, verbatim memory,
   dialectic claims, and lessons or skills.
 
+- **operational recovery comparison** — a second fully synthetic fixture
+  compares dialogue-only evidence with a bounded action/outcome record. Its
+  fixed thresholds require useful recovery links, zero forbidden-string leaks,
+  bounded storage relative to the dialogue baseline, and zero false causal
+  links. The record shape contains only normalized action names, opaque
+  objective/source references, coarse outcomes, error fingerprints, ordering,
+  recovery links, authority, provenance, and expiry. It has no raw arguments,
+  raw output, transcript text, paths, or secret field.
+
 - **outcome classification** — retrieval failure, reasoning failure,
   stale-memory use, removed-memory use, and privacy-policy violation.
 
@@ -2242,6 +2306,17 @@ memory egress policy (`all`, `same-vendor`, `work-only`). A hybrid row is marked
 unavailable when the optional semantic extra is not installed. `--strict`
 requires the versioned fixture thresholds and zero safety violations, making
 the same command suitable for retrieval/model migration gates.
+
+Action/outcome capture is an **offline-only prototype**. The runtime has no
+live producer or export route. Evaluation records expire after 30 days, and
+the retention pass removes them; `tk-forget --selector-type objective <ref>
+--apply` removes an objective's records and invalidates any linked lesson.
+Records sourced from a forgotten dialog/session/thread are removed by the
+same targeted-erasure path. The existing candidate reviewer may see only the
+bounded recovery candidate; a lesson must keep its
+`action_outcome_candidate:<id>` provenance so invalidation hides it. Live use
+requires a later explicit opt-in plus a passing offline comparison; this
+release provides neither.
 
 For DB concurrency, run the reproducible local gate:
 
@@ -2397,9 +2472,13 @@ write is `dialectic_supersede`.
 era. Legacy hosts retain the existing tools, resources, and prompts. Modern
 calls derive identity and capabilities from every request, static discovery
 catalogs advertise public cache freshness, and replaying a completed write with
-the same caller-bound JSON-RPC id returns the original result instead of
-committing a second mutation. Sealed continuation state expires after five
-minutes; an interrupted write with no terminal result is rejected on replay.
+the same caller-bound JSON-RPC id within one stdio connection returns the
+original result instead of committing a second mutation. Independent CLI
+connections have separate replay namespaces even when their client metadata
+and numeric IDs match; numeric and string IDs are distinct. Sealed continuation
+state expires after five minutes; an interrupted write with no terminal result
+is rejected on replay within that connection. Durable workflow retries use
+their application handles, such as a router pass ID.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

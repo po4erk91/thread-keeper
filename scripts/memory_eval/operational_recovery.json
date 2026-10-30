@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "dialogue_only": [
+    "tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output tool arguments very-sensitive-arguments tool output unbounded-output"
+  ],
+  "events": [
+    {
+      "id": "failure",
+      "objective_ref": "objective-1",
+      "action_name": "github.pr.create",
+      "outcome": "failure",
+      "error_fingerprint": "http.422.validation",
+      "sequence": 1
+    },
+    {
+      "id": "recovery",
+      "objective_ref": "objective-1",
+      "action_name": "github.pr.create",
+      "outcome": "success",
+      "sequence": 2,
+      "recovered_from": "failure"
+    }
+  ],
+  "expected_recoveries": [["failure", "recovery"]],
+  "forbidden_substrings": ["very-sensitive-arguments", "unbounded-output"],
+  "thresholds": {
+    "min_lesson_usefulness": 1.0,
+    "max_privacy_leakage": 0,
+    "max_storage_ratio": 0.7,
+    "max_false_causal_links": 0
+  }
+}

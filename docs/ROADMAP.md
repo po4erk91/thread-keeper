@@ -164,11 +164,12 @@ Evolve suggestions, and the October research digest. Four distinct gaps remain:
   conformance requirement sets for both supported protocol versions through a
   test-only transport backed by the production handler registry. Retain focused
   stdio tests for ThreadKeeper-specific discovery, metadata, and replay rules.
-- **Privacy-safe action/outcome memory (#380).** Evaluate a bounded operational
-  event stream that records normalized actions, coarse outcomes, stable error
-  fingerprints, and recovery links without retaining raw arguments or tool
-  output. Live ingestion stays gated on an offline comparison with the current
-  dialogue-only pipeline.
+- ✅ DONE (#380). **Privacy-safe action/outcome memory.** The offline-only
+  prototype records bounded normalized actions, coarse outcomes, stable error
+  fingerprints, sequence/recovery links, pointer provenance, authority, and
+  expiry without raw arguments, output, transcript text, paths, or secrets.
+  Its synthetic comparison gates usefulness, privacy leakage, storage, and
+  false links against dialogue-only evidence; live ingestion remains absent.
 - **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
   fixtures an explicit lifecycle that remains available to validators but is
   excluded from normal discovery, routing, and Curator production-health
@@ -431,7 +432,7 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   staging files encrypted, while ordinary SQLite remains the default.
 - Privacy selective erasure (#104): `forget(selector, dry_run=True)` and the
   `tk-forget` console command provide dry-run-first targeted deletion for one
-  session/cid/thread/dialog UUID. Applying removes dialog rows plus FTS/vector
+  session/cid/thread/dialog UUID or bounded operational objective. Applying removes dialog rows plus FTS/vector
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
@@ -1620,10 +1621,9 @@ The earlier mechanical issue gate linked the protocol-native Tasks/MRTR
 proposal to completed conformance issue #344. The later Tasks lifecycle gap was
 completed as #370; #344 continues to cover dual-era request compatibility and
 replay-safe writes, not standard Tasks.
-The outcome-quality evaluator in #347 is complete. The remaining bounded
-action/recovery-memory experiment is #380; obsolete-evidence mutation
-coverage is complete in #371. Tool-profile disclosure and project namespaces are
-complete in #353 and #359.
+The outcome-quality evaluator in #347 and bounded action/recovery evaluation
+in #380 are complete, as is obsolete-evidence mutation coverage in #371.
+Tool-profile disclosure and project namespaces are complete in #353 and #359.
 
 ---
 
