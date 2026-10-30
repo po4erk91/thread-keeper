@@ -110,6 +110,84 @@ struct UsefulResult: Decodable, Identifiable {
     }
 }
 
+struct NotificationRecord: Codable, Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let body: String
+    let createdAt: TimeInterval
+
+    var details: String {
+        [title, subtitle, body].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    init(request: UNNotificationRequest, date: Date = Date()) {
+        id = request.identifier
+        title = request.content.title
+        subtitle = request.content.subtitle
+        body = request.content.body
+        createdAt = date.timeIntervalSince1970
+    }
+}
+
+@MainActor
+enum NotificationHistory {
+    static let defaultsKey = "notificationHistoryV1"
+    static let limit = 200
+
+    static func load(defaults: UserDefaults = .standard) -> [NotificationRecord] {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let records = try? JSONDecoder().decode([NotificationRecord].self, from: data) else {
+            return []
+        }
+        return records
+    }
+
+    @discardableResult
+    static func record(
+        _ records: [NotificationRecord],
+        defaults: UserDefaults = .standard
+    ) -> [NotificationRecord] {
+        var byId = Dictionary(load(defaults: defaults).map { ($0.id, $0) },
+                              uniquingKeysWith: { _, newer in newer })
+        for record in records {
+            byId[record.id] = record
+        }
+        let history = Array(byId.values.sorted { $0.createdAt > $1.createdAt }.prefix(limit))
+        if let data = try? JSONEncoder().encode(history) {
+            defaults.set(data, forKey: defaultsKey)
+        }
+        return history
+    }
+
+    static func restoreDelivered(completion: @escaping ([NotificationRecord]) -> Void) {
+        UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+            let records = notifications.map {
+                NotificationRecord(request: $0.request, date: $0.date)
+            }
+            Task { @MainActor in
+                completion(record(records))
+            }
+        }
+    }
+
+    static func printJSONAndExit() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            FileHandle.standardError.write(Data("Notification history request timed out\n".utf8))
+            exit(1)
+        }
+        restoreDelivered { records in
+            guard let data = try? JSONEncoder().encode(records) else {
+                FileHandle.standardError.write(Data("Cannot encode notification history\n".utf8))
+                exit(1)
+            }
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            exit(0)
+        }
+    }
+}
+
 private let panelWidth: CGFloat = 380
 private let settingsWindowWidth: CGFloat = 980
 private let settingsWindowHeight: CGFloat = 760
@@ -1604,6 +1682,7 @@ extension EnvSettingsStore: @unchecked Sendable {}
 
 @MainActor
 final class AgentStatusStore: ObservableObject {
+    @Published var notificationHistory = NotificationHistory.load()
     @Published var snapshot = AgentStatusSnapshot(
         generatedAt: 0,
         runningCount: 0,
@@ -1635,6 +1714,9 @@ final class AgentStatusStore: ObservableObject {
     func start() {
         guard timer == nil else {
             return
+        }
+        NotificationHistory.restoreDelivered { [weak self] records in
+            self?.notificationHistory = records
         }
         requestNotificationPermission()
         refreshThreadKeeperToggleState()
@@ -1816,6 +1898,7 @@ final class AgentStatusStore: ObservableObject {
             content: content,
             trigger: nil
         )
+        notificationHistory = NotificationHistory.record([NotificationRecord(request: request)])
         UNUserNotificationCenter.current().add(request)
     }
 
@@ -3427,6 +3510,35 @@ struct AgentStatusMenu: View {
                             LoopRow(loop: loop)
                         }
                     }
+                    if !store.notificationHistory.isEmpty {
+                        Text("Notification history")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(store.notificationHistory) { record in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(record.title).fontWeight(.medium)
+                                HStack(spacing: 4) {
+                                    Text(Date(timeIntervalSince1970: record.createdAt), style: .date)
+                                    Text(Date(timeIntervalSince1970: record.createdAt), style: .time)
+                                }
+                                .foregroundStyle(.secondary)
+                                Text(record.body)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .font(.system(size: 11))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color(nsColor: .controlBackgroundColor),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .contextMenu {
+                                Button("Copy details") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(record.details, forType: .string)
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(12)
             }
@@ -3683,6 +3795,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
+            if CommandLine.arguments.contains("--notification-history") {
+                NotificationHistory.printJSONAndExit()
+                return
+            }
             statusItemController = StatusItemController()
         }
     }
