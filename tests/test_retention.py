@@ -229,6 +229,35 @@ def test_prune_then_vacuum_checkpoint_round_trip(fresh_mp, monkeypatch):
     assert _count(conn, "notes", "content='after prune'") == 1
 
 
+def test_retention_expires_bounded_action_outcomes(fresh_mp, monkeypatch):
+    from threadkeeper import action_outcomes, retention
+
+    conn = fresh_mp["db"].get_db()
+    action_outcomes.record_evaluation_event(
+        conn,
+        event_id="ao-retention",
+        objective_ref="objective-retention",
+        action_name="github.pr.create",
+        outcome="failure",
+        error_fingerprint="http.429.rate-limit",
+        sequence=1,
+        source_kind="dialog",
+        source_id="dialog-retention",
+        authority="observed",
+        principal="fixture-runner",
+        channel="offline-evaluation",
+        created_at=int(time.time()) - 3 * 86400,
+        retention_days=1,
+    )
+    conn.commit()
+
+    _retention_config(monkeypatch, retention)
+    out = retention.run_retention_pass(force=True)
+
+    assert "action_outcomes=1" in out
+    assert _count(conn, "action_outcome_events") == 0
+
+
 def test_vacuum_rebases_dialog_cursors_and_rebuilds_fts(fresh_mp, monkeypatch):
     """VACUUM may renumber dialog_messages' implicit rowids once dialog rows
     were pruned. The retention vacuum must rebase the rowid ingest cursors to

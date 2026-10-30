@@ -8,16 +8,170 @@ remains a live question.
 
 ---
 
+## 2026-10-30 reviewer audit
+
+- **Keep task-log access inside the task spool.** Agents allowed to inspect
+  background tasks can currently pass a relative or absolute filename instead
+  of a task identifier and read an unrelated log. The read also changes the
+  containing directory's permissions. Validate identifiers with the same rule
+  used when creating tasks, check containment and unsafe links before opening
+  a file, and keep directory creation and permission changes out of read-only
+  inspection. Cover valid logs, rejected names, missing logs, links, and
+  unchanged permissions. This is a separate caller-input boundary from the
+  spool-creation protection in #94 and status-summary redaction in #299.
+- **Bound memory used to inspect a task's output.** Asking for one final line
+  still loads, decodes, and splits the whole log. Read a bounded tail, limit
+  response bytes even for one very long line, and disclose truncation. Reuse
+  the bounded reading approach already used by agent status where practical.
+  Test large files, long lines, invalid text, growing logs, and explicit
+  whole-log requests. Task retention (#42) limits stored history; it does not
+  bound a single diagnostic read.
+- **Check every Curator phase's required tools (follow-up to #353).** The
+  capability gap also affects public research: the default `curator_researcher`
+  role selects `core`, which hides `curator_research_write`. Evaluators and
+  verifiers also lack required operations. Compose a narrow tool set for each
+  phase and reject dispatch when the parent or adapter cannot grant it. Keep
+  web research separate from memory mutation, preserve task-bound writer
+  authority, and cover real child discovery and writer calls on Codex. The
+  new model-router profile and missing-writer preflight provide an existing
+  pattern for this check.
+
+Disposable probes read only synthetic logs. Both filename escape forms reached
+a sibling log and changed its directory from 0755 to 0700; an identifier-check
+control refused them and preserved valid task reads. Returning a 20-byte tail
+from an 8 MiB log used about 25.6 MB of Python allocations. Phase-contract
+checks found one hidden research writer, nine hidden evaluator operations, and
+six hidden verifier operations. An exact allowlist with the full profile
+exposed each required set without adding other tools; production still needs
+the phase-specific composition and child integration tests above. All 67
+focused profile, spool, connection, Evolve, Curator, and status checks passed
+with a disposable database and background daemons disabled.
+
+The nine legacy suggestions map to the existing capability work (#353), mirror
+convergence and root policy (#388), branch-development database guard below
+(follow-up to #59), unavailable skills (#373), and lesson connection cleanup
+(follow-up to #293). The last two mirror-retry suggestions are identical.
+No external research digest was available.
+
+## 2026-10-29 reviewer audit
+
+- **Reclaim finished task checkouts safely ([#431](https://github.com/po4erk91/thread-keeper/issues/431)).** People running background repository
+  tasks keep a full working copy and a temporary Git branch after every task.
+  Existing task retention cleans flat log files but skips those checkouts.
+  Add ownership-aware retention and dry-run size reporting, keep active tasks
+  and unpublished or dirty work recoverable, and remove eligible checkouts
+  through Git so its worktree records and temporary branches stay consistent.
+- **Reuse fixed public research within one Curator pass (follow-up to [#355](https://github.com/po4erk91/thread-keeper/issues/355)).** The privacy fix is complete:
+  researchers receive only two fixed public queries. Every skill-containing
+  batch still launches that same search independently. Gather one verified
+  digest per pass, authorize each evaluator's use separately, and share a
+  bounded retry budget. Keep the existing privacy boundary, evidence checks,
+  and non-mutating fallback. This complements the local manifest slices in
+  #413; it does not replace per-batch evaluation or verification.
+- **Close lesson-read connections promptly (remaining cleanup after [#293](https://github.com/po4erk91/thread-keeper/issues/293)).** Large lesson
+  reviews leave one connection per read open until garbage collection. Give
+  `lesson_get` and `lesson_list` explicit connection ownership on success,
+  missing or invalidated lessons, empty listings, and errors. Preserve
+  foreground consultation counters and maintenance-read neutrality. A
+  disposable Curator-origin probe retained 40 connections with automatic
+  collection paused; explicit collection released them, and closing after
+  each read retained zero. This demonstrates delayed cleanup, not a permanent
+  leak or a held write transaction.
+
+Disposable probes confirmed the worktree and research gaps. The existing worktree, task-retention,
+and Curator research checks passed all 10 focused tests. The branch-development
+database guard, Curator capability coverage, unavailable-skill routing, and
+mirror-root policy recorded below remain open. A follow-up reviewed all five
+legacy suggestions: source availability belongs to #373, mirror-root policy
+belongs to #388, and connection cleanup is distinct from the neutral-read
+telemetry already delivered by #402. No external research digest was available.
+
+The follow-up's complete Curator phase-contract comparison found nine hidden
+operations: `lesson_list`, `lesson_get`, `lesson_append`, `lesson_patch`,
+`list_concepts`, `expand_concept`, `concept_manage`, `curator_merge_verdict`,
+and `evolve_format`. Report persistence is already exposed. An exact parent
+allowlist with the full profile exposed the required set without widening
+that allowlist; a production solution still needs phase-specific composition
+and the spawned-Codex integration coverage recorded below. All 33 focused
+profile, database-runtime, Evolve, and agent-status checks passed against a
+disposable database with background daemons disabled.
+
+## 2026-10-27 reviewer audit
+
+- **Protect shared memory during branch development.** The database guard
+  currently rejects only the managed `evolve-repo` layout. Ordinary and
+  task worktrees can still reach the shared store and run forward schema
+  migrations, leaving installed clients unable to start. Extend the guard to
+  unmerged and locally modified source checkouts before any database or file
+  mutation. Require an explicit disposable database for development, including
+  when a caller explicitly names or aliases the live store. Keep released
+  packages and the documented merged editable-install path working. Cover all
+  connection entry points with disposable repository and database tests.
+- **Unavailable skill routing ([#373](https://github.com/po4erk91/thread-keeper/issues/373)).** The source-missing repair lifecycle
+  already requires active records without a readable source to become
+  unavailable. Apply that state before routing an agent to a skill, with one
+  clear restore, archive, or remove action. This belongs to the existing issue.
+
+The Curator capability and mirror-root gaps recorded below remain open. A
+controlled profile check confirms that `curator_report_write` is present, while
+five required read, repair, concept, merge-verdict, and escalation tools are
+filtered out. Mirror checks pass for matching persistent copies and add
+`mirror_missing` when an empty workspace root is included; required consumer
+failures must remain visible when optional roots are classified separately.
+
+## 2026-10-26 reviewer audit
+
+- **Curator capability coverage after [#353](https://github.com/po4erk91/thread-keeper/issues/353).** The `curator` role selects the
+  `learning-loops` profile, which omits `lesson_get`, `lesson_patch`,
+  `concept_manage`, `curator_merge_verdict`, and `evolve_format` even though
+  the Curator contract requests them. Compose the required role/phase tool
+  set while preserving the parent allowlist and mutation authorization.
+  Check the final server and adapter grants before launching a child, and
+  return a capability error if its required operations are unavailable.
+  Cover the actual Codex child discovery/call path as well as profile sets.
+- **Mirror root policy ([#388](https://github.com/po4erk91/thread-keeper/issues/388)).** Define required supported consumer mirrors
+  separately from intentionally unmaterialized workspace roots. The current
+  audit marks each active skill `mirror_missing` when any listed root is
+  empty, even when persistent copies match. Keep per-skill failures for
+  required consumers and summarize an optional-root gap once. Writes and
+  audits must share that root policy.
+- **Curator-neutral lesson reads (#402) are implemented in v0.20.0.** Only
+  foreground lesson reads update consultation counters and access times.
+  Focused tests cover both neutral Curator reads and counted foreground
+  reads; the remaining capability gap above must not be confused with this
+  completed telemetry change.
+
+## 2026-10-24 reviewer audit
+
+This pass reconciled current `main`, the full issue history, and the five
+pending legacy Evolve suggestions. Two distinct gaps remain:
+
+- **Batch-scoped Curator skill manifests (#413).** Keep the canonical
+  pass-wide audit manifest for coordination and provenance, but give each
+  evaluator a deterministic slice for only its assigned skills. Lesson-only
+  batches should receive an explicit no-skills document instead of repeatedly
+  parsing unrelated consumer, mirror, link, and duplicate findings.
+- **Verified guard records for memory-insufficient lessons (#414).** The
+  violation tracker delivered by #228 identifies passive-memory failures, but
+  it does not bind a lesson to an exact host trigger or persist installation
+  and allow/deny/escape verification. Add that registry while reusing #390 for
+  consent and rollback of host-wide changes.
+
+The task-selection hook suggestion maps to open contract-test issue #399.
+Curator-neutral lesson reads (#402) are implemented in v0.20.0. Durable
+multi-batch state and task-bound report authority are already covered by completed issues #290
+and #366, so those legacy suggestions were not re-filed. No external research
+digest was available for this pass.
+
 ## 2026-10-21 reviewer audit
 
 This pass reconciled current `main`, the complete open/closed issue history,
-the pending legacy Evolve queue, and the 2026-10-20 research digest. Four new,
-issue-backed gaps remain:
+the pending legacy Evolve queue, and the 2026-10-20 research digest. Four
+issue-backed items were identified:
 
-- **Curator-neutral lesson reads (#402).** Curator evaluators must be able to
-  read complete lesson bodies without incrementing consultation counters or
-  refreshing `last_used_at`; foreground/task reads must keep recording real
-  use.
+- ✅ DONE (#402). **Curator-neutral lesson reads.** Curator and other
+  non-foreground reads leave consultation counters and `last_used_at`
+  unchanged; foreground reads continue to record real use.
 - **Authenticated source-tracked skill updates (#403).** Resolve immutable
   commits, retain whole-directory provenance, verify supported detached
   publisher signatures, and make unsigned-source policy explicit before an
@@ -40,30 +194,45 @@ provider/CLI spawn adapters remain the deliberate execution boundary.
 
 The post-2026-10-14 open backlog is also now represented explicitly: spawned
 child memory authority (#385), validated host trace context (#386), contextual
-index text for short memories (#387), verified skill-mirror convergence (#388),
-persisted task-role status (#389), consent and rollback for learned host-wide
-mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
-installed Agent/Workflow gate tests (#399), and automation-owned Evolve
-autoland (#400). Curator launch-authority isolation remains #366, with its
-implementation PR under review.
+index text for short memories (#387), persisted task-role status (#389),
+consent and rollback for learned host-wide mutations (#390), semantic
+export/import (#395), lesson audit integrity (#396), installed task-gate
+contract coverage (#399), and automation-owned Evolve autoland (#400). Managed-skill
+mirror convergence (#388) now verifies every consumer before success and has
+an idempotent reconciliation path. Curator launch-authority isolation is
+ complete in #366.
+
+## Implemented after the audit
+
+- **Installed task-gate contract coverage (#399).** Tests replay current Claude
+  Code `Agent` and legacy `Task` events through the managed script, pin the
+  generated matcher and mode behavior, and keep unsupported `Workflow` and
+  unrelated tools silent.
+
+- **Versioned semantic memory bundle (#395).** `tk-semantic-bundle` exports
+  deterministic, hash-checked JSONL records for portable semantic memory while
+  excluding raw dialog, task logs, and personal-memory records by default.
+  Import is dry-run first and retains source IDs under a local namespace.
 
 ## 2026-10-14 reviewer audit
 
 This pass reconciled the full issue history, current implementation, legacy
-Evolve suggestions, and the October research digest. Four distinct gaps remain:
+Evolve suggestions, and the October research digest. The remaining work is:
 
-- **Privacy-safe action/outcome memory (#380).** Evaluate a bounded operational
-  event stream that records normalized actions, coarse outcomes, stable error
-  fingerprints, and recovery links without retaining raw arguments or tool
-  output. Live ingestion stays gated on an offline comparison with the current
-  dialogue-only pipeline.
+- ✅ DONE (#380). **Privacy-safe action/outcome memory.** The offline-only
+  prototype records bounded normalized actions, coarse outcomes, stable error
+  fingerprints, sequence/recovery links, pointer provenance, authority, and
+  expiry without raw arguments, output, transcript text, paths, or secrets.
+  Its synthetic comparison gates usefulness, privacy leakage, storage, and
+  false links against dialogue-only evidence; live ingestion remains absent.
 - **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
   fixtures an explicit lifecycle that remains available to validators but is
   excluded from normal discovery, routing, and Curator production-health
   counts.
-- **Skill validator coverage (#382).** Detect missing relative resources named
-  in path-like inline code and repeated normalized paragraphs within one skill,
-  with conservative exclusions for URLs, commands, examples, and boilerplate.
+- ✅ DONE (#382). **Skill validator coverage.** Curator audit and
+  `skill_validate` now detect missing local Markdown-link and path-like
+  inline-code resources, plus substantial repeated normalized paragraphs within
+  one skill, while excluding URLs, commands, examples, and boilerplate.
 
 General validity, supersession, and obsolete-evidence evaluation map to #371
 and #372 on top of
@@ -79,16 +248,13 @@ The resource-subscription (#345), privacy-safe tracing (#346), and
 outcome-evaluation (#347) items are complete. The remaining audit gaps are
 issue-backed and deliberately narrower:
 
-- **Forgetting-aware store mutation evaluation (#371).** Exercise real
-  correction, supersession, consolidation, source erasure, and restart paths;
-  penalize obsolete evidence even when current evidence is also recalled.
+- ✅ DONE (#371). **Forgetting-aware store mutation evaluation.** The frozen
+  replay exercises real correction, supersession, consolidation, source erasure,
+  and restart paths, and penalizes obsolete evidence returned beside current
+  evidence.
 - **Protected-lesson freshness flags (#372).** Preserve protected lesson text
   while attaching source-linked verified, contradicted, or unsubstantiated
   states that are visible when the lesson is retrieved for a task.
-- **Source-missing skill reconciliation (#373).** Mark registry records without
-  a readable primary source unavailable, expose one recovery action, and allow
-  Curator to archive or remove a confirmed registry-only orphan after a
-  recoverable snapshot.
 
 The legacy task-gate suggestion was not re-filed because the setup matcher
 already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
@@ -102,6 +268,10 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   justified expected-failure baselines are stale-checked; focused real-stdio
   coverage retains legacy initialization, `server/discover`, per-request
   `_meta`, and replay behavior.
+- Source-missing skill reconciliation (#373): validation marks registry
+  records without a readable source unavailable and non-compatible, preserves
+  the prior lifecycle for restoration, and gives the Curator verifier a
+  snapshotted registry-only cleanup path after an all-root/cache absence check.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.
@@ -325,7 +495,7 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   staging files encrypted, while ordinary SQLite remains the default.
 - Privacy selective erasure (#104): `forget(selector, dry_run=True)` and the
   `tk-forget` console command provide dry-run-first targeted deletion for one
-  session/cid/thread/dialog UUID. Applying removes dialog rows plus FTS/vector
+  session/cid/thread/dialog UUID or bounded operational objective. Applying removes dialog rows plus FTS/vector
   sidecars, notes, verbatim, dialectic observations/evidence/claims, extract
   candidates, task rows/spool files, signals, and session sidecars, while
   surfacing lessons/skills that cite the purged source for manual re-review.
@@ -1404,9 +1574,10 @@ transport, migration, memory-safety, and learning-quality gaps:
   the original principal/channel and propagated through derived artifacts;
   repeated evidence cannot manufacture independent corroboration, and the
   Write–Execute–Forget lifecycle invalidates descendants after erasure.
-- **Preference-drift evaluation (#339).** Pilot ambiguity/authenticity labels
-  and multi-timescale replay before changing supersession policy, so a one-off
-  task exception cannot silently replace a validated durable preference.
+- ✅ DONE (#339). **Preference-drift evaluation pilot.** The read-only replay
+  separates durable changes from task-local exceptions, ambiguity, and poisoning.
+  Production supersession policy remains unchanged pending a representative
+  pilot review.
 - ✅ DONE (#340). **Lesson-promotion precision.** Candidates now filter
   generic and high-document-frequency terms, require a shared body mechanism,
   keep one maximal cohesive cluster, and report emitted/rejected telemetry.
@@ -1504,20 +1675,18 @@ and Curator child-capability isolation:
   before a child launches. Preserve the cursor, collapse repeated blocker
   telemetry, and retry on a bounded short cadence while keeping real issue
   attempts and empty-queue throttling unchanged.
-- **Curator per-child capability isolation (#366).** Stop conveying Curator
-  pass/snapshot authority by temporarily mutating the server process
-  environment. Pass server-owned values explicitly to the intended child,
-  strip stale values from ordinary spawns, and bind report/research writers to
-  the owning task, role, and batch.
+- ✅ DONE (#366). **Curator per-child capability isolation.** Pass/snapshot
+  authority is private launch data for the intended child. Ordinary spawns strip
+  stale values, and report/research writers verify the owning task, child, pass,
+  role, origin, and batch; watchdog retries restore recorded launch context.
 
 The earlier mechanical issue gate linked the protocol-native Tasks/MRTR
 proposal to completed conformance issue #344. The later Tasks lifecycle gap was
 completed as #370; #344 continues to cover dual-era request compatibility and
 replay-safe writes, not standard Tasks.
-The outcome-quality evaluator in #347 is complete. The remaining bounded
-action/recovery-memory experiment is #380, while obsolete-evidence mutation
-coverage remains #371. Tool-profile disclosure and project namespaces are
-complete in #353 and #359.
+The outcome-quality evaluator in #347 and bounded action/recovery evaluation
+in #380 are complete, as is obsolete-evidence mutation coverage in #371.
+Tool-profile disclosure and project namespaces are complete in #353 and #359.
 
 ---
 

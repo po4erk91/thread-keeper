@@ -169,14 +169,12 @@ def install_hooks(dry_run: bool) -> list[str]:
             "matcher": "",
             "command": str(TK_HOOKS_DIR / "tk-session-end.sh"),
         },
-        # spawn-vs-native gate: covers the legacy built-in Task tool AND the
-        # opus-4.8 native primitives (Agent/Workflow). Task → deny fan-out
-        # toward spawn(); Agent/Workflow → advisory warn on persistence
-        # signals only. Claude Code only; other CLIs ignore an unknown
-        # PreToolUse event.
+        # Claude Code renamed Task to Agent in 2.1.63. Keep the legacy
+        # blocking policy for Task; Agent only warns on persistence signals.
+        # Workflow takes scripts/names, not Agent's prompt payload.
         {
             "event": "PreToolUse",
-            "matcher": "^(Task|Agent|Workflow)$",
+            "matcher": "^(Task|Agent)$",
             "command": str(TK_HOOKS_DIR / "tk-task-gate.sh"),
         },
     ]
