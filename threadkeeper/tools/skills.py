@@ -72,6 +72,7 @@ from ..review_prompts import (
     DATA_FENCE, fence_observed, screen_injection_markers,
 )
 from ..trash import (
+    capture_registry_only_skill,
     capture_removed_skill,
     latest_skill_artifact,
     read_skill_artifact,
@@ -879,7 +880,8 @@ def skill_manage(action: str,
                  description: str = "",
                  source: str = "",
                  force: bool = False,
-                 replacement_name: str = "") -> str:
+                 replacement_name: str = "",
+                 orphan_action: str = "archive") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -910,6 +912,9 @@ def skill_manage(action: str,
       restore     — restore the latest trashed copy for `name`.
       reconcile   — retry mirror convergence for the canonical skill, or
                     finish removing mirrors when its canonical copy is gone.
+      cleanup_orphan — Curator verifier only. Archive or remove an already
+                    validated registry-only orphan without requiring a skill
+                    directory. Set `orphan_action` to `archive` or `remove`.
     """
     action = action.strip()
     name = name.strip()
@@ -942,15 +947,18 @@ def skill_manage(action: str,
             return _action_restore(name)
         if action == "reconcile":
             return _action_reconcile(name)
+        if action == "cleanup_orphan":
+            return _action_cleanup_registry_orphan(name, orphan_action)
         return (
             f"ERR unknown_action={action} "
-            "(create|edit|patch|write_file|remove_file|delete|restore|reconcile)"
+            "(create|edit|patch|write_file|remove_file|delete|restore|reconcile|cleanup_orphan)"
         )
 
 
-_REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file"})
+_REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file", "cleanup_orphan"})
 _MUTATING_SKILL_ACTIONS = frozenset({
     "create", "edit", "patch", "write_file", "remove_file", "delete", "restore",
+    "cleanup_orphan",
 })
 
 
@@ -1333,6 +1341,97 @@ def _action_delete(
     )
 
 
+def _action_cleanup_registry_orphan(name: str, orphan_action: str) -> str:
+    """Archive or remove a verified orphaned usage row without a skill tree."""
+    mode = orphan_action.strip().lower()
+    if mode not in {"archive", "remove"}:
+        return "ERR invalid_orphan_action (archive|remove)"
+    if WRITE_ORIGIN != "curator" or not is_curator_verifier():
+        return "ERR registry_orphan_cleanup_requires_curator_verifier"
+
+    from ..skill_audit import build_skill_audit, find_any_skill_source
+
+    conn = get_db()
+    _ensure_session(conn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM skill_usage WHERE name=?", (name,),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return f"ok registry_orphan_already_removed={name}"
+
+        source, source_kind = find_any_skill_source(name)
+        if source is not None:
+            conn.commit()
+            return (
+                "ERR registry_orphan_source_present "
+                f"name={name} source_kind={source_kind}"
+            )
+        if row["availability"] != "unavailable":
+            conn.commit()
+            return f"ERR registry_orphan_not_confirmed name={name}"
+        if mode == "archive" and row["state"] == "archived":
+            conn.commit()
+            return f"ok registry_orphan_already_archived={name}"
+
+        if reason := admit_curator_destructive_action(
+            conn,
+            action=f"skill_registry_orphan_{mode}",
+            artifact="skill",
+            key=name,
+            transaction_open=True,
+        ):
+            conn.commit()
+            return f"ERR {reason}"
+
+        audit = build_skill_audit(conn, include_archived=True)
+        record = next(
+            (item for item in audit["skills"] if item["name"] == name),
+            None,
+        )
+        # The lookup above is intentionally repeated through the full audit so
+        # the snapshot records the same all-roots/external-cache evidence that
+        # Curator saw when it authorized the cleanup.
+        if record is None or record["source_path"] is not None:
+            conn.rollback()
+            return f"ERR registry_orphan_source_present name={name}"
+        artifact = capture_registry_only_skill(
+            name=name,
+            usage_row=_row_to_dict(row),
+            audit_record=record,
+        )
+        if mode == "archive":
+            conn.execute(
+                "UPDATE skill_usage SET state='archived' WHERE name=? "
+                "AND availability='unavailable'",
+                (name,),
+            )
+            event_kind = "skill_registry_orphan_archived"
+        else:
+            conn.execute(
+                "DELETE FROM skill_usage WHERE name=? AND availability='unavailable'",
+                (name,),
+            )
+            event_kind = "skill_registry_orphan_removed"
+        _emit(conn, event_kind, target=name, summary=f"trash={artifact.name}")
+        record_curator_action(
+            conn,
+            action=event_kind,
+            artifact="skill",
+            key=name,
+            snapshot_rel=f"trash={artifact.name}",
+        )
+        conn.commit()
+    except (OSError, sqlite3.Error) as exc:
+        if conn.in_transaction:
+            conn.rollback()
+        return f"ERR registry_orphan_cleanup_failed={type(exc).__name__}"
+
+    return f"ok registry_orphan_{mode}d={name} trash={artifact.name}"
+
+
 def _restore_skill_usage_row(
     conn: sqlite3.Connection,
     name: str,
@@ -1358,7 +1457,9 @@ def _restore_skill_usage_row(
     # A restore is a deliberate return: the aging clock starts again instead
     # of resuming an old stale or archived state.
     conn.execute(
-        "UPDATE skill_usage SET state='active', stale_since=NULL, created_at=? "
+        "UPDATE skill_usage SET state='active', stale_since=NULL, created_at=?, "
+        "availability='available', unavailable_since=NULL, "
+        "unavailable_prior_state=NULL "
         "WHERE name=?",
         (int(time.time()), name),
     )
@@ -1408,7 +1509,8 @@ def _action_reconcile(name: str) -> str:
 def skill_list(include_archived: bool = False) -> str:
     """List skills with telemetry. Format:
         <name> tier=<hypothesis|observed|validated> origin=<...>
-            state=<active|stale|archived> uses=N fg_uses=N
+            state=<active|stale|archived> availability=<available|unavailable>
+            uses=N fg_uses=N
             views=N patches=N wrong=N pinned=0/1 last_active=<age>
 
     Listing is not consultation: it never touches ``view_count``,
@@ -1465,7 +1567,7 @@ def skill_list(include_archived: bool = False) -> str:
         )
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
-            f"state={r['state']} "
+            f"state={r['state']} availability={r['availability']} "
             f"uses={r['use_count']} "
             f"fg_uses={fg_uses} views={r['view_count'] or 0} "
             f"patches={r['patch_count']} wrong={wrong_n} "
@@ -1592,7 +1694,8 @@ def curator_run(stale_after_days: int = 30,
         conn.commit()
     origins = sorted(CURATABLE_SKILL_ORIGINS)
     rows = conn.execute(
-        "SELECT * FROM skill_usage WHERE pinned=0 AND created_by_origin IN "
+        "SELECT * FROM skill_usage WHERE pinned=0 AND availability='available' "
+        "AND created_by_origin IN "
         f"({','.join('?' for _ in origins)})",
         origins,
     ).fetchall()

@@ -25,6 +25,7 @@ macOS (osascript) + log now; webhook is a follow-up.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -238,6 +239,23 @@ def _record_notify_pass(conn: sqlite3.Connection, ev_id: int, tk_ended: int,
         logger.debug("notify: failed to record pass", exc_info=True)
 
 
+def _dispatch_recorded(conn: sqlite3.Connection, source: str,
+                       payload: tuple[str, str]) -> None:
+    title, body = (sanitize_presentation_text(text) for text in payload)
+    try:
+        conn.execute(
+            "INSERT INTO events (session_id, kind, target, summary, created_at) "
+            "VALUES (?, 'notification', ?, ?, ?)",
+            (identity._session_id or "", source,
+             json.dumps({"title": title, "body": body}, ensure_ascii=False),
+             int(time.time())),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.warning("notify: failed to save notification details", exc_info=True)
+    _dispatch(title, body)
+
+
 # ── scans ───────────────────────────────────────────────────────────────────
 
 def _scan_failures(conn: sqlite3.Connection, ev_floor: int,
@@ -259,7 +277,8 @@ def _scan_failures(conn: sqlite3.Connection, ev_floor: int,
         if r["kind"] == "spawn_timeout_retry_failed" or \
                 classify_summary(summary) == "failure":
             loop = r["kind"][:-5] if r["kind"].endswith("_pass") else r["kind"]
-            out.append({"kind": loop, "reason": _reason_from_summary(summary)})
+            out.append({"kind": loop, "reason": _reason_from_summary(summary),
+                        "source": f"event:{r['id']}"})
     return out
 
 
@@ -303,6 +322,7 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
             rc_disp = rc
         out.append({
             "kind": f"child:{label}",
+            "source": f"task:{r['id']}",
             "label": label,
             "rc": rc_disp,
             "reason": _reason_from_task_log(r["id"], tail=tail),
@@ -324,7 +344,8 @@ def _scan_positive(conn: sqlite3.Connection, ev_floor: int, ev_ceil: int,
     except sqlite3.OperationalError:
         return out
     for r in rows:
-        out.append({"kind": r["kind"], "target": r["target"] or "",
+        out.append({"kind": r["kind"], "source": f"event:{r['id']}",
+                    "target": r["target"] or "",
                     "summary": r["summary"] or ""})
     return out
 
@@ -465,19 +486,19 @@ def run_notify_pass(force: bool = False, *, scheduled: bool = False) -> str:
         now = time.time()
         for f in fails:
             if _cooldown_ok(f["kind"], now, conn):
-                _dispatch(*_fmt_failure(f))
+                _dispatch_recorded(conn, f["source"], _fmt_failure(f))
                 fired += 1
         for c in children:
             if _cooldown_ok(c["kind"], now, conn):
-                _dispatch(*_fmt_child(c))
+                _dispatch_recorded(conn, c["source"], _fmt_child(c))
                 fired += 1
         for s in skills:
             title, body = _fmt_skill(s)
             if body:  # A pathless mark only silences a nudge; no named artifact.
-                _dispatch(title, body)
+                _dispatch_recorded(conn, s["source"], (title, body))
                 fired += 1
         for l in lessons:
-            _dispatch(*_fmt_lesson(l))
+            _dispatch_recorded(conn, l["source"], _fmt_lesson(l))
             fired += 1
 
     # Advance to the ceilings we scanned (disabled categories are skipped, never

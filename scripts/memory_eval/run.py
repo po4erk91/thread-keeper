@@ -20,6 +20,8 @@ It reports, over a fixed ground-truth set:
   • retrieval latency   — mean / p50 / p95 / max wall-clock milliseconds
   • forgetting lifecycle — a full-store mutation sequence with explicit
                          negative credit for obsolete evidence
+  • operational recovery — offline comparison of bounded recovery records
+                         with the dialogue-only baseline
 
 The default judge is **lexical** (deterministic, offline, no API key, no
 embeddings) so a single command is reproducible and CI-safe. ``--matrix``
@@ -64,6 +66,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 DEFAULT_GROUND_TRUTH = HERE / "ground_truth.json"
 DEFAULT_LIFECYCLE_FIXTURE = HERE / "lifecycle_fixture.json"
+DEFAULT_OPERATIONAL_RECOVERY_FIXTURE = HERE / "operational_recovery.json"
 
 # Subprocess runs set ``sys.path[0]`` to ``scripts/memory_eval`` rather than
 # the checkout root.  Prefer this checkout over any unrelated editable install
@@ -1035,6 +1038,17 @@ def format_report(report: dict) -> str:
                 f"  ✗ {failure['stage']} [{failure['memory_class']}] "
                 f"obsolete={len(failure['obsolete_retrieved'])}"
             )
+    operational = report.get("operational_recovery")
+    if operational:
+        bounded = operational["bounded_action_outcomes"]
+        out.append(
+            "operational recovery: "
+            f"{'PASS' if operational['thresholds_pass'] else 'FAIL'} "
+            f"usefulness={bounded['lesson_usefulness']:.1%} "
+            f"privacy_leaks={bounded['privacy_leakage']} "
+            f"storage_ratio={bounded['storage_ratio']:.1%} "
+            f"false_links={bounded['false_causal_links']}"
+        )
     if fails:
         out.append("")
         out.append(f"failures ({len(fails)}):")
@@ -1192,6 +1206,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lifecycle-fixture", type=Path,
                     default=DEFAULT_LIFECYCLE_FIXTURE,
                     help="frozen full-store mutation fixture.")
+    ap.add_argument("--operational-recovery-fixture", type=Path,
+                    default=DEFAULT_OPERATIONAL_RECOVERY_FIXTURE,
+                    help="bounded action/outcome recovery comparison fixture.")
     ap.add_argument("--lifecycle-read", type=Path, metavar="DB",
                     help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
@@ -1281,12 +1298,22 @@ def main(argv: list[str] | None = None) -> int:
             fixture_path=args.lifecycle_fixture,
             semantic=semantic,
         )
+        from threadkeeper.action_outcomes import evaluate_offline_fixture
+
+        operational_fixture = json.loads(
+            args.operational_recovery_fixture.read_text()
+        )
+        report["operational_recovery"] = evaluate_offline_fixture(
+            operational_fixture
+        )
 
         if args.json:
             print(json.dumps(report, indent=2))
         else:
             print(format_report(report))
         if report["forgetting_lifecycle"]["verdict"] != "PASS":
+            return 4
+        if not report["operational_recovery"]["thresholds_pass"]:
             return 4
         return 0 if not args.strict or report["thresholds_pass"] else 1
     finally:
