@@ -140,6 +140,7 @@ PROFILE_TOOL_NAMES: Mapping[str, frozenset[str]] = {
     "coordination": frozenset(COORDINATION_TOOLS),
     "memory-admin": frozenset(MEMORY_ADMIN_TOOLS),
     "learning-loops": frozenset(LEARNING_LOOP_TOOLS),
+    "model-router": frozenset({"model_route_write"}),
 }
 PROFILE_NAMES = frozenset((*PROFILE_TOOL_NAMES, "full"))
 DECLARED_TOOL_NAMES = frozenset().union(*PROFILE_TOOL_NAMES.values())
@@ -284,6 +285,8 @@ def child_profile_for_role(role: str, configured_profile: str = "") -> str:
         return requested
 
     role_name = role.strip().lower()
+    if role_name == "model_router":
+        return "model-router"
     if role_name in {
         "archivist", "background_review", "candidate_reviewer", "curator",
         "dialectic_validator", "probe_runner", "shadow_observer",

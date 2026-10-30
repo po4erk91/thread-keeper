@@ -685,6 +685,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 task_id_override: str = "",
                 child_cid_override: str = "",
                 allowed_tools_override: Optional[tuple[str, ...]] = None,
+                native_tools_override: Optional[tuple[str, ...]] = None,
                 _bypass_capability: object | None = None,
                 _curator_launch: object | None = None,
                 memory_access: str = "read_only",
@@ -1048,6 +1049,12 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "--session-id", child_cid,
             "--append-system-prompt", sys_extra,
         ]
+        if capture_output and not visible:
+            from ..adapters.claude_code import STREAM_OUTPUT_ARGS
+
+            cmd.extend(STREAM_OUTPUT_ARGS)
+        if native_tools_override is not None:
+            cmd += ["--tools", ",".join(native_tools_override)]
     # Everything below is Claude-flavour argv flags. Non-claude
     # adapters built their full argv via spawn_argv() above and skip
     # all of this. (When chosen_cli != "claude", `cmd` already

@@ -2,16 +2,16 @@
 # thread-keeper: PreToolUse gate for parallelism tools — steers the
 # spawn-vs-native choice from core_memory.spawn_pattern.
 #
-# TWO tool families, OPPOSITE heuristics, because the right default flipped
-# with opus 4.8 (native parallelism matured):
+# Claude Code renamed Task to Agent in 2.1.63. Retain the legacy Task
+# policy for older hosts; current Agent calls use an advisory policy.
 #
-#   Task (legacy built-in, still present on non-opus-4.8 models)
+#   Task (legacy built-in, before Claude Code 2.1.63)
 #     Old premise: native is weak, spawn() is the strong path for any
 #     substantial parallel work. So BLOCK Task on parallel-fanout/long work
 #     lacking a synthesis cue → push to spawn(). Honors TK_TASK_GATE mode
 #     (deny default).
 #
-#   Agent / Workflow (opus 4.8+ native primitive)
+#   Agent (current Claude Code native primitive)
 #     New premise: native IS the right default for ephemeral in-turn
 #     fan-out. So DON'T block fan-out. INVERTED: only flag work that
 #     genuinely belongs to spawn() — carrying PERSISTENCE signals
@@ -20,7 +20,7 @@
 #     native call (blocking a primitive the harness wants to use is hostile;
 #     worst case of a false positive should be one ignorable stderr line).
 #
-# Modes via env TK_TASK_GATE (Task branch only; Agent/Workflow is always
+# Modes via env TK_TASK_GATE (Task branch only; Agent is always
 # advisory regardless of mode):
 #   deny  — exit 2, hard block, stderr visible to Claude (default)
 #   warn  — exit 0, stderr warning, tool proceeds
@@ -29,7 +29,7 @@
 # Decision rule (lesson 'spawn-vs-task-decision-tree' +
 # core_memory.spawn_pattern) — choose on SCOPE, not size:
 #   cross-session / inter-agent channels / daemon / outlives chat → spawn()
-#   in-turn parallel fan-out (synthesize this turn)               → native Agent/Workflow
+#   in-turn parallel fan-out (synthesize this turn)               → native Agent
 #   single targeted lookup                                         → native Agent Explore
 
 set -u
@@ -49,12 +49,12 @@ DESC=$(printf '%s' "$INPUT" | jq -r '.tool_input.description // empty' 2>/dev/nu
 PROMPT_LEN=${#PROMPT}
 
 # ──────────────────────────────────────────────────────────────────────
-# Agent / Workflow branch — INVERTED heuristic, advisory only.
+# Agent branch — INVERTED heuristic, advisory only.
 # Native fan-out is fine; only nudge toward spawn() when the prompt shows
 # the work needs thread-keeper persistence/coordination native can't give
 # (separate CLI process, own cid, shared DB, survives the session).
 # ──────────────────────────────────────────────────────────────────────
-if [ "$TOOL" = "Agent" ] || [ "$TOOL" = "Workflow" ]; then
+if [ "$TOOL" = "Agent" ]; then
   # PERSISTENCE signals — the spawn()-only niche. Tight on purpose: a false
   # positive wrongly nudges away from the now-preferred native primitive, so
   # match only explicit cross-session / inter-agent / daemon language, NOT
@@ -62,12 +62,12 @@ if [ "$TOOL" = "Agent" ] || [ "$TOOL" = "Workflow" ]; then
   PERSIST='cross.?session|across sessions|between sessions|outlive|survive the (session|chat|conversation)|next session|переживать|между сесси|пережить сесси|other CLI|another CLI|other agent instance|sibling session|shared brain|thread.?keeper (channel|DB|memory|spawn)|broadcast\(|whisper\(|\binbox\(|\bwait\(|respond\(|\bask\(|inter.?agent|coordinate with (the )?(peer|sibling|other)|spawn a (persistent|long.lived|daemon)|run as a daemon|persist (it|the result|across)'
   if printf '%s\n%s\n' "$PROMPT" "$DESC" | grep -qiE "$PERSIST"; then
     REASON=$(cat <<'EOF'
-tk-task-gate: native Agent/Workflow вызван для работы с PERSISTENCE-сигналами — это ниша mcp__thread-keeper__spawn(), не нативного сабагента.
+tk-task-gate: native Agent вызван для работы с PERSISTENCE-сигналами — это ниша mcp__thread-keeper__spawn(), не нативного сабагента.
 
 Сигналы: prompt упоминает cross-session / inter-agent каналы (broadcast/whisper/inbox/wait) / переживание сессии / daemon / координацию с другим CLI.
 
 Почему spawn(), а не native:
-  • native Agent/Workflow — ЭФЕМЕРНЫЙ внутрисессионный параллелизм (общий контекст, результат в этот turn). НЕ переживает сессию, не виден другим CLI, нет inter-agent каналов.
+  • native Agent — ЭФЕМЕРНЫЙ внутрисессионный параллелизм (общий контекст, результат в этот turn). НЕ переживает сессию, не виден другим CLI, нет inter-agent каналов.
   • spawn() — отдельный CLI-процесс, свой cid, общая thread-keeper БД, переживает чат, broadcast/whisper/inbox/wait.
 
 Реально нужна персистентность/координация → mcp__thread-keeper__spawn().
@@ -83,7 +83,7 @@ EOF
 fi
 
 # ──────────────────────────────────────────────────────────────────────
-# Task branch (legacy tool, non-opus-4.8 models) — original heuristic.
+# Task branch (legacy Claude Code tool) — original heuristic.
 # ──────────────────────────────────────────────────────────────────────
 [ "$TOOL" != "Task" ] && exit 0
 

@@ -28,28 +28,73 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _TICK_S = 3600
+_RUNNING_TICK_S = 30
 _BACKOFF_S = 6 * 3600
 _RECORDED_ACTIONS = frozenset({"start", "fallback", "fail"})
 ROUTER_TOOL = "mcp__thread-keeper__model_route_write"
 ROUTER_PROMPT_PREFIX = "You are a MODEL ROUTER"
+MAX_PROMPT_DATA_CHARS = 80_000
 
 ROUTER_PROMPT = ROUTER_PROMPT_PREFIX + """ for thread-keeper's background agents.
 
 Each role below runs as a spawned child on one CLI, model and reasoning effort.
 Choose the best CLI + model + effort for every listed role for the next week.
 
-Weigh three things:
-  1. Price: tokens per run, reasoning effort, and model tier. Cheaper is
-     better when quality holds.
-  2. Speed and reliability: run time, success rate, and provider failures
-     such as "Selected model is at capacity".
-  3. Result quality: the recent outcome lines of each role.
+Complete this pass using only the prepared task evidence, official prices and
+catalog below. The parent owns memory bookkeeping and has prepared the inputs.
+Do not load skills or start filesystem, transcript, repository
+or web investigations. Missing evidence is uncertainty to state in the reason,
+not an instruction to expand this pass into new research. Use ToolSearch only
+to load model_route_write, then submit the decisions and finish.
+
+Evaluate every role from the results of its previous tasks. Compare the
+available CLI + model + effort combinations on these three criteria:
+  1. Task effectiveness: how well the actual result meets that task's goal,
+     including correctness, usefulness, omissions, and required rework.
+  2. Cost: the resources needed to obtain a usable result. Use recorded costs
+     and the automatically fetched OFFICIAL PRICING below. Match exact model,
+     CLI billing scope, currency, context tier, cache and speed conditions.
+     API USD rates are reference costs, not subscription charges. Codex credits,
+     GitHub AI credits and provider quotas are separate units. Unknown billing
+     plans or alias versions must remain unknown; do not assume the newest
+     model when local/provider overrides or older CLIs may change an alias.
+  3. Efficiency: useful results relative to elapsed time and token use,
+     including failed attempts, retries, and wasted work.
 
 Rules:
-  - Keeping the current setting is a valid and expected answer. Switch only
-    when the data gives a concrete reason, and name that reason.
-  - With fewer than 5 runs on the current setting, prefer keeping it.
-  - Roles with impact code_write or external_write weigh quality above price.
+  - Reassess the current setting against alternatives on every pass. Change
+    it whenever another combination offers a better balance for this role's
+    tasks, even if the current model runs without errors. Keeping it requires
+    the same comparison; stability alone is not a selection criterion.
+  - Analyze the previous task instructions and result excerpts, not just
+    execution counts. Exit code 0 means the process completed, not that the
+    task succeeded. A final answer is a self-report unless tests, reviews or
+    other verification in the evidence support it. Missing results are unknown.
+  - Compare results from similar tasks and distinguish model shortcomings
+    from authentication, quota, CLI-version and other infrastructure failures.
+    Use VERIFIED ROUTER EXECUTION ACCESS to resolve historical startup errors;
+    do not claim an unresolved access failure after a later successful run.
+  - Treat small samples and untested alternatives as uncertainty. Do not
+    invent benchmark results, task-success rates, model prices or savings.
+    Mark provisional choices and identify the missing comparison evidence.
+  - Use the source URL and fetched_at for price comparisons. Stale cards are
+    historical estimates, not current prices; unavailable rates are unknown,
+    never zero. Do not use a rate missing from the provided excerpt.
+  - Compare model AND effort using observed input/output tokens, duration,
+    retries and quality on similar tasks. Effort has no invented fixed price
+    multiplier: it changes generated/reasoning token use and task outcomes.
+    Estimate cost from input/output rates only when their token definitions
+    and billing scope match. Missing cache/reasoning breakdowns and untested
+    effort settings need explicit assumptions; keep estimates separate from
+    recorded cost_usd and include failed/retried work in cost per useful result.
+    Task tokens are cumulative across requests: do not infer a per-request
+    long-context tier from their total. CLI-reported USD may also be an API
+    equivalent rather than an actual subscription charge.
+  - Neither the current model nor the strongest or cheapest model gets an
+    automatic preference. Choose the best task-specific tradeoff across all
+    three criteria, including for roles that write memory or code.
+  - For each role's reason, cite previous-task evidence and compare task
+    effectiveness, cost and efficiency with an alternative. State any unknowns.
   - Choose only from AVAILABLE OPTIONS. The effort must be listed for that
     model; for a CLI that encodes effort in the model, use an empty effort.
 
@@ -184,28 +229,37 @@ def describe_next_pass(state: TickState) -> str:
 
 
 def build_prompt(conn: sqlite3.Connection, router_pass: routes.RouterPass) -> str:
-    from .model_router_digest import build_digest
+    from .model_pricing import pricing_context
+    from .model_router_digest import MAX_DIGEST_CHARS, build_digest
     from .review_prompts import DATA_FENCE, fence_observed
     from .spawn_config import resolution_details
 
     active = identity.active_cli()
     current = {role: resolution_details(role, active) for role in router_pass.roles}
+    options = routes.cached_options()
+    now = int(time.time())
+    pricing = pricing_context(options, now)
     digest = build_digest(
-        conn, list(router_pass.roles), routes.cached_options(), current,
-        int(time.time()),
+        conn, list(router_pass.roles), options, current, now,
+        max_chars=min(MAX_DIGEST_CHARS, MAX_PROMPT_DATA_CHARS - len(pricing) - 2),
     )
     return ROUTER_PROMPT % {
         "pass_id": router_pass.pass_id,
         "roles": ", ".join(router_pass.roles),
         "fence": DATA_FENCE,
-        # Outcome lines echo child output, which can carry untrusted text.
-        "digest": fence_observed(digest, "router telemetry"),
+        # Both publisher text and child outcomes are observed data.
+        "digest": fence_observed(pricing, "official pricing") + "\n\n"
+                  + fence_observed(digest, "router telemetry"),
     }
 
 
 def _spawn_child(prompt: str, cli: str = "", model: str = "", effort: str = "") -> str:
+    from ._mcp import active_tool_names
+    from .tools.model_router import model_route_write
     from .tools.spawn import _spawn_impl  # type: ignore
 
+    if model_route_write.__name__ not in active_tool_names():
+        return "ERR model_router_write_tool_unavailable"
     return _spawn_impl(
         prompt=prompt,
         visible=False,
@@ -216,6 +270,7 @@ def _spawn_child(prompt: str, cli: str = "", model: str = "", effort: str = "") 
         memory_access="read_only",
         slim=True,
         allowed_tools_override=(ROUTER_TOOL,),
+        native_tools_override=("ToolSearch",),
         cli=cli,
         model=model,
         effort=effort,
@@ -333,7 +388,7 @@ def run_router_pass(force: bool = False, *, scheduled: bool = False) -> str:
         return "disabled"
     conn = get_db()
     if not daemon_state.claim_pass(
-        "model_router", _TICK_S, scheduled=scheduled, conn=conn,
+        "model_router", _poll_interval(conn), scheduled=scheduled, conn=conn,
     ):
         return "not_due"
     _ensure_session(conn)
@@ -348,13 +403,18 @@ def run_router_pass(force: bool = False, *, scheduled: bool = False) -> str:
         return outcome
 
 
+def _poll_interval(conn: sqlite3.Connection) -> int:
+    pending = routes.latest_pass(conn)
+    return _RUNNING_TICK_S if pending and pending.status == "running" else _TICK_S
+
+
 def _serve_loop() -> None:
     while True:
         try:
             run_router_pass(scheduled=True)
         except Exception:
             logger.debug("model_router tick failed", exc_info=True)
-        daemon_sleep(_TICK_S)
+        daemon_sleep(_poll_interval(get_db()))
 
 
 def start_model_router_daemon() -> None:

@@ -255,6 +255,13 @@ curator_restore and record the rollback. For a [PROTECTED] skill,
 put the exact repair in a VERIFY proposal. Never touch an external plugin skill
 or a [PINNED] entry.
 
+SOURCE-MISSING RECORDS are unavailable and non-compatible. Their single owner
+action is `restore_source`; do not create another repair task. If a verifier
+confirms that no managed root, archive, or external cache has the source, it
+may propose `skill_manage(action='cleanup_orphan', name=...,
+orphan_action='archive'|'remove')`. The server takes a registry/usage snapshot
+and rechecks source absence; a readable source always refuses cleanup.
+
 MERGE/DELETE safety:
   • Merge only when the skills have the same practical job or one fully
     subsumes the other. Preserve all unique procedures, caveats, triggers,
