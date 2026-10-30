@@ -140,6 +140,11 @@ DECISION RULES:
   to a protected skill, REJECT the candidate (don't patch protected).
 - For action=NOTE without a clear thread_id — DON'T guess. Leave the
   candidate pending; an agent may pick the right thread later.
+- An `operational_recovery` candidate is bounded metadata, not a transcript.
+  Never infer or request raw arguments, raw output, paths, secrets, or an
+  unrecorded causal link. If it becomes a LESSON, pass
+  `source='action_outcome_candidate:<candidate id>'` to `lesson_append` so
+  source deletion can invalidate that lesson.
 - Skip-and-leave-pending IS a valid action — but ONLY when no other
   action fits, not as a default. Most candidates should resolve to
   one of REJECT / NOTE / VERBATIM / SKILL.
@@ -420,6 +425,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 permission_mode="auto",
                 role="candidate_reviewer",
                 write_origin="candidate_review",
+                memory_access="propose",
                 slim=True,
                 # De-privileged (issue #76): path-scoped skill/lesson/
                 # candidate tools only — no bare Read/Write. Reference

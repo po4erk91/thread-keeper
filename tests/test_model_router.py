@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import pytest
 
 CATALOG = {
     "claude": {"models": ["opus", "sonnet"]},
@@ -12,7 +13,9 @@ CATALOG = {
 
 
 def _setup(pkg, monkeypatch, auto_roles=("curator",)):
-    from threadkeeper import model_router, model_routes
+    from threadkeeper import model_pricing, model_router, model_routes
+    monkeypatch.setattr(model_pricing, "pricing_context",
+                        lambda options, now: "## OFFICIAL PRICING\nTest official price data")
     config = pkg["config"]
     monkeypatch.setattr(config, "MODEL_ROUTER_INTERVAL_S", 604800.0)
     for role in auto_roles:
@@ -242,3 +245,58 @@ def test_router_child_may_only_call_route_write(fresh_mp, monkeypatch):
     assert seen.get("extra_allowed_tools", "") == ""
     assert (seen["role"], seen["write_origin"]) == ("model_router", "model_router")
     assert (seen["cli"], seen["model"], seen["effort"]) == ("codex", "gpt-6.1-sol", "xhigh")
+
+
+def test_router_does_not_spawn_when_parent_cannot_expose_route_write(fresh_mp, monkeypatch):
+    from threadkeeper import _mcp, model_router
+    import threadkeeper.tools.spawn as spawn_mod
+    calls = []
+    monkeypatch.setattr(_mcp, "active_tool_names", lambda: frozenset({"brief"}))
+    monkeypatch.setattr(spawn_mod, "_spawn_impl", lambda **kwargs: calls.append(kwargs))
+    assert model_router._spawn_child("prompt") == "ERR model_router_write_tool_unavailable"
+    assert calls == []
+
+
+@pytest.mark.parametrize("cli", ["", "claude"])
+def test_claude_router_cannot_expand_into_shell_or_skill_research(fresh_mp, monkeypatch, cli):
+    from threadkeeper import model_router
+    import threadkeeper.tools.spawn as spawn_mod
+    seen = {}
+    monkeypatch.setattr(spawn_mod, "_spawn_impl",
+                        lambda **kwargs: seen.update(kwargs) or "ok task=tk_x pid=1")
+    model_router._spawn_child("prompt", cli=cli, model="opus", effort="max")
+    assert seen["native_tools_override"] == ("ToolSearch",)
+    assert seen["allowed_tools_override"] == (model_router.ROUTER_TOOL,)
+
+
+def test_router_prompt_requires_task_result_cost_and_efficiency_comparison(fresh_mp, monkeypatch):
+    router, _, _, calls = _setup(fresh_mp, monkeypatch)
+    router.run_router_pass()
+    prompt = calls[0]["prompt"]
+    assert "Task effectiveness:" in prompt
+    assert "Cost:" in prompt
+    assert "Efficiency:" in prompt
+    assert "Reassess the current setting against alternatives on every pass" in prompt
+    assert "Exit code 0 means the process completed, not that the" in prompt
+    assert "including for roles that write memory or code" in prompt
+    assert "Switch only" not in prompt
+    assert "fewer than 5 runs" not in prompt
+    assert "Test official price data" in prompt
+    assert "Stale cards are" in prompt
+    assert "Effort has no invented fixed price" in prompt
+    assert "API USD rates are reference costs, not subscription charges" in prompt
+
+
+def test_pending_pass_reconciles_before_the_hourly_interval(fresh_mp, monkeypatch):
+    router, routes, conn, calls = _setup(fresh_mp, monkeypatch)
+    router.run_router_pass()
+    primary = routes.latest_pass(conn).task_id
+    _exit(conn, primary, 1)
+    intervals = []
+    monkeypatch.setattr(router.daemon_state, "claim_pass",
+                        lambda name, interval, **kwargs: intervals.append(interval) or True)
+    assert router._poll_interval(conn) == 30
+    assert router.run_router_pass(scheduled=True).startswith("spawned attempt=fallback")
+    assert intervals == [30]
+    _record_valid_route(routes, conn, routes.latest_pass(conn))
+    assert router._poll_interval(conn) == 3600

@@ -964,7 +964,7 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert pkg["reports_dir"].is_dir()
     manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
     assert len(manifests) == 1
-    assert json.loads(manifests[0].read_text())["schema_version"] == 1
+    assert json.loads(manifests[0].read_text())["schema_version"] == 2
     assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
     assert kw["_curator_launch"].pass_id not in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
@@ -1782,6 +1782,80 @@ def test_skill_validator_is_exhaustive_and_semantic(tmp_path, monkeypatch):
     assert "1. SKILL bad_name" in checklist
     assert "2. SKILL first-skill" in checklist
     assert "3. SKILL second-skill" in checklist
+
+
+def test_skill_audit_reports_only_safe_inline_resources_and_substantial_repeats(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    skill_dir = primary / "resource-audit"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "references" / "present.md").write_text(
+        "available", encoding="utf-8",
+    )
+    repeated = (
+        "Keep each release checklist explicit about the owner, verification "
+        "command, expected result, rollback path, and the evidence retained "
+        "after deployment so later operators can reproduce the decision "
+        "without rediscovering undocumented local assumptions."
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: resource-audit\n"
+        "description: \"Use `references/frontmatter-missing.md` only in this test.\"\n"
+        "---\n\n"
+        "# Heading `references/heading-missing.md`\n\n"
+        "Read [missing Markdown reference](references/missing-link.md).\n\n"
+        "Read `references/missing-inline.md` and `references/present.md`.\n\n"
+        "[URL](https://example.test/missing.md) [absolute](/private/missing.md) "
+        "`https://example.test/missing.md` `/private/missing.md` "
+        "[outside](../outside.md) `../outside.md` `python scripts/check.py`, "
+        "`value.method`, and `value/method` stay unreported.\n\n"
+        "```sh\n"
+        "cat references/fenced-missing.md\n"
+        "```\n\n"
+        "Short repeated boilerplate.\n\n"
+        "Short repeated boilerplate.\n\n"
+        f"{repeated}\n\n"
+        f"{repeated.upper()}\n\n"
+        f"{repeated.replace('release checklist', 'release   checklist')}\n",
+        encoding="utf-8",
+    )
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, state) VALUES (?, ?, ?, ?)",
+        ("resource-audit", int(time.time()), "background_review", "active"),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.skills as skill_tools
+    from threadkeeper.skill_audit import build_skill_audit
+
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary])
+    record = build_skill_audit(conn)["skills"][0]
+
+    assert "dangling_relative_link:references/missing-link.md" in record["findings"]
+    assert "dangling_inline_resource:references/missing-inline.md" in record["findings"]
+    assert any(
+        finding.startswith("repeated_normalized_paragraph:occurrences=3:")
+        for finding in record["findings"]
+    )
+    assert not any(
+        item in finding
+        for finding in record["findings"]
+        for item in (
+            "frontmatter-missing", "heading-missing", "fenced-missing",
+            "present.md", "example.test", "/private", "scripts/check.py",
+            "value.method", "value/method", "outside.md",
+        )
+    )
+
+    from threadkeeper.tools.curator import skill_validate
+
+    payload = json.loads(skill_validate(name="resource-audit"))
+    assert payload["skill"]["findings"] == record["findings"]
 
 
 def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(

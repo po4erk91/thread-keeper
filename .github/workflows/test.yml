@@ -94,6 +94,76 @@ jobs:
           echo "pytest shards: $SHARDS"
           test "$SHARDS" = "success"
 
+  conformance:
+    name: MCP conformance requirements
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install test server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Build pinned official conformance runner
+        run: |
+          CONFORMANCE_REF=c37eec888e1c6ff140af79987a40008548b7cc5f
+          git clone --no-checkout https://github.com/modelcontextprotocol/conformance.git .conformance
+          git -C .conformance fetch --depth=1 origin "$CONFORMANCE_REF"
+          git -C .conformance checkout --detach "$CONFORMANCE_REF"
+          npm --prefix .conformance ci
+          npm --prefix .conformance run build
+
+      - name: Run official MCP requirement sets
+        env:
+          THREADKEEPER_DISABLE_BG_DAEMONS: "1"
+          THREADKEEPER_NO_EMBEDDINGS: "1"
+          THREADKEEPER_MENUBAR_AUTO_LAUNCH: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/conformance-home"
+          export CLAUDE_PROJECTS_DIR="$RUNNER_TEMP/conformance-projects"
+          export THREADKEEPER_DB="$RUNNER_TEMP/conformance.sqlite"
+          mkdir -p "$HOME" "$CLAUDE_PROJECTS_DIR"
+
+          python -m threadkeeper.conformance_server > "$RUNNER_TEMP/conformance-server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          server_ready=false
+          for _ in {1..60}; do
+            if python -c 'import socket; socket.create_connection(("127.0.0.1", 8765), 0.2).close()' > /dev/null 2>&1; then
+              server_ready=true
+              break
+            fi
+            sleep 0.25
+          done
+          test "$server_ready" = true
+
+          node .conformance/dist/index.js server \
+            --url http://127.0.0.1:8765/mcp \
+            --requirements 2025-11-25 \
+            --expected-failures tests/conformance/expected-failures.2025-11-25.yml
+          node .conformance/dist/index.js server \
+            --url http://127.0.0.1:8765/mcp \
+            --requirements 2026-07-28 \
+            --expected-failures tests/conformance/expected-failures.2026-07-28.yml
+
   encrypted-storage:
     name: SQLCipher storage (py3.12)
     runs-on: ubuntu-latest

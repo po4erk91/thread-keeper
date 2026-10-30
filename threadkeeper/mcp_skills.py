@@ -22,6 +22,7 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import INVALID_PARAMS, RequestParams, Resource
 
 from .config import CLAUDE_SKILLS_DIR
+from .consequential_state import review_warning, skill_review_categories
 
 
 SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
@@ -226,6 +227,9 @@ def skill_catalog() -> tuple[SkillEntry, ...]:
         files = _skill_files(skill_dir, name)
         if files is None:
             continue
+        warning = review_warning(skill_review_categories(skill_dir))
+        if warning:
+            frontmatter["description"] = f"{warning}\n{frontmatter['description']}"
         entries.append(
             SkillEntry(
                 name=name,
@@ -265,6 +269,8 @@ def read_skill_resource(uri: str) -> SkillFile:
     for entry in skill_catalog():
         for item in entry.files:
             if item.uri == uri:
+                if warning := review_warning(skill_review_categories(CLAUDE_SKILLS_DIR / entry.name)):
+                    raise ResourceNotFoundError(warning)
                 return item
     raise ResourceNotFoundError(f"Unknown resource: {uri}")
 

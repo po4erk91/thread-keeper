@@ -91,7 +91,8 @@ def _normalize_origin(origin: str | None) -> str:
 
 
 def _current_origin() -> str:
-    return _normalize_origin(WRITE_ORIGIN) or "unknown"
+    from .memory_access import effective_origin
+    return _normalize_origin(effective_origin(WRITE_ORIGIN)) or "unknown"
 
 
 def _creator_marker(file_body: str, target_begin: str) -> tuple[str, str] | None:
@@ -254,6 +255,8 @@ def append_lesson(
     A replacement keeps the creator's origin, so rewriting a lesson never
     moves it across that boundary.
     """
+    from .memory_access import require_write
+    require_write()
     fp = path or _LESSONS_PATH
     slug = _slugify(title)
     ts = int(time.time())
@@ -302,6 +305,8 @@ def patch_lesson(
     remain untouched. Returns a short status code so the MCP wrapper can map
     predictable conflicts to its public error strings.
     """
+    from .memory_access import require_write
+    require_write()
     if not old_string:
         return "old_string_required"
     fp = path or _LESSONS_PATH
@@ -349,6 +354,8 @@ def patch_lesson(
 
 def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:
     """Remove one lesson section by exact slug. Returns True when removed."""
+    from .memory_access import require_write
+    require_write()
     fp = path or _LESSONS_PATH
     with _lessons_file_lock(fp):
         found = lesson_section(slug, path=fp)
@@ -407,6 +414,8 @@ def restore_lesson_section(
     path: Optional[Path] = None,
 ) -> bool:
     """Restore an exact lesson section. Refuses to overwrite an existing slug."""
+    from .memory_access import require_write
+    require_write()
     fp = path or _LESSONS_PATH
     with _lessons_file_lock(fp):
         _ensure_file(fp)
@@ -590,6 +599,9 @@ def record_lesson_access(
     if is_curator_audit_reader(conn):
         return
     now_t = int(now or time.time())
+    from .memory_access import resolve_access
+    if resolve_access(conn).access != "write":
+        return
     ensure_lesson_usage(conn, item, now=now_t)
     if kind == "view":
         conn.execute(

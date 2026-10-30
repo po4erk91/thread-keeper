@@ -11,6 +11,7 @@ import os
 import threading
 from pathlib import Path
 
+import pytest
 
 
 _FAKE_CID = "11112222-3333-4444-5555-666677778888"
@@ -213,6 +214,38 @@ def test_headless_log_file_is_owner_only(mp_with_cid, monkeypatch):
     assert len(log_files) == 1, log_files
     mode = log_files[0].stat().st_mode & 0o777
     assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+
+@pytest.mark.parametrize("native_tools", [None, ("ToolSearch",)])
+def test_captured_claude_streams_progress_and_applies_native_tool_scope(
+    mp_with_cid, monkeypatch, native_tools,
+):
+    pkg = mp_with_cid(_FAKE_CID)
+    import threadkeeper.tools.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "_claude_bin", lambda: "/fake/bin/claude")
+    monkeypatch.setattr(pkg["identity"], "_active_cli", "claude")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.pid = 4321
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", FakePopen)
+    out = spawn_mod._spawn_impl(
+        prompt="Decide from prepared evidence", cwd=str(pkg["tmp"]),
+        visible=False, capture_output=True, cli="claude",
+        native_tools_override=native_tools,
+    )
+    assert out.startswith("ok task="), out
+    argv = captured["args"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--include-partial-messages" in argv and "--verbose" in argv
+    if native_tools is None:
+        assert "--tools" not in argv
+    else:
+        assert argv[argv.index("--tools") + 1] == "ToolSearch"
 
 
 def test_ordinary_spawn_strips_stale_curator_capabilities(mp_with_cid, monkeypatch):

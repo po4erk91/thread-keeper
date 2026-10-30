@@ -167,6 +167,7 @@ def claim_pickup(thread_id: str, plan: str = "",
                 visible=False,
                 permission_mode="auto",
                 role=spawn_role or "executor",
+                memory_access="propose",
                 extra_allowed_tools="Read,Bash,Grep,Glob",
             )
         except Exception as exc:  # noqa: BLE001 — leave no orphaned claim
