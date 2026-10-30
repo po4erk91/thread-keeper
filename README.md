@@ -54,7 +54,11 @@ make it more than a memory store:
   `~/.codex/skills/`, `~/.gemini/config/skills/` for Antigravity,
   existing `~/.agents/skills/`, extra roots from
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`), with
-  lessons.md as a fallback for CLIs without a native skills loader.
+  lessons.md as a fallback for CLIs without a native skills loader. A managed
+  skill write reports success only after every mirror has the expected file
+  set and hashes; `ERR mirror_partial_failure` keeps the canonical copy and
+  names only the affected consumer plus relative file. Retry safely with
+  `skill_manage(action="reconcile", name="<skill>")`.
 
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
@@ -352,6 +356,27 @@ sent to another model provider.
 ## Core systems
 
 ### Spawn — primary parallelism primitive
+
+Public children have explicit durable-memory access. `spawn(...,
+memory_access="read_only")` is the default; `memory_access="propose"` queues
+supported memory-writing calls as pending candidates. A foreground reviewer
+uses `memory_proposals()` and `memory_proposal_decide(id, accept=True)` to
+apply one candidate. New generated artifacts keep **observed** authority.
+Only private Curator and Evolve launchers can grant direct `write` access.
+Curator researchers, probe runners, model routers, and general helpers remain
+read-only; learning reviewers submit proposals. Coordination and authorized
+research/report handoffs remain available.
+
+These are three separate controls: tool profiles decide which tools a child
+can discover; provenance labels describe where content came from; a persisted,
+task-bound memory capability decides whether it can write accepted memory.
+Changing `write_origin`, a role, or the advertised tool profile grants no memory
+authority. An omitted or forged child grant fails closed. Ordinary child reads
+are capped to the launch project's namespace plus global/shared memory, even
+with `cross_project=True`; a child outside a resolved project sees only
+global/shared memory. Existing memory keeps its current scope. This boundary protects server
+tools and storage helpers; it does not sandbox arbitrary code running under
+the same operating-system account with direct access to database files.
 
 `spawn(prompt, slim=True, role=..., visible=False, ...)` launches a child
 Claude session via a `claude -p` subprocess. By default `slim=True`: the
@@ -827,9 +852,20 @@ children start, a deterministic validator writes
 ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
-their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The same inventory also
-flags a dense lesson subtopic when at least
+their read-only caches rather than misreported as missing mirrors. A telemetry
+row with no readable primary source becomes `unavailable`, is non-compatible,
+and shows only `restore_source` until validation sees a source again; repeated
+validation does not create duplicate repair work. A scoped Curator verifier can
+archive or remove a confirmed registry-only orphan only after rechecking every
+configured root, the primary archive, and external cache and saving its usage row plus
+audit evidence to recovery trash. The same inventory also
+checks Markdown links and unambiguous slash-containing inline-code resource
+paths for missing local files. It ignores URLs, absolute or escaping paths,
+shell fragments, frontmatter, headings, and fenced examples. It also reports
+only substantial repeated prose: normalized paragraphs of at least 160
+characters that occur at least three times in the same skill. The same findings
+are returned by `skill_validate`, before a Curator repair is mirrored. The
+inventory also flags a dense lesson subtopic when at least
 `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
 concrete title terms and a non-generic body mechanism. Generic joins and
 domain-wide/high-document-frequency title words cannot form a candidate. The
@@ -1150,27 +1186,44 @@ with that name instead of minting overlapping roadmap PRs.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
-the automatic pass first sweeps the open PRs authored by the account
-thread-keeper's `gh` acts as — yours: applier, reviewer, and hand-made PRs
-alike. A PR from any other account (a collaborator, a bot, a fork) is never
-updated, repaired, or merged. If the PR sweep itself cannot read GitHub state
-or the `gh` account, the pass fails closed instead of taking fresh work blind.
-The sweep squash-merges the oldest non-draft PR GitHub reports `CLEAN` (up to
-date, required checks green) through the protected merge API, pinned to the
-head SHA it saw green, and then asks GitHub to update the oldest `BEHIND` one —
-the "Update branch" button — so CI reruns against the new base. Open
-work in progress as a draft: drafts are never merged. Strict branch
+the automatic pass first sweeps eligible PRs from the account thread-keeper's
+`gh` acts as. A PR must be in this repository and have a recognized automation
+branch (`roadmap/issue-…`, `evolve/apply-…`, or `docs/roadmap-audit-…`) or a
+standalone ownership marker in its body. Applier PRs use
+`<!-- thread-keeper:evolve-applier-pr -->`; reviewer roadmap PRs use
+`<!-- thread-keeper:evolve-reviewer-roadmap-pr -->`. Manual and fork PRs, and
+PRs with missing or conflicting ownership signals, stay read-only. If the PR
+sweep itself cannot read GitHub state or the `gh` account, the pass fails
+closed instead of taking fresh work blind.
+
+The sweep squash-merges the oldest eligible non-draft PR GitHub reports
+`CLEAN` (up to date, required checks green) through the protected merge API,
+pinned to the head SHA it saw green, and then asks the oldest eligible `BEHIND`
+PR to update its branch so CI reruns against the new base. Strict branch
 protection lets only one PR merge per base commit, so PRs land one at a time,
 oldest first. Between full passes the daemon repeats only this cheap landing
-sweep every 15 minutes, so a green PR lands minutes after its checks finish;
-it skips while any reviewer/applier git writer runs. A conflicted applier PR
-(`roadmap/…` or `evolve/…` head branch in this repository) is repaired before
-any new issue/report/evolve work is started: the conflict-repair child checks
-out the existing PR branch, merges the current base branch, resolves
-conflicts, runs the full suite, and pushes back to the same branch, then
-stops; the landing sweep merges it once it is green. A hand-made PR with
-conflicts, and red or otherwise blocked PRs, wait for a human. Set
-`THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge to a human.
+sweep every 15 minutes, so a green PR lands minutes after its checks finish; it
+skips while any reviewer/applier git writer runs.
+
+The applier keeps one applier PR (`roadmap/…` or `evolve/…` head branch in
+this repository) in flight at a time. While any is open it starts no new
+issue, Curator report, or evolve suggestion, and works on the oldest one until
+it lands. A conflicted PR gets a conflict-repair child that checks out the
+existing PR branch, merges the current base branch, resolves conflicts, runs
+the full suite, and pushes back to the same branch. A PR whose finished checks
+include a red one is first updated onto the newest base, which clears failures
+already fixed there. If it stays red while up to date, a fix child reads the
+failing logs, fixes the cause on the same branch (or re-runs a job that failed
+outside the code), runs the full suite, and pushes. A green applier draft is
+marked ready. Children never merge: the landing sweep lands the PR once it is
+green. When that PR needs a child, or the last open applier PR has just
+landed, the 15-minute sweep runs the full pass right away. After three repair
+or fix children one PR waits for a human and the next open applier PR moves
+ahead. When every open applier PR waits for a human, the pass records
+`ERR applier_prs_need_human=…`, which the notifier reports as a failure. A
+hand-made PR with conflicts or red checks waits for its author and does not
+hold back new work. Set `THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge
+to a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
@@ -1322,9 +1375,9 @@ the prior cursor and retries on a bounded short cadence; repeated identical
 blockers are recorded once until the blocker changes. `evolve_apply_status()`
 shows the last attempt, last successful dispatch, and any pending retry time.
 Manual tools such as `evolve_apply_conflicted_pr()` and
-`evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
-or roadmap issue is startable, the pass falls back to Curator reports and then
-legacy promoted `evolve_format(...)` suggestions.
+`evolve_apply_roadmap_issue()` dispatch immediately. If no applier PR is open
+and no roadmap issue is startable, the pass falls back to Curator reports and
+then legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
 
@@ -1408,9 +1461,7 @@ after an update shows a one-time permission prompt.
 `agent_status` feeds the app two lists — `recent_results` (named skill/lesson
 write events plus completed-task history) and `recent_failures` (the two failure
 sources above) — each item tagged with a `notify` flag computed from the toggles
-below. The app **lists**
-every item in its menu but only **posts a banner** for flagged ones, so turning a
-category off silences the banner without hiding the history. Each materialization
+below. The app only posts a banner for flagged items. Each materialization
 uses its own skill or lesson toggle; generic task reports are history-only.
 Foreground writes appear too, without waiting for a background child to finish.
 A pathless skill mark only silences its reminder and has no materialization
@@ -1419,6 +1470,26 @@ error reasons in both lists are bounded sanitized summaries: credential-shaped
 values and private home paths are redacted before they reach the MCP status
 response, menu, or notification; raw logs remain available only through
 `task_logs`.
+
+**Reading a hidden or truncated banner.** The menu-bar popover's **Notification
+history** keeps the last 200 notification attempts, with the full text supplied
+to macOS and **Copy details** in each item's context menu. The app also imports
+its own delivered notifications still retained by Notification Center, so an
+older banner can be recovered even if previews are hidden. This local history
+survives app restarts and category toggles; it does not replay notifications or
+change macOS privacy settings. For diagnostics, the installed app prints the
+same history as JSON:
+
+```bash
+~/Applications/ThreadKeeperAgentStatus.app/Contents/MacOS/ThreadKeeperAgentStatus --notification-history
+```
+
+The daemon also stores each sanitized title/body as a node-local `notification`
+event before dispatch, including its source event or task, regardless of the
+selected channels. `notify_pass` remains the aggregate cursor/counter record.
+These records describe notification attempts, not proof that macOS displayed a
+banner. Older dismissed notifications without a saved payload cannot be
+reconstructed from counters alone.
 
 **Settings in the app.** The menu-bar app's **Settings ▸ Notifications** tab
 edits these same `THREADKEEPER_NOTIFY_*` keys visually — switches for the
@@ -1517,6 +1588,7 @@ the host after changing it:
 | `coordination` | `core` plus child spawning, task status, pickup, and delegated search |
 | `memory-admin` | `core` plus durable memory, concepts, lessons, graph links, and explicit erasure |
 | `learning-loops` | `core` plus extraction, validation, skills, Curator, probes, and dialectic workflows |
+| `model-router` | only the pass-authorized `model_route_write` tool |
 | `full` | every registered tool; the compatibility default when no profile is configured |
 
 New `thread-keeper-setup` registrations use `core`. Existing server entries
@@ -1527,7 +1599,9 @@ server rather than exposing an unintended surface.
 
 Spawned children default to `core`; archival, Curator, candidate-review,
 shadow-review, probe-runner, and dialectic-validator roles use
-`learning-loops`, while Evolve roles request `full`. The server receives the
+`learning-loops`, model-router children use `model-router`, and Evolve roles
+request `full`. A router refuses to spawn if its parent cannot expose the
+route-write tool. The server receives the
 parent’s resolved allowlist and intersects it with the child profile, so a
 child cannot regain a tool its parent did not expose.
 `THREADKEEPER_CHILD_TOOL_PROFILE` explicitly selects a different child profile,
@@ -1540,7 +1614,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, or `full`; read at server start |
+| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, `model-router`, or `full`; read at server start |
 | `THREADKEEPER_TOOL_INCLUDE` | "" | exact comma-separated tool names to add to the selected profile; unknown names fail closed |
 | `THREADKEEPER_TOOL_EXCLUDE` | "" | exact comma-separated tool names to remove from the selected profile; unknown or overlapping names fail closed |
 | `THREADKEEPER_CHILD_TOOL_PROFILE` | role default | spawned-child profile override; always intersected with the parent’s resolved tool surface |
@@ -1648,7 +1722,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
-| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
+| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Applier PRs also get a green draft marked ready, and red checks retried on the newest base before a fix child starts. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
@@ -1739,16 +1813,50 @@ model and effort:
 THREADKEEPER_SPAWN__LOOP__SHADOW_OBSERVER=auto
 ```
 
-The router reviews the last 30 days of that role's spawns (success rate,
-failures such as provider capacity errors, run time, tokens, recent outcomes)
-plus the local model catalog, and records one decision per `auto` role with a
-reason. Until it has decided, `auto` keeps its old meaning and follows the
+The router compares models and effort for each role using the results of its
+previous tasks: task effectiveness, cost, and efficiency. Its last-30-day
+digest includes task instructions and final answers from saved transcripts,
+with structured CLI results or log summaries as a fallback. Samples cover
+different model/effort combinations and include failed executions. Time,
+tokens, recorded USD costs and missing-cost coverage accompany the results;
+subscription token use is a quota proxy, not an invented dollar price.
+
+Before each decision pass, the parent fetches official OpenAI API and Codex
+credit rates, Anthropic API rates and Claude alias rules, GitHub Copilot rates,
+and Antigravity quota/overage rules for available CLIs. Rate cards are cached
+for 24 hours in `model_pricing.json` beside the database, with source URLs and
+fetch times. Network or document-layout failures retain the last good card
+as **stale**; absent rates remain unknown. Published API USD rates, Codex
+credits, GitHub AI credits and subscription quotas keep their own billing
+scope. The router uses observed input/output tokens, duration and results to
+compare effort; effort has no fixed invented price multiplier. Estimates
+state missing cache/reasoning or alias details and never replace recorded spend.
+Completed router executions also supply dated CLI/model/effort access evidence,
+so an older startup rejection is not treated as unresolved after a later success.
+Access evidence does not establish quality on other roles' tasks.
+Recent failed router attempts also carry their parsed error text, including
+temporary quota limits, separately from evidence of task quality.
+
+Every pass reassesses alternatives, even when the current model runs without
+errors. Exit code zero does not prove task success, and missing results leave
+quality unknown. Each decision explains the task-specific tradeoff and its
+uncertainty. Until it has decided, `auto` keeps its old meaning and follows the
 active CLI. While a role is routed, its `SPAWN__MODEL__<ROLE>` and
 `SPAWN__EFFORT__<ROLE>` pins are ignored and `spawn_status()` warns about them.
 
 The router runs on `claude` / `opus` / `max` (override with the usual
 `SPAWN__LOOP|MODEL|EFFORT__MODEL_ROUTER` keys). If that run fails, the same pass
 reruns on the fallback below; a pass that fails twice retries after 6 hours.
+Due-pass checks run hourly; unfinished passes reconcile every 30 seconds so
+a finished or failed child does not wait an hour for its next state transition.
+It decides from the prepared evidence and prices, rather than starting new
+research. Claude router children expose only native `ToolSearch` plus the MCP
+route writer. Captured headless Claude launches stream intermediate events
+to the task log so an active analysis is distinguishable from a stalled run.
+If the CLI rejects a model shown in the shared model cache, check
+`codex --version` and update the CLI before changing model pins. The desktop
+app and the CLI on `PATH` can use different releases. Verify access with a
+short call through the CLI that thread-keeper actually launches.
 `model_router_status()` shows current decisions and `model_router_run()` runs a
 pass now. Set `THREADKEEPER_MODEL_ROUTER_INTERVAL_S=0` to disable the router.
 
@@ -1940,6 +2048,56 @@ WAL mode because recent committed transactions may exist only in
 first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
+
+For a selective, human-inspectable migration or audit, use
+`tk-semantic-bundle`. It writes a versioned `manifest.json` and canonical
+`records.jsonl`; every record has a SHA-256 content hash, source namespace and
+ID, provenance/authority metadata, temporal fields, and deletion or
+invalidation state. It is not a disaster-recovery snapshot and does not
+replace active-active sync:
+
+| Need | Use |
+| --- | --- |
+| Recover an exact local store after loss | `tk-backup` |
+| Keep live, compatible instances converged | instance sync |
+| Move or inspect selected semantic memory | `tk-semantic-bundle` |
+
+```bash
+# Default: semantic threads, notes, concepts, distillations, lessons, skills,
+# and graph links. Raw dialog, task logs, and personal memory stay out.
+tk-semantic-bundle export ./memory.bundle --namespace laptop-2026
+
+# Opt in to each sensitive class independently when it is needed.
+tk-semantic-bundle export ./complete.bundle --namespace laptop-2026 \
+  --include-personal-memory --include-dialog --include-task-logs
+
+# Import is a dry run unless --apply is explicit.
+tk-semantic-bundle import ./memory.bundle
+tk-semantic-bundle import ./memory.bundle --apply
+```
+
+An import first validates the manifest schema and every hash, then reports
+additions, conflicts, invalid records, and its namespace choice without
+writing. Applied imports retain source IDs in the local
+`semantic_bundle_import_records` namespace ledger; an identical re-import is
+idempotent, while changed source content reports a deterministic conflict.
+The format has a documented crosswalk to the evolving
+[W3C AI Agent Memory Interoperability work](https://www.w3.org/groups/cg/ai-agent-memory-interop/)
+and [IETF AIMEM bundle draft](https://www.ietf.org/archive/id/draft-vu-aimem-bundle-00.html),
+but does not claim conformance to either draft. The crosswalk is deliberately
+conceptual, not a wire-format mapping:
+
+| ThreadKeeper bundle v1 | External direction | Deliberate difference |
+| --- | --- | --- |
+| versioned manifest + canonical JSONL | AIMEM envelope and versioning | Directory/JSONL rather than the draft's one JSON object |
+| `source.namespace` + source-ID ledger | AIMEM producer namespace and replay identity | Local namespace strings are not AIMEM URNs |
+| record and stream SHA-256 hashes | AIMEM checksum/content-hash concepts | No signature or authenticity claim |
+| typed records and graph links | AIMEM chunks and edges | ThreadKeeper types and relations remain local |
+| egress class, authority, valid time, tombstone | W3C work on memory metadata, sharing, and revocation | Local policy metadata; not an external profile |
+
+The IETF document is an Internet-Draft and the W3C group is still developing
+its protocol, so compatibility must be reviewed again before publishing an
+external-profile claim.
 
 ### Opt-in encrypted storage (experimental)
 
@@ -2260,6 +2418,15 @@ It reports these headline groups over a fixed ground-truth set:
   process. It reports a separate score for thread notes, verbatim memory,
   dialectic claims, and lessons or skills.
 
+- **operational recovery comparison** — a second fully synthetic fixture
+  compares dialogue-only evidence with a bounded action/outcome record. Its
+  fixed thresholds require useful recovery links, zero forbidden-string leaks,
+  bounded storage relative to the dialogue baseline, and zero false causal
+  links. The record shape contains only normalized action names, opaque
+  objective/source references, coarse outcomes, error fingerprints, ordering,
+  recovery links, authority, provenance, and expiry. It has no raw arguments,
+  raw output, transcript text, paths, or secret field.
+
 - **outcome classification** — retrieval failure, reasoning failure,
   stale-memory use, removed-memory use, and privacy-policy violation.
 
@@ -2269,6 +2436,17 @@ memory egress policy (`all`, `same-vendor`, `work-only`). A hybrid row is marked
 unavailable when the optional semantic extra is not installed. `--strict`
 requires the versioned fixture thresholds and zero safety violations, making
 the same command suitable for retrieval/model migration gates.
+
+Action/outcome capture is an **offline-only prototype**. The runtime has no
+live producer or export route. Evaluation records expire after 30 days, and
+the retention pass removes them; `tk-forget --selector-type objective <ref>
+--apply` removes an objective's records and invalidates any linked lesson.
+Records sourced from a forgotten dialog/session/thread are removed by the
+same targeted-erasure path. The existing candidate reviewer may see only the
+bounded recovery candidate; a lesson must keep its
+`action_outcome_candidate:<id>` provenance so invalidation hides it. Live use
+requires a later explicit opt-in plus a passing offline comparison; this
+release provides neither.
 
 For DB concurrency, run the reproducible local gate:
 
@@ -2424,9 +2602,17 @@ write is `dialectic_supersede`.
 era. Legacy hosts retain the existing tools, resources, and prompts. Modern
 calls derive identity and capabilities from every request, static discovery
 catalogs advertise public cache freshness, and replaying a completed write with
-the same caller-bound JSON-RPC id returns the original result instead of
-committing a second mutation. Sealed continuation state expires after five
-minutes; an interrupted write with no terminal result is rejected on replay.
+the same caller-bound JSON-RPC id within one stdio connection returns the
+original result instead of committing a second mutation. Independent CLI
+connections have separate replay namespaces even when their client metadata
+and numeric IDs match; numeric and string IDs are distinct. Sealed continuation
+state expires after five minutes; an interrupted write with no terminal result
+is rejected on replay within that connection. Durable workflow retries use
+their application handles, such as a router pass ID.
+The release gate also runs the pinned official MCP conformance requirement sets
+for both versions against a loopback-only Streamable HTTP view of this same
+registry. Its version-specific expected-failure baselines are checked for both
+new failures and stale entries; stdio keeps the ThreadKeeper-specific coverage.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

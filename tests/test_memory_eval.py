@@ -166,6 +166,8 @@ def test_smoke_emits_headline_metrics(smoke_report):
     assert r["evidence_recall"]["rate"] == 1.0
     assert r["final_answer"]["rate"] == 1.0
     assert r["thresholds_pass"] is True
+    assert r["operational_recovery"]["thresholds_pass"] is True
+    assert r["operational_recovery"]["live_ingestion_allowed"] is False
 
 
 def test_smoke_covers_every_versioned_axis(smoke_report):
