@@ -7,6 +7,14 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a test or eval run can no longer leave a live daemon host
+  behind.** A thread-keeper process whose database lives under the system
+  temp directory or `/tmp` no longer spawns a detached host. Such a host
+  dropped the daemon gates, read `~/.threadkeeper/.env`, and ran every
+  background loop against the throwaway database. One ran for four days,
+  taking roadmap issues in parallel with the real host and spending model
+  budget on reviews.
+
 - **Fixed: notification causes remain available when macOS hides previews.**
   The menu-bar app keeps a bounded local history with selectable details and
   imports its own retained delivered notifications. `--notification-history`
@@ -43,6 +51,7 @@ version bumps follow semver per the policy in
   existing assignment no longer stands in for task quality.
   Router children receive a dedicated profile exposing their route-write
   tool; a missing parent permission prevents a doomed child launch.
+
 
 ## v0.22.0 — 2026-10-24
 
