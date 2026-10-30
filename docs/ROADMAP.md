@@ -8,6 +8,51 @@ remains a live question.
 
 ---
 
+## 2026-10-30 reviewer audit
+
+- **Keep task-log access inside the task spool.** Agents allowed to inspect
+  background tasks can currently pass a relative or absolute filename instead
+  of a task identifier and read an unrelated log. The read also changes the
+  containing directory's permissions. Validate identifiers with the same rule
+  used when creating tasks, check containment and unsafe links before opening
+  a file, and keep directory creation and permission changes out of read-only
+  inspection. Cover valid logs, rejected names, missing logs, links, and
+  unchanged permissions. This is a separate caller-input boundary from the
+  spool-creation protection in #94 and status-summary redaction in #299.
+- **Bound memory used to inspect a task's output.** Asking for one final line
+  still loads, decodes, and splits the whole log. Read a bounded tail, limit
+  response bytes even for one very long line, and disclose truncation. Reuse
+  the bounded reading approach already used by agent status where practical.
+  Test large files, long lines, invalid text, growing logs, and explicit
+  whole-log requests. Task retention (#42) limits stored history; it does not
+  bound a single diagnostic read.
+- **Check every Curator phase's required tools (follow-up to #353).** The
+  capability gap also affects public research: the default `curator_researcher`
+  role selects `core`, which hides `curator_research_write`. Evaluators and
+  verifiers also lack required operations. Compose a narrow tool set for each
+  phase and reject dispatch when the parent or adapter cannot grant it. Keep
+  web research separate from memory mutation, preserve task-bound writer
+  authority, and cover real child discovery and writer calls on Codex. The
+  new model-router profile and missing-writer preflight provide an existing
+  pattern for this check.
+
+Disposable probes read only synthetic logs. Both filename escape forms reached
+a sibling log and changed its directory from 0755 to 0700; an identifier-check
+control refused them and preserved valid task reads. Returning a 20-byte tail
+from an 8 MiB log used about 25.6 MB of Python allocations. Phase-contract
+checks found one hidden research writer, nine hidden evaluator operations, and
+six hidden verifier operations. An exact allowlist with the full profile
+exposed each required set without adding other tools; production still needs
+the phase-specific composition and child integration tests above. All 67
+focused profile, spool, connection, Evolve, Curator, and status checks passed
+with a disposable database and background daemons disabled.
+
+The nine legacy suggestions map to the existing capability work (#353), mirror
+convergence and root policy (#388), branch-development database guard below
+(follow-up to #59), unavailable skills (#373), and lesson connection cleanup
+(follow-up to #293). The last two mirror-retry suggestions are identical.
+No external research digest was available.
+
 ## 2026-10-29 reviewer audit
 
 - **Reclaim finished task checkouts safely ([#431](https://github.com/po4erk91/thread-keeper/issues/431)).** People running background repository
