@@ -21,8 +21,21 @@ The dual-era runner also accepts the legacy `2025-11-25` initialize handshake
 and the `2026-07-28` per-request envelope. Business tools are shared across
 both paths. Modern static discovery catalogs advertise one-hour public cache
 hints, sealed continuation state is bound to the caller and expires after five
-minutes, and a caller-scoped replay ledger returns the first terminal result
-for a repeated modern mutation rather than running it twice.
+minutes, and a caller- and stdio-connection-scoped replay ledger returns the
+first terminal result for a repeated modern mutation rather than running it
+twice. Each stdio server instance gets a fresh namespace; client software
+metadata is not a unique running-client identity. Numeric and string JSON-RPC
+IDs remain distinct. Durable retries use application workflow handles.
+
+The release gate runs the pinned official MCP conformance requirement sets for
+both protocol versions. `threadkeeper.conformance_server` is a test-only,
+loopback Streamable HTTP entry point: it imports `threadkeeper.server` to use
+the exact same `mcp` tool, resource, prompt, extension, and schema registry as
+production stdio. It adds no production transport or test fixture handlers.
+Version-specific expected-failure baselines document intentional differences
+from the upstream `test_*` fixtures. The official runner rejects both a new
+failure and a stale baseline entry, while real-stdio tests retain legacy
+initialization, `server/discover`, per-request `_meta`, and replay coverage.
 
 ## Package map
 
@@ -44,7 +57,9 @@ threadkeeper/
 ├── elicitation.py     capability-gated MCP form confirmations (#26)
 ├── github_budget.py   shared gh API rate-limit/cooldown ledger
 ├── backup.py          tk-backup VACUUM INTO snapshot/restore command
+├── semantic_bundle.py versioned, privacy-selective semantic bundle CLI
 ├── forget.py          targeted session/cid/thread/dialog erasure planner + CLI
+├── action_outcomes.py  offline-only bounded action/recovery evaluation records
 ├── agent_status.py    structured loop/agent/recent-result status for UI clients
 ├── dashboard_app.py   sandboxed, display-only ui:// dashboard (#364)
 ├── brief.py           render_brief() / render_context() — main digest
@@ -116,7 +131,15 @@ name; completed-task log summaries remain history-only. Child-log excerpts and
 spawn error reasons in `recent_results` and `recent_failures` are sanitized
 before the snapshot is returned: credential-shaped values and private home
 paths become redaction markers, while owner-only raw logs remain available
-through `task_logs`. Skill and lesson notification toggles apply independently
+through `task_logs`. The native app retains up to 200 notification payloads in
+its local preferences and imports its own delivered notifications through
+`UNUserNotificationCenter`; the popover shows their full text with a copy
+action. Its `--notification-history` diagnostic mode prints this history and
+exits before creating the status controller or requesting permission. The
+Python notifier separately journals sanitized title/body payloads as local
+`notification` events with an event/task source before channel dispatch. Both
+histories record attempts, not proof that macOS displayed a banner.
+Skill and lesson notification toggles apply independently
 to their respective write events. The
 popover includes a power button that writes `THREADKEEPER_DISABLE_BG_DAEMONS`
 to the same `.env` file and requests a ThreadKeeper restart, giving the widget
@@ -232,6 +255,17 @@ again, and re-runs integrity_check. Restore still requires stopping live
 thread-keeper servers first; replacing a database under an open SQLite
 connection can strand that process on the old unlinked file.
 
+`tk-semantic-bundle` is a separate portability path. Its deterministic
+canonical JSONL records carry source namespace/ID, SHA-256 hash, provenance,
+authority, valid-time values, and tombstone or invalidation state. The default
+bundle excludes raw dialog, task logs, and personal-memory records; each class
+requires an explicit export option. Import is dry-run first, validates all
+schema versions and hashes before writing, records source IDs in the local
+namespace ledger, and treats a changed already-imported source record as a
+deterministic conflict. The format is informed by the W3C AI Agent Memory and
+IETF AIMEM bundle drafts, but is not a conformance implementation while those
+drafts remain in motion.
+
 ### Encrypted storage profile
 
 `THREADKEEPER_STORAGE_PROFILE=sqlite` is the dependency-free default. The
@@ -339,6 +373,14 @@ Steady-state access is split by intent:
    FTS/vector mirrors, plus directly sourced notes, verbatim, dialectic,
    extract, task, signal, and session-sidecar records. It defaults to dry-run
    and reports lessons/skills that cite the purged source for manual re-review.
+   The offline action/outcome prototype uses the same path: each record holds
+   only normalized action/outcome metadata, opaque objective/source references,
+   error fingerprints, sequence/recovery links, authority, provenance, and an
+   expiry. It has no argument, output, transcript, path, or secret field.
+   `tk-forget --selector-type objective <ref> --apply` removes the objective's
+   events; source erasure removes source-linked events. Both invalidate linked
+   candidate/lesson derivations. There is no live ingester or external export;
+   `export_events()` is an allowlisted internal reducer for offline evaluation.
 
 4. **events + cursors + presence + signals** — live channel: every mutating
    action writes an event, each session has a cursor, and `live_status()`
@@ -610,13 +652,37 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` (default 3, 0 = uncapped) the row is
   terminally skipped as poison (`poison_skip` pass event) instead of respawning
   a fresh child against the same unresolvable batch every interval.
-- **model_router** — ticks hourly; starts a pass once per
+- **model_router** — checks due passes hourly and reconciles a running pass
+  every 30 seconds; starts a pass once per
   `MODEL_ROUTER_INTERVAL_S` (default 604800, weekly) or as soon as a role set to
   `auto` has no valid decision. The parent builds a fenced telemetry digest
   (`model_router_digest.py`) and spawns the router (`claude`/`opus`/`max` by
-  default). The child can only call `model_route_write`, which validates every
-  decision against the model catalog and writes `model_routes` atomically. A
-  child that exits without a decision triggers one fallback run
+  default). It compares task effectiveness, cost and efficiency using prior
+  task instructions and final transcript answers, failed and alternative-model
+  runs, durations, input/output tokens, reported model IDs and recorded costs.
+  Completed router attempts with successful exits supply dated CLI/model/effort
+  access evidence, superseding older startup errors without claiming task quality.
+  Recent failed router attempts include their parsed terminal error text, so
+  current quota/transport limits are visible separately from model quality.
+  `model_pricing.py` fetches fixed official Markdown sources in parallel for
+  available CLIs: OpenAI API/Codex credits, Anthropic API/Claude alias rules,
+  Copilot pricing and Antigravity quota/overage terms. Fetches have time and
+  response-size limits and do not follow redirects. An atomic private JSON
+  cache beside the database has a 24-hour TTL; fetch/layout failures preserve
+  the last good data with an explicit stale status. Source URLs, timestamps,
+  currencies and billing scopes accompany the fenced evidence. Pricing has
+  reserved space in the prompt budget. The child compares effort from observed
+  resource use and task results, without a fixed price multiplier; estimates
+  never overwrite recorded spend. Missing results or rates remain unknown;
+  execution success alone does not establish result quality. The
+  child's `model-router` MCP profile exposes only `model_route_write`; a
+  missing parent permission prevents the launch. That tool validates every
+  decision against the model catalog and writes `model_routes` atomically.
+  Claude router children have only native `ToolSearch` and the MCP writer;
+  their prompt requires decisions from the prepared evidence rather than new
+  filesystem, transcript or web investigations. Captured headless Claude
+  launches use streaming JSON output so task logs show intermediate progress.
+  A child that exits without a decision triggers one fallback run
   (`MODEL_ROUTER_FALLBACK_*`, default `codex`/`gpt-6.1-sol`/`xhigh`); two failures
   back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
@@ -624,7 +690,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   bounded slim-child batches. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
-  exact duplicates, and lexical semantic candidates. The web-free evaluator
+  exact duplicates, repeated substantial paragraphs, and lexical semantic
+  candidates. Resource checks cover Markdown links and only unambiguous
+  slash-containing inline-code paths that remain inside the skill directory;
+  URLs, absolute or escaping paths, commands, frontmatter, headings, and
+  fenced examples are excluded. Repeated-prose findings require a normalized
+  paragraph of at least 160 characters to occur at least three times. The
+  web-free evaluator
   reads each full skill, writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
   External research is a separate opt-in capability: when
@@ -738,38 +810,26 @@ moving the high-water forward; `force=True` bypasses this due gate.
 - **evolve_applier** (`evolve_applier.start_evolve_applier_daemon`) — once per
   `EVOLVE_APPLY_INTERVAL_S` (default 0 = off) first fetches open GitHub PRs via
   `gh pr list --json mergeStateStatus,mergeable,headRefOid,author,...` and
-  keeps only PRs authored by the account `gh` acts as (`gh api user`, cached
-  per token auth context for an hour; default credentials are re-read each
-  sweep so account switches take effect). `_pr_landing_action` requires an
-  explicit same-repository flag and durable automation ownership: a generated
-  `roadmap/issue-<number>-<slug>[-<host>]` or `evolve/apply-<id>-<slug>` branch,
-  a reviewer `docs/roadmap-audit-YYYY-MM-DD` branch, or a standalone applier/
-  reviewer PR-body marker. Applier prompts include
-  `<!-- thread-keeper:evolve-applier-pr -->`; the reviewer keeps its
-  `<!-- thread-keeper:evolve-reviewer-roadmap-pr -->` marker. Repair preserves
-  the PR's branch/body. Curator application currently writes memory only;
-  an older maintenance PR can be explicitly adopted with the applier marker.
-  `_applier_pr_queue` checks the latest local issue/suggestion handoff when
-  present against the exact PR URL; a requeue, empty/mismatched handoff, or
-  ledger read error yields `wait`. No local record is required when a durable
-  branch/marker proves ownership across hosts. Unmarked manual PRs, all forks,
-  missing repository metadata, and ambiguous ownership remain read-only and
-  visible in status with `not_automation_owned` reasons. Operators may review
-  an older PR's provenance and add the appropriate standalone marker to its
-  body; contradictory handoffs must be reconciled or the PR landed manually.
-  Another account's PR is never updated, repaired, or merged. Each eligible
-  PR is classified: `repair` for an applier PR with `DIRTY` / `CONFLICTING`,
-  `update` for `BEHIND`, `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for pending
-  or red checks, `UNKNOWN`, drafts, a missing head SHA, another base, reviewer
-  conflicts, or `EVOLVE_AUTOLAND=0` (repair may still run). This sweep is a hard
-  preflight before new work: if PR state or the `gh` account cannot be read, the pass records
+  accepts only PRs authored by the account `gh` acts as (`gh api user`, cached
+  per auth context for an hour) that are in the same repository and have
+  durable automation ownership. Ownership is a generated applier/reviewer
+  branch or a standalone applier/reviewer body marker. Missing repository data,
+  forks, manual branches, and conflicting signals stay visible as `wait` and
+  are never changed. Each eligible PR is classified (`_pr_landing_action`):
+  `repair` for a conflicted applier PR, `update` for `BEHIND`, `fix` for an
+  applier branch whose finished `statusCheckRollup` holds a red check run or
+  commit status, `ready` for an applier draft whose checks are all green,
+  `merge` for `CLEAN` / `HAS_HOOKS`, and `wait` for everything else (checks
+  still running, `UNKNOWN`, another base, reviewer conflicts, or
+  `EVOLVE_AUTOLAND=0`). This sweep is a hard preflight before new work: if
+  PR state or the `gh` account cannot be read, the pass records
   `conflicted_pr_fetch_error` and does not pick a fresh roadmap issue, Curator
   report, or promoted evolve suggestion. Fork PRs are never fed to the
   privileged repair child. **Landing** (`_land_applier_prs`, parent only, no
   child): squash-merge the oldest `merge` PR through `PUT /pulls/{n}/merge`
   with `sha=<headRefOid>`, so a head pushed after the green read is refused,
   then delete its same-repository head branch (never a fork's, never the
-  base); then call
+  base); then mark the oldest `ready` draft ready (`gh pr ready`); then call
   `PUT /pulls/{n}/update-branch` with `expected_head_sha` on the oldest PR that
   is behind (including green PRs that the merge just made behind). Strict branch
   protection allows one merge per base commit, so one merge and one update per
@@ -777,11 +837,25 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `evolve_pr_landing` event; the shared GitHub budget cooldown stops the sweep.
   Between due passes the daemon wakes every `EVOLVE_LANDING_POLL_S` (15 min) and
   runs only `run_evolve_landing_pass()`, which skips while any reviewer/applier
-  git writer runs. Then, if a `repair` PR exists, the repair child checks out
-  the existing PR branch, merges the current base branch, resolves conflicts,
-  runs the full suite, and pushes back to the same branch; it never merges, and
-  the landing sweep lands it once GitHub reports it green.
-  When no conflicted applier PR exists, it fetches open GitHub issues via the
+  git writer runs. **One applier PR at a time:** while any applier PR is open
+  (`_open_applier_prs`), the pass starts no new work and moves the oldest one
+  that does not wait for a human (`_next_applier_pr`) one step: a `repair` PR
+  gets the conflict-repair child (check out the existing PR branch, merge the
+  current base, resolve, run the full suite, push the same branch); a `fix` PR
+  is first updated onto the newest base through `update-branch`, and only when
+  GitHub says it is already up to date (or refuses the update) does a fix child
+  start (`PR_CHECK_REPAIR_PROMPT`: read the failing job logs, re-run a job that
+  failed outside the code or fix the cause, merge the base, run the full suite,
+  push the same branch). Children never merge; the landing sweep lands the PR
+  once GitHub reports it green. Each started child records an
+  `evolve_pr_repair_attempt` event; after `PR_REPAIR_MAX_ATTEMPTS` (3) a PR
+  waits for a human and the next open applier PR moves ahead. Otherwise the
+  pass records `waiting_on_open_prs n=… next=#… <action>` (an empty pass), or
+  `ERR applier_prs_need_human=…` (a transient blocker that the notifier
+  reports) when every open applier PR waits for a human. The landing sweep
+  runs the full pass at once when the next PR needs a child, or when the last
+  pass waited on open PRs and none is left.
+  When no applier PR is open, it fetches open GitHub issues via the
   REST API (`gh api repos/{owner}/{repo}/issues` — needed because `gh issue
   list --json` cannot return `author_association`; pull requests in the
   response are filtered out). The fetch is explicit `--include --paginate`,
@@ -1476,7 +1550,10 @@ skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
 - **skill_manage(action, …)** — a single atomic tool. Actions:
-  `create | edit | patch | write_file | remove_file | delete | restore`.
+  `create | edit | patch | write_file | remove_file | delete | restore |
+  reconcile | cleanup_orphan`. `cleanup_orphan` is scoped to a Curator verifier and can
+  archive or remove an already validated registry-only orphan with
+  `orphan_action='archive'|'remove'` after a recovery snapshot is written.
   Frontmatter validator: strict YAML, `name` regex + ≤64 chars,
   `description` ≤1024 chars, total ≤100k chars. Generated frontmatter writes
   `name` and `description` as quoted YAML scalars so colon-containing
@@ -1486,13 +1563,27 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   `patch` revalidates the result before writing. A non-foreground `create`,
   `edit`, or `patch` may not grow SKILL.md past `SKILL_MD_SOFT_CAP_CHARS`
   (20 000): it is refused with a hint to move detail into `references/` via
-  `write_file`, while shrinking or same-size rewrites stay allowed. Every successful write
-  mirrors the whole skill directory into all configured roots:
+  `write_file`, while shrinking or same-size rewrites stay allowed. Every
+  managed write holds a per-skill lock, swaps each mirror tree from a staging
+  directory, then compares the complete relative file set and SHA-256 hashes
+  before reporting success. Copy and verification failures retry three times;
+  an unresolved target returns `ERR mirror_partial_failure` with a stable
+  consumer label and relative file diagnostics, never an absolute path. The
+  canonical write or trash artifact remains recoverable, and
+  `skill_manage(action="reconcile", name=...)` idempotently retries either
+  publication or removal without changing skill telemetry. Successful writes
+  mirror the whole skill directory into all configured roots:
   `~/.claude/skills/`, `~/.codex/skills/`,
   `~/.gemini/config/skills/` for Antigravity, existing `~/.agents/skills/`,
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`.
   The scheduled `skill_updater` repairs drift in the same mirror set and can
   import newer copies that were installed into a non-primary CLI root.
+  Curator validation reports a missing local resource before a repair is
+  mirrored when it appears as a Markdown link or as an inline-code path with a
+  slash. Inline URLs, absolute or escaping paths, shell fragments, and other
+  non-path code are ignored. It also flags a normalized prose paragraph only
+  when it is at least 160 characters and appears at least three times; headings,
+  frontmatter, fenced examples, and short boilerplate are excluded.
 
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
@@ -1510,6 +1601,15 @@ Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
   explicit `skill_record(kind='view')`. The curator checklist shows raw uses,
   foreground uses, views, and patches. The `skill_watcher` daemon catches
   external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
+
+- **Source availability** — validation keeps `availability` separate from the
+  active/stale/archived lifecycle. If no configured root or external cache has
+  a readable primary source, the record becomes `unavailable`, is never
+  compatible, and exposes one owner action: `restore_source`. Revalidating a
+  restored source returns the record to its saved lifecycle state. Unavailable
+  records do not age into archive. Curator cleanup rechecks every configured
+  root, the primary archive, and external cache and refuses whenever a readable source is
+  present; its registry snapshot stores both usage telemetry and audit evidence.
 
 - **Lesson index** — `_lessons_file_lock` calls `refresh_lesson_index()` before
   it releases the lock, so every lesson write (append, patch, remove, restore,
@@ -1842,15 +1942,33 @@ deployment](#cross-cli-deployment) below). The canonical wiring lives in
   Note: Claude Code's `Stop` fires at the end of every turn (there is no
   model-actionable session-end event), hence the once-per-session throttle.
 
-- **PreToolUse → tk-task-gate.sh** (matcher `^(Task|Agent|Workflow)$`) —
-  steers the spawn-vs-native choice (see `core_memory.spawn_pattern`) with
-  two OPPOSITE heuristics, since the right default flipped with opus 4.8.
-  `Task` (legacy, non-opus-4.8 models): blocks fan-out lacking a synthesis
-  cue → push to `spawn()` (modes via `TK_TASK_GATE`: `deny`/`warn`/`off`).
-  `Agent`/`Workflow` (opus-4.8 native): native is the right default for
-  in-turn fan-out, so advisory `warn` ONLY on persistence signals
-  (cross-session, inter-agent channels, outlive-session, daemon) — never
-  hard-blocks. Claude-Code-specific; other CLIs ignore the unknown event.
+- **PreToolUse → tk-task-gate.sh** (matcher `^(Task|Agent)$`) —
+  steers the spawn-vs-native choice (see `core_memory.spawn_pattern`).
+  The tested host contract is Claude Code's JSON stdin envelope with
+  `hook_event_name: "PreToolUse"`, `tool_name`, and nested `tool_input.prompt`,
+  `tool_input.description`, and `tool_input.subagent_type`, as documented in
+  the [hooks reference](https://code.claude.com/docs/en/hooks#pretooluse-input).
+  Claude Code [renamed Task to Agent in version 2.1.63](https://code.claude.com/docs/en/sub-agents#restrict-which-subagents-can-be-spawned);
+  the names are tied to the host version, not the model.
+  Legacy `Task` blocks prompts longer than 600 characters with fan-out or
+  duration signals and no synthesis cue, except exempt subagent types.
+  `TK_TASK_GATE=deny` (default) exits 2 with a blocking reason on stderr;
+  `warn` exits 0 with stderr; `off` exits 0 silently for both tools.
+  Current `Agent` only writes a non-blocking stderr advisory for persistence
+  signals (cross-session, inter-agent channels, outlive-session, daemon),
+  including in `deny` mode. Ordinary in-turn fan-out stays silent.
+  Claude Code sends exit-0 stderr to its debug log, not model context.
+  Bash and `jq` are required; without `jq` the script exits 0 silently.
+  `tests/test_task_gate.py` installs the real setup spec and replays these
+  payloads through the copied executable without a live Claude session.
+  `Workflow` is unsupported: the inspected Claude Code 2.1.296 input schema
+  takes `script`, `name`, or `scriptPath`, has no Agent-style `prompt`, and
+  ignores `description`. The removed prompt-only branch could not inspect
+  that work. Setup does not match it and direct calls are silent, like
+  unrelated tools; tests cover both script input and the old prompt shape.
+  This gate is only validated for Claude Code; Copilot's installed spec has
+  no verified equivalent payload contract. Codex, Claude Desktop,
+  Antigravity, and VS Code do not run this managed hook.
 
 ### Cross-CLI deployment
 

@@ -12,6 +12,7 @@ import hashlib
 import json
 import time
 from typing import Any
+import uuid
 
 from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.shared.exceptions import MCPError
@@ -97,15 +98,16 @@ def _replay_result(text: str) -> dict[str, Any]:
 class ReplaySafeWrites:
     """Make re-entered modern writes once-only or safely reject ambiguity.
 
-    JSON-RPC ids are a request handle in the 2026 stateless model. The ledger
-    scopes each handle to the normalized caller and stores a digest of its tool
-    and arguments. A completed replay returns its original result. A request
-    that is still claimed (for example after a process died after a write) is
-    rejected rather than executing an uncertain mutation again.
+    The stdio connection owns JSON-RPC ids. Client metadata identifies software,
+    not a unique running client, so independent connections need distinct ledger
+    namespaces. Within a connection, completed replays return the original result
+    and uncertain claims are rejected rather than executed again. Durable workflow
+    retries remain governed by their application handles, such as a router pass id.
     """
 
     def __init__(self, write_tools: set[str]) -> None:
         self._write_tools = write_tools
+        self._connection_id = uuid.uuid4().hex
 
     async def __call__(
         self,
@@ -127,7 +129,7 @@ class ReplaySafeWrites:
         if ctx.request_id is None:
             raise MCPError(code=-32600, message="modern write requests require a JSON-RPC id")
 
-        request_id = str(ctx.request_id)
+        request_id = _json([self._connection_id, ctx.request_id])
         arguments_hash = _arguments_hash(arguments)
         now = int(time.time())
 
