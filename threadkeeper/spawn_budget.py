@@ -547,6 +547,7 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             visible=_as_bool(_row_get(row, "visible", 0), False),
             role=role,
             write_origin=write_origin,
+            memory_access="read_only",
             slim=_as_bool(_row_get(row, "slim", 1), True),
             retry_of=str(row["id"]),
             retry_root=root_id,
@@ -554,6 +555,8 @@ def _respawn_timed_out(conn, row, age: int) -> None:
             parent_cid_override=str(_row_get(row, "parent_cid", "") or ""),
             cli=str(_row_get(row, "chosen_cli", "") or ""),
             traceparent_override=str(_row_get(row, "traceparent", "") or ""),
+            tracestate_override=str(_row_get(row, "trace_tracestate", "") or ""),
+            baggage_override=str(_row_get(row, "trace_baggage", "") or ""),
             _bypass_capability=_retry_bypass_capability(permission_mode),
             _curator_launch=curator_launch,
         )

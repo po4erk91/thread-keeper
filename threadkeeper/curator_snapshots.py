@@ -389,6 +389,7 @@ def admit_curator_destructive_action(
     action: str,
     artifact: str,
     key: str,
+    transaction_open: bool = False,
 ) -> str | None:
     """Reserve one destructive curator operation for the current pass.
 
@@ -401,6 +402,8 @@ def admit_curator_destructive_action(
 
     Returns an error reason when the caller must not mutate, otherwise ``None``.
     Foreground and other non-curator writers deliberately bypass this guard.
+    ``transaction_open=True`` lets a caller reserve the action beside another
+    transaction-safe check; that caller owns the enclosing commit or rollback.
     """
     if WRITE_ORIGIN != "curator":
         return None
@@ -429,8 +432,12 @@ def admit_curator_destructive_action(
             ),
         )
 
+    owns_transaction = not transaction_open
+    if transaction_open and not conn.in_transaction:
+        return f"curator_destructive_cap_unavailable action={action}: transaction_required"
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM events "
             "WHERE kind=? AND target=? AND summary LIKE 'outcome=admitted %'",
@@ -439,16 +446,18 @@ def admit_curator_destructive_action(
         used = int(row["n"] if row else 0)
         if used >= limit:
             record("refused", used)
-            conn.commit()
+            if owns_transaction:
+                conn.commit()
             return (
                 "curator_destructive_cap_exceeded "
                 f"action={action} limit={limit} used={used}"
             )
         record("admitted", used)
-        conn.commit()
+        if owns_transaction:
+            conn.commit()
         return None
     except sqlite3.Error as e:
-        if conn.in_transaction:
+        if owns_transaction and conn.in_transaction:
             conn.rollback()
         # A server-side safety guard must fail closed when accounting cannot
         # be persisted, rather than silently allowing an unbounded delete.

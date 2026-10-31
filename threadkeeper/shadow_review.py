@@ -636,6 +636,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
                 permission_mode="auto",
                 role="shadow_observer",
                 write_origin="shadow_review",
+                memory_access="propose",
                 slim=True,
                 # De-privileged (issue #76): only the path-scoped skill/lesson
                 # tools — no bare Read/Write. Reference files go through

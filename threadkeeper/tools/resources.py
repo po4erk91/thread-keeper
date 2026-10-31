@@ -27,9 +27,8 @@ refreshes on a timer must not mutate the escalation counters. The static memory
 (core_memory, style, verbatim, user_model) is still rendered. ``memory://
 agent-status`` uses ``refresh=False`` so a pull never triggers a process re-scan.
 
-URIs are static on purpose: the spec's resource *templates* (``{param}``) are
-still unevenly implemented across hosts, so parameterized URIs are left as a
-later, host-gated step (see roadmap #78).
+Snapshot URIs are static. Search tools additionally issue opaque exact-evidence
+links, resolved by ``evidence.py`` without adding entries to this catalog.
 """
 from __future__ import annotations
 

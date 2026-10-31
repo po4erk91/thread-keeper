@@ -69,6 +69,7 @@ from ..curator_snapshots import (
     verifier_scope_refusal,
 )
 from ..review_prompts import screen_injection_markers
+from ..consequential_state import host_mutation_refusal, owner_review_warning
 from ..lessons import (
     _slugify,
     append_lesson,
@@ -557,9 +558,12 @@ def _curator_lesson_refusal(
     Pinned lessons are off-limits to every curator phase. The evaluator only
     proposes changes to protected lessons; the verifier applies them.
     """
+    protected, reason = lesson_protection(item, _lesson_usage_row(conn, item["slug"]))
+    if WRITE_ORIGIN != "foreground" and protected:
+        if refusal := host_mutation_refusal(conn, item.get("body", "")):
+            return refusal
     if WRITE_ORIGIN != "curator":
         return ""
-    protected, reason = lesson_protection(item, _lesson_usage_row(conn, item["slug"]))
     if reason == "pinned":
         return f"ERR pinned_lesson slug={item['slug']}"
     if is_curator_verifier():
@@ -584,6 +588,9 @@ def _removal_refusal(
     foreground force.
     """
     slug = item["slug"]
+    if WRITE_ORIGIN != "foreground" and lesson_protection(item, usage_row)[0]:
+        if refusal := host_mutation_refusal(conn, item.get("body", "")):
+            return refusal
     if is_curator_evaluator() or WRITE_ORIGIN == "evolve_apply":
         return verification_required_error("lesson_remove", slug)
     if scope_refusal := verifier_scope_refusal(slug):
@@ -746,6 +753,9 @@ def _merge_into_incumbent(
     """Fold a loop writer's duplicate evidence into the incumbent lesson."""
     slug = item["slug"]
     merged_summary, merged_body, changed = _merge_duplicate_lesson_body(item, body)
+    if _is_loop_lesson_write(source):
+        if refusal := host_mutation_refusal(conn, merged_summary + "\n\n" + merged_body):
+            return refusal
     append_lesson(
         title=slug,
         body=merged_body,
@@ -859,6 +869,10 @@ def lesson_append(
         return "ERR empty_title"
     if not body.strip():
         return "ERR empty_body"
+    if _is_loop_lesson_write(source):
+        candidate = "\n\n".join(part for part in (title, summary, body) if part)
+        if refusal := host_mutation_refusal(conn, candidate):
+            return refusal
     # Write-time injection screening (issue #76): a loop-synthesized lesson
     # body that contains imperative-override / remote-exec idioms is almost
     # certainly laundering observed-content injection into an auto-loaded
@@ -982,6 +996,10 @@ def lesson_patch(
         return f"ERR not_found slug={slug}"
     if error := _curator_lesson_refusal(conn, existing_item, "lesson_patch"):
         return error
+    current = existing_item.get("body", "")
+    if WRITE_ORIGIN != "foreground" and current.count(old_string) == 1:
+        if refusal := host_mutation_refusal(conn, current.replace(old_string, new_string, 1)):
+            return refusal
     result = patch_lesson(slug, old_string, new_string)
     if result == "old_string_not_found":
         return "ERR old_string_not_found"
@@ -1110,7 +1128,8 @@ def _age_label(age_s: int) -> str:
 def _lesson_snippet(item: dict) -> str:
     """The summary when there is one, else the start of the body."""
     summary, body = _strip_lesson_heading(item.get("body") or "")
-    return " ".join((summary or body).split())[:80]
+    snippet = " ".join((summary or body).split())[:80]
+    return f"{snippet} {owner_review_warning(item.get('body', ''))}".rstrip()
 
 
 def _rank_for_query(query: str, items: list[dict]) -> tuple[list[tuple[dict, float]], str]:
@@ -1167,7 +1186,8 @@ def lesson_list(k: int = 20, query: str = "") -> str:
 @write_tool()
 def lesson_get(slug: str) -> str:
     """Return the full body of one lesson by slug. Useful when
-    `lesson_list` surfaced something you want to read in full."""
+    `lesson_list` surfaced something you want to read in full. Records a
+    consultation except for server-authorized Curator audit tasks."""
     conn = get_db()
     _ensure_session(conn)
     for it in iter_lessons():
@@ -1181,6 +1201,9 @@ def lesson_get(slug: str) -> str:
             record_lesson_access(conn, it, kind="use")
             conn.commit()
             warnings = verification_warnings(conn, it)
+            owner_warning = owner_review_warning(it["body"])
+            if owner_warning:
+                warnings.insert(0, owner_warning)
             return "\n\n".join([*warnings, it["body"]])
     return f"ERR not_found slug={slug}"
 
@@ -1337,6 +1360,8 @@ def lesson_restore(slug: str) -> str:
         section, meta = read_lesson_artifact(artifact)
     except Exception as e:
         return f"ERR trash_read_failed slug={slug}: {e}"
+    if WRITE_ORIGIN != "foreground" and (refusal := host_mutation_refusal(conn, section)):
+        return refusal
     char_start = None
     expected_post_remove = meta.get("post_remove_sha256") or ""
     if expected_post_remove:

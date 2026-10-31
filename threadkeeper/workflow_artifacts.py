@@ -249,11 +249,15 @@ def _artifact_paths_for_pass(
             paths.append((Path(path), CURATOR_REPORTS_DIR))
     total = int(row["expected_batches"])
     batches = conn.execute(
-        "SELECT batch_index, report_name, research_state FROM curator_batches "
+        "SELECT batch_index, report_name, research_state, audit_slice_path "
+        "FROM curator_batches "
         "WHERE pass_id=? ORDER BY batch_index",
         (row["pass_id"],),
     ).fetchall()
     for batch in batches:
+        slice_path = batch["audit_slice_path"] or ""
+        if slice_path:
+            paths.append((Path(slice_path), CURATOR_REPORTS_DIR))
         paths.append((CURATOR_REPORTS_DIR / batch["report_name"], CURATOR_REPORTS_DIR))
         # The verifier's report quotes memory text too, so it ages out with
         # the rest of the pass. Only batches that ran a verifier have one.

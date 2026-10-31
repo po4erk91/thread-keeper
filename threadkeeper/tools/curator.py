@@ -69,7 +69,7 @@ from ..curator_snapshots import (
 )
 from ..permissions import chmod_private_file
 from ..link_health import scan_wikilink_health
-from ..skill_audit import build_skill_audit
+from ..skill_audit import build_skill_audit, reconcile_source_availability
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
@@ -303,7 +303,7 @@ def curator_review_status() -> str:
     return "\n".join(lines)
 
 
-@read_tool()
+@write_tool(idempotent=True)
 def skill_validate(name: str = "", include_archived: bool = True) -> str:
     """Validate ThreadKeeper-managed skills across supported CLI consumers.
 
@@ -317,6 +317,9 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
     conn = get_db()
     _ensure_session(conn)
     manifest = build_skill_audit(conn, include_archived=include_archived)
+    reconciled = reconcile_source_availability(conn, manifest["skills"])
+    if reconciled:
+        manifest = build_skill_audit(conn, include_archived=include_archived)
     requested = name.strip()
     if requested:
         record = next(
@@ -337,6 +340,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             {
                 "schema_version": manifest["schema_version"],
                 "skill": record,
+                "reconciled": requested in reconciled,
                 "exact_duplicate_groups": exact,
                 "semantic_candidates": candidates,
             },
@@ -351,6 +355,9 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "index": index,
             "name": record["name"],
             "state": record["state"],
+            "availability": record["availability"],
+            "compatible": record["compatible"],
+            "owner_action": record["owner_action"],
             "protected": record["protected"],
             "source_path": record["source_path"],
             "validators": record["validators"],
@@ -361,6 +368,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
         {
             "schema_version": manifest["schema_version"],
             "summary": manifest["summary"],
+            "reconciled": reconciled,
             "skills": rows,
             "exact_duplicate_groups": manifest["exact_duplicate_groups"],
             "semantic_candidates": manifest["semantic_candidates"],
