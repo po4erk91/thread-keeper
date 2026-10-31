@@ -11,6 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from mcp.server.mcpserver import Context
+
 from .._mcp import read_tool, write_tool
 from ..config import TASK_LOG_DIR, DIALOG_LOG, SEMANTIC_AVAILABLE
 from ..db import get_db, read_db
@@ -23,7 +25,9 @@ from ..task_spool import (
     touch_spool_file,
     write_spool_text,
 )
-from ..retrieval import retrieve_dialogs
+from ..retrieval import Candidate, retrieve_dialogs
+from ..evidence import search_result
+from ..tool_schemas import SearchResults
 from ..ingest import _ingest_all
 from ..project_scope import format_provenance, recall_where
 from .threads import _audit_cross_project_recall
@@ -70,16 +74,18 @@ def open_dialog_window() -> str:
 
 @read_tool()
 def dialog_search(query: str, k: int = 5, role: str = "",
-                  mode: str = "hybrid", cross_project: bool = False) -> str:
+                  mode: str = "hybrid", cross_project: bool = False,
+                  ctx: Context = None) -> SearchResults:
     """Search ingested Claude Code transcripts.
 
     mode='hybrid' (default) combines semantic and FTS5 keyword via RRF.
-    mode='semantic' is pure cosine. mode='fts' is pure FTS5 keyword."""
+    mode='semantic' is pure cosine. mode='fts' is pure FTS5 keyword.
+    Returns unchanged text, structured hits, and bounded dialog-window links."""
     identity.ensure_session_started()
     with read_db() as conn:
         result = _dialog_search_conn(
             conn, query=query, k=k, role=role, mode=mode,
-            cross_project=cross_project,
+            cross_project=cross_project, context=ctx,
         )
     if cross_project:
         _audit_cross_project_recall("dialog_search", query)
@@ -88,18 +94,18 @@ def dialog_search(query: str, k: int = 5, role: str = "",
 
 def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
                         role: str, mode: str,
-                        cross_project: bool = False) -> str:
+                        cross_project: bool = False, context=None):
     """Connection-scoped implementation used by the read-only MCP wrapper."""
     role = role.strip().lower()
     mode = mode.strip().lower()
     if mode not in ("hybrid", "semantic", "fts"):
-        return f"ERR bad_mode={mode} (use hybrid|semantic|fts)"
+        return search_result(conn, f"ERR bad_mode={mode} (use hybrid|semantic|fts)")
     hits = retrieve_dialogs(conn, query, k=k, role=role, mode=mode,
                             cross_project=cross_project)
     if not hits:
         if not SEMANTIC_AVAILABLE and mode != "semantic":
-            return _legacy_like_fallback(conn, query, k, role, cross_project)
-        return f"no_matches (mode={mode})"
+            return _legacy_like_fallback(conn, query, k, role, cross_project, context)
+        return search_result(conn, f"no_matches (mode={mode})")
     now = int(time.time())
     lines = []
     for hit in hits:
@@ -112,11 +118,12 @@ def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
             f"{hit.role}@{sess} {score_part}{ago}_ago "
             f"{format_provenance(hit.memory_scope, hit.project_id)} {q(snip)}"
         )
-    return "\n".join(lines)
+    return search_result(conn, "\n".join(lines), hits, context=context,
+                         cross_project=cross_project)
 
 
 def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
-                          k: int, role: str, cross_project: bool = False) -> str:
+                          k: int, role: str, cross_project: bool = False, context=None):
     pattern = f"%{query}%"
     where = "content LIKE ?"
     params: list = [pattern]
@@ -132,15 +139,22 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
         f"ORDER BY created_at DESC LIMIT ?", params,
     ).fetchall()
     if not rows:
-        return "no_matches (no_embeddings, used LIKE)"
+        return search_result(conn, "no_matches (no_embeddings, used LIKE)")
     now = int(time.time())
-    return "\n".join(
+    text = "\n".join(
         f"{r['role']}@{(r['session_id'] or '-')[:8]} "
         f"{fmt_age(now - r['created_at'])}_ago "
         f"{format_provenance(r['memory_scope'], r['project_id'])} "
         f"{q(r['content'][:240].replace(chr(10), ' '))}"
         for r in rows
     )
+    hits = [Candidate(
+        id=str(row["uuid"]), source="dialog", content=row["content"],
+        created_at=row["created_at"], session_id=row["session_id"],
+        role=row["role"], project_id=row["project_id"],
+        memory_scope=row["memory_scope"], matched_by={"like"},
+    ) for row in rows]
+    return search_result(conn, text, hits, context=context, cross_project=cross_project)
 
 
 @write_tool()

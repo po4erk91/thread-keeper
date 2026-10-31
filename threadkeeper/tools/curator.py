@@ -69,7 +69,7 @@ from ..curator_snapshots import (
 )
 from ..permissions import chmod_private_file
 from ..link_health import scan_wikilink_health
-from ..skill_audit import build_skill_audit
+from ..skill_audit import build_skill_audit, reconcile_source_availability
 from ..config import (
     CURATOR_INTERVAL_S,
     CURATOR_MIN_LESSONS,
@@ -85,6 +85,52 @@ from ..config import (
 _PASS_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MAX_REPORT_CHARS = 2_000_000
 logger = logging.getLogger(__name__)
+
+
+@write_tool(idempotent=True)
+def curator_verify_lesson(
+    slug: str,
+    lesson_revision: str,
+    claim: str,
+    status: str,
+    source_url: str,
+    source_revision: str = "",
+    source_text: str = "",
+) -> str:
+    """Record a protected lesson's factual freshness without editing its text.
+
+    Read lesson_verifications for the lesson revision. Check the exact claim
+    against an official HTTPS page. Pass its official revision/ETag as
+    source_revision, or its checked text as source_text for server-side hashing.
+    Status: verified, contradicted, or unsubstantiated.
+    The server stamps check time. Reaudits replace the same claim record;
+    a changed source invalidates other results based on its older revision.
+    This tool records supplied evidence; it does not fetch or certify a URL.
+    """
+    from ..lesson_freshness import checked_source_revision, record_verification
+    from ..lessons import _lessons_file_lock, get_path, iter_lessons, lesson_protection
+
+    conn = get_db()
+    _ensure_session(conn)
+    with _lessons_file_lock(get_path()):
+        item = next((item for item in iter_lessons() if item["slug"] == slug), None)
+        if item is None:
+            return f"ERR not_found slug={slug}"
+        usage = conn.execute("SELECT * FROM lesson_usage WHERE slug=?", (slug,)).fetchone()
+        if not lesson_protection(item, dict(usage) if usage else None)[0]:
+            return f"ERR lesson_not_protected slug={slug}"
+        try:
+            revision = checked_source_revision(source_revision, source_text)
+            result = record_verification(
+                conn, item, lesson_revision, claim, status, source_url, revision,
+            )
+        except ValueError as exc:
+            return f"ERR {exc}"
+        conn.commit()
+    return (
+        f"ok slug={slug} status={status} claim_fingerprint={result['claim_fingerprint']} "
+        f"checked_at={result['checked_at']}"
+    )
 
 
 @write_tool(idempotent=True)
@@ -257,7 +303,7 @@ def curator_review_status() -> str:
     return "\n".join(lines)
 
 
-@read_tool()
+@write_tool(idempotent=True)
 def skill_validate(name: str = "", include_archived: bool = True) -> str:
     """Validate ThreadKeeper-managed skills across supported CLI consumers.
 
@@ -271,6 +317,9 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
     conn = get_db()
     _ensure_session(conn)
     manifest = build_skill_audit(conn, include_archived=include_archived)
+    reconciled = reconcile_source_availability(conn, manifest["skills"])
+    if reconciled:
+        manifest = build_skill_audit(conn, include_archived=include_archived)
     requested = name.strip()
     if requested:
         record = next(
@@ -291,6 +340,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             {
                 "schema_version": manifest["schema_version"],
                 "skill": record,
+                "reconciled": requested in reconciled,
                 "exact_duplicate_groups": exact,
                 "semantic_candidates": candidates,
             },
@@ -305,6 +355,9 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "index": index,
             "name": record["name"],
             "state": record["state"],
+            "availability": record["availability"],
+            "compatible": record["compatible"],
+            "owner_action": record["owner_action"],
             "protected": record["protected"],
             "source_path": record["source_path"],
             "validators": record["validators"],
@@ -315,6 +368,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
         {
             "schema_version": manifest["schema_version"],
             "summary": manifest["summary"],
+            "reconciled": reconciled,
             "skills": rows,
             "exact_duplicate_groups": manifest["exact_duplicate_groups"],
             "semantic_candidates": manifest["semantic_candidates"],

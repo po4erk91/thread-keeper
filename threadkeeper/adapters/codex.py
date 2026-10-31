@@ -94,6 +94,7 @@ _THREAD_KEEPER_AUTO_APPROVED_TOOLS = (
     "reject_candidate",
     "lesson_list",
     "lesson_get",
+    "lesson_verifications",
     "lesson_append",
     "lesson_patch",
     "lesson_neighbors",

@@ -576,6 +576,7 @@ def _spawn_validator_child(prompt: str, task_id: str) -> str:
         permission_mode="auto",
         role="dialectic_validator",
         write_origin="background_review",
+        memory_access="propose",
         slim=True,
         extra_allowed_tools=(
             "mcp__thread-keeper__dialectic_claim,"

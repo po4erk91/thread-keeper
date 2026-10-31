@@ -1,0 +1,38 @@
+# Pinned official conformance baseline for the stateful 2025-11-25 suite.
+#
+# Entries are intentional product-vs-fixture gaps. The upstream scenarios call
+# named ``test_*`` tools, resources, and prompts that are not ThreadKeeper's
+# public API. Do not add generic passes or custom fixture handlers: this run
+# must keep exercising the production registry. The official runner fails if an
+# entry no longer reproduces, so remove an entry as soon as the product begins
+# to satisfy that scenario.
+server:
+  # ThreadKeeper has no mutable server log-level or completion fixture.
+  - logging-set-level
+  - completion-complete
+
+  # The product's tools return its own text/structured results, not the
+  # official image, audio, mixed-content, progress, sampling, or elicitation
+  # probe payloads.
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  - tools-call-with-logging
+  - tools-call-with-progress
+  - tools-call-sampling
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+
+  # Memory resources and application prompts intentionally do not claim the
+  # upstream test:// URIs or test_* prompt names.
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - resources-subscribe
+  - resources-unsubscribe
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
