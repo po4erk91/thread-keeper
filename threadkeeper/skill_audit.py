@@ -22,6 +22,7 @@ import time
 from typing import Iterable
 
 import yaml
+from .consequential_state import skill_review_categories
 
 from .config import (
     CLAUDE_SKILLS_DIR,
@@ -30,12 +31,21 @@ from .config import (
 )
 
 
-AUDIT_SCHEMA_VERSION = 1
+AUDIT_SCHEMA_VERSION = 2
 AUDIT_BATCH_SLICE_SCHEMA_VERSION = 1
 _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+_INLINE_CODE_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+_ATX_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
+_SETEXT_HEADING_RE = re.compile(r"^\s*(?:=+|-+)\s*$")
+_LIST_OR_QUOTE_RE = re.compile(r"^\s*(?:[-+*]\s+|\d+[.)]\s+|>)")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[a-z]:[\\/]", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9][a-zа-яё0-9_-]{2,}", re.IGNORECASE)
+_RESOURCE_DIR_NAMES = {"assets", "references", "scripts", "templates"}
+MIN_REPEATED_PARAGRAPH_CHARS = 160
+MIN_REPEATED_PARAGRAPH_OCCURRENCES = 3
 _STOPWORDS = {
     "about", "after", "also", "and", "are", "before", "but", "can",
     "does", "for", "from", "how", "into", "its", "not", "only", "or",
@@ -155,17 +165,132 @@ def _candidate_pairs(records: list[dict], limit: int = 200) -> list[dict]:
     return pairs[:limit]
 
 
-def _relative_link_findings(skill_dir: Path, content: str) -> list[str]:
-    findings: list[str] = []
-    for raw_target in _MARKDOWN_LINK_RE.findall(content):
-        target = raw_target.strip().strip("<>").split(maxsplit=1)[0]
-        target = target.split("#", 1)[0].split("?", 1)[0]
-        if not target or target.startswith("#") or _URI_SCHEME_RE.match(target):
+def _scanable_markdown(body: str) -> str:
+    """Exclude non-prose Markdown regions from resource and repeat checks."""
+    lines = body.splitlines()
+    result: list[str] = []
+    fence: str | None = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        marker = _FENCE_RE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            result.append("")
+            index += 1
             continue
-        decoded = target.replace("%20", " ")
-        if not (skill_dir / decoded).exists():
-            findings.append(f"dangling_relative_link:{target}")
+        if fence is not None:
+            result.append("")
+            index += 1
+            continue
+        if _ATX_HEADING_RE.match(line):
+            result.append("")
+            index += 1
+            continue
+        if (
+            line.strip()
+            and index + 1 < len(lines)
+            and _SETEXT_HEADING_RE.match(lines[index + 1])
+        ):
+            result.extend(("", ""))
+            index += 2
+            continue
+        result.append(line)
+        index += 1
+    return "\n".join(result)
+
+
+def _safe_relative_resource(target: str) -> tuple[str, str] | None:
+    """Return display and filesystem forms for a non-escaping relative path."""
+    display = target.strip().strip("<>").split(maxsplit=1)[0]
+    display = display.split("#", 1)[0].split("?", 1)[0]
+    if (
+        not display
+        or display.startswith(("#", "/", "\\", "~"))
+        or _URI_SCHEME_RE.match(display)
+        or _WINDOWS_ABSOLUTE_RE.match(display)
+    ):
+        return None
+    decoded = display.replace("%20", " ")
+    path = Path(decoded)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return display, decoded
+
+
+def _is_path_like_inline_code(target: str) -> bool:
+    """Keep inline-code detection conservative enough to avoid commands."""
+    if any(char.isspace() for char in target):
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9._/%+-]+", target):
+        return False
+    path = _safe_relative_resource(target)
+    if path is None:
+        return False
+    _display, decoded = path
+    normalized = decoded.removeprefix("./")
+    if "/" not in decoded or normalized.endswith("/"):
+        return False
+    parts = normalized.split("/")
+    return parts[0] in _RESOURCE_DIR_NAMES or "." in parts[-1]
+
+
+def _resource_exists_within_skill(skill_dir: Path, decoded: str) -> bool | None:
+    """Return None when a symlink would lead the audit outside the skill."""
+    candidate = skill_dir / decoded
+    try:
+        candidate.resolve().relative_to(skill_dir.resolve())
+    except ValueError:
+        return None
+    return candidate.exists()
+
+
+def _relative_resource_findings(skill_dir: Path, body: str) -> list[str]:
+    """Find missing local Markdown links and unambiguous inline resources."""
+    findings: list[str] = []
+    scanable = _scanable_markdown(body)
+    markdown = _INLINE_CODE_RE.sub("", scanable)
+    for raw_target in _MARKDOWN_LINK_RE.findall(markdown):
+        resource = _safe_relative_resource(raw_target)
+        if resource is None:
+            continue
+        display, decoded = resource
+        exists = _resource_exists_within_skill(skill_dir, decoded)
+        if exists is False:
+            findings.append(f"dangling_relative_link:{display}")
+    for raw_target in _INLINE_CODE_RE.findall(scanable):
+        if not _is_path_like_inline_code(raw_target):
+            continue
+        resource = _safe_relative_resource(raw_target)
+        if resource is None:
+            continue
+        display, decoded = resource
+        exists = _resource_exists_within_skill(skill_dir, decoded)
+        if exists is False:
+            findings.append(f"dangling_inline_resource:{display}")
     return sorted(set(findings))
+
+
+def _repeated_paragraph_findings(body: str) -> list[str]:
+    """Report substantial prose repeated at least three times in one skill."""
+    counts: Counter[str] = Counter()
+    for paragraph in re.split(r"\n\s*\n", _scanable_markdown(body)):
+        stripped = paragraph.strip()
+        if not stripped or _LIST_OR_QUOTE_RE.match(stripped):
+            continue
+        normalized = " ".join(_TOKEN_RE.findall(stripped.lower()))
+        if len(normalized) >= MIN_REPEATED_PARAGRAPH_CHARS:
+            counts[normalized] += 1
+    return [
+        "repeated_normalized_paragraph:"
+        f"occurrences={count}:sha256={_sha256(paragraph.encode('utf-8'))[:12]}"
+        for paragraph, count in sorted(counts.items())
+        if count >= MIN_REPEATED_PARAGRAPH_OCCURRENCES
+    ]
 
 
 def _root_label(root: Path) -> str:
@@ -247,7 +372,8 @@ def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[st
         rows = conn.execute(
             "SELECT name, created_at, created_by_origin, last_used_at, "
             "last_viewed_at, last_patched_at, use_count, view_count, "
-            "patch_count, foreground_use_count, pinned, state, tier "
+            "patch_count, foreground_use_count, pinned, state, tier, "
+            "availability, unavailable_since, unavailable_prior_state "
             "FROM skill_usage" + where
             + " ORDER BY name"
         ).fetchall()
@@ -298,6 +424,99 @@ def _source_for(
     return None, "missing"
 
 
+def find_any_skill_source(name: str) -> tuple[Path | None, str]:
+    """Find any source path before a registry-only cleanup.
+
+    An active row normally ignores ``.archive`` because it is not its current
+    source. Cleanup is stricter: it must preserve the registry whenever any
+    managed, archived, or external source still exists.
+    """
+    return _source_for(
+        name,
+        _configured_roots(),
+        "archived",
+        _external_skill_index(),
+    )
+
+
+def source_requires_recovery(record: dict) -> bool:
+    """Whether this record has no source a consumer can read."""
+    return (
+        record.get("source_kind") == "missing"
+        or any(
+            str(finding).startswith("source_unreadable:")
+            for finding in record.get("findings", [])
+        )
+    )
+
+
+def _apply_availability_contract(record: dict) -> None:
+    """Attach the source-availability and owner-recovery contract."""
+    missing_source = source_requires_recovery(record)
+    stored = str(record.get("availability") or "available")
+    availability = "unavailable" if missing_source else stored
+    record["availability"] = availability
+    record["compatible"] = bool(
+        availability == "available"
+        and record.get("validators")
+        and all(value == "PASS" for value in record["validators"].values())
+    )
+    if missing_source:
+        record["owner_action"] = "restore_source"
+    elif availability == "unavailable":
+        # The source is back, but validation must explicitly restore the
+        # registry's saved lifecycle state before it is compatible again.
+        record["owner_action"] = "validate_restore"
+    else:
+        record["owner_action"] = None
+
+
+def reconcile_source_availability(
+    conn: sqlite3.Connection,
+    records: Iterable[dict],
+) -> list[str]:
+    """Persist availability transitions and return only changed skill names.
+
+    Availability is separate from active/stale/archive. Remembering the prior
+    lifecycle state lets a later validation restore the record without creating
+    another repair item every time an unavailable source is checked.
+    """
+    changed: list[str] = []
+    now = int(time.time())
+    for record in records:
+        name = str(record.get("name") or "")
+        if not name:
+            continue
+        row = conn.execute(
+            "SELECT state, availability FROM skill_usage WHERE name=?", (name,),
+        ).fetchone()
+        if row is None:
+            continue
+        desired = "unavailable" if source_requires_recovery(record) else "available"
+        current = str(row["availability"] or "available")
+        if current == desired:
+            continue
+        if desired == "unavailable":
+            conn.execute(
+                "UPDATE skill_usage SET availability='unavailable', "
+                "unavailable_since=?, unavailable_prior_state=? WHERE name=?",
+                (now, row["state"], name),
+            )
+        else:
+            conn.execute(
+                "UPDATE skill_usage SET state=CASE "
+                "WHEN unavailable_prior_state IN ('active','stale','archived') "
+                "THEN unavailable_prior_state ELSE state END, "
+                "availability='available', unavailable_since=NULL, "
+                "unavailable_prior_state=NULL WHERE name=?",
+                (name,),
+            )
+        changed.append(name)
+    if changed:
+        conn.commit()
+    return changed
+
+
 def _record_for(
     name: str,
     telemetry: dict | None,
@@ -323,6 +542,9 @@ def _record_for(
         "name": name,
         "origin": origin,
         "state": state,
+        "availability": telemetry.get("availability") or "available",
+        "unavailable_since": telemetry.get("unavailable_since"),
+        "unavailable_prior_state": telemetry.get("unavailable_prior_state"),
         "tier": telemetry.get("tier") or "unknown",
         "protected": protected,
         "telemetry": {
@@ -354,6 +576,7 @@ def _record_for(
             "codex": "FAIL:source_missing",
             "agentskills": "FAIL:source_missing",
         }
+        _apply_availability_contract(record)
         return record
     try:
         content = source.read_text(encoding="utf-8")
@@ -365,6 +588,7 @@ def _record_for(
             "codex": "FAIL:source_unreadable",
             "agentskills": "FAIL:source_unreadable",
         }
+        _apply_availability_contract(record)
         return record
 
     fields, body, front_error = _frontmatter(content)
@@ -379,12 +603,17 @@ def _record_for(
         "lines": len(content.splitlines()),
     })
     skill_dir = source.parent
+    record["findings"].extend(
+        f"owner_review_required:{category}"
+        for category in skill_review_categories(skill_dir)
+    )
     record["support_files"] = sorted(
         path.relative_to(skill_dir).as_posix()
         for path in skill_dir.rglob("*")
         if path.is_file() and path.name != "SKILL.md"
     )
-    record["findings"].extend(_relative_link_findings(skill_dir, content))
+    record["findings"].extend(_relative_resource_findings(skill_dir, body))
+    record["findings"].extend(_repeated_paragraph_findings(body))
 
     expected_name = fm_name or source.parent.name
     tk_error = _validate_skill_md(content, expected_name)
@@ -424,6 +653,7 @@ def _record_for(
             "status": "external_read_only",
         }]
         record["findings"] = sorted(set(record["findings"]))
+        _apply_availability_contract(record)
         return record
 
     canonical_tree_hash = _tree_hash(skill_dir)
@@ -443,6 +673,7 @@ def _record_for(
         if "missing" in mirror_states:
             record["findings"].append("mirror_missing")
     record["findings"] = sorted(set(record["findings"]))
+    _apply_availability_contract(record)
     return record
 
 
@@ -482,6 +713,8 @@ def build_skill_audit(
             "active_or_stale": active,
             "archived": sum(r["state"] == "archived" for r in records),
             "protected": sum(bool(r["protected"]) for r in records),
+            "unavailable": sum(r["availability"] == "unavailable" for r in records),
+            "compatible": sum(bool(r["compatible"]) for r in records),
             "external_plugin": sum(
                 r["source_kind"] == "external_plugin" for r in records
             ),
@@ -506,6 +739,9 @@ def audit_fingerprint_payload(conn: sqlite3.Connection) -> list[dict]:
         {
             "name": record["name"],
             "state": record["state"],
+            "availability": record["availability"],
+            "compatible": record["compatible"],
+            "owner_action": record["owner_action"],
             "source_path": record["source_path"],
             "source_kind": record["source_kind"],
             "content_sha256": record["content_sha256"],
@@ -606,7 +842,9 @@ def format_skill_checklist(manifest: dict) -> str:
         )
         lines.append(
             f"{index}. SKILL {record['name']}{protected} "
-            f"state={record['state']} origin={record['origin']} "
+            f"state={record['state']} availability={record['availability']} "
+            f"owner_action={record['owner_action'] or '-'} "
+            f"origin={record['origin']} "
             f"fg_uses={telemetry.get('foreground_use_count') or 0} "
             f"uses={telemetry.get('use_count') or 0} "
             f"views={telemetry.get('view_count') or 0} "

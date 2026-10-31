@@ -51,7 +51,7 @@ __all__ = [
     "SCHEMA",
 ]
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 # sqlite-vec extension state. We probe once at first get_db() call and
 # cache the verdict. _VEC_AVAILABLE = True means vec0 virtual tables work
@@ -472,6 +472,29 @@ CREATE TABLE IF NOT EXISTS dialectic_evidence (
                    CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
+CREATE TABLE IF NOT EXISTS child_memory_grants (
+    child_cid TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('read_only','propose','write')),
+    namespace TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    child_cid TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    project_id TEXT,
+    memory_scope TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','applying','accepted','rejected','failed')),
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    result TEXT NOT NULL DEFAULT ''
+);
+
 -- Immutable write-time authority.  It is separate from evidence weight,
 -- confidence and tier so a later trusted writer cannot upgrade old input.
 CREATE TABLE IF NOT EXISTS memory_authority (
@@ -550,6 +573,13 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
                       CHECK(state IN ('active','stale','archived')),
+    -- Source availability is independent of the aging lifecycle. A source
+    -- that disappears must not look compatible merely because its last valid
+    -- lifecycle state was active or stale.
+    availability      TEXT NOT NULL DEFAULT 'available'
+                      CHECK(availability IN ('available','unavailable')),
+    unavailable_since INTEGER,
+    unavailable_prior_state TEXT,
     project_id        TEXT,
     memory_scope      TEXT NOT NULL DEFAULT 'project'
                       CHECK(memory_scope IN ('project','global','shared','unresolved'))
@@ -694,6 +724,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     memory_scope  TEXT NOT NULL DEFAULT 'project'
                   CHECK(memory_scope IN ('project','global','shared','unresolved')),
     traceparent TEXT,
+    trace_tracestate TEXT,
+    trace_baggage TEXT,
     trace_workflow_span_id TEXT,
     trace_parent_span_id TEXT,
     trace_started_ns INTEGER,
@@ -1059,6 +1091,39 @@ CREATE TABLE IF NOT EXISTS lesson_vectors (
     created_at  INTEGER NOT NULL,
     PRIMARY KEY (text_sha256, fingerprint)
 );
+
+-- Offline-only operational recovery evaluation. The table has no raw tool
+-- arguments, output, transcript text, paths, or secret-bearing payload slot:
+-- every value is a bounded identifier validated by action_outcomes.py.
+CREATE TABLE IF NOT EXISTS action_outcome_events (
+    id                TEXT PRIMARY KEY,
+    objective_ref     TEXT NOT NULL,
+    action_name       TEXT NOT NULL,
+    outcome           TEXT NOT NULL CHECK(outcome IN ('success','failure','cancelled','skipped')),
+    error_fingerprint TEXT,
+    recovered_from    TEXT REFERENCES action_outcome_events(id),
+    sequence          INTEGER NOT NULL CHECK(sequence > 0),
+    source_kind       TEXT NOT NULL,
+    source_id         TEXT NOT NULL,
+    authority_class   TEXT NOT NULL CHECK(authority_class IN ('observed','trusted')),
+    provenance_version INTEGER NOT NULL DEFAULT 1 CHECK(provenance_version = 1),
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL,
+    UNIQUE(objective_ref, sequence),
+    CHECK((outcome = 'failure' AND error_fingerprint IS NOT NULL)
+       OR (outcome != 'failure' AND error_fingerprint IS NULL)),
+    CHECK((recovered_from IS NULL) OR outcome = 'success')
+);
+CREATE INDEX IF NOT EXISTS idx_action_outcome_source
+    ON action_outcome_events(source_kind, source_id);
+CREATE INDEX IF NOT EXISTS idx_action_outcome_expiry
+    ON action_outcome_events(expires_at);
+CREATE TABLE IF NOT EXISTS action_outcome_candidates (
+    candidate_id INTEGER PRIMARY KEY REFERENCES extract_candidates(id),
+    event_id     TEXT NOT NULL UNIQUE REFERENCES action_outcome_events(id),
+    created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daemon_health (
     name              TEXT PRIMARY KEY,
     thread_alive      INTEGER NOT NULL,
@@ -1142,15 +1207,38 @@ CREATE TABLE IF NOT EXISTS model_router_passes (
     started_at  INTEGER NOT NULL,
     ended_at    INTEGER
 );
+
+-- Source identity ledger for the portable semantic bundle importer.  The
+-- imported artifact stays in its native table while this local-only mapping
+-- retains its source namespace/id and makes replay detection deterministic.
+CREATE TABLE IF NOT EXISTS semantic_bundle_import_records (
+    source_namespace TEXT NOT NULL,
+    record_type      TEXT NOT NULL,
+    source_id        TEXT NOT NULL,
+    content_sha256   TEXT NOT NULL,
+    local_kind       TEXT NOT NULL,
+    local_id         TEXT NOT NULL,
+    imported_at      INTEGER NOT NULL,
+    PRIMARY KEY (source_namespace, record_type, source_id)
+);
 """
 
 # These columns are independently additive: current databases deliberately do
 # not bump PRAGMA user_version for safe telemetry-only extensions.
 ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
     "ALTER TABLE tasks ADD COLUMN traceparent TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_tracestate TEXT",
+    "ALTER TABLE tasks ADD COLUMN trace_baggage TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_workflow_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_parent_span_id TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_started_ns INTEGER",
+    # Source availability is separate from the active/stale/archive lifecycle,
+    # so an old registry row can be made visibly unavailable without a table
+    # rebuild or an irreversible lifecycle transition.
+    "ALTER TABLE skill_usage ADD COLUMN availability "
+    "TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','unavailable'))",
+    "ALTER TABLE skill_usage ADD COLUMN unavailable_since INTEGER",
+    "ALTER TABLE skill_usage ADD COLUMN unavailable_prior_state TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_queue_wait_ms INTEGER",
     "ALTER TABLE tasks ADD COLUMN trace_exported_at INTEGER",
     "ALTER TABLE curator_batches ADD COLUMN workflow_batch_sha256 TEXT",
@@ -1520,7 +1608,7 @@ def _rebuild_dialog_fts_if_needed(conn: sqlite3.Connection) -> None:
 
 
 def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    if from_version not in (0, 1, 2, 3, 4):
+    if from_version not in (0, 1, 2, 3, 4, 5):
         raise RuntimeError(
             f"unsupported SQLite schema version {from_version}; "
             f"expected 0..{CURRENT_SCHEMA_VERSION}"
@@ -1554,6 +1642,8 @@ def _run_schema_migrations(conn: sqlite3.Connection, from_version: int) -> None:
     _backfill_schema_data(conn)
     if from_version < 5:
         _backfill_project_scopes(conn)
+    elif from_version == 5:
+        _ensure_project_namespaces(conn)
     for idx in POST_SCHEMA_INDEXES:
         conn.execute(idx)
     if from_version < 2:
@@ -1888,6 +1978,8 @@ def get_db() -> sqlite3.Connection:
         autocommit=query_only,
         factory=_LegacyConnection,
     )
+    from .memory_access import protect_connection
+    protect_connection(conn)
     if query_only:
         conn.execute("PRAGMA query_only=ON")
     _track_legacy_connection(conn, _caller_site(2))
@@ -1900,7 +1992,28 @@ def read_db() -> Iterator[sqlite3.Connection]:
     bootstrap_db()
     conn, _ = _open_connection(autocommit=True)
     try:
+        from .memory_access import protect_connection
+        protect_connection(conn)
         conn.execute("PRAGMA query_only=ON")
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def proposal_db() -> Iterator[sqlite3.Connection]:
+    """A narrow storage path for appending untrusted proposal payloads."""
+    bootstrap_db()
+    conn, _ = _open_connection()
+    from .memory_access import resolve_access
+    try:
+        if resolve_access(conn).access != "propose":
+            raise PermissionError("memory_access_denied")
+        conn.set_authorizer(lambda action, table, column, database, source:
+            sqlite3.SQLITE_DENY
+            if action in (sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE)
+            or (action == sqlite3.SQLITE_INSERT and table != "memory_proposals")
+            else sqlite3.SQLITE_OK)
         yield conn
     finally:
         conn.close()
@@ -1940,6 +2053,8 @@ def run_write(op: str, fn: Callable[[sqlite3.Connection], _T], *,
             # Opening is inside the retry: connection setup can hit the same
             # transient lock as BEGIN IMMEDIATE.
             conn, _ = _open_connection(autocommit=True, busy_timeout_ms=busy_ms)
+            from .memory_access import protect_connection
+            protect_connection(conn)
             conn.execute("BEGIN IMMEDIATE")
             result = fn(conn)
             conn.commit()

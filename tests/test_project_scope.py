@@ -10,7 +10,10 @@ PROJECT_B = "prj_bbbbbbbbbbbbbbbbbbbb"
 
 
 def _tool(pkg, name):
-    return pkg["mcp"]._tool_manager._tools[name].fn
+    fn = pkg["mcp"]._tool_manager._tools[name].fn
+    if name in {"search", "dialog_search"}:
+        return lambda *args, **kwargs: fn(*args, **kwargs).content[0].text
+    return fn
 
 
 def _seed_note(conn, *, suffix: str, project_id: str | None,

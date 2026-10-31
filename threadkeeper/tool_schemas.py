@@ -1,10 +1,10 @@
-"""Typed output schemas for the status tools that advertise an MCP
-``outputSchema`` and return ``structuredContent`` (roadmap #67).
+"""Typed output schemas for tools that advertise an MCP ``outputSchema``
+and return ``structuredContent``.
 
 Each model is used as the return annotation of its tool so MCPServer derives
-the ``outputSchema`` exposed in ``tools/list``; the tool body builds the
-model and hands it to :func:`threadkeeper._mcp.structured_result`, which
-keeps the legacy human-readable text block alongside the structured JSON.
+the ``outputSchema`` exposed in ``tools/list``. Status and search result builders
+keep the legacy human-readable text block alongside the structured JSON;
+searches can also attach exact-evidence resource links.
 
 Nested/list members allow extra keys so the snapshot producers can grow
 new fields without breaking validation.
@@ -14,6 +14,32 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class SearchHit(BaseModel):
+    """Compact provenance and optional exact-evidence references."""
+
+    id: str
+    source: str
+    snippet: str
+    created_at: int
+    thread_id: str | None = None
+    session_id: str | None = None
+    role: str | None = None
+    kind: str | None = None
+    project_id: str | None = None
+    memory_scope: str | None = None
+    score: float | None = None
+    matched_by: list[str] = Field(default_factory=list)
+    resource_uri: str | None = None
+    thread_uri: str | None = None
+
+
+class SearchResults(BaseModel):
+    """Legacy search text plus progressive evidence-loading metadata."""
+
+    text: str
+    hits: list[SearchHit] = Field(default_factory=list)
 
 
 class _Lenient(BaseModel):

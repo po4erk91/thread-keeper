@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import time
@@ -103,6 +104,46 @@ def test_failure_pass_fires_one_notification(tmp_path, monkeypatch, caplog):
     assert "[notify]" in caplog.text and "curator loop failed" in caplog.text
     assert "memory budget" in caplog.text
     assert "subscription" not in caplog.text
+
+
+def test_notification_details_survive_disabled_log_channel(tmp_path, monkeypatch):
+    m = _bootstrap(tmp_path, monkeypatch, channel="macos")
+    notify, conn = m["notify"], m["db"].get_db()
+    delivered = []
+    monkeypatch.setattr(notify, "_notify_macos", lambda *args: delivered.append(args))
+    assert notify.run_notify_pass(force=True) == "seed"
+    _ev(conn, "model_router_pass", "spawn_error: unsupported model")
+    source_id = conn.execute("SELECT MAX(id) FROM events").fetchone()[0]
+
+    assert notify.run_notify_pass(force=True) == "ok fired=1"
+    row = conn.execute("SELECT target, summary FROM events WHERE kind='notification'").fetchone()
+    payload = json.loads(row["summary"])
+    assert row["target"] == f"event:{source_id}"
+    assert (payload["title"], payload["body"]) == delivered[0]
+    assert "unsupported model" in payload["body"]
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
+
+    _ev(conn, "model_router_pass", "spawn_error: unsupported model")
+    assert notify.run_notify_pass(force=True) == "ok fired=0"
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='notification'").fetchone()[0] == 1
+
+
+def test_saved_notification_uses_the_sanitized_dispatched_payload(tmp_path, monkeypatch):
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, conn = m["notify"], m["db"].get_db()
+    delivered = []
+    monkeypatch.setattr(notify, "_dispatch", lambda *args: delivered.append(args))
+    secret = "sk-" + "privatecredential" * 3
+    notify._dispatch_recorded(conn, "task:child", (
+        "Model router failed", f"api_key={secret} in /Users/private/project/settings.json",
+    ))
+
+    payload = json.loads(conn.execute(
+        "SELECT summary FROM events WHERE kind='notification'"
+    ).fetchone()[0])
+    assert (payload["title"], payload["body"]) == delivered[0]
+    assert (secret in payload["body"]) is False
+    assert ("/Users/private" in payload["body"]) is False
 
 
 _RAM_REFUSAL = (
