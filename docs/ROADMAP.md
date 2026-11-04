@@ -8,6 +8,37 @@ remains a live question.
 
 ---
 
+## 2026-11-04 reviewer audit
+
+- **Preserve implementation ownership when reusing a roadmap PR (follow-up to
+  #54 and #400).** Adding reviewer notes to an existing implementation PR can
+  stop its automatic repair and hold back the rest of the queue. Keep one
+  primary owner when the reviewer contributes documentation, while retaining
+  the marker used to find and reuse that PR. Unknown or truly conflicting
+  ownership must still block automatic action. Cover reviewer selection,
+  marker insertion, repair and landing decisions, and the open-PR queue gate
+  together; retain the existing fork, account, base, head, and handoff checks.
+- **Check that workers can save their result before they start (follow-up to
+  #353 and #385).** A worker can spend paid time while its save operation is
+  refused. The required-tool preflight below must check that the intended task
+  can use its writer, as well as discover it: a visible writer can still return
+  `memory_access_denied`. Read the effective task grant without issuing a write,
+  refuse an unusable launch with a clear reason, and preserve the parent's
+  permission limit. Test the grant through the child adapter and MCP server.
+  A refused issue gate must never lead to direct issue creation.
+
+A disposable probe of current main used public PR #416 metadata. Its reviewer
+marker made the ownership classifier return `wait`; removing only that marker
+restored `repair`. An otherwise green pair returned `wait` and `merge`. An
+in-memory policy option preserved the recognized implementation branch's owner
+and restored those decisions while retaining the refusal controls above. The
+existing manual-branch ambiguity test remains intentional. No repair or merge
+was attempted. The focused Evolve, Curator, and agent-status checks passed with
+disposable databases and background daemons disabled. No external research
+digest or pending legacy suggestion was available.
+
+---
+
 ## 2026-11-02 reviewer audit
 
 - **Check required tools before starting Evolve workers (follow-up to #353).**
