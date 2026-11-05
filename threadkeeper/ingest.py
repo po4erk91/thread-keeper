@@ -416,7 +416,7 @@ def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
             "UPDATE skill_usage "
             "SET last_used_at=?, use_count=use_count+1, "
             "    foreground_use_count=foreground_use_count+? "
-            "WHERE name=? AND (last_used_at IS NULL "
+            "WHERE name=? AND classification='production' AND (last_used_at IS NULL "
             "OR last_used_at < ?)",
             (created_at, fg, skill_name, created_at),
         )

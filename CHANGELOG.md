@@ -15,6 +15,16 @@ version bumps follow semver per the policy in
   taking roadmap issues in parallel with the real host and spending model
   budget on reviews.
 
+## v0.23.0 — 2026-11-05
+
+- **Added: hidden managed-skill fixtures (#381).** Maintainers can keep test
+  seeds and probes without showing them as normal guidance or counting them
+  in production usage and Curator health totals. Listing, validation, and test
+  telemetry support explicit fixture inclusion. Legacy entries require a
+  reviewed migration preview and matching file hash; names never classify
+  guidance automatically. Mirrors, semantic bundles, and trash/restore retain
+  the classification.
+
 ## v0.22.0 — 2026-10-29
 
 - **Added: safe cleanup for finished task checkouts (#431).** Task retention
