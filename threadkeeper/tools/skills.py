@@ -24,7 +24,7 @@ Validator enforces the agentskills.io-compatible frontmatter shape:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -55,6 +55,7 @@ from ..authority import (
     source_parent,
 )
 from ..memory_compat import memory_provenance
+from ..curator_skill_eval import mutation_refusal
 from ..curator_snapshots import (
     admit_curator_destructive_action,
     capture_skill_tombstone,
@@ -77,7 +78,10 @@ from ..trash import (
     latest_skill_artifact,
     read_skill_artifact,
 )
-from ..lessons import get_path
+from ..lessons import _lessons_file_lock, get_path
+from ..skill_retirement import (
+    RuleRetirement, record_rule_retirement, rule_retirement_log, validate_rule_retirement,
+)
 from ..consequential_state import (
     host_mutation_refusal, review_warning, skill_review_categories,
 )
@@ -892,7 +896,11 @@ def skill_manage(action: str,
                  source: str = "",
                  force: bool = False,
                  replacement_name: str = "",
-                 orphan_action: str = "archive") -> str:
+                 orphan_action: str = "archive",
+                 usefulness_score: int = 0,
+                 deletion_reason: str = "",
+                 rule_lesson_slug: str = "",
+                 rule_excerpt: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -905,7 +913,9 @@ def skill_manage(action: str,
                     + `content` (the body markdown WITHOUT frontmatter; the
                     tool prepends a valid frontmatter block).
                     Pass full `content` starting with '---' to skip the
-                    auto-frontmatter and supply your own.
+                    auto-frontmatter and supply your own. Link the reason for
+                    creating the skill with source='note:<id>' or record a
+                    short use case in metadata.threadkeeper-eval-context.
       edit        — overwrite SKILL.md wholesale. Requires `name` + `content`
                     (full file including frontmatter).
       patch       — find/replace within SKILL.md. Requires `name`,
@@ -919,7 +929,11 @@ def skill_manage(action: str,
                     are refused. Foreground/unknown-origin skills require
                     force from a foreground writer. Pass replacement_name
                     during consolidation to repoint inbound [[wikilinks]];
-                    otherwise the result lists dangling references.
+                    otherwise the result lists dangling references. The
+                    Curator verifier can retire a rule-only skill by passing
+                    usefulness_score (1 or 2), deletion_reason, rule_lesson_slug
+                    and rule_excerpt. The complete rule must exist in the named
+                    lesson. The retirement is recorded in skill_deletion_log.
       restore     — restore the latest trashed copy for `name`.
       reconcile   — retry mirror convergence for the canonical skill, or
                     finish removing mirrors when its canonical copy is gone.
@@ -929,6 +943,12 @@ def skill_manage(action: str,
     """
     action = action.strip()
     name = name.strip()
+    rule_requested = bool(usefulness_score or deletion_reason or rule_lesson_slug or rule_excerpt)
+    if rule_requested and (
+        action != "delete" or replacement_name or force
+        or WRITE_ORIGIN != "curator" or not is_curator_verifier()
+    ):
+        return "ERR rule_retirement_requires_curator_verifier"
     if action != "delete" and (err := _validate_name(name)):
         return f"ERR {err}"
     if refusal := _guarded_skill_write_refusal(name, action):
@@ -949,11 +969,15 @@ def skill_manage(action: str,
         if action == "delete":
             if err := _validate_name(name):
                 return f"ERR {err}"
-            return _action_delete(
-                name,
-                force=force,
-                replacement_name=replacement_name,
+            retirement = (
+                RuleRetirement(usefulness_score, deletion_reason, rule_lesson_slug, rule_excerpt)
+                if rule_requested else None
             )
+            lock = _lessons_file_lock(get_path()) if retirement else nullcontext()
+            with lock:
+                return _action_delete(
+                    name, force=force, replacement_name=replacement_name, retirement=retirement,
+                )
         if action == "restore":
             return _action_restore(name)
         if action == "reconcile":
@@ -964,6 +988,13 @@ def skill_manage(action: str,
             f"ERR unknown_action={action} "
             "(create|edit|patch|write_file|remove_file|delete|restore|reconcile|cleanup_orphan)"
         )
+
+
+@read_tool()
+def skill_deletion_log(name: str = "", limit: int = 20) -> str:
+    """Show recorded Curator rule-only skill deletions, newest first."""
+    entries = rule_retirement_log(get_db(), name=name.strip(), limit=max(1, min(limit, 100)))
+    return json.dumps(entries, ensure_ascii=False)
 
 
 _REMOVING_SKILL_ACTIONS = frozenset({"delete", "remove_file", "cleanup_orphan"})
@@ -1118,6 +1149,10 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
         return f"ERR skill_not_found={name}"
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed: {err}"
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal(get_db(), "edit", name, md.parent, content)
+    ):
+        return refusal
     if refusal := _skill_md_growth_refusal(md.read_text(encoding="utf-8"), content):
         return refusal
     if reason := _screen_synthesized_body(content):
@@ -1164,6 +1199,10 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
     updated = cur.replace(old_string, new_string, 1)
     if err := _validate_skill_md(updated, name):
         return f"ERR validate_failed_after_patch: {err}"
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal(get_db(), "edit", name, md.parent, updated)
+    ):
+        return refusal
     if refusal := _skill_md_growth_refusal(cur, updated):
         return refusal
     # Screen only the newly-introduced text — an existing skill that
@@ -1281,6 +1320,7 @@ def _action_delete(
     *,
     force: bool = False,
     replacement_name: str = "",
+    retirement: RuleRetirement | None = None,
 ) -> str:
     from ..memory_access import require_write
     require_write()
@@ -1325,6 +1365,14 @@ def _action_delete(
             f"ERR protected_skill name={name} reason={protected_reason}"
             f"{force_note}"
         )
+    lessons_path = get_path()
+    if retirement and (refusal := validate_rule_retirement(retirement, sdir, lessons_path)):
+        return refusal
+    evidence_action = "retire_rule" if retirement else "delete"
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal(conn, evidence_action, name, sdir, replacement=replacement_name)
+    ):
+        return refusal
     if reason := admit_curator_destructive_action(
         conn,
         action="skill_delete",
@@ -1332,12 +1380,14 @@ def _action_delete(
         key=name,
     ):
         return f"ERR {reason}"
+    link_replacement = retirement.lesson_slug if retirement else replacement_name
     try:
         inbound_refs = rewrite_inbound_wikilinks(
             name,
-            replacement_name,
-            lessons_path=get_path(),
+            link_replacement,
+            lessons_path=lessons_path,
             skill_roots=_skill_roots(),
+            lessons_locked=retirement is not None,
         )
     except OSError as e:
         return f"ERR inbound_link_rewrite_failed name={name}: {e}"
@@ -1349,6 +1399,7 @@ def _action_delete(
             name=name,
             skill_dir=sdir,
             usage_row=_row_to_dict(row),
+            retirement=retirement.log_details(tombstone) if retirement else None,
         )
     except Exception as e:
         return f"ERR trash_failed skill={name}: {e}"
@@ -1359,6 +1410,14 @@ def _action_delete(
     if tombstone:
         summary += f" tombstone={tombstone}"
     _emit(conn, "skill_delete", target=name, summary=summary)
+    if retirement:
+        record_rule_retirement(
+            conn, session_id=identity._session_id or "", name=name,
+            details={
+                **retirement.log_details(artifact.name),
+                "mirrors_complete": not mirror_outcome["failed"],
+            },
+        )
     if WRITE_ORIGIN == "curator":
         record_curator_action(
             conn,
@@ -1371,7 +1430,7 @@ def _action_delete(
     inbound = format_inbound_wikilinks(inbound_refs)
     if not inbound:
         return _result_with_mirror_outcome("ok", mirror_outcome)
-    inbound_outcome = "inbound_rewritten" if replacement_name else "dangling_wikilinks"
+    inbound_outcome = "inbound_rewritten" if link_replacement else "dangling_wikilinks"
     return _result_with_mirror_outcome(
         f"ok {inbound_outcome}={inbound}", mirror_outcome,
     )
@@ -1829,7 +1888,7 @@ def _thread_notes_dump(conn, thread_id: str) -> str:
     if not t:
         return ""
     notes = conn.execute(
-        "SELECT kind, content, created_at FROM notes "
+        "SELECT id, kind, content, created_at FROM notes "
         "WHERE thread_id=? ORDER BY created_at",
         (thread_id,),
     ).fetchall()
@@ -1841,7 +1900,7 @@ def _thread_notes_dump(conn, thread_id: str) -> str:
     ]
     for n in notes:
         snip = n["content"][:400].replace("\n", " ")
-        lines.append(f"  [{n['kind']}] {snip}")
+        lines.append(f"  [note:{n['id']} {n['kind']}] {snip}")
     return "\n".join(lines)
 
 
@@ -1898,6 +1957,10 @@ def review_thread(thread_id: str,
         f"{recent_skills_dump}"
         f"---\n\n"
         f"{base_prompt}\n\n"
+        "When creating a skill, pass the note:<id> that explains why the skill is "
+        "needed as skill_manage(source=...). If the need only appears in the thread "
+        "question or outcome, add a short synthetic summary under "
+        "SKILL.md metadata.threadkeeper-eval-context. "
         f"When you write any skill, finish with "
         f"mark_skill_materialized(thread_id='{thread_id}', skill_path=...) "
         f"so the brief's skill_hint clears."

@@ -1019,6 +1019,24 @@ recorded data.
 This makes the report directory an untrusted transport: a stray or forged
 `REPORT-*.md` file cannot acquire the provenance needed by the applier.
 
+### Test skill behaviour during Curator passes
+
+Curator can run a skill's benchmark with and without the skill, then try a
+proposed repair on the same cases. The independent verifier builds at least
+five cases from why the skill was created or added. When that reason is
+unknown, it infers a use case from the skill itself. At least three cases
+represent mutually exclusive conditions. It uses the result to keep the skill, apply the
+tested repair, or confirm a standalone removal under the existing snapshot
+and recovery rules. An unavailable or inconclusive result leaves the skill in
+place. [Set up Caliper for Curator](docs/CURATOR_CALIPER.md).
+
+Curator rates each skill's usefulness for the user from 1 to 10 after its
+applicable checks. The report explains the score or marks it unscored if the
+evidence is incomplete. A skill rated 1 or 2 can be retired as a standalone
+skill if it contains only a rule and the verifier confirms that the complete
+rule remains in a lesson. `skill_deletion_log()` shows the removed skill, date,
+score, reason, retained lesson, and recovery reference.
+
 The web-enabled researcher never receives lesson, skill, or concept mutation
 tools. The evaluator never receives web tools. By default the evaluator applies
 its own in-place edits directly after writing the REPORT, and the verifier
@@ -1712,6 +1730,8 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, and decisions that need facts the handoff lacks are marked `DEFER` for a later pass |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
+| `THREADKEEPER_CURATOR_CALIPER_DIR` | unset | Private Caliper login directory. Enables verifier-led skill benchmarks. |
+| `THREADKEEPER_CURATOR_CALIPER_MODEL` | unset | Exact model available to the Caliper Codex subscription login. Used for all comparison arms. |
 | `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 30 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |
 | `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` | 30 | days to retain recovery artifacts under `<db dir>/curator/trash` for `lesson_remove` and `skill_manage(action='delete')`; expired artifacts are swept on new trash writes |

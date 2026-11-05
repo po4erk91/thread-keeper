@@ -62,6 +62,7 @@ from ..curator_snapshots import (
     PHASE_ENV,
     VERIFY_PHASE,
     current_pass_id,
+    is_curator_verifier,
     verifier_scope_refusal,
     restore_lesson,
     restore_skill,
@@ -301,6 +302,55 @@ def curator_review_status() -> str:
     else:
         lines.append("latest_snapshot=(none yet)")
     return "\n".join(lines)
+
+
+@write_tool()
+def curator_evaluate_skill(
+    name: str, candidate: str = "", batch_index: int = 0, batch_total: int = 0,
+    scenarios: str = "",
+) -> str:
+    """Check a skill with context-based Caliper scenarios in this verifier batch.
+
+    Call with the skill name and batch arguments to retrieve the source context.
+    If context_source is skill_inferred, use the supplied SKILL.md text to infer
+    a plausible user task and include it as inferred_use_case in the JSON.
+    Pass JSON scenarios with exclusive_axis and cases. Each case needs name,
+    prompt, input, expected and a verbatim context_excerpt. At least three
+    cases need distinct exclusive_value strings on the same condition.
+    The runner creates input.txt and condition.json and checks result.txt.
+
+    Optionally supply the complete candidate SKILL.md. To try a candidate
+    after a baseline run, omit scenarios to reuse the original cases.
+    A deferred or inconclusive run grants no mutation authority.
+    """
+    from ..curator_skill_eval import evaluate
+    from .skills import _skill_dir, _validate_name, _validate_skill_md, curator_skill_refusal
+
+    if not SPAWNED_CHILD or not is_curator_verifier():
+        return "ERR caliper_verifier_not_authorized"
+    if bool(batch_index) != bool(batch_total) or not 0 <= batch_index <= batch_total <= 9999:
+        return "ERR invalid_batch"
+    if error := _validate_name(name):
+        return f"ERR {error}"
+    if error := curator_skill_refusal(name, "edit"):
+        return error
+    pass_id = current_pass_id()
+    report_name = curator_report_name(pass_id, batch_index, batch_total, phase=VERIFY_PHASE)
+    conn = get_db()
+    if not _curator_writer_owns_launch(
+        conn,
+        child_cid=_detect_self_cid() or "",
+        pass_id=pass_id,
+        batch_index=batch_index,
+        batch_total=batch_total,
+        report_name=report_name,
+    ):
+        return "ERR caliper_verifier_not_authorized"
+    if candidate and (
+        len(candidate.encode()) > 64_000 or _validate_skill_md(candidate, name)
+    ):
+        return "ERR invalid_caliper_candidate"
+    return json.dumps(evaluate(conn, name, _skill_dir(name), candidate, scenarios), ensure_ascii=False)
 
 
 @write_tool(idempotent=True)

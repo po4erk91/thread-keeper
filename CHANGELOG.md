@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: evidence for Curator skill repairs and removals.** With Caliper
+  configured, the verifier builds cases from why the skill was created or
+  added. If that reason is unknown, the verifier infers a use case from the
+  skill. It tests at least five cases, including three mutually exclusive
+  alternatives, with and without the skill. Missing or mixed results do not
+  authorize a change.
+- **Added: user usefulness scores and a log for rule-only skill retirements.**
+  Curator explains each score. When a low-value standalone skill is retired,
+  its rule remains in a lesson and its score, reason, and recovery reference
+  are recorded.
+
 - **Fixed: a test or eval run can no longer leave a live daemon host
   behind.** A thread-keeper process whose database lives under the system
   temp directory or `/tmp` no longer spawns a detached host. Such a host

@@ -7,6 +7,7 @@ can report the complete set of references it would otherwise strand.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 import re
 from pathlib import Path
 from typing import Iterable
@@ -41,6 +42,7 @@ def rewrite_inbound_wikilinks(
     *,
     lessons_path: Path,
     skill_roots: Iterable[Path],
+    lessons_locked: bool = False,
 ) -> dict[str, list[str]]:
     """Find references to ``target`` and optionally redirect them.
 
@@ -54,7 +56,8 @@ def rewrite_inbound_wikilinks(
     skill_refs: set[str] = set()
 
     if lessons_path.exists():
-        with _lessons_file_lock(lessons_path):
+        lock = nullcontext() if lessons_locked else _lessons_file_lock(lessons_path)
+        with lock:
             current = lessons_path.read_text(encoding="utf-8")
 
             def replace_lesson(match: re.Match[str]) -> str:
