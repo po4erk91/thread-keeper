@@ -69,3 +69,24 @@ a change. Pinned entries and existing recovery rules still apply.
 The verifier records the outcome in its report. The pass snapshot retains
 case counts, activation counts and fingerprints so an edit or removal cannot
 use evidence from a different skill revision or changed suite.
+
+## Usefulness scores and rule-only retirement
+
+Curator scores usefulness for the user on a scale from 1 to 10. A score of 1
+means the skill adds no standalone value. A score of 2 means a single useful
+rule belongs in a lesson. Scores of 3–4 reflect limited benefit, 5–6 reflect
+a narrow recurring use, 7–8 reflect reliable improvement, and 9–10 reflect
+substantial, repeated benefit on important work. The report includes a short
+reason for the score and leaves the score open if required checks are missing.
+
+For scores of 1 or 2, the independent verifier can retire a skill that has
+only a rule and no workflow or support files. It first checks that a retained
+lesson contains the complete rule. If the skill has a configured Caliper
+suite, the verifier also needs a result that supports removal or shows that
+every case passed with and without the loaded skill. The usual protection,
+snapshot, and recovery checks still apply.
+
+Call `skill_deletion_log()` to see the date, score, reason, retained lesson,
+and recovery reference for each recorded rule-only retirement. Filter with
+`name` when you want the history of one skill. The log uses ThreadKeeper's
+normal event retention. Recovery copies follow Curator's trash retention.

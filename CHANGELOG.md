@@ -11,6 +11,10 @@ version bumps follow semver per the policy in
   configured, the verifier runs owner-supplied cases with and without a skill
   and can test a repair before applying it. Missing or mixed results do not
   authorize a change.
+- **Added: user usefulness scores and a log for rule-only skill retirements.**
+  Curator explains each score. When a low-value standalone skill is retired,
+  its rule remains in a lesson and its score, reason, and recovery reference
+  are recorded.
 
 - **Fixed: a test or eval run can no longer leave a live daemon host
   behind.** A thread-keeper process whose database lives under the system

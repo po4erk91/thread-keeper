@@ -2979,6 +2979,10 @@ def test_evaluator_proposals_launch_a_verifier_before_endorsement(
     assert prompt.startswith(curator.CURATOR_PROMPT_PREFIX + "'s VERIFIER phase")
     assert "<curator_verify_proposals>\nPROPOSAL 1: REMOVE lesson" in prompt
     assert "lesson_remove" in verifier["kwargs"]["extra_allowed_tools"]
+    assert "whole number from 1 to 10" in launches[0]["kwargs"]["prompt"]
+    assert "whole number from 1 to 10" in prompt
+    assert "RETIRE RULE" in prompt
+    assert "no_measured_benefit=true" in prompt
     assert "curator_evaluate_skill" in verifier["kwargs"]["extra_allowed_tools"]
     assert "curator_evaluate_skill" not in launches[0]["kwargs"]["extra_allowed_tools"]
     assert verifier["snapshot"]

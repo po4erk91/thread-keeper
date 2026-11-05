@@ -149,3 +149,37 @@ def test_caliper_schedule_prioritizes_skills_without_recent_attempts(tmp_path, m
     assert evaluation.scheduled_suites(["alpha", "bravo", "charlie", "delta"]) == {
         "charlie", "delta",
     }
+
+
+def test_enrolled_rule_retirement_needs_current_evidence_of_no_benefit(tmp_path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    suite = suites / "sample.eval.yaml"
+    suite.write_text("tasks: []\n")
+    source = tmp_path / "skill"
+    source.mkdir()
+    (source / "SKILL.md").write_text("A complete user rule.")
+    snapshot = tmp_path / "snapshot"
+    monkeypatch.setattr(evaluation, "CURATOR_CALIPER_DIR", tmp_path)
+    monkeypatch.setattr(evaluation, "evidence_dir", lambda: snapshot)
+    assert evaluation.mutation_refusal("retire_rule", "sample", source)
+    evidence = {
+        "decision": "keep", "cases": ["one", "two"],
+        "passes_by_case": {"control": [3, 3], "current": [3, 3]},
+        "activations_by_case": {"current": [3, 0]},
+    }
+
+    def save():
+        evaluation.save_evidence(
+            snapshot, "sample", evaluation._tree_hash(source),
+            evaluation._digest(suite.read_bytes()), "", evidence,
+        )
+
+    save()
+    assert evaluation.mutation_refusal("retire_rule", "sample", source)
+    evidence["activations_by_case"]["current"] = [3, 3]
+    save()
+    assert not evaluation.mutation_refusal("retire_rule", "sample", source)
+    assert evaluation.mutation_refusal("delete", "sample", source)
+    suite.write_text("updated suite\n")
+    assert evaluation.mutation_refusal("retire_rule", "sample", source)

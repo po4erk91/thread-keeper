@@ -1419,3 +1419,79 @@ def test_curator_cannot_apply_a_caliper_enrolled_edit_without_tested_bytes(tmp_p
     assert edit.startswith("ERR caliper_evidence_required")
     assert removal.startswith("ERR caliper_evidence_required")
     assert source.read_text() == original
+
+
+def test_curator_retires_a_low_value_rule_and_logs_the_reason(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    name = "rule-only-skill"
+    slug = "keep-release-evidence"
+    rule = "Keep the final validation output with the release evidence."
+    _seed_skill_as_foreground(pkg, name)
+    _enter_curator_pass(tmp_path, monkeypatch, phase="verify", scope=(name, slug))
+    source = pkg["skills_root"] / name / "SKILL.md"
+    source.write_text(
+        f"---\nname: {name}\ndescription: A release rule.\n---\n## Rule\n\n{rule}\n",
+    )
+    from threadkeeper.lessons import get_path
+
+    get_path().write_text(
+        f"<!-- LESSON:BEGIN slug={slug} ts=1 -->\n## Keep release evidence\n\n"
+        f"{rule}\n<!-- LESSON:END slug={slug} -->\n"
+        f"<!-- LESSON:BEGIN slug=related-release-rule ts=1 -->\n"
+        f"See [[{name}]].\n<!-- LESSON:END slug=related-release-rule -->\n",
+    )
+    manage = _tool(pkg, "skill_manage")
+    log = _tool(pkg, "skill_deletion_log")
+    reason = "The skill contains one durable rule already covered by the release lesson."
+    args = {
+        "action": "delete", "name": name, "rule_lesson_slug": slug,
+        "rule_excerpt": rule, "deletion_reason": reason,
+    }
+    assert manage(**args, usefulness_score=3).startswith("ERR rule_retirement_requires_low_score")
+    assert source.is_file()
+    assert json.loads(log()) == []
+
+    support = source.parent / "references"
+    support.mkdir()
+    assert manage(**args, usefulness_score=2).startswith("ERR rule_retirement_has_support_files")
+    support.rmdir()
+
+    result = manage(**args, usefulness_score=2)
+    assert result == "ok inbound_rewritten=lesson:related-release-rule"
+    assert not source.exists()
+    [entry] = json.loads(log())
+    assert entry["name"] == name
+    assert entry["usefulness_score"] == 2
+    assert entry["reason"] == reason
+    assert entry["retained_lesson"] == slug
+    assert entry["deleted_at"] > 0
+    assert entry["mirrors_complete"]
+    assert json.loads(log(name="another-skill")) == []
+    assert rule in get_path().read_text()
+    assert f"See [[{slug}]]." in get_path().read_text()
+    from threadkeeper.config import CURATOR_TRASH_DIR
+
+    recovery = json.loads((CURATOR_TRASH_DIR / entry["recovery"] / "meta.json").read_text())
+    assert recovery["retirement"]["reason"] == reason
+
+
+def test_curator_cannot_retire_a_rule_without_a_matching_lesson(tmp_path, monkeypatch):
+    pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
+    name = "rule-only-skill"
+    _seed_skill_as_foreground(pkg, name)
+    _enter_curator_pass(tmp_path, monkeypatch, phase="verify", scope=(name,))
+    source = pkg["skills_root"] / name / "SKILL.md"
+    rule = "Keep the final validation output with the release evidence."
+    source.write_text(
+        f"---\nname: {name}\ndescription: A release rule.\n---\n## Rule\n\n{rule}\n",
+    )
+
+    result = _tool(pkg, "skill_manage")(
+        action="delete", name=name, usefulness_score=1,
+        rule_lesson_slug="missing-lesson", rule_excerpt=rule,
+        deletion_reason="A single rule with no workflow.",
+    )
+
+    assert result.startswith("ERR rule_retirement_lesson_missing")
+    assert source.is_file()
+    assert json.loads(_tool(pkg, "skill_deletion_log")()) == []

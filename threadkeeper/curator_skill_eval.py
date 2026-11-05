@@ -185,27 +185,47 @@ def save_evidence(
             temporary.unlink(missing_ok=True)
 
 
+def _redundancy_proved(evidence: dict) -> bool:
+    cases = evidence["cases"]
+    if not isinstance(cases, (list, tuple)) or not 2 <= len(cases) <= MAX_CASES:
+        return False
+    perfect = (ATTEMPTS,) * len(cases)
+    return (
+        tuple(evidence["passes_by_case"]["control"]) == perfect
+        and tuple(evidence["passes_by_case"]["current"]) == perfect
+        and tuple(evidence["activations_by_case"]["current"]) == perfect
+    )
+
+
+def _decision_matches(evidence: dict, action: str, candidate: str) -> bool:
+    decision = evidence["decision"]
+    if action == "edit":
+        return decision == "repair" and evidence["candidate_digest"] == _digest(candidate.encode())
+    return decision == "remove" or (
+        action == "retire_rule" and decision == "keep" and _redundancy_proved(evidence)
+    )
+
+
 def mutation_refusal(
     action: str, name: str, skill: Path, candidate: str = "", *, replacement: str = "",
 ) -> str:
     suite = suite_path(name)
-    if suite is None or action not in {"edit", "delete"}:
+    if suite is None or action not in {"edit", "delete", "retire_rule"}:
         return ""
     if action == "delete" and replacement:
         return ""
-    if action == "edit" and not suite.is_file():
+    if action in {"edit", "retire_rule"} and not suite.is_file():
         return ""
     directory = evidence_dir()
     if directory is not None:
         try:
             evidence = _read_result(directory / f"{name}.json")
-            expected = "repair" if action == "edit" else "remove"
             current_digest = _tree_hash(skill)
             if (
-                evidence["decision"] == expected
-                and current_digest is not None and evidence["skill_digest"] == current_digest
+                current_digest is not None
+                and evidence["skill_digest"] == current_digest
                 and evidence["suite_digest"] == _digest(suite.read_bytes())
-                and (action != "edit" or evidence["candidate_digest"] == _digest(candidate.encode()))
+                and _decision_matches(evidence, action, candidate)
             ):
                 return ""
         except (OSError, ValueError, KeyError, TypeError):
@@ -364,5 +384,6 @@ def _evaluate(
                 "attempts_per_case": ATTEMPTS,
                 "runtime": identities.pop(),
             }
+            result["no_measured_benefit"] = _redundancy_proved(result)
             save_evidence(directory, name, original_digest, suite_digest, candidate, result)
             return result

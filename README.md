@@ -1028,6 +1028,13 @@ tested repair, or confirm a standalone removal under the existing snapshot
 and recovery rules. An unavailable or inconclusive result leaves the skill in
 place. [Set up Caliper for Curator](docs/CURATOR_CALIPER.md).
 
+Curator rates each skill's usefulness for the user from 1 to 10 after its
+applicable checks. The report explains the score or marks it unscored if the
+evidence is incomplete. A skill rated 1 or 2 can be retired as a standalone
+skill if it contains only a rule and the verifier confirms that the complete
+rule remains in a lesson. `skill_deletion_log()` shows the removed skill, date,
+score, reason, retained lesson, and recovery reference.
+
 The web-enabled researcher never receives lesson, skill, or concept mutation
 tools. The evaluator never receives web tools. By default the evaluator applies
 its own in-place edits directly after writing the REPORT, and the verifier

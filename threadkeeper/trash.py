@@ -132,6 +132,7 @@ def capture_removed_skill(
     skill_dir: Path,
     usage_row: Optional[dict[str, Any]] = None,
     now: Optional[int] = None,
+    retirement: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Copy a skill directory and usage row before deletion."""
     now_t = int(now or time.time())
@@ -151,6 +152,7 @@ def capture_removed_skill(
             "original_path": str(skill_dir),
             "skill_md_sha256": sha,
             "usage_row": usage_row or None,
+            **({"retirement": retirement} if retirement else {}),
         },
     )
     return artifact

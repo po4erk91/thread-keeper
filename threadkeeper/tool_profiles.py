@@ -130,6 +130,7 @@ LEARNING_LOOP_TOOLS = CORE_TOOLS | {
     "run_probe",
     "shadow_review_run",
     "shadow_review_status",
+    "skill_deletion_log",
     "skill_list",
     "skill_manage",
     "skill_record",
