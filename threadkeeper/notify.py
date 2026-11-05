@@ -36,6 +36,7 @@ import threading
 import time
 
 from .config import (
+    CLAUDE_SKILLS_DIR,
     NOTIFY_POLL_S,
     NOTIFY_LOOP_FAILURE,
     NOTIFY_SKILL_MATERIALIZED,
@@ -405,13 +406,18 @@ def _fmt_child(c: dict) -> tuple[str, str]:
 def _fmt_skill(s: dict) -> tuple[str, str]:
     path = (s.get("summary") or "").strip()
     name = s.get("target", "") if s.get("kind") == "skill_create" else ""
-    if path and path != "(no path recorded)":
+    if path == "file=SKILL.md" and name:
+        md = CLAUDE_SKILLS_DIR / name / "SKILL.md"
+    elif path and path != "(no path recorded)":
         md = Path(path).expanduser()
         if md.name == "SKILL.md":
             name = md.parent.name
         else:
             name = md.name
             md = md / "SKILL.md"
+    else:
+        md = None
+    if md is not None:
         try:
             # A title is near the top. Never load an entire skill (or follow
             # paths mentioned in its body) just to render a notification.

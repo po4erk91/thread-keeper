@@ -186,3 +186,19 @@ class ReplaySafeWrites:
 
         run_write("mcp_replay_complete", complete)
         return result
+
+
+class HostTraceContext:
+    """Bind Trace Context only for the negotiated metadata-capable MCP era."""
+
+    async def __call__(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        call_next: CallNext,
+    ) -> HandlerResult:
+        if ctx.protocol_version != MODERN_PROTOCOL_VERSION:
+            return await call_next(ctx)
+        from .tracing import host_trace_context
+
+        with host_trace_context(ctx.meta):
+            return await call_next(ctx)

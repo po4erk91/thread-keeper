@@ -824,8 +824,11 @@ def test_mcp_lesson_reads_bump_usage_counters(tmp_path, monkeypatch):
     assert rows["error-handling"]["use_count"] == 0
 
 
-def test_loop_reads_do_not_bump_usage_counters(tmp_path, monkeypatch):
-    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+@pytest.mark.parametrize("origin", ["curator", "spawned", "shadow_review"])
+def test_origin_label_cannot_suppress_lesson_consultations(
+    tmp_path, monkeypatch, origin,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin=origin)
     pkg["lessons"].append_lesson(title="pagination", body="use cursor", source="T1")
     ll = _tool(pkg, "lesson_list")
     lg = _tool(pkg, "lesson_get")
@@ -837,7 +840,9 @@ def test_loop_reads_do_not_bump_usage_counters(tmp_path, monkeypatch):
         "SELECT use_count, view_count, last_used_at, last_viewed_at "
         "FROM lesson_usage WHERE slug='pagination'"
     ).fetchone()
-    assert row is None or tuple(row) == (0, 0, None, None)
+    assert row["use_count"] == row["view_count"] == 1
+    assert row["last_used_at"] is not None
+    assert row["last_viewed_at"] is not None
 
 
 def test_mcp_lesson_get_returns_body(tmp_path, monkeypatch):

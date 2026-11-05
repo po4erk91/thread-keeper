@@ -267,6 +267,7 @@ def _spawn_child(prompt: str, cli: str = "", model: str = "", effort: str = "") 
         permission_mode="auto",
         role=ROUTER_ROLE,
         write_origin=ROUTER_ROLE,
+        memory_access="read_only",
         slim=True,
         allowed_tools_override=(ROUTER_TOOL,),
         native_tools_override=("ToolSearch",),

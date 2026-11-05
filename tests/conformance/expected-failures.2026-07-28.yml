@@ -1,0 +1,46 @@
+# Pinned official conformance baseline for the stateless 2026-07-28 suite.
+#
+# Entries are intentional product-vs-fixture gaps. The upstream scenarios call
+# named ``test_*`` tools, resources, and prompts that are not ThreadKeeper's
+# public API. Do not add generic passes or custom fixture handlers: this run
+# must keep exercising the production registry. The official runner fails if an
+# entry no longer reproduces, so remove an entry as soon as the product begins
+# to satisfy that scenario.
+server:
+  # The server has no synthetic test_missing_capability probe. Its real
+  # capability checks remain covered by the production request handlers.
+  - server-stateless
+  - completion-complete
+
+  # The product's tools return its own text/structured results, not the
+  # official image, audio, mixed-content, progress, or MRTR probe payloads.
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  - tools-call-with-progress
+
+  # Memory resources and application prompts intentionally do not claim the
+  # upstream test:// URIs or test_* prompt names.
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+
+  # ThreadKeeper's actual confirmation flows are capability-gated, but they do
+  # not publish the official test_input_required_result_* workflow tools.
+  - input-required-result-basic-elicitation
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-request-state
+  - input-required-result-multiple-input-requests
+  - input-required-result-multi-round
+  - input-required-result-missing-input-response
+  - input-required-result-non-tool-request
+  - input-required-result-result-type
+  - input-required-result-tampered-state
+  - input-required-result-capability-check
+  - input-required-result-validate-input

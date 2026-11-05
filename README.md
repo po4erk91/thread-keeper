@@ -54,7 +54,11 @@ make it more than a memory store:
   `~/.codex/skills/`, `~/.gemini/config/skills/` for Antigravity,
   existing `~/.agents/skills/`, extra roots from
   `THREADKEEPER_EXTRA_SKILLS_DIRS`, and `~/.threadkeeper/skills/`), with
-  lessons.md as a fallback for CLIs without a native skills loader.
+  lessons.md as a fallback for CLIs without a native skills loader. A managed
+  skill write reports success only after every mirror has the expected file
+  set and hashes; `ERR mirror_partial_failure` keeps the canonical copy and
+  names only the affected consumer plus relative file. Retry safely with
+  `skill_manage(action="reconcile", name="<skill>")`.
 
 Foreground MCP servers also run a daily self-update check by default. Source
 checkouts fast-forward their tracked git branch and reinstall the editable
@@ -207,6 +211,22 @@ surface memory as attachable / `@`-mentionable context through a mechanical
 channel. The brief resource renders lean and agent-status uses a cached snapshot,
 so an automatic host pull is **side-effect-free**.
 
+`search` and `dialog_search` also return structured hits and `resource_link`
+blocks. Read a hit's `resource_uri` with `resources/read` to inspect its evidence
+without a broader search. Notes can also provide a `thread_uri` for a bounded
+thread excerpt. Dialog links contain the matching message and up to two messages
+on each side from the same source, session, and scope. Windows have fixed
+membership; later messages do not expand an issued link.
+
+These opaque `memory://evidence/...` links are private to the requesting caller
+and project, expire after five minutes, and may be evicted sooner or lost on
+server restart. Search again for a fresh link. Evidence reads return at most
+32 KiB of JSON, mark shortened bodies with `truncated`, and recheck scope,
+authority invalidation, erasure, and dialog retention on every read. Thread
+excerpts include at most ten notes. Links are not listed in `resources/list`
+and must not be cached. Hosts that ignore links and structured output keep the
+same first text block and search behavior.
+
 **Prompts** turn the curation / audit / review flows into discoverable,
 parameterized commands; each just drives the existing tools.
 
@@ -352,6 +372,27 @@ sent to another model provider.
 ## Core systems
 
 ### Spawn — primary parallelism primitive
+
+Public children have explicit durable-memory access. `spawn(...,
+memory_access="read_only")` is the default; `memory_access="propose"` queues
+supported memory-writing calls as pending candidates. A foreground reviewer
+uses `memory_proposals()` and `memory_proposal_decide(id, accept=True)` to
+apply one candidate. New generated artifacts keep **observed** authority.
+Only private Curator and Evolve launchers can grant direct `write` access.
+Curator researchers, probe runners, model routers, and general helpers remain
+read-only; learning reviewers submit proposals. Coordination and authorized
+research/report handoffs remain available.
+
+These are three separate controls: tool profiles decide which tools a child
+can discover; provenance labels describe where content came from; a persisted,
+task-bound memory capability decides whether it can write accepted memory.
+Changing `write_origin`, a role, or the advertised tool profile grants no memory
+authority. An omitted or forged child grant fails closed. Ordinary child reads
+are capped to the launch project's namespace plus global/shared memory, even
+with `cross_project=True`; a child outside a resolved project sees only
+global/shared memory. Existing memory keeps its current scope. This boundary protects server
+tools and storage helpers; it does not sandbox arbitrary code running under
+the same operating-system account with direct access to database files.
 
 `spawn(prompt, slim=True, role=..., visible=False, ...)` launches a child
 Claude session via a `claude -p` subprocess. By default `slim=True`: the
@@ -650,6 +691,33 @@ them without touching foreground-authored ones, and a write-time screen
 refuses loop-origin lesson/skill bodies that contain imperative-override /
 remote-exec idioms. See [`SECURITY.md`](SECURITY.md).
 
+**Host settings need consent and rollback (#390).** Background writers cannot
+save unconditional advice to reset a host proxy, remove credentials, change
+shell/global settings, control startup services, change home/system permissions,
+or alter global packages. Each procedure must state a narrow confirmed
+precondition, require the owner's consent, save the original state, and restore
+it during cleanup, including on failure. Read-only checks and project-local
+changes remain allowed. This is a conservative English text/command screen,
+separate from injection detection, rather than a semantic safety guarantee.
+
+Existing unsafe advice stays on disk with an **OWNER REVIEW REQUIRED** warning
+in lesson retrieval, skill listings, and Curator inventories. Skill manifests
+show the warning in their description; MCP resource delivery pauses with the
+same warning. Curator never rewrites protected records to clear it, including
+in its verifier phase. The skill watcher also flags direct file edits.
+
+To clear a warning, the owner reviews the procedure in a foreground session,
+then uses `lesson_patch` / `lesson_append` or `skill_manage` to remove the unsafe
+advice or add all three guards. For example: “Only when inspection has confirmed
+an observed test-owned proxy left by this test, ask the user for explicit consent
+before changing it. Save the original proxy settings, reset the proxy for the
+test, and restore the original settings in cleanup even if the test fails.” Keep
+the condition and guards together in each procedure paragraph. Retrieval checks
+the current content, so the warning clears after a safe repair; there is no
+blanket approval switch. Historical `host_state_review` telemetry keeps only
+fixed categories and a SHA-256 fingerprint, without host values, paths, titles,
+or command text.
+
 #### 1. Auto-review on close_thread
 
 When a closed thread is rich (≥5 notes, ≥2 insight/move),
@@ -800,9 +868,20 @@ children start, a deterministic validator writes
 ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
 findings, mirror hashes, exact-body duplicate groups, and lexical candidates
 for semantic review. System and installed-plugin sources are resolved from
-their read-only caches rather than misreported as missing mirrors; telemetry
-rows with no real `SKILL.md` remain explicit orphans. The same inventory also
-flags a dense lesson subtopic when at least
+their read-only caches rather than misreported as missing mirrors. A telemetry
+row with no readable primary source becomes `unavailable`, is non-compatible,
+and shows only `restore_source` until validation sees a source again; repeated
+validation does not create duplicate repair work. A scoped Curator verifier can
+archive or remove a confirmed registry-only orphan only after rechecking every
+configured root, the primary archive, and external cache and saving its usage row plus
+audit evidence to recovery trash. The same inventory also
+checks Markdown links and unambiguous slash-containing inline-code resource
+paths for missing local files. It ignores URLs, absolute or escaping paths,
+shell fragments, frontmatter, headings, and fenced examples. It also reports
+only substantial repeated prose: normalized paragraphs of at least 160
+characters that occur at least three times in the same skill. The same findings
+are returned by `skill_validate`, before a Curator repair is mirrored. The
+inventory also flags a dense lesson subtopic when at least
 `THREADKEEPER_CURATOR_PROMOTION_MIN_LESSONS` lessons (default 3) share two
 concrete title terms and a non-generic body mechanism. Generic joins and
 domain-wide/high-document-frequency title words cannot form a candidate. The
@@ -881,10 +960,15 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. It then persists a pass manifest with the
-expected reports and the rendered text of every batch before launching any
-child. A dispatch is not completion: every batch must exit successfully and
-have a final, matching provenance record before the inventory is endorsed.
+trees, validators, and mirror state. It persists the full pass audit manifest
+for parent coordination and provenance, then writes one smaller, hash-checked
+audit slice for every frozen batch. A worker reads only its slice: assigned
+skill records and their relevant consumer, link, mirror, source, duplicate, and
+candidate findings. A lesson-only batch receives an explicit no-skills slice
+instead of the full skill inventory. The scheduler stores the expected reports,
+slice hashes, and rendered text before launching any child. A dispatch is not
+completion: every batch must exit successfully and have a final, matching
+provenance record before the inventory is endorsed.
 Repeated manual calls over identical bytes return `unchanged_inventory` only
 after that endorsement; scheduled passes still run because CLI behavior,
 official guidance, and external alternatives can change without local file
@@ -948,7 +1032,26 @@ verifier) additionally lets the
 evaluator make in-place repairs to them. Lessons are
 stamped with an explicit `origin=<THREADKEEPER_WRITE_ORIGIN>` marker when
 appended; missing, legacy, or unknown lesson provenance is protected by
-default. `lesson_remove` and `skill_manage(action='delete')` refuse protected
+default. Protection preserves authored content; it does not certify that every
+factual claim is current. `lesson_verifications(slug)` returns the current
+lesson revision and its factual checks. After reading an official source,
+Curator can call `curator_verify_lesson(slug, lesson_revision, claim, status,
+source_url, source_revision)` with an exact claim excerpt, `verified`,
+`contradicted`, or `unsubstantiated`, an official HTTPS URL, and its revision
+identifier or ETag. When no official revision is available, omit
+`source_revision` and pass the checked page text as `source_text`; the server
+hashes it without retaining the text. Use a consistent revision identifier or
+page text for each URL. The server records check time separately from lesson
+content. Repeated checks update the same claim record. `lesson_get` and
+`lesson_list(query=...)` show source-linked warnings for contradicted or
+unsubstantiated claims. A changed lesson or an observed source revision change
+makes old checks require a new audit; a verified recheck clears the warning.
+Sources are checked by the caller: these tools do not fetch pages, certify
+domains, or detect remote changes between audits. Unavailable research means
+defer the check, not declare the claim unsubstantiated. Content edits still
+follow the existing approval and verifier rules.
+
+`lesson_remove` and `skill_manage(action='delete')` refuse protected
 foreground/unknown-origin entries unless `force=True` is called from a
 foreground writer or the caller is the Curator verifier phase; curator/spawned
 children cannot elevate themselves with `force`. Before a destructive child is spawned, thread-keeper writes
@@ -1026,10 +1129,12 @@ embedding is closest to the prompt reached 25% recall at 12% precision.
 
 Lesson access is tracked the same way skill access is: `lesson_list` increments
 `lesson_usage.view_count` for displayed rows and `lesson_get` increments
-`lesson_usage.use_count` for the returned lesson. Only foreground reads count:
-the curator and other loops read every lesson they audit, and counting those
-reads would make every lesson look recently useful. Curator dry runs include a
-ranked `STALE LESSONS (dry-run decay ranking)` section computed as
+`lesson_usage.use_count` for the returned lesson. Foreground and ordinary task
+reads count as consultations. Curator evaluator and verifier reads are neutral
+only while the caller owns a live task with a server-issued Curator launch
+record. This also applies to retries and every batch of a pass. An origin label
+or a caller-supplied pass ID cannot suppress normal usage. Curator dry runs
+include a ranked `STALE LESSONS (dry-run decay ranking)` section computed as
 `access_frequency × exp(-days_since_access / tau)`, filtered to unprotected
 lessons with no recent access and low pull-count. That decay list is advisory
 only; it never becomes an automatic `lesson_remove` path by itself, and pinned
@@ -1123,27 +1228,44 @@ with that name instead of minting overlapping roadmap PRs.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
 picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
-the automatic pass first sweeps the open PRs authored by the account
-thread-keeper's `gh` acts as — yours: applier, reviewer, and hand-made PRs
-alike. A PR from any other account (a collaborator, a bot, a fork) is never
-updated, repaired, or merged. If the PR sweep itself cannot read GitHub state
-or the `gh` account, the pass fails closed instead of taking fresh work blind.
-The sweep squash-merges the oldest non-draft PR GitHub reports `CLEAN` (up to
-date, required checks green) through the protected merge API, pinned to the
-head SHA it saw green, and then asks GitHub to update the oldest `BEHIND` one —
-the "Update branch" button — so CI reruns against the new base. Open
-work in progress as a draft: drafts are never merged. Strict branch
+the automatic pass first sweeps eligible PRs from the account thread-keeper's
+`gh` acts as. A PR must be in this repository and have a recognized automation
+branch (`roadmap/issue-…`, `evolve/apply-…`, or `docs/roadmap-audit-…`) or a
+standalone ownership marker in its body. Applier PRs use
+`<!-- thread-keeper:evolve-applier-pr -->`; reviewer roadmap PRs use
+`<!-- thread-keeper:evolve-reviewer-roadmap-pr -->`. Manual and fork PRs, and
+PRs with missing or conflicting ownership signals, stay read-only. If the PR
+sweep itself cannot read GitHub state or the `gh` account, the pass fails
+closed instead of taking fresh work blind.
+
+The sweep squash-merges the oldest eligible non-draft PR GitHub reports
+`CLEAN` (up to date, required checks green) through the protected merge API,
+pinned to the head SHA it saw green, and then asks the oldest eligible `BEHIND`
+PR to update its branch so CI reruns against the new base. Strict branch
 protection lets only one PR merge per base commit, so PRs land one at a time,
 oldest first. Between full passes the daemon repeats only this cheap landing
-sweep every 15 minutes, so a green PR lands minutes after its checks finish;
-it skips while any reviewer/applier git writer runs. A conflicted applier PR
-(`roadmap/…` or `evolve/…` head branch in this repository) is repaired before
-any new issue/report/evolve work is started: the conflict-repair child checks
-out the existing PR branch, merges the current base branch, resolves
-conflicts, runs the full suite, and pushes back to the same branch, then
-stops; the landing sweep merges it once it is green. A hand-made PR with
-conflicts, and red or otherwise blocked PRs, wait for a human. Set
-`THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge to a human.
+sweep every 15 minutes, so a green PR lands minutes after its checks finish; it
+skips while any reviewer/applier git writer runs.
+
+The applier keeps one applier PR (`roadmap/…` or `evolve/…` head branch in
+this repository) in flight at a time. While any is open it starts no new
+issue, Curator report, or evolve suggestion, and works on the oldest one until
+it lands. A conflicted PR gets a conflict-repair child that checks out the
+existing PR branch, merges the current base branch, resolves conflicts, runs
+the full suite, and pushes back to the same branch. A PR whose finished checks
+include a red one is first updated onto the newest base, which clears failures
+already fixed there. If it stays red while up to date, a fix child reads the
+failing logs, fixes the cause on the same branch (or re-runs a job that failed
+outside the code), runs the full suite, and pushes. A green applier draft is
+marked ready. Children never merge: the landing sweep lands the PR once it is
+green. When that PR needs a child, or the last open applier PR has just
+landed, the 15-minute sweep runs the full pass right away. After three repair
+or fix children one PR waits for a human and the next open applier PR moves
+ahead. When every open applier PR waits for a human, the pass records
+`ERR applier_prs_need_human=…`, which the notifier reports as a failure. A
+hand-made PR with conflicts or red checks waits for its author and does not
+hold back new work. Set `THREADKEEPER_EVOLVE_AUTOLAND=0` to leave every merge
+to a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
@@ -1295,9 +1417,9 @@ the prior cursor and retries on a bounded short cadence; repeated identical
 blockers are recorded once until the blocker changes. `evolve_apply_status()`
 shows the last attempt, last successful dispatch, and any pending retry time.
 Manual tools such as `evolve_apply_conflicted_pr()` and
-`evolve_apply_roadmap_issue()` dispatch immediately. If no conflicted applier PR
-or roadmap issue is startable, the pass falls back to Curator reports and then
-legacy promoted `evolve_format(...)` suggestions.
+`evolve_apply_roadmap_issue()` dispatch immediately. If no applier PR is open
+and no roadmap issue is startable, the pass falls back to Curator reports and
+then legacy promoted `evolve_format(...)` suggestions.
 
 #### Honest take
 
@@ -1642,7 +1764,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
 | `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
-| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
+| `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Applier PRs also get a green draft marked ready, and red checks retried on the newest base before a fix child starts. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
 | `THREADKEEPER_EVOLVE_REPO_URL` | upstream repo | HTTPS `github.com` source for the managed clone; restart-only, and other hosts/schemes are refused |
@@ -1800,6 +1922,17 @@ Three tools keep the memory tidy. `consolidate()` and `forget()` default to
   `THREADKEEPER_TASK_RETENTION_DAYS` defaults to `30` and
   `THREADKEEPER_TASK_RETENTION_COUNT` defaults to `1000`; a row is kept if it
   is protected by either bound. Set either knob to `0` to disable that bound.
+  With both bounds disabled, finished task rows and their checkouts are kept.
+  Expired tasks also release their owned Git worktrees and temporary branches
+  when the checkout is clean and its commits remain reachable from another
+  local branch or a remote-tracking branch. Other temporary task branches do
+  not count as a safe copy. Dry run reports checkout counts, bytes, and reasons
+  for keeping work. Cleanup preserves live tasks, changed or untracked files
+  (including ignored files), unpublished work, locked checkouts, changed
+  ownership, and branches checked out elsewhere. It never forces Git removal.
+  Commits saved only in the task's branch or checkout history are also kept,
+  including commits left behind by a reset or branch switch.
+  Ownership records survive task-history pruning, so a later cleanup can retry.
 - **`forget(selector, selector_type="auto", dry_run=True)`** — targeted
   privacy erasure for one session/cid/thread/dialog UUID. Dry-run reports the
   rows that would be removed from `dialog_messages`, FTS/vector sidecars,
@@ -1842,6 +1975,22 @@ operation`. The W3C trace context is saved with the task and passed only in the
 private child environment (and its slim MCP config), never in a prompt or CLI
 argument. A watchdog continuation uses the prior agent span as its parent, so
 retries remain in the same trace.
+
+For MCP `2026-07-28`, a host can add W3C `traceparent`, `tracestate`, and
+`baggage` values to the request `_meta`. A valid `traceparent` becomes the
+parent of the MCP operation, so the host and child work appear in one trace.
+Older MCP clients keep the existing local behavior. A missing or malformed
+host traceparent starts a local trace and does not fail the tool call.
+
+ThreadKeeper accepts only the exact lowercase W3C `00` traceparent form. It
+keeps valid tracestate only when it has at most 32 entries and 512 characters,
+with W3C key and value characters. Baggage is more restrictive: it is capped
+at 256 characters and only forwards `deployment.environment`,
+`service.namespace`, and `threadkeeper.workflow_class` values made of up to 64
+safe identifier characters. All other baggage is dropped. These three values
+stay in private task tracing fields and child environment variables; they never appear
+in prompts, command arguments, memory, tool results, or exported span
+attributes.
 
 The exporter has a fixed allowlist: operation/tool identifier, latency and
 queue wait, provider/model identifiers, input/output/total tokens, USD cost,
@@ -1968,6 +2117,56 @@ WAL mode because recent committed transactions may exist only in
 first and copy `db.sqlite`, `db.sqlite-wal`, and `db.sqlite-shm` together. To
 wipe memory, also stop thread-keeper first, then remove the main DB and both
 sidecars.
+
+For a selective, human-inspectable migration or audit, use
+`tk-semantic-bundle`. It writes a versioned `manifest.json` and canonical
+`records.jsonl`; every record has a SHA-256 content hash, source namespace and
+ID, provenance/authority metadata, temporal fields, and deletion or
+invalidation state. It is not a disaster-recovery snapshot and does not
+replace active-active sync:
+
+| Need | Use |
+| --- | --- |
+| Recover an exact local store after loss | `tk-backup` |
+| Keep live, compatible instances converged | instance sync |
+| Move or inspect selected semantic memory | `tk-semantic-bundle` |
+
+```bash
+# Default: semantic threads, notes, concepts, distillations, lessons, skills,
+# and graph links. Raw dialog, task logs, and personal memory stay out.
+tk-semantic-bundle export ./memory.bundle --namespace laptop-2026
+
+# Opt in to each sensitive class independently when it is needed.
+tk-semantic-bundle export ./complete.bundle --namespace laptop-2026 \
+  --include-personal-memory --include-dialog --include-task-logs
+
+# Import is a dry run unless --apply is explicit.
+tk-semantic-bundle import ./memory.bundle
+tk-semantic-bundle import ./memory.bundle --apply
+```
+
+An import first validates the manifest schema and every hash, then reports
+additions, conflicts, invalid records, and its namespace choice without
+writing. Applied imports retain source IDs in the local
+`semantic_bundle_import_records` namespace ledger; an identical re-import is
+idempotent, while changed source content reports a deterministic conflict.
+The format has a documented crosswalk to the evolving
+[W3C AI Agent Memory Interoperability work](https://www.w3.org/groups/cg/ai-agent-memory-interop/)
+and [IETF AIMEM bundle draft](https://www.ietf.org/archive/id/draft-vu-aimem-bundle-00.html),
+but does not claim conformance to either draft. The crosswalk is deliberately
+conceptual, not a wire-format mapping:
+
+| ThreadKeeper bundle v1 | External direction | Deliberate difference |
+| --- | --- | --- |
+| versioned manifest + canonical JSONL | AIMEM envelope and versioning | Directory/JSONL rather than the draft's one JSON object |
+| `source.namespace` + source-ID ledger | AIMEM producer namespace and replay identity | Local namespace strings are not AIMEM URNs |
+| record and stream SHA-256 hashes | AIMEM checksum/content-hash concepts | No signature or authenticity claim |
+| typed records and graph links | AIMEM chunks and edges | ThreadKeeper types and relations remain local |
+| egress class, authority, valid time, tombstone | W3C work on memory metadata, sharing, and revocation | Local policy metadata; not an external profile |
+
+The IETF document is an Internet-Draft and the W3C group is still developing
+its protocol, so compatibility must be reviewed again before publishing an
+external-profile claim.
 
 ### Opt-in encrypted storage (experimental)
 
@@ -2111,6 +2310,18 @@ current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
 and visible `.command` files with no-follow owner-only opens. Git-backed spawns
 also create their isolated worktrees there. `consolidate()` garbage-collects
 task spool files once their task row is no longer retained.
+
+Task worktrees use the same retention bounds. Before removing history,
+`consolidate()` saves cleanup eligibility in a separate ownership record.
+It uses `git worktree remove` and deletes only the recorded temporary branch,
+after checking that its tip is retained elsewhere. Failed or interrupted cleanup
+keeps that record; rerun the dry run after saving work on another branch,
+publishing commits, or resolving the reported block. Apply cleanup only after
+reviewing that report. A changed branch or checkout must be reviewed manually.
+Older checkouts without ownership records are reported as `ownership_unknown`
+and kept; their task rows also stay available for manual review. Verify their
+Git status and saved commits before removing them
+manually with Git; directory names alone never establish ownership.
 
 ---
 
@@ -2479,6 +2690,10 @@ and numeric IDs match; numeric and string IDs are distinct. Sealed continuation
 state expires after five minutes; an interrupted write with no terminal result
 is rejected on replay within that connection. Durable workflow retries use
 their application handles, such as a router pass ID.
+The release gate also runs the pinned official MCP conformance requirement sets
+for both versions against a loopback-only Streamable HTTP view of this same
+registry. Its version-specific expected-failure baselines are checked for both
+new failures and stale entries; stdio keeps the ThreadKeeper-specific coverage.
 
 Detailed map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Open work in [docs/ROADMAP.md](docs/ROADMAP.md) and the

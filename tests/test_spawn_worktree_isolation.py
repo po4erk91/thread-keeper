@@ -80,6 +80,10 @@ def test_git_spawns_get_distinct_branch_worktrees(mp_with_cid, monkeypatch):
     ]
     assert len(set(branches)) == 2
     assert all(branch.startswith("threadkeeper/spawn-tk_") for branch in branches)
+    claims = pkg["db"].get_db().execute("SELECT * FROM task_worktrees").fetchall()
+    assert {row["path"] for row in claims} == {str(path) for path in child_cwds}
+    assert {row["branch"] for row in claims} == set(branches)
+    assert all(row["path_ino"] and not row["eligible"] for row in claims)
     assert spawn_mod._git_result(
         ["status", "--porcelain", "--untracked-files=no"], repo
     )[0] == ""
@@ -110,3 +114,25 @@ def test_dirty_git_checkout_is_refused_before_child_launch(
     assert worktrees.count("worktree ") == 1
     conn = pkg["db"].get_db()
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_failed_launch_keeps_owned_cleanup_retry(mp_with_cid, monkeypatch):
+    pkg = mp_with_cid(_FAKE_CID)
+    repo = _init_repo(pkg["tmp"])
+    spawn_mod = _configure_spawn(monkeypatch, pkg)
+
+    def fail_launch(*args, **kwargs):
+        raise OSError("injected launch failure")
+
+    monkeypatch.setattr(spawn_mod.subprocess, "Popen", fail_launch)
+    output = spawn_mod.spawn(prompt="failed launch", cwd=str(repo), visible=False,
+                             capture_output=False)
+    assert "ERR spawn_failed=" in output
+    conn = pkg["db"].get_db()
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    claim = conn.execute("SELECT * FROM task_worktrees").fetchone()
+    assert claim["eligible"] == 1
+    assert claim["path_ino"]
+    consolidate = pkg["mcp"]._tool_manager._tools["consolidate"].fn
+    assert "worktrees_removed=1" in consolidate(dry_run=False)
+    assert not Path(claim["path"]).exists()

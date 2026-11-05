@@ -1,6 +1,8 @@
 """What a spawned child inherits and which CLI runs it."""
 from __future__ import annotations
 
+import pytest
+
 _FAKE_CID = "44445555-6666-7777-8888-999900001111"
 
 
@@ -99,3 +101,69 @@ def test_model_home_cli():
     assert model_home_cli("o3") == "codex"
     assert model_home_cli("gemini-3-pro") == ""
     assert model_home_cli("") == ""
+
+
+@pytest.mark.parametrize('origin', ['', 'foreground', 'user', 'curator', 'evolve_apply'])
+def test_public_spawn_memory_is_read_only_even_with_spoofed_origin(mp_with_cid, monkeypatch, origin):
+    pkg, spawn_mod, launched = _setup(mp_with_cid, monkeypatch, routed_cli='claude')
+    monkeypatch.setenv('THREADKEEPER_WRITE_ORIGIN', 'foreground')
+    monkeypatch.setenv('THREADKEEPER_MEMORY_ACCESS', 'write')
+    out = spawn_mod.spawn(prompt='x', cwd=str(pkg['tmp']), visible=False,
+                         capture_output=False, write_origin=origin)
+    assert out.startswith('ok task='), out
+    env = launched[0]['env']
+    assert env['THREADKEEPER_MEMORY_ACCESS'] == 'read_only'
+    expected_origin = origin if origin not in {'', 'foreground', 'user'} else 'spawned'
+    assert env['THREADKEEPER_WRITE_ORIGIN'] == expected_origin
+    assert env['THREADKEEPER_MEMORY_TOKEN']
+    conn = pkg['db'].get_db()
+    row = conn.execute('SELECT access,origin FROM child_memory_grants').fetchone()
+    assert tuple(row) == ('read_only', 'spawned')
+    conn.close()
+
+
+def test_public_and_private_generic_spawn_cannot_grant_write(mp_with_cid, monkeypatch):
+    pkg, spawn_mod, launched = _setup(mp_with_cid, monkeypatch, routed_cli='claude')
+    for fn in [spawn_mod.spawn, spawn_mod._spawn_impl]:
+        assert fn(prompt='x', cwd=str(pkg['tmp']), visible=False,
+                  capture_output=False, memory_access='write',
+                  write_origin='evolve_apply') == 'ERR memory_write_requires_trusted_launcher'
+    assert launched == []
+    for origin in ('model_router', 'evolve'):
+        out = spawn_mod._spawn_impl(
+            prompt='x', cwd=str(pkg['tmp']), visible=False, capture_output=False,
+            write_origin=origin, memory_access='read_only',
+        )
+        assert out.startswith('ok task='), out
+        assert launched[-1]['env']['THREADKEEPER_WRITE_ORIGIN'] == origin
+    conn = pkg['db'].get_db()
+    assert {r[0] for r in conn.execute('SELECT origin FROM child_memory_grants')} == {'spawned'}
+    conn.close()
+
+
+@pytest.mark.parametrize('launcher', ['_spawn_evolve_reviewer', '_spawn_evolve_applier', '_spawn_evolve_applier_maintenance'])
+def test_trusted_evolve_launchers_have_explicit_memory_write(mp_with_cid, monkeypatch, launcher):
+    pkg, spawn_mod, launched = _setup(mp_with_cid, monkeypatch, routed_cli='claude')
+    monkeypatch.setattr(spawn_mod, '_install_gh_safety_wrapper', lambda _: (pkg['tmp'], 'gh'))
+    out = getattr(spawn_mod, launcher)(prompt='x', cwd=str(pkg['tmp']),
+                                     visible=False, capture_output=False)
+    assert out.startswith('ok task='), out
+    assert launched[0]['env']['THREADKEEPER_MEMORY_ACCESS'] == 'write'
+    assert launched[0]['env']['THREADKEEPER_WRITE_ORIGIN'] in {'evolve', 'evolve_apply'}
+
+
+def test_curator_evaluator_is_trusted_but_researcher_is_read_only(mp_with_cid, monkeypatch):
+    pkg, spawn_mod, launched = _setup(mp_with_cid, monkeypatch, routed_cli='claude')
+    from threadkeeper import curator
+    for role, origin, access in [
+        ('curator', 'curator', 'write'),
+        ('curator_researcher', 'curator_research', 'read_only'),
+    ]:
+        out = curator._spawn_batch_child(
+            'pass-test', None, 'x', '', role=role, write_origin=origin,
+            phase='research' if role == 'curator_researcher' else 'evaluate',
+            batch_index=1, batch_total=1,
+        )
+        assert out.startswith('ok task='), out
+        assert launched[-1]['env']['THREADKEEPER_MEMORY_ACCESS'] == access
+        assert launched[-1]['env']['THREADKEEPER_WRITE_ORIGIN'] == origin

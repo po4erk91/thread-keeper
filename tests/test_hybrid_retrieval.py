@@ -31,7 +31,7 @@ def test_notes_hybrid_uses_fts_when_dense_has_no_coverage(fresh_mp,
     monkeypatch.setattr(retrieval.config, "SEMANTIC_AVAILABLE", True)
     monkeypatch.setattr(retrieval, "_cosine_search", lambda *_args, **_kw: [])
 
-    out = _tool(fresh_mp, "search")(query="zebra-quux", k=5)
+    out = _tool(fresh_mp, "search")(query="zebra-quux", k=5).content[0].text
     assert "zebra-quux" in out
     assert "no_matches" not in out
 
@@ -125,6 +125,6 @@ def test_dialog_role_filter_applies_before_limit(fresh_mp):
 
     out = _tool(fresh_mp, "dialog_search")(
         query="needle", k=1, role="user", mode="fts"
-    )
+    ).content[0].text
     assert "user target" in out
     assert "assistant noise" not in out

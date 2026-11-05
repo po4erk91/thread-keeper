@@ -8,6 +8,23 @@ remains a live question.
 
 ---
 
+## 2026-10-28 curator scale audit
+
+- **Batch-scoped Curator audit slices (#413).** Keep the full audit manifest
+  for parent coordination, but give each worker only the skill records and
+  related checks for its assigned batch. Lesson-only workers receive a small
+  no-skills marker, and retries verify the same saved slice before use.
+
+
+---
+## Spawned-child durable-memory access (#385)
+
+✅ DONE. Public children default to read-only memory; proposal mode queues
+supported writes for foreground review. Private Curator/Evolve launchers own
+direct-write capabilities. Durable tools and storage enforce task-bound grants,
+child/proposal content remains observed, and SQL candidate selection respects
+the launch namespace. Schema v6 preserves existing memory scopes.
+
 ## 2026-10-30 reviewer audit
 
 - **Keep task-log access inside the task spool.** Agents allowed to inspect
@@ -169,9 +186,12 @@ This pass reconciled current `main`, the complete open/closed issue history,
 the pending legacy Evolve queue, and the 2026-10-20 research digest. Four
 issue-backed items were identified:
 
-- ✅ DONE (#402). **Curator-neutral lesson reads.** Curator and other
-  non-foreground reads leave consultation counters and `last_used_at`
-  unchanged; foreground reads continue to record real use.
+- ✅ DONE (#402). **Curator-neutral lesson reads.** Live evaluator and
+  verifier tasks with a server-issued Curator launch read complete lesson
+  bodies without changing consultation counts or timestamps. Foreground and
+  ordinary task reads still count, even with a maintenance-looking origin
+  label. Repeated passes, multiple batches, and retries preserve the
+  consultation telemetry used for decay and stale-lesson ranking.
 - **Authenticated source-tracked skill updates (#403).** Resolve immutable
   commits, retain whole-directory provenance, verify supported detached
   publisher signatures, and make unsigned-source policy explicit before an
@@ -180,9 +200,11 @@ issue-backed items were identified:
   and `mcp.json` manifests plus a bootstrap skill from the same canonical
   setup metadata as `thread-keeper-setup`, while retaining current installers
   for hosts without plugin support.
-- **Progressive memory evidence links (#405).** Keep the text fallback from
-  `search` and `dialog_search`, but add structured hits and scoped
-  `resource_link` blocks for exact notes, threads, and bounded dialog windows.
+- **Progressive memory evidence links (done, #405).** `search` and
+  `dialog_search` preserve their text fallback and return structured hits plus
+  caller/project-bound `resource_link` blocks for notes, thread excerpts, and
+  fixed dialog windows. Bounded read-only resolution rechecks live authority,
+  erasure, scope, and retention; opaque links expire after five minutes.
 
 The standards leads for durable Tasks, live memory-resource subscriptions,
 and a portable read-only dashboard are already complete in #370, #345, and
@@ -193,22 +215,37 @@ deprecated it in favor of direct provider integration, so ThreadKeeper's
 provider/CLI spawn adapters remain the deliberate execution boundary.
 
 The post-2026-10-14 open backlog is also now represented explicitly: spawned
-child memory authority (#385), validated host trace context (#386), contextual
-index text for short memories (#387), verified skill-mirror convergence (#388),
-persisted task-role status (#389), consent and rollback for learned host-wide
-mutations (#390), semantic export/import (#395), lesson audit integrity (#396),
-installed Agent/Workflow gate tests (#399), and automation-owned Evolve
-autoland (#400). Curator launch-authority isolation is complete in #366.
+child memory authority (#385), contextual index text for short memories (#387),
+verified skill-mirror convergence (#388), persisted task-role status (#389),
+consent and rollback for learned host-wide mutations (#390), semantic
+export/import (#395), lesson audit integrity (#396), installed task-gate
+contract coverage (#399), and automation-owned Evolve autoland (#400).
+Managed-skill mirror convergence (#388) now verifies every consumer before
+success and has an idempotent reconciliation path. Curator launch-authority
+isolation is complete in #366.
+
+## Implemented after the audit
+
+- **Installed task-gate contract coverage (#399).** Tests replay current Claude
+  Code `Agent` and legacy `Task` events through the managed script, pin the
+  generated matcher and mode behavior, and keep unsupported `Workflow` and
+  unrelated tools silent.
+
+- **Versioned semantic memory bundle (#395).** `tk-semantic-bundle` exports
+  deterministic, hash-checked JSONL records for portable semantic memory while
+  excluding raw dialog, task logs, and personal-memory records by default.
+  Import is dry-run first and retains source IDs under a local namespace.
+
+- **Done (#390): consent and rollback for learned host-wide mutations.**
+  Background lesson and skill writes refuse unguarded host changes. Existing
+  advice carries owner-review warnings through Curator and retrieval, protected
+  records stay unchanged, and telemetry retains only categories/fingerprints.
 
 ## 2026-10-14 reviewer audit
 
 This pass reconciled the full issue history, current implementation, legacy
-Evolve suggestions, and the October research digest. Four distinct gaps remain:
+Evolve suggestions, and the October research digest. The remaining work is:
 
-- **Official MCP conformance release gate (#379).** Run pinned official
-  conformance requirement sets for both supported protocol versions through a
-  test-only transport backed by the production handler registry. Retain focused
-  stdio tests for ThreadKeeper-specific discovery, metadata, and replay rules.
 - ✅ DONE (#380). **Privacy-safe action/outcome memory.** The offline-only
   prototype records bounded normalized actions, coarse outcomes, stable error
   fingerprints, sequence/recovery links, pointer provenance, authority, and
@@ -219,9 +256,10 @@ Evolve suggestions, and the October research digest. Four distinct gaps remain:
   fixtures an explicit lifecycle that remains available to validators but is
   excluded from normal discovery, routing, and Curator production-health
   counts.
-- **Skill validator coverage (#382).** Detect missing relative resources named
-  in path-like inline code and repeated normalized paragraphs within one skill,
-  with conservative exclusions for URLs, commands, examples, and boilerplate.
+- ✅ DONE (#382). **Skill validator coverage.** Curator audit and
+  `skill_validate` now detect missing local Markdown-link and path-like
+  inline-code resources, plus substantial repeated normalized paragraphs within
+  one skill, while excluding URLs, commands, examples, and boilerplate.
 
 General validity, supersession, and obsolete-evidence evaluation map to #371
 and #372 on top of
@@ -244,16 +282,35 @@ issue-backed and deliberately narrower:
 - **Protected-lesson freshness flags (#372).** Preserve protected lesson text
   while attaching source-linked verified, contradicted, or unsubstantiated
   states that are visible when the lesson is retrieved for a task.
-- **Source-missing skill reconciliation (#373).** Mark registry records without
-  a readable primary source unavailable, expose one recovery action, and allow
-  Curator to archive or remove a confirmed registry-only orphan after a
-  recoverable snapshot.
 
 The legacy task-gate suggestion was not re-filed because the setup matcher
 already recognizes `Task`, `Agent`, and `Workflow`. The two source-missing
 registry suggestions share one repair lifecycle and are consolidated in #373.
 
 ## Closed
+
+- **Protected lesson freshness flags (#372).** Curator records verified,
+  contradicted, or unsubstantiated claim checks without editing protected text.
+  Reads and task-time lesson lists warn with the official source and check
+  time. Reaudits update one claim record; changed lesson revisions or observed
+  source revisions require a recheck. Content protection and approval rules
+  remain in force.
+
+- Validated host trace context (#386): modern MCP requests can continue a
+  valid W3C host trace through the MCP operation, spawned work, retries, and
+  child operations. Strict bounds keep optional trace state private, and older
+  MCP clients continue to start local traces.
+
+- **Official MCP conformance release gate (#379).** CI runs the pinned official
+  requirement sets for `2025-11-25` and `2026-07-28` over a loopback-only
+  Streamable HTTP view of the production stdio registry. Version-specific,
+  justified expected-failure baselines are stale-checked; focused real-stdio
+  coverage retains legacy initialization, `server/discover`, per-request
+  `_meta`, and replay behavior.
+- Source-missing skill reconciliation (#373): validation marks registry
+  records without a readable source unavailable and non-compatible, preserves
+  the prior lifecycle for restoration, and gives the Curator verifier a
+  snapshotted registry-only cleanup path after an all-root/cache absence check.
 
 - Curator child-authority isolation (#366): Curator pass/snapshot values are
   private per-child launch data instead of temporary server-process environment.
@@ -1114,6 +1171,10 @@ Follow-up gaps from the 2026-06-17 audit:
   while preserving live rows, removes orphan `.log`/`.stdin.txt`/`.command`
   spools, and creates captured headless `.log` files with owner-only
   permissions.
+- DONE (#431). Finished task checkouts and owned temporary branches now
+  share task retention. Cleanup previews count and size, preserves active or
+  recoverable work and unknown owners, and keeps ownership evidence across
+  history pruning and partial Git failures so removal can be retried safely.
 - ✅ DONE (#44). Auto-update payload integrity/provenance: packaged PyPI
   self-updates now verify PyPI Integrity API provenance before invoking `pip`,
   require the expected GitHub Trusted Publisher identity, check the attested

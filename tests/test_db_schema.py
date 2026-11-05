@@ -21,6 +21,14 @@ def test_get_db_sets_user_version_and_skips_legacy_alters(
     assert conn.execute("PRAGMA user_version").fetchone()[0] == (
         db.CURRENT_SCHEMA_VERSION
     )
+    skill_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(skill_usage)")
+    }
+    assert {
+        "availability",
+        "unavailable_since",
+        "unavailable_prior_state",
+    } <= skill_columns
     conn.close()
 
     def fail_if_called(*_args, **_kwargs):

@@ -47,7 +47,9 @@ from ..identity import (
     _ensure_session, _detect_self_cid, _emit, ensure_session_started,
 )
 from ..ingest import _parse_ts
-from ..tracing import TRACEPARENT_ENV, new_child_trace
+from ..tracing import (
+    BAGGAGE_ENV, TRACEPARENT_ENV, TRACESTATE_ENV, new_child_trace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -641,15 +643,33 @@ def _spawn_worktree_plan(
 
 def _remove_spawn_worktree(worktree: _SpawnWorktree) -> None:
     """Best-effort cleanup for a worktree whose child never launched."""
-    _git_result(
-        ["worktree", "remove", "--force", str(worktree.path)],
-        worktree.repo_root,
-    )
-    _git_result(["branch", "-D", worktree.branch], worktree.repo_root)
+    from ..db import run_write
+    from ..task_worktrees import remove_worktree
+
+    def cleanup(conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE task_worktrees SET eligible=1 WHERE task_id=?",
+                     (worktree.path.name,))
+        # The reservation still looks live until _release deletes it. Leave
+        # the durable claim for consolidate if immediate removal is blocked.
+        remove_worktree(conn, TASK_LOG_DIR, worktree.path.name)
+
+    try:
+        run_write("spawn_worktree_cleanup", cleanup)
+    except (sqlite3.Error, OSError):
+        pass
 
 
 def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
     """Create the task's branch/worktree after the spawn budget is reserved."""
+    from ..db import run_write
+    from ..task_worktrees import register_worktree, confirm_worktree
+
+    try:
+        run_write("spawn_worktree_claim", lambda conn: register_worktree(
+            conn, worktree.path.name, worktree.repo_root, worktree.path, worktree.branch,
+        ))
+    except (sqlite3.Error, OSError) as error:
+        return f"ERR spawn_worktree_claim_failed={error}"
     _, err = _git_result(
         [
             "worktree", "add", "--quiet", "-b", worktree.branch,
@@ -660,6 +680,13 @@ def _create_spawn_worktree(worktree: _SpawnWorktree) -> str:
     if err:
         _remove_spawn_worktree(worktree)
         return f"ERR spawn_worktree_create_failed={err}"
+    try:
+        run_write("spawn_worktree_confirm", lambda conn: confirm_worktree(
+            conn, worktree.path.name, worktree.path,
+        ))
+    except (sqlite3.Error, OSError) as error:
+        _remove_spawn_worktree(worktree)
+        return f"ERR spawn_worktree_confirm_failed={error}"
     if not worktree.child_cwd.is_dir():
         _remove_spawn_worktree(worktree)
         return "ERR spawn_worktree_create_failed=cwd_not_in_clean_checkout"
@@ -682,12 +709,16 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 parent_cid_override: str = "",
                 cli: str = "",
                 traceparent_override: str = "",
+                tracestate_override: str = "",
+                baggage_override: str = "",
                 task_id_override: str = "",
                 child_cid_override: str = "",
                 allowed_tools_override: Optional[tuple[str, ...]] = None,
                 native_tools_override: Optional[tuple[str, ...]] = None,
                 _bypass_capability: object | None = None,
-                _curator_launch: object | None = None) -> str:
+                _curator_launch: object | None = None,
+                memory_access: str = "read_only",
+                _memory_capability: object | None = None) -> str:
     """Launch a NEW claude session in parallel — your primary parallelism primitive.
 
     REACH FOR THIS WHEN:
@@ -742,6 +773,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     # the child would run (workspace-write, with that project's agent
     # instructions) inside an unrelated user project, and a dirty git checkout
     # there would refuse every loop spawn.
+    launch_namespace = resolve_project_namespace(cwd.strip() or os.getcwd()).project_id
     cwd = cwd.strip() or (
         str(_background_workspace())
         if _is_background_spawn(write_origin)
@@ -858,16 +890,48 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             )
     if append_system:
         sys_extra += "\n\n" + append_system
+    from ..memory_access import (
+        MEMORY_ENV, TRUSTED_LAUNCH, current_access, token_digest, issuing_grant,
+    )
+    parent_memory = current_access()
+    if memory_access not in {"read_only", "propose", "write"}:
+        return "ERR invalid_memory_access"
+    trusted_memory = _memory_capability is TRUSTED_LAUNCH or (
+        curator_launch is not None and curator_launch.role == "curator"
+    )
+    if memory_access == "write" and (not trusted_memory or parent_memory.child):
+        return "ERR memory_write_requires_trusted_launcher"
+    if parent_memory.child and parent_memory.access == "read_only" and memory_access == "propose":
+        return "ERR memory_access_escalation"
+    sys_extra += f"\n\nDurable-memory access: {memory_access}. "
+    if memory_access == "propose":
+        sys_extra += "Memory-writing calls create pending proposals for foreground review."
+    elif memory_access == "read_only":
+        sys_extra += "Report findings through the coordination channels."
+    memory_token = secrets.token_urlsafe(32)
+    memory_namespace = (
+        parent_memory.namespace if parent_memory.child
+        else ("*" if memory_access == "write" else launch_namespace or "")
+    )
+    # Foreground/user are never child provenance, even for trusted launchers.
+    write_origin = (
+        write_origin if write_origin not in {"foreground", "user", ""}
+        else "spawned"
+    )
     child_env = {
         **{
             k: v for k, v in os.environ.items()
             if k != "THREADKEEPER_ROLE" and k not in _CURATOR_CAPABILITY_ENV
+            and k not in MEMORY_ENV
         },
         "THREADKEEPER_DB": str(DB_PATH),
         "THREADKEEPER_TASK_LOG_DIR": str(TASK_LOG_DIR),
         "CLAUDE_PROJECTS_DIR": str(CLAUDE_PROJECTS_DIR),
         "THREADKEEPER_FORCE_CID": child_cid,
         "THREADKEEPER_SPAWNED_CHILD": "1",
+        "THREADKEEPER_MEMORY_ACCESS": memory_access,
+        "THREADKEEPER_MEMORY_TOKEN": memory_token,
+        "THREADKEEPER_MEMORY_NAMESPACE": memory_namespace,
         "THREADKEEPER_TZ": os.environ.get("THREADKEEPER_TZ", "UTC"),
     }
     from .._mcp import active_tool_names
@@ -889,11 +953,19 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     child_env.update(
         child_profile_environment(active_tool_names(), role, configured_child_profile)
     )
-    child_trace = new_child_trace(traceparent_override)
+    for trace_env in (TRACEPARENT_ENV, TRACESTATE_ENV, BAGGAGE_ENV):
+        child_env.pop(trace_env, None)
+    child_trace = new_child_trace(
+        traceparent_override, tracestate_override, baggage_override,
+    )
     if child_trace is not None:
         # Trace context travels only in the private child environment and task
         # row; it is never copied into a user prompt or command-line argument.
         child_env[TRACEPARENT_ENV] = child_trace.traceparent
+        if child_trace.tracestate:
+            child_env[TRACESTATE_ENV] = child_trace.tracestate
+        if child_trace.baggage:
+            child_env[BAGGAGE_ENV] = child_trace.baggage
     if "THREADKEEPER_ENV_FILE" in os.environ:
         child_env["THREADKEEPER_ENV_FILE"] = os.environ["THREADKEEPER_ENV_FILE"]
     if write_origin:
@@ -1090,9 +1162,10 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             "started_at, rss_kb, rss_updated_at, role, write_origin, "
             "permission_mode, extra_allowed_tools, capture_output, visible, slim, "
             "model, effort, append_system, chosen_cli, retry_of, retry_root, "
-            "retry_attempt, project_id, memory_scope, traceparent, trace_workflow_span_id, "
-            "trace_parent_span_id, trace_started_ns, trace_queue_wait_ms) "
-            "VALUES (" + ",".join("?" for _ in range(30)) + ")",
+            "retry_attempt, project_id, memory_scope, traceparent, trace_tracestate, "
+            "trace_baggage, trace_workflow_span_id, trace_parent_span_id, "
+            "trace_started_ns, trace_queue_wait_ms) "
+            "VALUES (" + ",".join("?" for _ in range(32)) + ")",
             (
                 task_id, 0, parent_cid, child_cid, cwd, prompt, now_t,
                 _new_kb, now_t, role_clean, write_origin, permission_mode,
@@ -1102,11 +1175,20 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
                 retry_root or None, int(retry_attempt or 0),
                 namespace.project_id, task_scope,
                 child_trace.traceparent if child_trace else None,
+                child_trace.tracestate if child_trace else None,
+                child_trace.baggage if child_trace else None,
                 child_trace.workflow_span_id if child_trace else None,
                 child_trace.parent_span_id if child_trace else None,
                 child_trace.started_ns if child_trace else None,
                 trace_queue_wait_ms,
             ),
+        )
+        conn.execute(
+            "INSERT INTO child_memory_grants "
+            "(child_cid,task_id,token_hash,access,namespace,origin,created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (child_cid, task_id, token_digest(memory_token), memory_access,
+             memory_namespace, write_origin if trusted_memory else "spawned", now_t),
         )
         if curator_launch is not None:
             from ..curator import _record_curator_child_launch
@@ -1128,7 +1210,8 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
         return reason
 
     try:
-        refusal = run_write("spawn_reserve", _reserve)
+        with issuing_grant():
+            refusal = run_write("spawn_reserve", _reserve)
     except sqlite3.Error as e:
         return f"ERR spawn_reservation_failed={e}"
     if refusal:
@@ -1161,11 +1244,18 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
             env_pairs = [
                 ("THREADKEEPER_FORCE_CID", child_cid),
                 ("THREADKEEPER_SPAWNED_CHILD", "1"),
+                ("THREADKEEPER_MEMORY_ACCESS", memory_access),
+                ("THREADKEEPER_MEMORY_TOKEN", memory_token),
+                ("THREADKEEPER_MEMORY_NAMESPACE", memory_namespace),
                 ("THREADKEEPER_TZ",
                  os.environ.get("THREADKEEPER_TZ", "UTC")),
             ]
             if child_trace is not None:
                 env_pairs.append((TRACEPARENT_ENV, child_trace.traceparent))
+                if child_trace.tracestate:
+                    env_pairs.append((TRACESTATE_ENV, child_trace.tracestate))
+                if child_trace.baggage:
+                    env_pairs.append((BAGGAGE_ENV, child_trace.baggage))
             if write_origin:
                 env_pairs.append(
                     ("THREADKEEPER_WRITE_ORIGIN", write_origin)
@@ -1355,6 +1445,7 @@ def _spawn_evolve_reviewer(prompt: str, cwd: str = "", append_system: str = "",
                            visible: bool = True,
                            slim: bool = True) -> str:
     """Launch the privileged reviewer through a server-owned capability."""
+    from ..memory_access import TRUSTED_LAUNCH
     return _spawn_impl(
         prompt=prompt,
         cwd=cwd,
@@ -1368,6 +1459,8 @@ def _spawn_evolve_reviewer(prompt: str, cwd: str = "", append_system: str = "",
         role="evolve_reviewer",
         write_origin="evolve",
         slim=slim,
+        memory_access="write",
+        _memory_capability=TRUSTED_LAUNCH,
         _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
     )
 
@@ -1379,6 +1472,7 @@ def _spawn_evolve_applier(prompt: str, cwd: str = "", append_system: str = "",
                           visible: bool = True,
                           slim: bool = True) -> str:
     """Launch the privileged applier through a server-owned capability."""
+    from ..memory_access import TRUSTED_LAUNCH
     return _spawn_impl(
         prompt=prompt,
         cwd=cwd,
@@ -1392,6 +1486,8 @@ def _spawn_evolve_applier(prompt: str, cwd: str = "", append_system: str = "",
         role="evolve_applier",
         write_origin="evolve_apply",
         slim=slim,
+        memory_access="write",
+        _memory_capability=TRUSTED_LAUNCH,
         _bypass_capability=_EVOLVE_BYPASS_CAPABILITY,
     )
 
@@ -1402,6 +1498,7 @@ def _spawn_evolve_applier_maintenance(
     capture_output: bool = True, visible: bool = True, slim: bool = True,
 ) -> str:
     """Launch an applier maintenance child with fixed provenance, no bypass."""
+    from ..memory_access import TRUSTED_LAUNCH
     return _spawn_impl(
         prompt=prompt,
         cwd=cwd,
@@ -1415,6 +1512,8 @@ def _spawn_evolve_applier_maintenance(
         role="evolve_applier",
         write_origin="evolve_apply",
         slim=slim,
+        memory_access="write",
+        _memory_capability=TRUSTED_LAUNCH,
     )
 
 
@@ -1428,12 +1527,14 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
           visible: bool = True,
           role: str = "",
           write_origin: str = "",
-          slim: bool = True) -> str:
+          slim: bool = True, memory_access: str = "read_only") -> str:
     """Launch a new child session in parallel.
 
     This is the public MCP surface. `role` selects a cognitive stance and
     `write_origin` labels ordinary child provenance; neither grants elevated
     permissions. Privileged Evolve children use private server-owned launchers.
+    Children default to `memory_access="read_only"`; `propose` queues memory
+    writes for foreground review. Public callers cannot select `write`.
     Watchdog continuation retries use `_spawn_impl` so retry lineage/config
     fields do not leak into the normal tool contract.
     """
@@ -1451,6 +1552,7 @@ def spawn(prompt: str, cwd: str = "", append_system: str = "",
         role=role,
         write_origin=write_origin,
         slim=slim,
+        memory_access=memory_access,
     )
 
 
@@ -1513,6 +1615,7 @@ def tournament(prompt: str,
             effort=effort,
             permission_mode="auto",
             role=role,
+            memory_access="read_only",
         )
         spawn_result = parse_spawn_result(result)
         if spawn_result.ok:

@@ -63,6 +63,8 @@ COORDINATION_TOOLS = CORE_TOOLS | {
 
 MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "compost",
+    "memory_proposals",
+    "memory_proposal_decide",
     "concept_manage",
     "core_get",
     "core_list",
@@ -77,6 +79,7 @@ MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "lesson_patch",
     "lesson_remove",
     "lesson_restore",
+    "lesson_verifications",
     "link",
     "list_concepts",
     "neighbors",
@@ -97,6 +100,8 @@ LEARNING_LOOP_TOOLS = CORE_TOOLS | {
     "curator_review",
     "curator_review_status",
     "curator_run",
+    "curator_verify_lesson",
+    "lesson_verifications",
     "dialectic_claim",
     "dialectic_evidence",
     "dialectic_mine_run",

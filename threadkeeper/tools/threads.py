@@ -10,8 +10,11 @@ import sqlite3
 import time
 from typing import Optional
 
+from mcp.server.mcpserver import Context
+
 from .._mcp import read_tool, write_tool, structured_result
-from ..tool_schemas import ContextStatus
+from ..tool_schemas import ContextStatus, SearchResults
+from ..evidence import search_result
 from ..db import get_db, read_db, run_write
 from ..helpers import gen_thread_id, fmt_age, q
 from .. import identity
@@ -294,27 +297,30 @@ def idle_thread(thread_id: str) -> str:
 
 
 @read_tool()
-def search(query: str, k: int = 5, cross_project: bool = False) -> str:
+def search(query: str, k: int = 5, cross_project: bool = False,
+           ctx: Context = None) -> SearchResults:
     """Search current-project notes plus global/shared memory.
 
     Set ``cross_project=True`` only for an intentional cross-project recall;
     output marks every result's scope and an audit event is recorded.
+    Returns unchanged text plus structured hits and short-lived evidence links.
     """
     identity.ensure_session_started()
     with read_db() as conn:
-        result = _search_conn(conn, query=query, k=k, cross_project=cross_project)
+        result = _search_conn(conn, query=query, k=k, cross_project=cross_project,
+                              context=ctx)
     if cross_project:
         _audit_cross_project_recall("search", query)
     return result
 
 
 def _search_conn(conn: sqlite3.Connection, *, query: str, k: int,
-                 cross_project: bool = False) -> str:
+                 cross_project: bool = False, context=None):
     """Connection-scoped implementation used by the read-only MCP wrapper."""
     hits = retrieve_notes(conn, query, k=k, mode="hybrid",
                           cross_project=cross_project)
     if not hits:
-        return "no_matches"
+        return search_result(conn, "no_matches")
     lines = []
     for hit in hits:
         score = hit.display_score
@@ -324,7 +330,8 @@ def _search_conn(conn: sqlite3.Connection, *, query: str, k: int,
             f"{format_provenance(hit.memory_scope, hit.project_id)} "
             f"{q(hit.content[:200].replace(chr(10), ' '))}"
         )
-    return "\n".join(lines)
+    return search_result(conn, "\n".join(lines), hits, context=context,
+                         cross_project=cross_project)
 
 
 def _audit_cross_project_recall(tool: str, query: str) -> None:

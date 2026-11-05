@@ -94,6 +94,8 @@ thread-keeper-setup = "threadkeeper._setup:main"
 tk-migrate-embeddings = "threadkeeper.migrate_embeddings:main"
 # Create/restore consistent single-file snapshots of the live WAL SQLite store.
 tk-backup = "threadkeeper.backup:main"
+# Export/import a privacy-preserving, inspectable semantic-memory bundle.
+tk-semantic-bundle = "threadkeeper.semantic_bundle:main"
 # Initialize, validate, rekey, and migrate the opt-in SQLCipher profile.
 tk-storage = "threadkeeper.storage:main"
 # Dry-run/apply targeted erasure for one session/cid/thread/dialog UUID.

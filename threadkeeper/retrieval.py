@@ -50,6 +50,8 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
     fq = _fts_query(query)
     if not fq:
         return []
+    from .memory_access import candidate_scope
+    where, params = candidate_scope(conn, "n")
     def _run(match_query: str):
         return conn.execute(
             "SELECT n.id, n.thread_id, n.kind, n.content, n.created_at, "
@@ -59,9 +61,9 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
             # join on rowid, NOT n.id — post-migration n.id is a TEXT ULID while
             # the FTS rowid stays the integer notes.rowid.
             "FROM notes_fts f JOIN notes n ON n.rowid=f.rowid "
-            "WHERE notes_fts MATCH ? "
+            f"WHERE notes_fts MATCH ? AND ({where}) "
             "ORDER BY lexical_score, n.id DESC LIMIT ?",
-            (match_query, max(1, int(k))),
+            (match_query, *params, max(1, int(k))),
         ).fetchall()
 
     try:

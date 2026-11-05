@@ -64,6 +64,7 @@ from .tools import config_watch  # noqa: F401
 from .tools import db_maintenance  # noqa: F401
 from .tools import forget  # noqa: F401
 from .tools import authority  # noqa: F401
+from .tools import memory_proposals  # noqa: F401
 from .tools import capabilities  # noqa: F401
 
 # MCP Resources & Prompts (roadmap #78) — the other two MCP server primitives.

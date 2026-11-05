@@ -35,7 +35,7 @@ from .mcp_skills import (
     resource_catalog,
 )
 from .mcp_tasks import MCPTasksExtension
-from .protocol import ReplaySafeWrites, caller_principal
+from .protocol import HostTraceContext, ReplaySafeWrites, caller_principal
 from .read_context import read_only_call
 from .tool_profiles import environment_selection
 from .instructions import SERVER_INSTRUCTIONS
@@ -55,6 +55,15 @@ class ThreadKeeperMCPServer(MCPServer):
 
     async def read_resource(self, uri: AnyUrl | str, context=None):
         value = str(uri)
+        if value.startswith("memory://evidence/"):
+            from .evidence import read_evidence
+
+            with read_only_call():
+                text = read_evidence(value, context)
+            return [ReadResourceContents(
+                content=text, mime_type="application/json",
+                meta={"cacheScope": "private", "ttl": 0},
+            )]
         if value.startswith(f"skill://{SKILL_URI_ORIGIN}/"):
             item = read_skill_resource(value)
             try:
@@ -96,7 +105,7 @@ mcp = ThreadKeeperMCPServer(
         ttl=300,
         bind_principal=caller_principal,
     ),
-    middleware=[ReplaySafeWrites(WRITE_TOOL_NAMES)],
+    middleware=[HostTraceContext(), ReplaySafeWrites(WRITE_TOOL_NAMES)],
 )
 
 _active_tool_names: frozenset[str] = frozenset()
@@ -196,7 +205,8 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
 
     def decorate(fn):
         WRITE_TOOL_NAMES.add(kwargs.get("name") or fn.__name__)
-        return register(_traced_tool(fn))
+        from .memory_access import guard_tool
+        return register(_traced_tool(guard_tool(fn)))
 
     return decorate
 

@@ -33,15 +33,16 @@ READ_TOOLS = {
     "model_router_status",
     "evolve_apply_status", "evolve_review", "expand_concept", "find_invariants",
     "find_missed_spawns", "list_concepts",
-    "memory_authorize_action", "memory_guard_status", "memory_scope_status",
+    "memory_authorize_action", "memory_guard_status", "memory_scope_status", "memory_proposals",
     "mp_dashboard", "mp_health", "neighbors", "open_dashboard", "peers",
     "pending_distillates", "pickup_candidates", "reliability_for",
     "review_candidates", "run_probe", "search", "shadow_review_status",
-    "skill_validate", "spawn_budget_status", "spawn_status",
+    "spawn_budget_status", "spawn_status",
     "sync_peers", "sync_status", "task_logs",
     "task_thread", "tasks", "weak_spots", "whoami", "wikilink_health",
     "workflow_retention_preview",
     "lesson_neighbors",
+    "lesson_verifications",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------
@@ -49,7 +50,7 @@ DELETE_CLASS_TOOLS = {
     "agent_memory_cleanup", "concept_manage", "consolidate", "core_remove",
     "curator_restore", "curator_run", "forget", "lesson_patch", "lesson_remove",
     "evolve_prune_managed_venv", "memory_guard_check", "mp_cleanup",
-    "skill_manage", "unlink",
+    "skill_manage", "unlink", "memory_proposal_decide",
 }
 
 # --- non-destructive mutating tools ------------------------------------------
@@ -57,6 +58,7 @@ WRITE_TOOLS = {
     "accept_candidate", "ask", "auto_review_trigger", "broadcast",
     "candidate_review_run", "claim_pickup", "close_thread", "config_reload",
     "convene_panel", "core_set", "curator_merge_verdict",
+    "curator_verify_lesson",
     "curator_report_write", "curator_research_write", "curator_review",
     "db_compact", "db_deduplicate_embeddings", "dialectic_claim",
     "dialectic_evidence", "dialectic_mine_run", "dialectic_observation_resolve",
@@ -73,7 +75,7 @@ WRITE_TOOLS = {
     "open_dialog_window", "open_thread", "presence", "record_attempt",
     "register_concept", "register_probe", "reject_candidate", "release_pickup",
     "respond", "review_thread", "search_via_parent", "session_end",
-    "shadow_review_run", "skill_list", "skill_record", "spawn", "spawn_budget_set",
+    "shadow_review_run", "skill_list", "skill_record", "skill_validate", "spawn", "spawn_budget_set",
     "style_set", "sync_now", "tag_signal", "tournament", "validate_threads",
     "verbatim_user", "vote_distill", "wait", "whisper",
     "agent_status_refresh", "shadow_review_snapshot", "tasks_refresh",

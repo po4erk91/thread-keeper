@@ -12,6 +12,21 @@ from pathlib import Path
 import pytest
 
 
+def pytest_sessionstart(session):
+    """Isolate imports during collection before per-test fixtures can run."""
+    sandbox = tempfile.TemporaryDirectory(prefix="threadkeeper-pytest-")
+    session.config._threadkeeper_collection_sandbox = sandbox
+    os.environ.update(_force_clean_env(Path(sandbox.name)))
+    for key in ("THREADKEEPER_TOOL_PARENT_ALLOWLIST", "THREADKEEPER_FORCE_CID"):
+        os.environ.pop(key, None)
+
+
+def pytest_unconfigure(config):
+    sandbox = getattr(config, "_threadkeeper_collection_sandbox", None)
+    if sandbox is not None:
+        sandbox.cleanup()
+
+
 def shard_of(nodeid: str, total: int) -> int:
     """1-based shard for a test id; stable across runs, machines, and Pythons."""
     return zlib.crc32(nodeid.encode("utf-8")) % total + 1
@@ -54,6 +69,13 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     """
     home = tmp_path / ".threadkeeper-test-home"
     home.mkdir(parents=True, exist_ok=True)
+    for key in ("THREADKEEPER_MEMORY_TOKEN", "THREADKEEPER_MEMORY_ACCESS",
+                "THREADKEEPER_MEMORY_NAMESPACE", "THREADKEEPER_TOOL_PARENT_ALLOWLIST",
+                "THREADKEEPER_TOOL_INCLUDE", "THREADKEEPER_TOOL_EXCLUDE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("THREADKEEPER_SPAWNED_CHILD", "0")
+    monkeypatch.setenv("THREADKEEPER_WRITE_ORIGIN", "foreground")
+    monkeypatch.setenv("THREADKEEPER_TOOL_PROFILE", "full")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
     # Model snapshots are large and immutable. Reuse one cache across the
@@ -68,6 +90,16 @@ def isolated_cli_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("THREADKEEPER_AUTO_UPDATE_INTERVAL_S", "0")
     monkeypatch.setenv("THREADKEEPER_SKILL_UPDATE_INTERVAL_S", "0")
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
+    # Test fixtures need the foreground server defaults. A host process may
+    # pass child-only tool and writer settings that change the behavior under
+    # test or remove tools the fixture exercises.
+    monkeypatch.delenv("THREADKEEPER_TOOL_PROFILE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_INCLUDE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_EXCLUDE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_TOOL_PARENT_ALLOWLIST", raising=False)
+    monkeypatch.delenv("THREADKEEPER_CHILD_TOOL_PROFILE", raising=False)
+    monkeypatch.delenv("THREADKEEPER_SPAWNED_CHILD", raising=False)
+    monkeypatch.delenv("THREADKEEPER_WRITE_ORIGIN", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -109,6 +141,14 @@ def _force_clean_env(tmp_root: Path) -> dict[str, str]:
         # A suite run from a host-spawned child inherits THREADKEEPER_ROLE=host;
         # tests must start as an ordinary server unless they opt in.
         "THREADKEEPER_ROLE": "server",
+        "THREADKEEPER_SPAWNED_CHILD": "0",
+        "THREADKEEPER_WRITE_ORIGIN": "foreground",
+        "THREADKEEPER_MEMORY_TOKEN": "",
+        "THREADKEEPER_MEMORY_ACCESS": "",
+        "THREADKEEPER_MEMORY_NAMESPACE": "",
+        "THREADKEEPER_TOOL_PROFILE": "full",
+        "THREADKEEPER_TOOL_INCLUDE": "",
+        "THREADKEEPER_TOOL_EXCLUDE": "",
         # Hard kill-switch (BACKGROUND_DAEMONS_ALLOWED=False) so a tool call's
         # _ensure_session never starts a real daemon thread — not even when a
         # test monkeypatches a single daemon's POLL_S back to >0 (e.g. the

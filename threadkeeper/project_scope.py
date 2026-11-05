@@ -161,6 +161,13 @@ def recall_allowed(memory_scope: str | None, project_id: str | None,
                    *, current: str | None = None,
                    cross_project: bool = False) -> bool:
     """Return whether a scoped row is visible to the current recall request."""
+    from .memory_access import current_access
+    policy = current_access()
+    if policy.child and policy.namespace != "*":
+        if not policy.namespace and memory_scope not in PORTABLE_SCOPES:
+            return False
+        if memory_scope == "project" and project_id != policy.namespace:
+            return False
     if memory_scope in PORTABLE_SCOPES:
         return True
     if memory_scope != "project":
@@ -176,7 +183,7 @@ def recall_allowed(memory_scope: str | None, project_id: str | None,
     return project_id == (current if current is not None else current_project_id())
 
 
-def recall_where(alias: str, *, current: str | None = None,
+def _recall_where(alias: str, *, current: str | None = None,
                  cross_project: bool = False) -> tuple[str, tuple[str, ...]]:
     """SQL predicate for schema-v5 scoped tables.
 
@@ -195,6 +202,17 @@ def recall_where(alias: str, *, current: str | None = None,
             (project_id,),
         )
     return f"{alias}.memory_scope IN ('global','shared')", ()
+
+
+def recall_where(alias: str, *, current: str | None = None,
+                 cross_project: bool = False) -> tuple[str, tuple[str, ...]]:
+    from .memory_access import current_access, scope_predicate
+    normal, params = _recall_where(alias, current=current, cross_project=cross_project)
+    policy = current_access()
+    if not policy.child:
+        return normal, params
+    cap, cap_params = scope_predicate(alias, policy)
+    return f"({normal}) AND ({cap})", (*params, *cap_params)
 
 
 def format_provenance(memory_scope: str | None, project_id: str | None) -> str:

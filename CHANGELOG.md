@@ -15,6 +15,117 @@ version bumps follow semver per the policy in
   taking roadmap issues in parallel with the real host and spending model
   budget on reviews.
 
+## v0.22.0 — 2026-10-29
+
+- **Added: safe cleanup for finished task checkouts (#431).** Task retention
+  can reclaim clean, expired checkouts and their owned temporary branches once
+  their commits are saved elsewhere. Preview reports size and reasons for
+  keeping work. Active tasks, changed files, unpublished commits, and uncertain
+  ownership stay protected. Cleanup can resume after history pruning or a
+  partial failure, with separate results for checkouts and branches.
+## v0.22.0 — 2026-10-28
+
+- **Added: factual freshness checks for protected lessons (#372).** Curator can
+  record whether an exact claim is verified, contradicted, or unsubstantiated
+  against an official source without editing the lesson. Lesson reads and
+  task-time lists warn when a claim needs attention. Repeated audits update one
+  record, and changed lesson or observed source revisions require a recheck.
+  Existing content protection and approval rules still apply.
+
+- **Added: Curator workers receive small, verified audit slices (#413).** The
+  parent keeps the full pass audit for coordination and provenance, while each
+  worker receives only its assigned skills and the related checks. Lesson-only
+  batches receive an explicit no-skills document. Retries reuse the saved
+  slice and stop when its contents or binding no longer match.
+- **Inspect exact memory evidence from search results (#405).** Search tools
+  keep their current text and also return structured hits with private,
+  short-lived links to notes, thread excerpts, and bounded dialog windows.
+  Linked reads recheck access, invalidation, erasure, and retention without
+  changing stored memory. Hosts that ignore links keep the existing text.
+
+## v0.22.0 — 2026-10-27
+
+- **Added: connected trace views for supported MCP hosts (#386).** A valid
+  host trace now remains connected to the MCP request, spawned work, retries,
+  and child operations. Invalid or unsupported trace parents start a local trace
+  without interrupting the user's request. Optional trace state is tightly
+  checked, carries only a small safe baggage set, and stays out of user content.
+
+- **Fixed: Curator audits cannot make lessons look recently consulted (#402).**
+  Only live evaluator and verifier tasks with a server-issued Curator launch
+  record read lessons without changing usage counts or access timestamps.
+  Ordinary task reads still count, even with a maintenance origin label.
+  Repeated audits, multiple batches, and retries preserve the consultation
+  history used to rank stale lessons.
+
+- **Added: learned changes to host settings need consent and rollback (#390).**
+  Background writers cannot save unconditional host proxy resets or similar
+  changes to credentials, global settings, startup services, permissions, or
+  packages. Existing unsafe advice shows an owner-review warning; protected
+  records stay unchanged until the owner repairs them. Lesson and skill writes,
+  Curator review, retrieval, and external skill-edit monitoring use the same
+  check. Review telemetry stores only categories and content fingerprints.
+- **Added: explicit spawned-child memory capabilities (#385).** Public children
+  default to read-only access. Proposal mode queues supported memory changes for
+  foreground review; only private Curator/Evolve launchers grant direct writes.
+  Tool and storage checks reject spoofed origins and missing grants. Generated
+  memory keeps observed authority, and SQL/FTS/vector candidate selection is
+  capped to the launch namespace. Existing memory scopes are preserved.
+
+- **Fixed: Evolve autoland changes only automation-owned pull requests (#400).**
+  The sweep now requires a same-repository generated branch or an explicit
+  ownership marker before it can repair, update, ready, or merge a pull
+  request. Manual and fork pull requests remain read-only.
+
+## v0.22.0 — 2026-10-27
+
+- **Added: official MCP conformance release gates (#379).** CI now runs pinned
+  `2025-11-25` and `2026-07-28` requirement sets through a loopback-only
+  Streamable HTTP view of the production MCP registry. Version-specific,
+  justified expected-failure baselines fail on both regressions and stale
+  entries; focused real-stdio compatibility tests remain in place.
+- **Tested: the installed Claude Code task gate (#399).** Contract tests pin
+  the generated matcher and managed script, replay current `Agent` and legacy
+  `Task` payloads, and cover blocking, advisory, disabled, exempt, and unrelated
+  tool behavior. Removed the `Workflow` branch and matcher entry because its
+  script/name input does not match the prompt-based guard; architecture docs
+  name the tested payload fields and unsupported hosts.
+
+## v0.22.0 — 2026-10-26
+
+- **Added: versioned semantic memory bundles (#395).** `tk-semantic-bundle`
+  exports inspectable, deterministic JSONL records with hashes, source
+  namespaces, provenance, authority, temporal, and deletion metadata. Its
+  default export excludes raw dialog, task logs, and personal memory; import
+  validates before a dry-run conflict report or explicit apply.
+- **Fixed: managed skill writes now verify every mirror before success (#388).**
+  Each mirror uses a staged tree replacement followed by a complete relative
+  file-set and SHA-256 check. Failures retry three times and return redacted,
+  per-consumer diagnostics instead of a false success; canonical copies and
+  trash artifacts remain recoverable through `skill_manage(action='reconcile')`.
+
+- **Added: source-missing skill reconciliation (#373).** Validation now marks
+  registry records without a readable source unavailable and non-compatible,
+  preserves their lifecycle for a later source restore, and gives Curator a
+  snapshotted, verifier-only cleanup path for confirmed registry-only orphans.
+
+- **Added: Curator skill audits detect missing inline resources and repeated
+  prose (#382).** Markdown links and conservative path-like inline-code spans
+  now report missing local resources without treating URLs, absolute paths,
+  shell fragments, headings, frontmatter, or fenced examples as files. The
+  audit also reports normalized paragraphs of at least 160 characters that
+  occur three or more times within one skill.
+
+- **Fixed: the Evolve applier finishes one pull request before it starts the
+  next task.** While any applier PR is open, no new roadmap issue, Curator
+  report, or evolve suggestion starts. The applier works on the oldest open PR
+  until it lands: a red PR is first updated onto the newest base, and if it
+  stays red a fix child reads the failing logs and pushes a fix to the same
+  branch; a green draft is marked ready. After three repair or fix children a
+  PR waits for a human, and a full stall is reported as a failure. Before
+  this, PRs with a red check waited forever while new tasks kept opening more
+  of them.
+
 - **Fixed: notification causes remain available when macOS hides previews.**
   The menu-bar app keeps a bounded local history with selectable details and
   imports its own retained delivered notifications. `--notification-history`

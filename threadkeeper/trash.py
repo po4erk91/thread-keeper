@@ -156,6 +156,36 @@ def capture_removed_skill(
     return artifact
 
 
+def capture_registry_only_skill(
+    *,
+    name: str,
+    usage_row: Optional[dict[str, Any]],
+    audit_record: dict[str, Any],
+    now: Optional[int] = None,
+) -> Path:
+    """Snapshot an orphaned registry row before Curator removes or archives it.
+
+    There is deliberately no filesystem tree to copy. Keeping both the exact
+    usage row and the confirming audit record makes this cleanup recoverable
+    without pretending that an absent skill source was deleted.
+    """
+    now_t = int(now or time.time())
+    sweep_expired_trash(now=now_t)
+    artifact = _new_artifact_dir("skill-registry", name, now=now_t)
+    _write_meta(
+        artifact / "meta.json",
+        {
+            "version": 1,
+            "kind": "skill_registry",
+            "name": name,
+            "created_at": now_t,
+            "usage_row": usage_row or None,
+            "audit_record": audit_record,
+        },
+    )
+    return artifact
+
+
 def _latest_artifact(kind: str, key: str, field: str) -> Optional[Path]:
     root = CURATOR_TRASH_DIR
     if not root.exists():

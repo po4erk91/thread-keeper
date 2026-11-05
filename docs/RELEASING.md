@@ -99,7 +99,11 @@ git commit -am "release: 0.4.1"
 
 The workflows then:
 
-1. Run the full test matrix on `main`
+1. Run the full test matrix on `main`, including the pinned official MCP
+   conformance requirement sets for `2025-11-25` and `2026-07-28`. They use a
+   loopback-only test transport backed by the production stdio registry; each
+   version has an expected-failures baseline that fails if an entry becomes
+   stale.
 2. Check that the unreleased `vX.Y.Z` has a matching changelog section
    (a bump without notes is a warning, not a tag)
 3. Create the annotated `vX.Y.Z` tag on the tested commit and dispatch

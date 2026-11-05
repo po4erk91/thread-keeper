@@ -462,20 +462,23 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
         except sqlite3.OperationalError:
             pass  # fall through to legacy
     # Legacy Python-side path
+    from .memory_access import candidate_scope
+    where, scope_params = candidate_scope(conn, "n")
     join, effective_embedding = _note_embedding_parts(conn, "n")
     rows = conn.execute(
-        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, n.project_id, n.memory_scope, "
         "       g.embedding AS embedding "
         "FROM notes n JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='note' AND g.memory_id=CAST(n.id AS TEXT) "
+        f"WHERE {where} "
         "UNION ALL "
-        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, "
+        "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, n.project_id, n.memory_scope, "
         f"       {effective_embedding} AS embedding FROM notes n {join} "
-        f"WHERE {effective_embedding} IS NOT NULL AND n.embed_backend=? "
+        f"WHERE {where} AND {effective_embedding} IS NOT NULL AND n.embed_backend=? "
         "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
         "WHERE g.generation=? AND g.memory_kind='note' "
         "AND g.memory_id=CAST(n.id AS TEXT))",
-        (active, active, active),
+        (active, *scope_params, *scope_params, active, active),
     ).fetchall()
     if not rows:
         return []
@@ -523,7 +526,11 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
             "JOIN notes n ON n.id = v.id "
             "WHERE v.embedding MATCH ? AND k = ?"
         )
+    from .memory_access import candidate_scope
+    where, scope_params = candidate_scope(conn, "n")
     params: list = [qv_blob, fetch_k]
+    sql += f" AND ({where})"
+    params.extend(scope_params)
     if embed_backend:
         sql += " AND n.embed_backend = ?"
         params.append(embed_backend)
@@ -560,6 +567,8 @@ def _dialog_cosine_search(conn, query: str, k: int,
                 return hits
         except sqlite3.OperationalError:
             pass
+    from .memory_access import candidate_scope
+    where, scope_params = candidate_scope(conn, "d")
     join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
@@ -568,7 +577,8 @@ def _dialog_cosine_search(conn, query: str, k: int,
         "g.generation=? AND g.memory_kind='dialog' "
         "AND g.memory_id=CAST(d.uuid AS TEXT)"
     )
-    params: list = [active]
+    sql += f" WHERE {where}"
+    params: list = [active, *scope_params]
     if role:
         sql += " AND d.role=?"
         params.append(role)
@@ -577,12 +587,12 @@ def _dialog_cosine_search(conn, query: str, k: int,
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
         f"       d.project_id, d.memory_scope, d.created_at, {effective_embedding} AS embedding "
         f"FROM dialog_messages d {join} "
-        f"WHERE {effective_embedding} IS NOT NULL AND d.embed_backend=? "
+        f"WHERE {where} AND {effective_embedding} IS NOT NULL AND d.embed_backend=? "
         "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
         "WHERE g.generation=? AND g.memory_kind='dialog' "
         "AND g.memory_id=CAST(d.uuid AS TEXT))"
     )
-    params.extend([active, active])
+    params.extend([*scope_params, active, active])
     if role:
         sql += " AND d.role=?"
         params.append(role)
@@ -782,7 +792,11 @@ def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
         "JOIN dialog_messages d ON d.uuid = m.uuid "
         "WHERE v.embedding MATCH ? AND k = ?"
     )
+    from .memory_access import candidate_scope
+    where, scope_params = candidate_scope(conn, "d")
     params: list = [qv_blob, max(1, int(k))]
+    sql += f" AND ({where})"
+    params.extend(scope_params)
     if role:
         sql += " AND d.role = ?"
         params.append(role)
@@ -811,6 +825,8 @@ def _fts_search(conn: sqlite3.Connection, query: str,
     fq = _fts_query(query)
     if not fq:
         return []
+    from .memory_access import candidate_scope
+    where, scope_params = candidate_scope(conn, "d")
     def _run(match_query: str):
         sql = (
             "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
@@ -818,9 +834,9 @@ def _fts_search(conn: sqlite3.Connection, query: str,
             "       d.created_at, bm25(dialog_fts) AS lexical_score "
             "FROM dialog_fts f "
             "JOIN dialog_messages d ON d.rowid = f.rowid "
-            "WHERE dialog_fts MATCH ?"
+            f"WHERE dialog_fts MATCH ? AND ({where})"
         )
-        params: list = [match_query]
+        params: list = [match_query, *scope_params]
         if role:
             sql += " AND d.role = ?"
             params.append(role)

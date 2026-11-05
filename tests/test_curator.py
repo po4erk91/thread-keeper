@@ -221,7 +221,7 @@ def _bind_curator_writer(
 ):
     """Create the task-bound authority a real Curator launch records."""
     conn = pkg["db"].get_db()
-    task_id = f"tk_curator_{phase}_{batch_index or 'single'}_{verify_batch}"
+    task_id = f"tk_curator_{pass_id}_{phase}_{batch_index or 'single'}_{verify_batch}"
     conn.execute(
         "UPDATE tasks SET ended_at=? WHERE spawned_cid=? AND ended_at IS NULL",
         (int(time.time()), _FAKE_CID),
@@ -278,6 +278,96 @@ def _bind_curator_researcher(pkg, pass_id, *, batch_index, batch_total):
         conn, launch, task_id, _FAKE_CID,
     )
     conn.commit()
+
+
+@pytest.mark.parametrize("phase", ["evaluate", "verify"])
+def test_authorized_curator_reads_preserve_consultation_telemetry(
+    tmp_path, monkeypatch, phase,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 3)
+    from threadkeeper._mcp import mcp
+
+    conn = pkg["db"].get_db()
+    items = list(pkg["lessons"].iter_lessons())
+    for item in items[:2]:
+        pkg["lessons"].ensure_lesson_usage(conn, item)
+    conn.execute(
+        "UPDATE lesson_usage SET use_count=3, last_used_at=123, "
+        "view_count=2, last_viewed_at=122 WHERE slug=?", (items[1]["slug"],),
+    )
+    conn.commit()
+    before = pkg["lessons"].lesson_usage_map(conn)
+    ranking = pkg["lessons"].rank_stale_lessons(conn, now=1_900_000_000)
+    for pass_id in ("audit-one", "audit-two"):
+        snapshot = None
+        if phase == "verify":
+            snapshot = pkg["reports_dir"] / "snapshots" / pass_id
+            snapshot.mkdir(parents=True)
+        for batch_index, item in enumerate(items, 1):
+            _bind_curator_writer(
+                pkg, pass_id, batch_index=batch_index, batch_total=3,
+                phase=phase, verify_batch=batch_index if snapshot else 0,
+                snapshot_dir=snapshot,
+            )
+            for _ in range(2):
+                assert "body " in mcp._tool_manager._tools["lesson_get"].fn(
+                    slug=item["slug"],
+                )
+                mcp._tool_manager._tools["lesson_list"].fn(k=3)
+            assert pkg["lessons"].lesson_usage_map(conn) == before
+    assert pkg["lessons"].rank_stale_lessons(conn, now=1_900_000_000) == ranking
+
+
+@pytest.mark.parametrize("invalid_authority", ["missing_launch", "ended", "other_child"])
+def test_untrusted_curator_reads_still_record_consultations(
+    tmp_path, monkeypatch, invalid_authority,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 1)
+    from threadkeeper._mcp import mcp
+
+    _bind_curator_writer(pkg, "audit-pass")
+    conn = pkg["db"].get_db()
+    if invalid_authority == "missing_launch":
+        conn.execute(
+            "DELETE FROM events WHERE kind=?",
+            (pkg["curator"].CURATOR_CHILD_LAUNCH_KIND,),
+        )
+    elif invalid_authority == "ended":
+        conn.execute("UPDATE tasks SET ended_at=?", (int(time.time()),))
+    else:
+        conn.execute("UPDATE tasks SET spawned_cid='another-child'")
+    conn.commit()
+    assert "body " in mcp._tool_manager._tools["lesson_get"].fn(slug="bulk-lesson-0000")
+    row = conn.execute("SELECT use_count, last_used_at FROM lesson_usage").fetchone()
+    assert row["use_count"] == 1
+    assert row["last_used_at"] is not None
+
+
+def test_curator_continuation_reads_remain_telemetry_neutral(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="curator")
+    _write_bulk_lessons(pkg["lessons_path"], 1)
+    from threadkeeper._mcp import mcp
+
+    _bind_curator_writer(pkg, "continued-pass")
+    conn = pkg["db"].get_db()
+    task = conn.execute("SELECT id FROM tasks WHERE ended_at IS NULL").fetchone()
+    launch = pkg["curator"]._curator_launch_for_continuation(conn, task["id"])
+    assert launch is not None
+    conn.execute("UPDATE tasks SET ended_at=?", (int(time.time()),))
+    retry_cid = "bbbb1111-2222-3333-4444-555566667777"
+    conn.execute(
+        "INSERT INTO tasks (id, pid, spawned_cid, cwd, prompt, started_at, "
+        "role, write_origin) VALUES ('tk_retry', 1, ?, '/tmp', 'curator', ?, "
+        "'curator', 'curator')", (retry_cid, int(time.time())),
+    )
+    pkg["curator"]._record_curator_child_launch(conn, launch, "tk_retry", retry_cid)
+    conn.commit()
+    monkeypatch.setenv("THREADKEEPER_FORCE_CID", retry_cid)
+
+    assert "body " in mcp._tool_manager._tools["lesson_get"].fn(slug="bulk-lesson-0000")
+    assert pkg["lessons"].lesson_usage_map(conn) == {}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -872,14 +962,161 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
     assert "Bash" not in allowed
     # REPORTS_DIR was created so the child has a place to write
     assert pkg["reports_dir"].is_dir()
-    manifests = list(pkg["reports_dir"].glob("AUDIT-*.json"))
+    manifests = [
+        path for path in pkg["reports_dir"].glob("AUDIT-*.json")
+        if not path.name.startswith("AUDIT-SLICE-")
+    ]
     assert len(manifests) == 1
-    assert json.loads(manifests[0].read_text())["schema_version"] == 1
-    assert f"AUDIT_MANIFEST_PATH = {manifests[0]}" in kw["prompt"]
+    assert json.loads(manifests[0].read_text())["schema_version"] == 2
+    slices = list(pkg["reports_dir"].glob("AUDIT-SLICE-*.json"))
+    assert len(slices) == 1
+    assert f"AUDIT_MANIFEST_SLICE_PATH = {slices[0]}" in kw["prompt"]
+    assert str(manifests[0]) not in kw["prompt"]
     assert kw["_curator_launch"].pass_id not in kw["prompt"]
     assert "THREADKEEPER_CURATOR_PASS_ID" not in os.environ
     assert "THREADKEEPER_CURATOR_SNAPSHOT_DIR" not in os.environ
     assert "THREADKEEPER_CURATOR_PHASE" not in os.environ
+
+
+def test_curator_batch_audit_slices_keep_only_assigned_skill_evidence(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(
+        tmp_path, monkeypatch, min_lessons="2", max_concurrent="999",
+    )
+    for title in ("first lesson", "second lesson"):
+        pkg["lessons"].append_lesson(title=title, body="body", source="shadow")
+    for name, body in {
+        "alpha-skill": "# Shared body\n\nSame duplicate procedure.\n",
+        "beta-skill": "# Shared body\n\nSame duplicate procedure.\n",
+        "gamma-skill": "# Gamma\n\n[Missing support](missing.md)\n",
+    }.items():
+        path = pkg["skills_dir"] / name
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{body}",
+            encoding="utf-8",
+        )
+
+    import threadkeeper.tools.spawn as spawn_mod
+
+    launches = []
+    monkeypatch.setattr(pkg["curator"], "CURATOR_BATCH_MAX_ENTRIES", 3)
+    monkeypatch.setattr(
+        spawn_mod,
+        "_spawn_impl",
+        lambda **kwargs: launches.append(kwargs) or "ok task=tk_slice pid=0",
+    )
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    conn = pkg["db"].get_db()
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    rows = conn.execute(
+        "SELECT * FROM curator_batches ORDER BY batch_index"
+    ).fetchall()
+    assert len(rows) == len(launches) == 2
+    canonical = json.loads(Path(pass_row["audit_manifest_path"]).read_text())
+    slices = [json.loads(Path(row["audit_slice_path"]).read_text()) for row in rows]
+    by_names = {tuple(item["assigned_skill_names"]): item for item in slices}
+
+    alpha_slice = by_names[("alpha-skill",)]
+    assert [record["name"] for record in alpha_slice["skills"]] == ["alpha-skill"]
+    assert alpha_slice["canonical_manifest"]["sha256"] == pass_row[
+        "audit_manifest_sha256"
+    ]
+    assert alpha_slice["exact_duplicate_groups"] == [{
+        "normalized_body_sha256": next(
+            group["normalized_body_sha256"]
+            for group in canonical["exact_duplicate_groups"]
+            if group["skills"] == ["alpha-skill", "beta-skill"]
+        ),
+        "skills": ["alpha-skill", "beta-skill"],
+    }]
+    gamma_slice = by_names[("beta-skill", "gamma-skill")]
+    gamma = next(
+        record for record in gamma_slice["skills"]
+        if record["name"] == "gamma-skill"
+    )
+    assert "dangling_relative_link:missing.md" in gamma["findings"]
+    assert gamma["source_path"]
+    assert gamma["validators"]
+    assert gamma["mirrors"]
+    assert all(
+        record["name"] in item["assigned_skill_names"]
+        for item in slices for record in item["skills"]
+    )
+
+
+def test_curator_reuses_verified_audit_slice_and_rejects_tampering(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _add_skill(pkg, "stable-slice-skill")
+    _recording_spawn(monkeypatch)
+
+    pkg["curator"].run_curator_pass(force=True)
+
+    conn = pkg["db"].get_db()
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    batch_row = conn.execute("SELECT * FROM curator_batches").fetchone()
+    slice_path = Path(batch_row["audit_slice_path"])
+    original = slice_path.read_text()
+    first = pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    )
+    second = pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    )
+    assert first.prompt == second.prompt
+    assert slice_path.read_text() == original
+
+    slice_path.write_text("{}\n", encoding="utf-8")
+    assert pkg["curator"]._evaluate_spec(
+        conn, pass_row, batch_row, "evaluate", 1,
+    ) == "audit_slice_sha256_mismatch"
+
+
+def test_worker_audit_input_scales_with_assigned_skill_records():
+    from threadkeeper.skill_audit import build_batch_skill_audit_slice
+
+    records = [
+        {
+            "name": f"skill-{index:03d}",
+            "source_path": f"/skills/skill-{index:03d}/SKILL.md",
+            "source_kind": "managed",
+            "validators": {"threadkeeper": "PASS"},
+            "mirrors": [{"root": "~/skills", "status": "canonical"}],
+            "findings": [],
+            "detail": "x" * 500,
+        }
+        for index in range(60)
+    ]
+    manifest = {
+        "schema_version": 1,
+        "skills": records,
+        "exact_duplicate_groups": [],
+        "semantic_candidates": [],
+    }
+    batches = [records[index:index + 6] for index in range(0, len(records), 6)]
+    slices = [
+        build_batch_skill_audit_slice(
+            manifest,
+            pass_id="pass",
+            batch_index=index,
+            batch_total=len(batches),
+            inventory_fingerprint="f" * 64,
+            canonical_manifest_sha256="a" * 64,
+            assigned_skill_names=[record["name"] for record in batch],
+        )
+        for index, batch in enumerate(batches, start=1)
+    ]
+    canonical_size = len(json.dumps(manifest))
+    worker_input_size = sum(len(json.dumps(item)) for item in slices)
+
+    assert sum(len(item["skills"]) for item in slices) == len(records)
+    assert worker_input_size < canonical_size * len(slices) // 2
 
 
 def test_web_research_receives_only_public_brief_and_narrow_tools(
@@ -1692,6 +1929,80 @@ def test_skill_validator_is_exhaustive_and_semantic(tmp_path, monkeypatch):
     assert "1. SKILL bad_name" in checklist
     assert "2. SKILL first-skill" in checklist
     assert "3. SKILL second-skill" in checklist
+
+
+def test_skill_audit_reports_only_safe_inline_resources_and_substantial_repeats(
+    tmp_path, monkeypatch,
+):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    primary = pkg["skills_dir"]
+    skill_dir = primary / "resource-audit"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "references" / "present.md").write_text(
+        "available", encoding="utf-8",
+    )
+    repeated = (
+        "Keep each release checklist explicit about the owner, verification "
+        "command, expected result, rollback path, and the evidence retained "
+        "after deployment so later operators can reproduce the decision "
+        "without rediscovering undocumented local assumptions."
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: resource-audit\n"
+        "description: \"Use `references/frontmatter-missing.md` only in this test.\"\n"
+        "---\n\n"
+        "# Heading `references/heading-missing.md`\n\n"
+        "Read [missing Markdown reference](references/missing-link.md).\n\n"
+        "Read `references/missing-inline.md` and `references/present.md`.\n\n"
+        "[URL](https://example.test/missing.md) [absolute](/private/missing.md) "
+        "`https://example.test/missing.md` `/private/missing.md` "
+        "[outside](../outside.md) `../outside.md` `python scripts/check.py`, "
+        "`value.method`, and `value/method` stay unreported.\n\n"
+        "```sh\n"
+        "cat references/fenced-missing.md\n"
+        "```\n\n"
+        "Short repeated boilerplate.\n\n"
+        "Short repeated boilerplate.\n\n"
+        f"{repeated}\n\n"
+        f"{repeated.upper()}\n\n"
+        f"{repeated.replace('release checklist', 'release   checklist')}\n",
+        encoding="utf-8",
+    )
+    conn = pkg["db"].get_db()
+    conn.execute(
+        "INSERT INTO skill_usage "
+        "(name, created_at, created_by_origin, state) VALUES (?, ?, ?, ?)",
+        ("resource-audit", int(time.time()), "background_review", "active"),
+    )
+    conn.commit()
+
+    import threadkeeper.tools.skills as skill_tools
+    from threadkeeper.skill_audit import build_skill_audit
+
+    monkeypatch.setattr(skill_tools, "_skill_roots", lambda: [primary])
+    record = build_skill_audit(conn)["skills"][0]
+
+    assert "dangling_relative_link:references/missing-link.md" in record["findings"]
+    assert "dangling_inline_resource:references/missing-inline.md" in record["findings"]
+    assert any(
+        finding.startswith("repeated_normalized_paragraph:occurrences=3:")
+        for finding in record["findings"]
+    )
+    assert not any(
+        item in finding
+        for finding in record["findings"]
+        for item in (
+            "frontmatter-missing", "heading-missing", "fenced-missing",
+            "present.md", "example.test", "/private", "scripts/check.py",
+            "value.method", "value/method", "outside.md",
+        )
+    )
+
+    from threadkeeper.tools.curator import skill_validate
+
+    payload = json.loads(skill_validate(name="resource-audit"))
+    assert payload["skill"]["findings"] == record["findings"]
 
 
 def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(
@@ -2859,6 +3170,14 @@ def test_lesson_only_batch_skips_web_research(tmp_path, monkeypatch):
     prompt = launches[0]["kwargs"]["prompt"]
     assert "NO WEB RESEARCH FOR THIS BATCH" in prompt
     assert "DESTRUCTIVE MODE ENABLED" in prompt
+    slice_paths = list(pkg["reports_dir"].glob("AUDIT-SLICE-*.json"))
+    assert len(slice_paths) == 1
+    audit_slice = json.loads(slice_paths[0].read_text())
+    assert audit_slice["no_skills"] is True
+    assert audit_slice["skills"] == []
+    assert audit_slice["exact_duplicate_groups"] == []
+    assert audit_slice["semantic_candidates"] == []
+    assert str(slice_paths[0]) in prompt
 
 
 

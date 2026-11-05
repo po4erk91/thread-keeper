@@ -203,6 +203,7 @@ def _spawn_probe_child(probe: sqlite3.Row) -> str:
         permission_mode="auto",
         role="probe_runner",
         write_origin="probe",
+        memory_access="read_only",
         slim=True,
         extra_allowed_tools="Write",
     )
