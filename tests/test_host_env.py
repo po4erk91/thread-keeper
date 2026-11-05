@@ -7,6 +7,7 @@ daemon starters would self-gate off — a loop-less zombie host that still binds
 the embed socket and heartbeats (looks alive, holds the election lock)."""
 from __future__ import annotations
 import sys, importlib, uuid
+from pathlib import Path
 
 
 def _reimport(monkeypatch, tmp_path, **env_overrides):
@@ -38,9 +39,10 @@ def test_ensure_host_running_sanitizes_spawned_child_env(monkeypatch, tmp_path):
         THREADKEEPER_WRITE_ORIGIN="background_review",
     )
     # The test env keeps THREADKEEPER_DISABLE_BG_DAEMONS=1 so the import stays
-    # quiet; clear the derived flag so ensure_host_running() reaches the spawn
-    # whose env this test is about.
+    # quiet; clear the derived flag and the temp-dir DB guard so
+    # ensure_host_running() reaches the spawn whose env this test is about.
     monkeypatch.setattr(host.config, "DISABLE_BG_DAEMONS", False)
+    monkeypatch.setattr(host, "_db_is_disposable", lambda: False)
     monkeypatch.setattr(host, "_host_alive", lambda: False)
 
     captured: dict = {}
@@ -78,6 +80,39 @@ def test_ensure_host_running_skips_when_daemons_disabled(monkeypatch, tmp_path):
     assert host.ensure_host_running() is False
 
 
+def test_ensure_host_running_never_spawns_a_host_for_a_temp_db(
+    monkeypatch, tmp_path,
+):
+    """A test or eval process on a throwaway DB must not leave a live host.
+
+    The spawned host drops the daemon gates on purpose and reads
+    ~/.threadkeeper/.env, so a host spawned for a temp-dir DB runs every
+    loop — GitHub writes and LLM children included — against that DB until
+    someone kills it, long after the run deleted its directory."""
+    host = _reimport(monkeypatch, tmp_path)
+    monkeypatch.setattr(host.config, "DISABLE_BG_DAEMONS", False)
+    monkeypatch.setattr(host, "_host_alive", lambda: False)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("a temp-dir DB must never spawn a detached host")
+
+    monkeypatch.setattr(host.subprocess, "Popen", _boom)
+
+    assert host.ensure_host_running() is False
+
+
+def test_only_a_db_under_a_temp_dir_is_disposable(monkeypatch, tmp_path):
+    host = _reimport(monkeypatch, tmp_path)
+
+    assert host._db_is_disposable() is True
+    monkeypatch.setattr(host.config, "DB_PATH", Path("/tmp/tk-run/db.sqlite"))
+    assert host._db_is_disposable() is True
+    monkeypatch.setattr(
+        host.config, "DB_PATH", Path("/srv/threadkeeper/db.sqlite"),
+    )
+    assert host._db_is_disposable() is False
+
+
 _CHILD_CID = "11111111-2222-3333-4444-555555555555"
 _PER_CHILD_IDENTITY = {
     "THREADKEEPER_CURATOR_PASS_ID": "20261012T101949",
@@ -90,6 +125,7 @@ _PER_CHILD_IDENTITY = {
 def _host_spawn_env(monkeypatch, tmp_path, **env_overrides):
     host = _reimport(monkeypatch, tmp_path, **env_overrides)
     monkeypatch.setattr(host.config, "DISABLE_BG_DAEMONS", False)
+    monkeypatch.setattr(host, "_db_is_disposable", lambda: False)
     monkeypatch.setattr(host, "_host_alive", lambda: False)
     captured: dict = {}
     monkeypatch.setattr(host.subprocess, "Popen",
