@@ -7,6 +7,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: evidence for Curator skill repairs and removals.** With Caliper
+  configured, the verifier runs owner-supplied cases with and without a skill
+  and can test a repair before applying it. Missing or mixed results do not
+  authorize a change.
+
 - **Fixed: a test or eval run can no longer leave a live daemon host
   behind.** A thread-keeper process whose database lives under the system
   temp directory or `/tmp` no longer spawns a detached host. Such a host

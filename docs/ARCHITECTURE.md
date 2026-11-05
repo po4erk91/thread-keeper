@@ -741,6 +741,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mismatched file. The web-free evaluator reads each full assigned skill,
   writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
+  Skills with a [Caliper suite](CURATOR_CALIPER.md) get a verification
+  proposal even if static checks found no defect. Only the authorized
+  verifier can launch the isolated evaluation. A small receipt binds the
+  outcome to the suite, current skill bundle, and any tested replacement.
+  Curator checks that binding again before applying an edit or standalone
+  deletion. The pass stores counts and hashes, while temporary transcripts
+  and model output are discarded.
   External research is a separate opt-in capability: when
   `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a Claude-only `curator_researcher`
   receives a deterministic public brief containing only fixed compatibility
@@ -2287,7 +2294,7 @@ below).
 | lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation, lesson_verifications |
 | shadow_review | shadow_review_run, shadow_review_status, shadow_review_snapshot |
 | candidate_reviewer | candidate_review_run, candidate_review_status |
-| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson |
+| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson, curator_evaluate_skill |
 | evolve_research | evolve_research_handoff |
 | evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status, evolve_prune_managed_venv |
 | style | style_set, verbatim_user |

@@ -95,6 +95,7 @@ LEARNING_LOOP_TOOLS = CORE_TOOLS | {
     "candidate_review_run",
     "candidate_review_status",
     "consolidate",
+    "curator_evaluate_skill",
     "curator_report_write",
     "curator_restore",
     "curator_review",

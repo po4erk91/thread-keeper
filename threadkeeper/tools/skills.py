@@ -55,6 +55,7 @@ from ..authority import (
     source_parent,
 )
 from ..memory_compat import memory_provenance
+from ..curator_skill_eval import mutation_refusal
 from ..curator_snapshots import (
     admit_curator_destructive_action,
     capture_skill_tombstone,
@@ -1118,6 +1119,10 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
         return f"ERR skill_not_found={name}"
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed: {err}"
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal("edit", name, md.parent, content)
+    ):
+        return refusal
     if refusal := _skill_md_growth_refusal(md.read_text(encoding="utf-8"), content):
         return refusal
     if reason := _screen_synthesized_body(content):
@@ -1164,6 +1169,10 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
     updated = cur.replace(old_string, new_string, 1)
     if err := _validate_skill_md(updated, name):
         return f"ERR validate_failed_after_patch: {err}"
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal("edit", name, md.parent, updated)
+    ):
+        return refusal
     if refusal := _skill_md_growth_refusal(cur, updated):
         return refusal
     # Screen only the newly-introduced text — an existing skill that
@@ -1325,6 +1334,10 @@ def _action_delete(
             f"ERR protected_skill name={name} reason={protected_reason}"
             f"{force_note}"
         )
+    if WRITE_ORIGIN == "curator" and (
+        refusal := mutation_refusal("delete", name, sdir, replacement=replacement_name)
+    ):
+        return refusal
     if reason := admit_curator_destructive_action(
         conn,
         action="skill_delete",

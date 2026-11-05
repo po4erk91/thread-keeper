@@ -93,6 +93,7 @@ from .curator_snapshots import (
     create_curator_snapshot,
     write_verify_scope,
 )
+from .curator_skill_eval import scheduled_suites, suite_revision
 from .skill_audit import (
     build_batch_skill_audit_slice,
     build_skill_audit,
@@ -282,6 +283,12 @@ MERGE/DELETE safety:
   • DELETE only exact duplicates, fully superseded entries with no unique
     value, or demonstrably irrelevant/broken skills. Prefer CROSS_LINK or
     SPLIT when scopes are adjacent rather than identical.
+  • Behaviour-based repairs and standalone deletions of skills go to VERIFY.
+    Explain the failing behaviour and propose a concrete repair when possible.
+    For a skill marked [CALIPER_SUITE], add a CHECK skill proposal even if
+    static review found no defect. Skip pinned or external skills.
+    A structural fix to a skill marked [CALIPER_ENROLLED] or [CALIPER_SUITE]
+    also goes to VERIFY so the proposed SKILL.md can be tested before editing.
   • Physical mirrors are copies of one logical skill, never duplicates.
   • [PROTECTED] skills change only through VERIFY proposals.
   • Write REPORT.md before mutation. A parent snapshot already exists in
@@ -439,7 +446,7 @@ one block in this format:
 
 Proposal kinds: CONSOLIDATE lessons, REMOVE lesson, PATCH protected lesson,
 PROMOTE lessons to skill, DELETE skill, MERGE skills, SPLIT skill, PATCH
-protected skill. Name exact slugs and skill names; quote old/new text for a
+protected skill, CHECK skill. Name exact slugs and skill names; quote old/new text for a
 PATCH. Write `none` inside the block when you have no proposal.
 
 CLOSE with the literal line `CURATOR_PASS_COMPLETE` so the parent
@@ -491,6 +498,18 @@ FOR EACH PROPOSAL, in order:
        existing target skill.
      • PATCH / SPLIT of a protected entry: REFUTED if the change loses meaning
        or contradicts the entry's evidence.
+  For CHECK skill or a behavioural skill proposal, call curator_evaluate_skill before
+  applying it. Supply the exact complete replacement SKILL.md as candidate
+  when a repair is possible. Use the same batch arguments as for the report.
+  A repair verdict authorizes only those tested bytes; use skill_manage(edit)
+  with that candidate. A remove verdict supports a standalone deletion only
+  after the proposal survives your checks for unique value and viable repair.
+  If the first check exposes a defect and a fix is viable, submit the candidate
+  before considering removal. Defer if the pass budget cannot test it.
+  Keep the original on keep, defer, or inconclusive; record the reason and
+  never infer failure from a missing suite, login, or incomplete run.
+  For an enrolled structural edit, validate the candidate the same way.
+  Existing consolidation, rollback, and protected-entry rules still apply.
   3. Apply every CONFIRMED and MODIFIED proposal yourself, safely:
      • write or patch the umbrella entry first (lesson_append / lesson_patch /
        skill_manage), then remove merged-away entries with
@@ -544,6 +563,7 @@ _VERIFY_TOOLS = (
     "mcp__thread-keeper__skill_list,"
     "mcp__thread-keeper__skill_manage,"
     "mcp__thread-keeper__skill_validate,"
+    "mcp__thread-keeper__curator_evaluate_skill,"
     "mcp__thread-keeper__curator_report_write,"
     "mcp__thread-keeper__curator_restore,"
     "mcp__thread-keeper__curator_merge_verdict,"
@@ -2078,6 +2098,7 @@ def _curator_inventory_snapshot(
                 "normalized_body_sha256": record["normalized_body_sha256"],
                 "mirrors": record["mirrors"],
                 "findings": record["findings"],
+                "caliper_suite": suite_revision(record["name"]),
             }
             for record in audit["skills"]
         ]
@@ -2436,8 +2457,21 @@ def _collect_inventory_entry_groups(
             else build_skill_audit(conn, include_archived=True)
         )
         checklist_lines = format_skill_checklist(audit).splitlines()[2:]
+        enrolled = [
+            record["name"] for record in audit["skills"]
+            if not record["telemetry"]["pinned"] and record["source_kind"] == "managed"
+            and suite_revision(record["name"])
+        ]
+        scheduled = scheduled_suites(enrolled)
+        caliper_labels = {
+            name: " [CALIPER_SUITE]" if name in scheduled else " [CALIPER_ENROLLED]"
+            for name in enrolled
+        }
         skill_entries = [
-            _InventoryEntry("skill", record["name"], line)
+            _InventoryEntry(
+                "skill", record["name"],
+                line + caliper_labels.get(record["name"], ""),
+            )
             for record, line in zip(audit["skills"], checklist_lines)
         ]
     except Exception as exc:
