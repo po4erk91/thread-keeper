@@ -3321,7 +3321,7 @@ def test_caliper_creation_context_schedules_check_and_changes_pass_identity(tmp_
     conn = pkg["db"].get_db()
     before = curator._current_inventory_fingerprint(conn)
 
-    assert "[CALIPER_CHECK]" not in curator._collect_inventory(conn)[0]
+    assert "[CALIPER_CHECK]" in curator._collect_inventory(conn)[0]
     skill = pkg["skills_dir"] / "example-skill" / "SKILL.md"
     skill.write_text(
         "---\nname: example-skill\ndescription: Example\nmetadata:\n"

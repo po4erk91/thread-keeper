@@ -37,17 +37,24 @@ MIN_CASES = 5
 MAX_CASES = 6
 MIN_EXCLUSIVE_CASES = 3
 MAX_CONTEXT_CHARS = 2_000
+MAX_SKILL_CONTEXT_CHARS = 20_000
+MAX_INFERRED_USE_CASE_CHARS = 500
+INFERRED_CONTEXT_SOURCE = "skill_inferred"
 CONTEXT_KEY = "threadkeeper-eval-context"
 MAX_RUNS_PER_PASS = 2
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 
 
-def _explicit_context(skill: Path) -> str:
+def _read_skill_text(skill: Path) -> str:
     try:
         with (skill / "SKILL.md").open(encoding="utf-8") as file:
-            fields, _, _ = _frontmatter(file.read(64_000))
+            return file.read(64_000)
     except (OSError, UnicodeError):
         return ""
+
+
+def _explicit_context(content: str) -> str:
+    fields, _, _ = _frontmatter(content)
     metadata = fields.get("metadata")
     text = metadata.get(CONTEXT_KEY) if isinstance(metadata, dict) else None
     return text.strip() if isinstance(text, str) else ""
@@ -74,12 +81,17 @@ def _creation_context(conn: sqlite3.Connection, name: str) -> tuple[str, str]:
 
 
 def skill_context(conn: sqlite3.Connection, name: str, skill: Path) -> dict[str, str] | None:
-    """Resolve a recorded use case without guessing from a skill's instructions."""
-    explicit = _explicit_context(skill)
+    """Prefer a recorded use case and fall back to the skill as evidence."""
+    content = _read_skill_text(skill)
+    explicit = _explicit_context(content)
     source, text = ("metadata", explicit) if explicit else _creation_context(conn, name)
+    excerpt_limit = MAX_CONTEXT_CHARS
     if not text:
-        return None
-    excerpt = _scrub_dialog_secrets(text)[:MAX_CONTEXT_CHARS].strip()
+        if not content.strip():
+            return None
+        source, text = INFERRED_CONTEXT_SOURCE, content
+        excerpt_limit = MAX_SKILL_CONTEXT_CHARS
+    excerpt = _scrub_dialog_secrets(text)[:excerpt_limit].strip()
     revision = _digest(json.dumps([source, text], ensure_ascii=False).encode())
     return {"source": source, "text": excerpt, "revision": revision}
 
@@ -129,12 +141,26 @@ def _scenario_task(case: dict, axis: str) -> dict:
     }
 
 
-def compile_scenarios(raw: str, context: str) -> list[dict]:
+def compile_scenarios(raw: str, context: str, *, inferred: bool = False) -> tuple[list[dict], str]:
     if len(raw.encode()) > 32_000:
         raise ValueError("scenario set too large")
     suite = json.loads(raw)
-    if not isinstance(suite, dict) or set(suite) != {"exclusive_axis", "cases"}:
+    required_keys = {"exclusive_axis", "cases"}
+    if (
+        not isinstance(suite, dict) or not required_keys <= suite.keys()
+        or suite.keys() - required_keys - {"inferred_use_case"}
+    ):
         raise ValueError("provide an exclusive_axis and cases")
+    inference = suite.get("inferred_use_case", "")
+    if inferred:
+        if (
+            not isinstance(inference, str) or not inference.strip()
+            or len(inference) > MAX_INFERRED_USE_CASE_CHARS or "\x00" in inference
+        ):
+            raise ValueError("skill-derived scenarios need a short inferred_use_case")
+        inference = _scrub_dialog_secrets(inference.strip())
+    elif "inferred_use_case" in suite:
+        raise ValueError("inferred_use_case is only allowed for skill-derived scenarios")
     axis = suite["exclusive_axis"]
     if not isinstance(axis, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", axis):
         raise ValueError("exclusive_axis must name one condition shared by the alternatives")
@@ -152,7 +178,7 @@ def compile_scenarios(raw: str, context: str) -> list[dict]:
             raise ValueError("invalid scenario fields")
         excerpt = case["context_excerpt"].strip()
         if len(excerpt) < 12 or excerpt not in context:
-            raise ValueError("each scenario must cite its recorded context")
+            raise ValueError("each scenario must cite its source context")
     if len({case["name"].strip().casefold() for case in cases}) != len(cases):
         raise ValueError("scenario names must be unique")
     if len({case["prompt"].strip().casefold() for case in cases}) != len(cases):
@@ -163,7 +189,7 @@ def compile_scenarios(raw: str, context: str) -> list[dict]:
     ]
     if len(alternatives) < MIN_EXCLUSIVE_CASES or len(set(alternatives)) != len(alternatives):
         raise ValueError("at least three cases need mutually exclusive values on the same axis")
-    return [_scenario_task(case, axis) for case in cases]
+    return [_scenario_task(case, axis) for case in cases], inference
 
 
 def _read_result(path: Path) -> dict:
@@ -398,7 +424,7 @@ def evaluate(
             return {"decision": "defer", "reason": "private_caliper_subscription_login_required"}
         context = skill_context(conn, name, skill)
         if context is None:
-            return {"decision": "defer", "reason": "missing_skill_creation_context"}
+            return {"decision": "defer", "reason": "missing_skill_context_and_source"}
         suite = directory / f"{name}.suite.json"
         if not scenarios and not (candidate and suite.is_file()):
             return {
@@ -436,12 +462,18 @@ def _evaluate(
             if recorded["context_digest"] != context_digest:
                 return {"decision": "defer", "reason": "source_changed"}
             tasks = recorded["tasks"]
+            inference = recorded.get("inferred_use_case", "")
         else:
             try:
-                tasks = compile_scenarios(scenarios, context["text"])
+                tasks, inference = compile_scenarios(
+                    scenarios, context["text"], inferred=context["source"] == INFERRED_CONTEXT_SOURCE,
+                )
             except ValueError as exc:
                 return {"decision": "defer", "reason": "invalid_scenarios", "detail": str(exc)}
-            suite_bytes = json.dumps({"context_digest": context_digest, "tasks": tasks}).encode()
+            recorded = {"context_digest": context_digest, "tasks": tasks}
+            if inference:
+                recorded["inferred_use_case"] = inference
+            suite_bytes = json.dumps(recorded).encode()
         cases = tuple(task["name"] for task in tasks)
         suite_digest = _digest(suite_bytes)
         model = CURATOR_CALIPER_MODEL
@@ -496,7 +528,10 @@ def _evaluate(
                 "cases": cases,
                 "attempts_per_case": ATTEMPTS,
                 "runtime": identities.pop(),
+                "context_source": context["source"],
             }
+            if inference:
+                result["inferred_use_case"] = inference
             result["no_measured_benefit"] = _redundancy_proved(result)
             save_evidence(
                 directory, name, original_digest, suite_digest, context_digest, candidate, result,

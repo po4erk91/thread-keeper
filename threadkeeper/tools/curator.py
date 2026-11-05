@@ -311,7 +311,9 @@ def curator_evaluate_skill(
 ) -> str:
     """Check a skill with context-based Caliper scenarios in this verifier batch.
 
-    Call with the skill name and batch arguments to retrieve recorded context.
+    Call with the skill name and batch arguments to retrieve the source context.
+    If context_source is skill_inferred, use the supplied SKILL.md text to infer
+    a plausible user task and include it as inferred_use_case in the JSON.
     Pass JSON scenarios with exclusive_axis and cases. Each case needs name,
     prompt, input, expected and a verbatim context_excerpt. At least three
     cases need distinct exclusive_value strings on the same condition.

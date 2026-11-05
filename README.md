@@ -1023,8 +1023,9 @@ This makes the report directory an untrusted transport: a stray or forged
 
 Curator can run a skill's benchmark with and without the skill, then try a
 proposed repair on the same cases. The independent verifier builds at least
-five cases from why the skill was created or added. At least three represent
-mutually exclusive conditions. It uses the result to keep the skill, apply the
+five cases from why the skill was created or added. When that reason is
+unknown, it infers a use case from the skill itself. At least three cases
+represent mutually exclusive conditions. It uses the result to keep the skill, apply the
 tested repair, or confirm a standalone removal under the existing snapshot
 and recovery rules. An unavailable or inconclusive result leaves the skill in
 place. [Set up Caliper for Curator](docs/CURATOR_CALIPER.md).

@@ -741,11 +741,11 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mismatched file. The web-free evaluator reads each full assigned skill,
   writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
-  Managed skills with [recorded use context](CURATOR_CALIPER.md) can get a
-  verification proposal even when static checks pass. The authorized
-  verifier builds the scenarios from that context and runs them in isolation.
-  A receipt binds the outcome to the context, cases, current skill bundle,
-  and any tested replacement.
+  Managed skills can get a [verification proposal](CURATOR_CALIPER.md) even
+  when static checks pass. The authorized verifier builds scenarios from the
+  recorded context or a use case inferred from the skill and runs them in
+  isolation. A receipt binds the outcome to the source, cases, current skill
+  bundle, and any tested replacement.
   Curator checks that binding again before applying an edit or standalone
   deletion. The pass stores synthetic cases, counts, and hashes. Transcripts
   and model output are discarded.

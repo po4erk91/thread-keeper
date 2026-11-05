@@ -42,6 +42,7 @@ def test_incomplete_or_failed_attempt_is_not_skill_evidence(tmp_path):
 
 CONTEXT = "The user needs to route imported items by status and handle incomplete inputs."
 CASES = ("open", "closed", "draft", "missing", "blank")
+INFERRED_USE_CASE = "Someone triaging an import needs to send each item to the right queue."
 
 
 def scenarios():
@@ -75,7 +76,9 @@ def test_scenario_compiles_data_into_safe_deterministic_checks(tmp_path):
     suite = scenarios()
     fixture = "one \n'; touch injected; #"
     suite["cases"][0]["input"] = fixture
-    task, *_ = evaluation.compile_scenarios(json.dumps(suite), CONTEXT)
+    tasks, inference = evaluation.compile_scenarios(json.dumps(suite), CONTEXT)
+    task = tasks[0]
+    assert inference == ""
     subprocess.run(task["setup"], shell=True, cwd=tmp_path, check=True)
     assert (tmp_path / "input.txt").read_text() == fixture
     assert json.loads((tmp_path / "condition.json").read_text()) == {"status": "open"}
@@ -111,7 +114,10 @@ def test_uses_live_creation_note_and_explicit_user_reason(tmp_path):
     md = skill / "SKILL.md"
     assert evaluation.skill_context(conn, "sample", skill)["text"] == CONTEXT
     md.write_text("---\nname: sample\ndescription: Generic description\n---\nBody\n")
-    assert evaluation.skill_context(conn, "sample", skill) is None
+    inferred = evaluation.skill_context(conn, "sample", skill)
+    assert inferred["source"] == "skill_inferred"
+    assert "Generic description" in inferred["text"]
+    assert "Body" in inferred["text"]
     conn.execute(
         "INSERT INTO notes(id, content, kind, created_at) VALUES (1, ?, 'insight', 0)",
         (CONTEXT,),
@@ -122,17 +128,20 @@ def test_uses_live_creation_note_and_explicit_user_reason(tmp_path):
     )
     assert evaluation.skill_context(conn, "sample", skill)["source"] == "note:1"
     conn.execute("UPDATE memory_authority SET invalidated_at=1")
+    assert evaluation.skill_context(conn, "sample", skill) == inferred
+    md.unlink()
     assert evaluation.skill_context(conn, "sample", skill) is None
 
 
-@pytest.mark.parametrize(("candidate", "activated", "retry", "expected"), [
-    ("corrected", True, False, "repair"),
-    ("corrected", True, True, "repair"),
-    ("", True, False, "remove"),
-    ("", False, False, "inconclusive"),
+@pytest.mark.parametrize(("candidate", "activated", "retry", "inferred", "expected"), [
+    ("corrected", True, False, False, "repair"),
+    ("corrected", True, True, False, "repair"),
+    ("corrected", True, True, True, "repair"),
+    ("", True, False, False, "remove"),
+    ("", False, False, False, "inconclusive"),
 ])
 def test_caliper_comparison_authorizes_only_supported_mutation(
-    tmp_path, monkeypatch, candidate, activated, retry, expected,
+    tmp_path, monkeypatch, candidate, activated, retry, inferred, expected,
 ):
     settings = tmp_path / "settings"
     auth = settings / "auth"
@@ -140,7 +149,14 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
     (auth / "caliper").mkdir(mode=0o700)
     (auth / "caliper" / "chatgpt.json").write_text("{}")
     conn, skill = skill_context_fixture(tmp_path)
-    original = (skill / "SKILL.md").read_text()
+    source = skill / "SKILL.md"
+    if inferred:
+        source.write_text(
+            "---\nname: sample\ndescription: Route items.\n---\n"
+            f"Use this workflow to {CONTEXT.partition('needs to ')[2]}\n"
+            "Original implementation.\n"
+        )
+    original = source.read_text()
     snapshot = tmp_path / "snapshot" / "batch-001"
     monkeypatch.setattr(evaluation, "CURATOR_CALIPER_DIR", settings)
     monkeypatch.setattr(evaluation, "CURATOR_CALIPER_MODEL", "test-model")
@@ -156,6 +172,7 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
         if arm == "candidate":
             assert (inputs / "repaired/sample/SKILL.md").read_text() == candidate
         assert (inputs / "original/sample/SKILL.md").read_text() == original
+        assert INFERRED_USE_CASE not in (inputs / f"{arm}.eval.yaml").read_text()
         passed = arm != "current"
         loaded = arm == "candidate" or (arm == "current" and activated)
         (output / "run.json").write_text(json.dumps({
@@ -173,11 +190,20 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
         }))
 
     monkeypatch.setattr(evaluation, "_docker_run", run)
-    assert evaluation.evaluate(conn, "sample", skill)["status"] == "needs_scenarios"
-    raw_scenarios = json.dumps(scenarios())
+    context = evaluation.evaluate(conn, "sample", skill)
+    assert context["status"] == "needs_scenarios"
+    assert context["context_source"] == ("skill_inferred" if inferred else "metadata")
+    suite = scenarios()
+    if inferred:
+        refused = evaluation.evaluate(conn, "sample", skill, scenarios=json.dumps(suite))
+        assert refused["reason"] == "invalid_scenarios"
+        assert "inferred_use_case" in refused["detail"]
+        assert not calls
+        suite["inferred_use_case"] = INFERRED_USE_CASE
+    raw_scenarios = json.dumps(suite)
     if retry:
         assert evaluation.evaluate(conn, "sample", skill, scenarios=raw_scenarios)["decision"] == "remove"
-        changed = scenarios()
+        changed = json.loads(raw_scenarios)
         changed["cases"][0]["expected"] = "different"
         assert evaluation.evaluate(
             conn, "sample", skill, candidate, json.dumps(changed),
@@ -186,6 +212,13 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
     else:
         result = evaluation.evaluate(conn, "sample", skill, candidate, raw_scenarios)
     assert result["decision"] == expected
+    assert result["context_source"] == context["context_source"]
+    if inferred:
+        assert result["inferred_use_case"] == INFERRED_USE_CASE
+        receipt = json.loads((snapshot / "sample.json").read_bytes())
+        assert receipt["inferred_use_case"] == INFERRED_USE_CASE
+    else:
+        assert "inferred_use_case" not in result
     expected_calls = ["control", "current"]
     if retry:
         expected_calls += ["control", "current"]

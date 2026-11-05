@@ -1,7 +1,7 @@
 # Caliper for Curator
 
 Caliper measures whether a skill helps Codex complete a task. Curator's
-independent verifier builds cases from the skill's recorded purpose and runs them without the skill and with
+independent verifier builds cases from the skill's purpose and runs them without the skill and with
 the current skill. It can also test an exact proposed replacement. It
 keeps these checks separate from `skill_validate`'s format and mirror checks.
 
@@ -23,8 +23,8 @@ Set `THREADKEEPER_CURATOR_CALIPER_DIR` to that absolute directory in
 ThreadKeeper's configuration. Set `THREADKEEPER_CURATOR_CALIPER_MODEL`
 to the exact Codex model you want to use from that subscription. The model
 must work with Caliper's signed-in Codex runner. The regular Curator pass
-selects managed skills with recorded context. Advisory passes continue to
-produce reports only.
+selects managed skills for verification. Advisory passes continue to produce
+reports only.
 
 The runner mounts the dedicated Caliper session, staged skill and cases, and
 a temporary results directory. Codex runs as an unprivileged user inside
@@ -35,11 +35,11 @@ skill content suitable for the model provider. The cases below use synthetic dat
 
 ## Where scenarios come from
 
-Curator uses the reason the skill was created or added. A skill created via
-ThreadKeeper can link directly to a source note, user quote or user message.
-For an imported skill, record why you added it in the skill's existing
-frontmatter metadata. Use a short description that is safe to share with the
-model provider.
+Curator uses the recorded reason the skill was created or added when it can
+find one. A skill created via ThreadKeeper can link to a source note, user
+quote or user message. You can record the reason for adding an imported skill
+in its frontmatter metadata. Use a short description that is safe to share
+with the model provider.
 
 ```yaml
 metadata:
@@ -49,15 +49,18 @@ metadata:
     Requests with no status need a separate review.
 ```
 
+When there is no recorded reason, Curator infers a plausible user task from
+the skill's trigger and instructions. The report and snapshot label that
+use case as inferred.
+
 Curator creates five or six cases and ties each to a passage in the recorded
-context. At least three cases must represent mutually exclusive values of one
-decision condition. For the example above, a request can be open, closed or
+context or the skill itself. At least three cases must represent mutually
+exclusive values of one decision condition. For the example above, a request can be open, closed or
 draft. The remaining cases can cover missing status and a batch of requests.
 Curator writes synthetic fixtures and exact expected outcomes. ThreadKeeper
 builds deterministic file checks from those values. The original note or
-message is kept out of the Caliper scenario inputs. A skill with no recorded
-context, or with too little context for distinct cases, stays unscored for
-that behavioural check.
+message is kept out of the Caliper scenario inputs. A skill stays unscored
+for that behavioural check if the source cannot support distinct cases.
 
 Curator proposes a check for eligible managed skills and runs a bounded
 number per pass, prioritising skills that have waited longest. Each arm runs
@@ -66,7 +69,7 @@ passing replacement on every attempt and evidence that Codex loaded it.
 Standalone removal requires the baseline to pass every case, the loaded
 current skill to fail every case, and any attempted repair to fail every case.
 The verifier also checks for unique value and a viable repair before removing
-anything. Missing context, mixed results and runtime failures do not authorize
+anything. Unavailable sources, mixed results and runtime failures do not authorize
 a change. Pinned entries and existing recovery rules still apply.
 
 The verifier records the outcome in its report. The pass snapshot retains
