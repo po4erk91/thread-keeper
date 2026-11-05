@@ -54,8 +54,9 @@ def _group_counts(conn: sqlite3.Connection, table: str,
                   col: str) -> dict[str, int]:
     """`SELECT col, COUNT(*) GROUP BY col` → dict. Empty on error."""
     try:
+        where = " WHERE classification='production'" if table == "skill_usage" else ""
         rows = conn.execute(
-            f"SELECT {col}, COUNT(*) FROM {table} GROUP BY {col}"
+            f"SELECT {col}, COUNT(*) FROM {table}{where} GROUP BY {col}"
         ).fetchall()
     except sqlite3.OperationalError:
         return {}

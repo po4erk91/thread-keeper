@@ -2040,7 +2040,7 @@ def _curator_inventory_snapshot(
             "last_viewed_at, last_patched_at, use_count, view_count, "
             "patch_count, pinned, state "
             "FROM skill_usage "
-            "WHERE state IN ('active', 'stale') "
+            "WHERE state IN ('active', 'stale') AND classification='production' "
             "ORDER BY name"
         ).fetchall()
         for r in rows:

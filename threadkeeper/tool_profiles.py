@@ -86,6 +86,7 @@ MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "open_dialog_window",
     "register_concept",
     "style_set",
+    "skill_fixture_migrate",
     "unlink",
 }
 

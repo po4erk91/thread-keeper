@@ -388,6 +388,7 @@ def _skill_records(
     provenance: dict[tuple[str, str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     from .config import CLAUDE_SKILLS_DIR
+    from .skill_lifecycle import skill_directory
 
     usage = {row["name"]: row for row in _select_rows(conn, "skill_usage", "name")}
     names = set(usage)
@@ -400,7 +401,9 @@ def _skill_records(
         row = {
             "name": name,
             "usage": usage.get(name),
-            "files": _safe_skill_files(CLAUDE_SKILLS_DIR / name),
+            "files": _safe_skill_files(skill_directory(
+                CLAUDE_SKILLS_DIR, name, (usage.get(name) or {}).get("classification", "production"),
+            )),
         }
         records.append(
             _record_from_row(
@@ -731,8 +734,11 @@ def _path_conflict(record: dict[str, Any], namespace: str) -> bool:
     record_type = record["type"]
     if record_type == "skill":
         from .config import CLAUDE_SKILLS_DIR
+        from .skill_lifecycle import skill_directory
 
-        return (CLAUDE_SKILLS_DIR / _planned_local_id(record, namespace)).exists()
+        name = _planned_local_id(record, namespace)
+        return any(skill_directory(CLAUDE_SKILLS_DIR, name, value).exists()
+                   for value in ("production", "fixture"))
     if record_type == "lesson":
         from .lessons import lesson_section
 
@@ -860,13 +866,16 @@ def _materialize_skill(record: dict[str, Any], namespace: str) -> None:
         return
     from .config import CLAUDE_SKILLS_DIR
     from .tools.skills import _mirror_skill_dir
+    from .skill_lifecycle import skill_directory
 
     name = _planned_local_id(record, namespace)
-    target = CLAUDE_SKILLS_DIR / name
+    classification = (record["data"].get("usage") or {}).get("classification", "production")
+    target = skill_directory(CLAUDE_SKILLS_DIR, name, classification)
     files = record["data"].get("files") or []
     if not files:
         return
     CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{name}.tmp-", dir=CLAUDE_SKILLS_DIR.parent))
     try:
         for entry in files:
@@ -889,7 +898,7 @@ def _materialize_skill(record: dict[str, Any], namespace: str) -> None:
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    _mirror_skill_dir(name)
+    _mirror_skill_dir(name, classification=classification)
 
 
 def _materialize_lesson(record: dict[str, Any], namespace: str) -> None:

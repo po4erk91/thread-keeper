@@ -152,7 +152,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "role": "curator",
         "description": _ROLE_DESCRIPTIONS["curator"],
         "work": "Audits lessons and skills for patch, prune, consolidate",
-        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage WHERE classification='production'",
         "backlog_label": "tracked skills",
     },
     {
@@ -268,7 +268,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "interval": "SKILL_UPDATE_INTERVAL_S",
         "description": _ROLE_DESCRIPTIONS["skill_update"],
         "work": "Checks installed skills for updates and mirrors them",
-        "backlog_sql": "SELECT COUNT(*) FROM skill_usage",
+        "backlog_sql": "SELECT COUNT(*) FROM skill_usage WHERE classification='production'",
         "backlog_label": "tracked skills",
     },
 )
@@ -950,6 +950,8 @@ def _recent_materializations(conn, now: int, limit: int) -> list[dict[str, Any]]
     rows = conn.execute(
         "SELECT id, kind, target, summary, created_at FROM events "
         "WHERE kind IN ('skill_create', 'skill_materialized', 'lesson_append') "
+        "AND NOT EXISTS (SELECT 1 FROM skill_usage s WHERE s.name=events.target "
+        "AND s.classification='fixture' AND events.kind LIKE 'skill_%') "
         "AND created_at>=? ORDER BY created_at DESC, id DESC LIMIT ?",
         (now - _RESULT_WINDOW_S, int(limit)),
     ).fetchall()
