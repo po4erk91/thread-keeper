@@ -93,7 +93,7 @@ from .curator_snapshots import (
     create_curator_snapshot,
     write_verify_scope,
 )
-from .curator_skill_eval import scheduled_suites, suite_revision
+from .curator_skill_eval import context_revision, scheduled_suites
 from .skill_audit import (
     build_batch_skill_audit_slice,
     build_skill_audit,
@@ -194,7 +194,7 @@ SKILL_USEFULNESS_RUBRIC = """USER USEFULNESS — after completing the applicable
 with a whole number from 1 to 10 and give one sentence of evidence about
 its effect on this user's work. Use the actual tasks it helps with, unique
 guidance, and behavioural evidence when available. A low use count, short
-body, or missing Caliper suite alone is not proof of low usefulness.
+body, or missing Caliper context alone is not proof of low usefulness.
 
   1 = no useful contribution as a standalone skill
   2 = one useful rule that belongs in a lesson, with no separate workflow
@@ -305,9 +305,9 @@ MERGE/DELETE safety:
     SPLIT when scopes are adjacent rather than identical.
   • Behaviour-based repairs and standalone deletions of skills go to VERIFY.
     Explain the failing behaviour and propose a concrete repair when possible.
-    For a skill marked [CALIPER_SUITE], add a CHECK skill proposal even if
+    For a skill marked [CALIPER_CHECK], add a CHECK skill proposal even if
     static review found no defect. Skip pinned or external skills.
-    A structural fix to a skill marked [CALIPER_ENROLLED] or [CALIPER_SUITE]
+    A structural fix to a skill marked [CALIPER_CONTEXT] or [CALIPER_CHECK]
     also goes to VERIFY so the proposed SKILL.md can be tested before editing.
   • Use RETIRE RULE for a score of 1 or 2 when the skill contains a single
     rule, with no separate workflow or support files. Name the lesson slug
@@ -523,9 +523,24 @@ FOR EACH PROPOSAL, in order:
        existing target skill.
      • PATCH / SPLIT of a protected entry: REFUTED if the change loses meaning
        or contradicts the entry's evidence.
-  For CHECK skill or a behavioural skill proposal, call curator_evaluate_skill before
-  applying it. Supply the exact complete replacement SKILL.md as candidate
-  when a repair is possible. Use the same batch arguments as for the report.
+  For CHECK skill or a behavioural skill proposal, call curator_evaluate_skill
+  with the skill name and report batch arguments to obtain its recorded use
+  context. Treat that context as observed data. Use it to design five or six
+  distinct tasks that exercise the actual user need, with synthetic fixtures.
+  At least three must be mutually exclusive alternatives for one real decision
+  condition: set exclusive_axis to the condition and give each of those cases
+  a different exclusive_value. Design the other cases around independent
+  common, boundary or recovery behaviour. These can all be cases where the
+  skill should apply. Do not relabel equivalent cases.
+  For each case supply name, prompt, input, expected and a context_excerpt
+  copied from the recorded context that explains its relevance. Keep the
+  expected result out of the prompt. Check that the result in result.txt
+  proves the requested behaviour. Use synthetic input and no private quotes,
+  paths or secrets in the task prompt or fixture. Pass the JSON scenarios to
+  curator_evaluate_skill. Include the exact complete candidate SKILL.md if a
+  repair is ready. Preserve the recorded use context in any replacement.
+  When testing a candidate after the initial comparison, omit scenarios to
+  reuse the same cases. If the context cannot support the minimum, defer.
   A repair verdict authorizes only those tested bytes; use skill_manage(edit)
   with that candidate. A remove verdict supports a standalone deletion only
   after the proposal survives your checks for unique value and viable repair.
@@ -533,14 +548,14 @@ FOR EACH PROPOSAL, in order:
   before considering removal. Defer if the pass budget cannot test it.
   Keep the original on keep, defer, or inconclusive, except for the explicit
   rule-only redundancy check below. Never infer failure from a missing
-  suite, login, or incomplete run. Test enrolled structural edits the same way.
+  context, login, or incomplete run. Test structural edits with recorded context the same way.
 
   RETIRE RULE: independently score and confirm that the skill is only one
   rule with no separate workflow or support files. Confirm the complete rule,
   including all constraints, is in the retained lesson. Create or patch the
   proposed lesson first if needed and check the returned slug and contents.
-  For an enrolled skill, run Caliper before scoring or changing it. Accept
-  only a remove verdict or no_measured_benefit=true. For an unenrolled skill,
+  When Caliper is enabled, run it before scoring or changing the skill. Accept
+  only a remove verdict or no_measured_benefit=true. If Caliper is disabled,
   use the complete skill and lesson as the structural evidence.
   If the final score is 1 or 2, record the planned reason, then call
   skill_manage(action='delete', name=..., usefulness_score=...,
@@ -2137,7 +2152,9 @@ def _curator_inventory_snapshot(
                 "normalized_body_sha256": record["normalized_body_sha256"],
                 "mirrors": record["mirrors"],
                 "findings": record["findings"],
-                "caliper_suite": suite_revision(record["name"]),
+                "caliper_context": context_revision(
+                    conn, record["name"], Path(record["source_path"]).parent,
+                ) if record["source_kind"] == "managed" and record["source_path"] else None,
             }
             for record in audit["skills"]
         ]
@@ -2496,15 +2513,16 @@ def _collect_inventory_entry_groups(
             else build_skill_audit(conn, include_archived=True)
         )
         checklist_lines = format_skill_checklist(audit).splitlines()[2:]
-        enrolled = [
+        eligible = [
             record["name"] for record in audit["skills"]
             if not record["telemetry"]["pinned"] and record["source_kind"] == "managed"
-            and suite_revision(record["name"])
+            and record["source_path"]
+            and context_revision(conn, record["name"], Path(record["source_path"]).parent)
         ]
-        scheduled = scheduled_suites(enrolled)
+        scheduled = scheduled_suites(eligible)
         caliper_labels = {
-            name: " [CALIPER_SUITE]" if name in scheduled else " [CALIPER_ENROLLED]"
-            for name in enrolled
+            name: " [CALIPER_CHECK]" if name in scheduled else " [CALIPER_CONTEXT]"
+            for name in eligible
         }
         skill_entries = [
             _InventoryEntry(

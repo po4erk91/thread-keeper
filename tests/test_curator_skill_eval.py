@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import json
+import sqlite3
+import subprocess
 
 import pytest
 
@@ -38,67 +40,107 @@ def test_incomplete_or_failed_attempt_is_not_skill_evidence(tmp_path):
         evaluation.read_arm(path, ("case",), "sample")
 
 
-def test_suite_rejects_model_grading_and_agent_supplied_skill_sources(tmp_path):
-    suite = tmp_path / "skill.eval.yaml"
-    suite.write_text("skills: [./OTHER.md]\ntasks: []\n")
-    with pytest.raises(ValueError, match="only a tasks mapping"):
-        evaluation.read_suite(suite.read_bytes())
-    suite.write_text("tasks: [{name: case, prompt: do something, expect: looks good}]\n")
-    with pytest.raises(ValueError, match="deterministic"):
-        evaluation.read_suite(suite.read_bytes())
+CONTEXT = "The user needs to route imported items by status and handle incomplete inputs."
+CASES = ("open", "closed", "draft", "missing", "blank")
 
 
-def test_mutation_requires_fresh_evidence_for_exact_edit(tmp_path, monkeypatch):
-    settings = tmp_path / "settings"
-    suites = settings / "suites"
-    suites.mkdir(parents=True)
-    suite = suites / "sample.eval.yaml"
-    suite.write_text("tasks: []\n")
+def scenarios():
+    return {
+        "exclusive_axis": "status",
+        "cases": [
+            {"name": name, "prompt": f"Route the {name} item.",
+             "input": f"item {name}", "expected": name,
+             "context_excerpt": "route imported items by status",
+             **({"exclusive_value": name} if index < 3 else {})}
+            for index, name in enumerate(CASES)
+        ],
+    }
+
+
+@pytest.mark.parametrize(("change", "message"), [
+    (lambda suite: suite["cases"].pop(), "five to six"),
+    (lambda suite: suite["cases"][2].pop("exclusive_value"), "mutually exclusive"),
+    (lambda suite: suite["cases"][2].update(exclusive_value=" OPEN "), "mutually exclusive"),
+    (lambda suite: suite["cases"][0].update(context_excerpt="unrelated reason"), "context"),
+    (lambda suite: suite["cases"][0].update(assert_code="assert True"), "fields"),
+])
+def test_scenarios_need_grounding_and_mutually_exclusive_cases(change, message):
+    suite = scenarios()
+    change(suite)
+    with pytest.raises(ValueError, match=message):
+        evaluation.compile_scenarios(json.dumps(suite), CONTEXT)
+
+
+def test_scenario_compiles_data_into_safe_deterministic_checks(tmp_path):
+    suite = scenarios()
+    fixture = "one \n'; touch injected; #"
+    suite["cases"][0]["input"] = fixture
+    task, *_ = evaluation.compile_scenarios(json.dumps(suite), CONTEXT)
+    subprocess.run(task["setup"], shell=True, cwd=tmp_path, check=True)
+    assert (tmp_path / "input.txt").read_text() == fixture
+    assert json.loads((tmp_path / "condition.json").read_text()) == {"status": "open"}
+    assert not (tmp_path / "injected").exists()
+    assert "route imported items" not in str(task)
+    result = tmp_path / "result.txt"
+    result.write_text("open\n")
+    command = ["python3", "-c", task["assert"]]
+    subprocess.run(command, cwd=tmp_path, check=True)
+    result.write_text("closed")
+    assert subprocess.run(command, cwd=tmp_path, capture_output=True).returncode
+    result.unlink()
+    result.symlink_to("input.txt")
+    assert subprocess.run(command, cwd=tmp_path, capture_output=True).returncode
+
+
+def skill_context_fixture(tmp_path):
     skill = tmp_path / "sample"
     skill.mkdir()
-    (skill / "SKILL.md").write_text("original")
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    monkeypatch.setattr(evaluation, "CURATOR_CALIPER_DIR", settings)
-    monkeypatch.setattr(evaluation, "evidence_dir", lambda: snapshot)
-
-    assert evaluation.mutation_refusal("edit", "sample", skill, "repair")
-    evaluation.save_evidence(
-        snapshot, "sample", evaluation._tree_hash(skill), evaluation._digest(suite.read_bytes()),
-        "repair", {"decision": "repair"},
+    (skill / "SKILL.md").write_text(
+        f"---\nname: sample\ndescription: Example\n"
+        f"metadata:\n  threadkeeper-eval-context: {CONTEXT}\n---\nOriginal\n"
     )
-    assert not evaluation.mutation_refusal("edit", "sample", skill, "repair")
-    assert evaluation.mutation_refusal("edit", "sample", skill, "unverified edit")
-    assert evaluation.mutation_refusal("delete", "sample", skill)
-    assert not evaluation.mutation_refusal("delete", "sample", skill, replacement="existing-skill")
+    from threadkeeper.db import SCHEMA
 
-    (skill / "SKILL.md").write_text("changed elsewhere")
-    assert evaluation.mutation_refusal("edit", "sample", skill, "repair")
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SCHEMA)
+    return conn, skill
 
 
-@pytest.mark.parametrize(("candidate", "activated", "expected"), [
-    ("corrected", True, "repair"),
-    ("", True, "remove"),
-    ("", False, "inconclusive"),
+def test_uses_live_creation_note_and_explicit_user_reason(tmp_path):
+    conn, skill = skill_context_fixture(tmp_path)
+    md = skill / "SKILL.md"
+    assert evaluation.skill_context(conn, "sample", skill)["text"] == CONTEXT
+    md.write_text("---\nname: sample\ndescription: Generic description\n---\nBody\n")
+    assert evaluation.skill_context(conn, "sample", skill) is None
+    conn.execute(
+        "INSERT INTO notes(id, content, kind, created_at) VALUES (1, ?, 'insight', 0)",
+        (CONTEXT,),
+    )
+    conn.execute("INSERT INTO memory_derivations VALUES ('note', '1', 'skill', 'sample', 0)")
+    conn.execute(
+        "INSERT INTO memory_authority VALUES ('note', '1', 'trusted', 'user', 'test', 0, NULL, NULL)"
+    )
+    assert evaluation.skill_context(conn, "sample", skill)["source"] == "note:1"
+    conn.execute("UPDATE memory_authority SET invalidated_at=1")
+    assert evaluation.skill_context(conn, "sample", skill) is None
+
+
+@pytest.mark.parametrize(("candidate", "activated", "retry", "expected"), [
+    ("corrected", True, False, "repair"),
+    ("corrected", True, True, "repair"),
+    ("", True, False, "remove"),
+    ("", False, False, "inconclusive"),
 ])
 def test_caliper_comparison_authorizes_only_supported_mutation(
-    tmp_path, monkeypatch, candidate, activated, expected,
+    tmp_path, monkeypatch, candidate, activated, retry, expected,
 ):
     settings = tmp_path / "settings"
-    suites = settings / "suites"
-    suites.mkdir(parents=True)
     auth = settings / "auth"
-    auth.mkdir(mode=0o700)
+    auth.mkdir(mode=0o700, parents=True)
     (auth / "caliper").mkdir(mode=0o700)
     (auth / "caliper" / "chatgpt.json").write_text("{}")
-    (suites / "sample.eval.yaml").write_text(
-        "tasks:\n"
-        "  - {name: create, prompt: Create sample, assert: assert True}\n"
-        "  - {name: inspect, prompt: Inspect sample, assert: assert True}\n",
-    )
-    skill = tmp_path / "sample"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("original")
+    conn, skill = skill_context_fixture(tmp_path)
+    original = (skill / "SKILL.md").read_text()
     snapshot = tmp_path / "snapshot" / "batch-001"
     monkeypatch.setattr(evaluation, "CURATOR_CALIPER_DIR", settings)
     monkeypatch.setattr(evaluation, "CURATOR_CALIPER_MODEL", "test-model")
@@ -113,7 +155,7 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
         assert name == "sample"
         if arm == "candidate":
             assert (inputs / "repaired/sample/SKILL.md").read_text() == candidate
-        assert (inputs / "original/sample/SKILL.md").read_text() == "original"
+        assert (inputs / "original/sample/SKILL.md").read_text() == original
         passed = arm != "current"
         loaded = arm == "candidate" or (arm == "current" and activated)
         (output / "run.json").write_text(json.dumps({
@@ -126,17 +168,42 @@ def test_caliper_comparison_authorizes_only_supported_mutation(
                     {"outcome": "pass" if passed else "task_fail",
                      "activated": [name] if loaded else []},
                 ] * 3}
-                for case in ("create", "inspect")
+                for case in CASES
             ],
         }))
 
     monkeypatch.setattr(evaluation, "_docker_run", run)
-    result = evaluation.evaluate("sample", skill, candidate)
+    assert evaluation.evaluate(conn, "sample", skill)["status"] == "needs_scenarios"
+    raw_scenarios = json.dumps(scenarios())
+    if retry:
+        assert evaluation.evaluate(conn, "sample", skill, scenarios=raw_scenarios)["decision"] == "remove"
+        changed = scenarios()
+        changed["cases"][0]["expected"] = "different"
+        assert evaluation.evaluate(
+            conn, "sample", skill, candidate, json.dumps(changed),
+        )["reason"] == "reuse_original_scenarios"
+        result = evaluation.evaluate(conn, "sample", skill, candidate)
+    else:
+        result = evaluation.evaluate(conn, "sample", skill, candidate, raw_scenarios)
     assert result["decision"] == expected
-    assert calls == (["control", "current", "candidate"] if candidate else ["control", "current"])
-    assert bool(evaluation.mutation_refusal("delete", "sample", skill)) == (expected != "remove")
-    assert bool(evaluation.mutation_refusal("edit", "sample", skill, candidate)) == (expected != "repair")
-    assert (skill / "SKILL.md").read_text() == "original"
+    expected_calls = ["control", "current"]
+    if retry:
+        expected_calls += ["control", "current"]
+    if candidate:
+        expected_calls.append("candidate")
+    assert calls == expected_calls
+    assert bool(evaluation.mutation_refusal(conn, "delete", "sample", skill)) == (expected != "remove")
+    assert bool(evaluation.mutation_refusal(conn, "edit", "sample", skill, candidate)) == (expected != "repair")
+    assert (skill / "SKILL.md").read_text() == original
+    if expected == "repair":
+        assert evaluation.mutation_refusal(conn, "edit", "sample", skill, "different repair")
+    if expected != "inconclusive":
+        (skill / "SKILL.md").write_text(original.replace("Original", "Edited outside Curator"))
+        assert evaluation.mutation_refusal(conn, "delete", "sample", skill)
+        assert evaluation.mutation_refusal(conn, "edit", "sample", skill, candidate)
+    assert not evaluation.mutation_refusal(
+        conn, "delete", "sample", skill, replacement="existing-skill",
+    )
 
 
 def test_caliper_schedule_prioritizes_skills_without_recent_attempts(tmp_path, monkeypatch):
@@ -151,35 +218,33 @@ def test_caliper_schedule_prioritizes_skills_without_recent_attempts(tmp_path, m
     }
 
 
-def test_enrolled_rule_retirement_needs_current_evidence_of_no_benefit(tmp_path, monkeypatch):
-    suites = tmp_path / "suites"
-    suites.mkdir()
-    suite = suites / "sample.eval.yaml"
-    suite.write_text("tasks: []\n")
-    source = tmp_path / "skill"
-    source.mkdir()
-    (source / "SKILL.md").write_text("A complete user rule.")
+def test_rule_retirement_needs_current_evidence_of_no_benefit(tmp_path, monkeypatch):
+    conn, source = skill_context_fixture(tmp_path)
     snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    suite = snapshot / "sample.suite.json"
+    suite.write_text("compiled tasks")
     monkeypatch.setattr(evaluation, "CURATOR_CALIPER_DIR", tmp_path)
     monkeypatch.setattr(evaluation, "evidence_dir", lambda: snapshot)
-    assert evaluation.mutation_refusal("retire_rule", "sample", source)
+    assert evaluation.mutation_refusal(conn, "retire_rule", "sample", source)
     evidence = {
-        "decision": "keep", "cases": ["one", "two"],
-        "passes_by_case": {"control": [3, 3], "current": [3, 3]},
-        "activations_by_case": {"current": [3, 0]},
+        "decision": "keep", "cases": list(CASES),
+        "passes_by_case": {"control": [3] * 5, "current": [3] * 5},
+        "activations_by_case": {"current": [3, 0, 3, 3, 3]},
     }
+    context = evaluation.skill_context(conn, "sample", source)
 
     def save():
         evaluation.save_evidence(
             snapshot, "sample", evaluation._tree_hash(source),
-            evaluation._digest(suite.read_bytes()), "", evidence,
+            evaluation._digest(suite.read_bytes()), context["revision"], "", evidence,
         )
 
     save()
-    assert evaluation.mutation_refusal("retire_rule", "sample", source)
-    evidence["activations_by_case"]["current"] = [3, 3]
+    assert evaluation.mutation_refusal(conn, "retire_rule", "sample", source)
+    evidence["activations_by_case"]["current"] = [3] * 5
     save()
-    assert not evaluation.mutation_refusal("retire_rule", "sample", source)
-    assert evaluation.mutation_refusal("delete", "sample", source)
+    assert not evaluation.mutation_refusal(conn, "retire_rule", "sample", source)
+    assert evaluation.mutation_refusal(conn, "delete", "sample", source)
     suite.write_text("updated suite\n")
-    assert evaluation.mutation_refusal("retire_rule", "sample", source)
+    assert evaluation.mutation_refusal(conn, "retire_rule", "sample", source)

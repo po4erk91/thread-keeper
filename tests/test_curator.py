@@ -3311,9 +3311,9 @@ def test_pinned_lessons_never_count_toward_a_promotion(tmp_path, monkeypatch):
     assert dict(detection.rejected_by_reason)["pinned_member"] == 1
 
 
-def test_caliper_suites_are_visible_to_curator_and_change_pass_identity(tmp_path, monkeypatch):
+def test_caliper_creation_context_schedules_check_and_changes_pass_identity(tmp_path, monkeypatch):
     settings = tmp_path / "caliper"
-    (settings / "suites").mkdir(parents=True)
+    settings.mkdir()
     monkeypatch.setenv("THREADKEEPER_CURATOR_CALIPER_DIR", str(settings))
     pkg = _bootstrap(tmp_path, monkeypatch)
     _add_skill(pkg, "example-skill")
@@ -3321,9 +3321,14 @@ def test_caliper_suites_are_visible_to_curator_and_change_pass_identity(tmp_path
     conn = pkg["db"].get_db()
     before = curator._current_inventory_fingerprint(conn)
 
-    suite = settings / "suites" / "example-skill.eval.yaml"
-    suite.write_text("tasks: []")
-    assert "[CALIPER_SUITE]" in curator._collect_inventory(conn)[0]
+    assert "[CALIPER_CHECK]" not in curator._collect_inventory(conn)[0]
+    skill = pkg["skills_dir"] / "example-skill" / "SKILL.md"
+    skill.write_text(
+        "---\nname: example-skill\ndescription: Example\nmetadata:\n"
+        "  threadkeeper-eval-context: User needs to sort entries by workflow state.\n"
+        "---\n\nHandle workflow entries.\n"
+    )
+    assert "[CALIPER_CHECK]" in curator._collect_inventory(conn)[0]
     assert curator._current_inventory_fingerprint(conn) != before
 
 

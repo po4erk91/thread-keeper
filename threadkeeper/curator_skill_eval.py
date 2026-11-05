@@ -1,12 +1,14 @@
 """Run isolated Caliper experiments and bind decisions to the tested bytes."""
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -24,31 +26,67 @@ from .config import (
 from .curator_snapshots import VERIFY_BATCH_ENV, current_snapshot_dir, snapshots_root
 from .helpers import single_flight_lock
 from .permissions import open_private_binary_write
-from .skill_audit import _tree_hash
+from .ingest import _scrub_dialog_secrets
+from .skill_audit import _frontmatter, _tree_hash
 
 
 IMAGE = "threadkeeper-caliper"
 PRIVATE_ROOT = "/run/caliper-private"
 ATTEMPTS = 3
-MAX_CASES = 4
+MIN_CASES = 5
+MAX_CASES = 6
+MIN_EXCLUSIVE_CASES = 3
+MAX_CONTEXT_CHARS = 2_000
+CONTEXT_KEY = "threadkeeper-eval-context"
 MAX_RUNS_PER_PASS = 2
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 
 
-def suite_path(name: str) -> Path | None:
-    if CURATOR_CALIPER_DIR is None:
-        return None
-    return CURATOR_CALIPER_DIR / "suites" / f"{name}.eval.yaml"
-
-
-def suite_revision(name: str) -> str | None:
-    suite = suite_path(name)
-    if suite is None or not suite.is_file():
-        return None
+def _explicit_context(skill: Path) -> str:
     try:
-        return _digest(suite.read_bytes())
-    except OSError:
+        with (skill / "SKILL.md").open(encoding="utf-8") as file:
+            fields, _, _ = _frontmatter(file.read(64_000))
+    except (OSError, UnicodeError):
+        return ""
+    metadata = fields.get("metadata")
+    text = metadata.get(CONTEXT_KEY) if isinstance(metadata, dict) else None
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _creation_context(conn: sqlite3.Connection, name: str) -> tuple[str, str]:
+    parents = conn.execute(
+        "SELECT d.parent_kind, d.parent_id FROM memory_derivations d "
+        "JOIN memory_authority a ON a.artifact_kind=d.parent_kind AND a.artifact_id=d.parent_id "
+        "WHERE d.child_kind='skill' AND d.child_id=? AND a.invalidated_at IS NULL "
+        "ORDER BY d.created_at, d.parent_kind, d.parent_id",
+        (name,),
+    )
+    queries = {
+        "note": "SELECT content FROM notes WHERE id=?",
+        "verbatim": "SELECT content FROM verbatim WHERE id=? AND speaker='user'",
+        "dialog": "SELECT content FROM dialog_messages WHERE uuid=? AND role='user'",
+    }
+    for kind, artifact_id in parents:
+        query = queries.get(kind)
+        if query and (row := conn.execute(query, (artifact_id,)).fetchone()) and row[0].strip():
+            return f"{kind}:{artifact_id}", row[0]
+    return "", ""
+
+
+def skill_context(conn: sqlite3.Connection, name: str, skill: Path) -> dict[str, str] | None:
+    """Resolve a recorded use case without guessing from a skill's instructions."""
+    explicit = _explicit_context(skill)
+    source, text = ("metadata", explicit) if explicit else _creation_context(conn, name)
+    if not text:
         return None
+    excerpt = _scrub_dialog_secrets(text)[:MAX_CONTEXT_CHARS].strip()
+    revision = _digest(json.dumps([source, text], ensure_ascii=False).encode())
+    return {"source": source, "text": excerpt, "revision": revision}
+
+
+def context_revision(conn: sqlite3.Connection, name: str, skill: Path) -> str | None:
+    context = skill_context(conn, name, skill) if CURATOR_CALIPER_DIR else None
+    return context["revision"] if context else None
 
 
 def scheduled_suites(names: list[str]) -> set[str]:
@@ -65,31 +103,67 @@ def scheduled_suites(names: list[str]) -> set[str]:
     return set(sorted(eligible, key=lambda name: (eligible[name], name))[:MAX_RUNS_PER_PASS])
 
 
-def read_suite(source: bytes) -> list[dict]:
-    if len(source) > 32_000:
-        raise ValueError("Caliper suite too large")
-    data = yaml.safe_load(source)
-    if not isinstance(data, dict) or set(data) != {"tasks"}:
-        raise ValueError("Caliper suite must contain only a tasks mapping")
-    tasks = data["tasks"]
-    if not isinstance(tasks, list) or any(
-        not isinstance(task, dict)
-        or set(task) - {"name", "prompt", "setup", "assert"}
-        or not all(isinstance(value, str) and value.strip() for value in task.values())
-        or not {"name", "prompt", "assert"} <= task.keys()
-        for task in tasks
-    ):
-        raise ValueError("Caliper tasks need a name, prompt and deterministic inline assertion")
-    if not 2 <= len(tasks) <= MAX_CASES or len({task["name"] for task in tasks}) != len(tasks):
-        raise ValueError("Caliper suite needs two to four uniquely named tasks")
-    for task in tasks:
-        try:
-            assertion = ast.parse(task["assert"])
-        except SyntaxError as exc:
-            raise ValueError("Caliper suite requires inline Python assertions") from exc
-        if not any(isinstance(node, ast.Assert) for node in ast.walk(assertion)):
-            raise ValueError("Caliper task must assert an observable result")
-    return tasks
+def _scenario_task(case: dict, axis: str) -> dict:
+    condition = {axis: case["exclusive_value"]} if "exclusive_value" in case else {}
+    setup = (
+        f"printf '%s' {shlex.quote(case['input'])} > input.txt\n"
+        f"printf '%s' {shlex.quote(json.dumps(condition))} > condition.json"
+    )
+    expected = case["expected"].encode()
+    assertion = (
+        "import os, stat\n"
+        "fd = os.open('result.txt', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)\n"
+        "with os.fdopen(fd, 'rb') as result:\n"
+        "    assert stat.S_ISREG(os.fstat(result.fileno()).st_mode)\n"
+        f"    assert result.read({len(expected) + 2}).removesuffix(b'\\n') == {expected!r}\n"
+    )
+    return {
+        "name": case["name"],
+        "prompt": (
+            f"{case['prompt']}\n\n"
+            "Use input.txt and the scenario condition in condition.json. "
+            "Write the requested outcome to result.txt."
+        ),
+        "setup": setup,
+        "assert": assertion,
+    }
+
+
+def compile_scenarios(raw: str, context: str) -> list[dict]:
+    if len(raw.encode()) > 32_000:
+        raise ValueError("scenario set too large")
+    suite = json.loads(raw)
+    if not isinstance(suite, dict) or set(suite) != {"exclusive_axis", "cases"}:
+        raise ValueError("provide an exclusive_axis and cases")
+    axis = suite["exclusive_axis"]
+    if not isinstance(axis, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", axis):
+        raise ValueError("exclusive_axis must name one condition shared by the alternatives")
+    cases = suite["cases"]
+    if not isinstance(cases, list) or not MIN_CASES <= len(cases) <= MAX_CASES:
+        raise ValueError("provide five to six scenarios")
+    required = {"name", "prompt", "input", "expected", "context_excerpt"}
+    for case in cases:
+        if (
+            not isinstance(case, dict) or not required <= case.keys()
+            or case.keys() - required - {"exclusive_value"}
+            or any(not isinstance(value, str) or "\x00" in value for value in case.values())
+            or any(not case[field].strip() for field in case.keys() - {"input", "expected"})
+        ):
+            raise ValueError("invalid scenario fields")
+        excerpt = case["context_excerpt"].strip()
+        if len(excerpt) < 12 or excerpt not in context:
+            raise ValueError("each scenario must cite its recorded context")
+    if len({case["name"].strip().casefold() for case in cases}) != len(cases):
+        raise ValueError("scenario names must be unique")
+    if len({case["prompt"].strip().casefold() for case in cases}) != len(cases):
+        raise ValueError("scenario prompts must be distinct")
+    alternatives = [
+        case["exclusive_value"].strip().casefold()
+        for case in cases if "exclusive_value" in case
+    ]
+    if len(alternatives) < MIN_EXCLUSIVE_CASES or len(set(alternatives)) != len(alternatives):
+        raise ValueError("at least three cases need mutually exclusive values on the same axis")
+    return [_scenario_task(case, axis) for case in cases]
 
 
 def _read_result(path: Path) -> dict:
@@ -166,28 +240,33 @@ def _digest(content: bytes) -> str:
 
 def save_evidence(
     directory: Path, name: str, skill_digest: str, suite_digest: str,
-    candidate: str, result: dict,
+    context_digest: str, candidate: str, result: dict,
 ) -> None:
     record = {
         **result,
         "skill_digest": skill_digest,
         "suite_digest": suite_digest,
+        "context_digest": context_digest,
         "candidate_digest": _digest(candidate.encode()) if candidate else None,
     }
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as file:
+    _save_private_bytes(directory / f"{name}.json", json.dumps(record, sort_keys=True).encode())
+
+
+def _save_private_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
         temporary = Path(file.name)
         try:
-            file.write(json.dumps(record, sort_keys=True).encode())
+            file.write(data)
             file.flush()
-            temporary.replace(directory / f"{name}.json")
+            temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
 
 
 def _redundancy_proved(evidence: dict) -> bool:
     cases = evidence["cases"]
-    if not isinstance(cases, (list, tuple)) or not 2 <= len(cases) <= MAX_CASES:
+    if not isinstance(cases, (list, tuple)) or not MIN_CASES <= len(cases) <= MAX_CASES:
         return False
     perfect = (ATTEMPTS,) * len(cases)
     return (
@@ -207,24 +286,26 @@ def _decision_matches(evidence: dict, action: str, candidate: str) -> bool:
 
 
 def mutation_refusal(
-    action: str, name: str, skill: Path, candidate: str = "", *, replacement: str = "",
+    conn: sqlite3.Connection, action: str, name: str, skill: Path,
+    candidate: str = "", *, replacement: str = "",
 ) -> str:
-    suite = suite_path(name)
-    if suite is None or action not in {"edit", "delete", "retire_rule"}:
+    if CURATOR_CALIPER_DIR is None or action not in {"edit", "delete", "retire_rule"}:
         return ""
     if action == "delete" and replacement:
         return ""
-    if action in {"edit", "retire_rule"} and not suite.is_file():
+    revision = context_revision(conn, name, skill)
+    if action == "edit" and revision is None:
         return ""
     directory = evidence_dir()
-    if directory is not None:
+    if directory is not None and revision is not None:
         try:
             evidence = _read_result(directory / f"{name}.json")
             current_digest = _tree_hash(skill)
             if (
                 current_digest is not None
                 and evidence["skill_digest"] == current_digest
-                and evidence["suite_digest"] == _digest(suite.read_bytes())
+                and evidence["context_digest"] == revision
+                and evidence["suite_digest"] == _digest((directory / f"{name}.suite.json").read_bytes())
                 and _decision_matches(evidence, action, candidate)
             ):
                 return ""
@@ -258,7 +339,7 @@ def _docker_run(
         "--mount", f"type=bind,src={inputs},dst={PRIVATE_ROOT}/input,readonly",
         "--mount", f"type=bind,src={outputs},dst={PRIVATE_ROOT}/output",
         IMAGE, "run", f"{PRIVATE_ROOT}/input/{arm}.eval.yaml", "--model", f"codex:{model}",
-        "--no-user-customizations", "--k", str(ATTEMPTS), "--workers", "3",
+        "--no-user-customizations", "--k", str(ATTEMPTS), "--workers", "6",
         "--timeout", "35", "--fail-fast", "1", "--output", f"{PRIVATE_ROOT}/output/run.json",
     ]
     if arm == "control":
@@ -299,11 +380,12 @@ def _stage_spec(inputs: Path, arm: str, bundle: str, name: str, tasks: list[dict
     (inputs / f"{arm}.eval.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
 
 
-def evaluate(name: str, skill: Path, candidate: str = "") -> dict:
-    suite = suite_path(name)
+def evaluate(
+    conn: sqlite3.Connection, name: str, skill: Path, candidate: str = "", scenarios: str = "",
+) -> dict:
     directory = evidence_dir()
-    if suite is None or directory is None or not suite.is_file():
-        return {"decision": "defer", "reason": "no_configured_suite"}
+    if CURATOR_CALIPER_DIR is None or directory is None:
+        return {"decision": "defer", "reason": "caliper_not_configured"}
     if not CURATOR_CALIPER_MODEL:
         return {"decision": "defer", "reason": "caliper_model_required"}
     auth = CURATOR_CALIPER_DIR / "auth" / "caliper"
@@ -314,15 +396,28 @@ def evaluate(name: str, skill: Path, candidate: str = "") -> dict:
             or not (auth / "chatgpt.json").is_file()
         ):
             return {"decision": "defer", "reason": "private_caliper_subscription_login_required"}
-        return _evaluate(name, skill, suite, auth, directory, candidate, CURATOR_CALIPER_MODEL)
+        context = skill_context(conn, name, skill)
+        if context is None:
+            return {"decision": "defer", "reason": "missing_skill_creation_context"}
+        suite = directory / f"{name}.suite.json"
+        if not scenarios and not (candidate and suite.is_file()):
+            return {
+                "status": "needs_scenarios",
+                "context": context["text"],
+                "context_source": context["source"],
+            }
+        return _evaluate(
+            conn, name, skill, suite, auth, directory, context, candidate, scenarios,
+        )
     except subprocess.CalledProcessError as exc:
         return {"decision": "defer", "reason": "caliper_failed", "exit_code": exc.returncode}
-    except (OSError, ValueError, yaml.YAMLError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, subprocess.SubprocessError) as exc:
         return {"decision": "defer", "reason": type(exc).__name__}
 
 
 def _evaluate(
-    name: str, skill: Path, suite: Path, auth: Path, directory: Path, candidate: str, model: str,
+    conn: sqlite3.Connection, name: str, skill: Path, suite: Path, auth: Path,
+    directory: Path, context: dict, candidate: str, scenarios: str,
 ) -> dict:
     with single_flight_lock("curator-caliper") as locked:
         if not locked:
@@ -332,10 +427,24 @@ def _evaluate(
             marker = directory / f"{name}:candidate.started"
         if marker.exists() or len(list(directory.parent.glob("batch-*/*.started"))) >= MAX_RUNS_PER_PASS:
             return {"decision": "defer", "reason": "evaluation_budget_exhausted"}
-        suite_bytes = suite.read_bytes()
-        tasks = read_suite(suite_bytes)
+        context_digest = context["revision"]
+        if suite.is_file():
+            if scenarios:
+                return {"decision": "defer", "reason": "reuse_original_scenarios"}
+            suite_bytes = suite.read_bytes()
+            recorded = json.loads(suite_bytes)
+            if recorded["context_digest"] != context_digest:
+                return {"decision": "defer", "reason": "source_changed"}
+            tasks = recorded["tasks"]
+        else:
+            try:
+                tasks = compile_scenarios(scenarios, context["text"])
+            except ValueError as exc:
+                return {"decision": "defer", "reason": "invalid_scenarios", "detail": str(exc)}
+            suite_bytes = json.dumps({"context_digest": context_digest, "tasks": tasks}).encode()
         cases = tuple(task["name"] for task in tasks)
         suite_digest = _digest(suite_bytes)
+        model = CURATOR_CALIPER_MODEL
         with tempfile.TemporaryDirectory(prefix="tk-caliper-") as scratch:
             root = Path(scratch)
             inputs = root / "input"
@@ -353,7 +462,8 @@ def _evaluate(
                 shutil.copytree(original, repaired)
                 (repaired / "SKILL.md").write_text(candidate, encoding="utf-8")
                 _stage_spec(inputs, "candidate", "repaired", name, tasks)
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not suite.is_file():
+                _save_private_bytes(suite, suite_bytes)
             with open_private_binary_write(marker):
                 pass
             (directory / f"{name}.json").unlink(missing_ok=True)
@@ -370,7 +480,10 @@ def _evaluate(
                 identities.add(identity)
             if len(identities) != 1 or next(iter(identities))[0] != model:
                 return {"decision": "defer", "reason": "runtime_changed"}
-            if original_digest != _tree_hash(skill) or suite_digest != _digest(suite.read_bytes()):
+            if (
+                original_digest != _tree_hash(skill) or suite_digest != _digest(suite.read_bytes())
+                or context_digest != context_revision(conn, name, skill)
+            ):
                 return {"decision": "defer", "reason": "source_changed"}
             decision = decide(results["control"], results["current"], results.get("candidate"))
             tested_arm = {"repair": "candidate", "remove": "current"}.get(decision)
@@ -385,5 +498,7 @@ def _evaluate(
                 "runtime": identities.pop(),
             }
             result["no_measured_benefit"] = _redundancy_proved(result)
-            save_evidence(directory, name, original_digest, suite_digest, candidate, result)
+            save_evidence(
+                directory, name, original_digest, suite_digest, context_digest, candidate, result,
+            )
             return result

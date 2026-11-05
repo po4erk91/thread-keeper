@@ -1402,16 +1402,20 @@ def test_evolve_report_applier_cannot_delete_skills(tmp_path, monkeypatch):
     assert (pkg["skills_root"] / "loop-skill").exists()
 
 
-def test_curator_cannot_apply_a_caliper_enrolled_edit_without_tested_bytes(tmp_path, monkeypatch):
+def test_curator_cannot_edit_a_skill_with_caliper_context_without_tested_bytes(tmp_path, monkeypatch):
     settings = tmp_path / "caliper"
-    (settings / "suites").mkdir(parents=True)
+    settings.mkdir()
     monkeypatch.setenv("THREADKEEPER_CURATOR_CALIPER_DIR", str(settings))
     pkg = _bootstrap_skills(tmp_path, monkeypatch, write_origin="curator")
     _seed_skill_as_foreground(pkg, "testable-skill")
     _enter_curator_pass(tmp_path, monkeypatch, phase="verify", scope=("testable-skill",))
-    (settings / "suites" / "testable-skill.eval.yaml").write_text("tasks: []")
     source = pkg["skills_root"] / "testable-skill" / "SKILL.md"
-    original = source.read_text()
+    original = source.read_text().replace(
+        "\n---\n",
+        "\nmetadata:\n  threadkeeper-eval-context: The user needs to sort items by state.\n---\n",
+        1,
+    )
+    source.write_text(original)
     sm = _tool(pkg, "skill_manage")
 
     edit = sm(action="edit", name="testable-skill", content=original + "\nUnverified change.\n")

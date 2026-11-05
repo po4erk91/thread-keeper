@@ -8,8 +8,9 @@ version bumps follow semver per the policy in
 ## [Unreleased]
 
 - **Added: evidence for Curator skill repairs and removals.** With Caliper
-  configured, the verifier runs owner-supplied cases with and without a skill
-  and can test a repair before applying it. Missing or mixed results do not
+  configured, the verifier builds cases from why the skill was created or
+  added. It tests at least five cases, including three mutually exclusive
+  alternatives, with and without the skill. Missing or mixed results do not
   authorize a change.
 - **Added: user usefulness scores and a log for rule-only skill retirements.**
   Curator explains each score. When a low-value standalone skill is retired,

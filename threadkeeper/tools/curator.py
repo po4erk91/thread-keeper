@@ -307,13 +307,19 @@ def curator_review_status() -> str:
 @write_tool()
 def curator_evaluate_skill(
     name: str, candidate: str = "", batch_index: int = 0, batch_total: int = 0,
+    scenarios: str = "",
 ) -> str:
-    """Run the owner-provided Caliper suite for a skill in this verifier batch.
+    """Check a skill with context-based Caliper scenarios in this verifier batch.
 
-    Optionally supply a complete candidate SKILL.md. Returns a compact
-    comparison of control, current and candidate outcomes. Apply a tested
-    repair with skill_manage(edit) using the exact candidate. A deferred or
-    inconclusive run grants no mutation authority.
+    Call with the skill name and batch arguments to retrieve recorded context.
+    Pass JSON scenarios with exclusive_axis and cases. Each case needs name,
+    prompt, input, expected and a verbatim context_excerpt. At least three
+    cases need distinct exclusive_value strings on the same condition.
+    The runner creates input.txt and condition.json and checks result.txt.
+
+    Optionally supply the complete candidate SKILL.md. To try a candidate
+    after a baseline run, omit scenarios to reuse the original cases.
+    A deferred or inconclusive run grants no mutation authority.
     """
     from ..curator_skill_eval import evaluate
     from .skills import _skill_dir, _validate_name, _validate_skill_md, curator_skill_refusal
@@ -342,7 +348,7 @@ def curator_evaluate_skill(
         len(candidate.encode()) > 64_000 or _validate_skill_md(candidate, name)
     ):
         return "ERR invalid_caliper_candidate"
-    return json.dumps(evaluate(name, _skill_dir(name), candidate), ensure_ascii=False)
+    return json.dumps(evaluate(conn, name, _skill_dir(name), candidate, scenarios), ensure_ascii=False)
 
 
 @write_tool(idempotent=True)

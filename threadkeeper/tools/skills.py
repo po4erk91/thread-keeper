@@ -913,7 +913,9 @@ def skill_manage(action: str,
                     + `content` (the body markdown WITHOUT frontmatter; the
                     tool prepends a valid frontmatter block).
                     Pass full `content` starting with '---' to skip the
-                    auto-frontmatter and supply your own.
+                    auto-frontmatter and supply your own. Link the reason for
+                    creating the skill with source='note:<id>' or record a
+                    short use case in metadata.threadkeeper-eval-context.
       edit        — overwrite SKILL.md wholesale. Requires `name` + `content`
                     (full file including frontmatter).
       patch       — find/replace within SKILL.md. Requires `name`,
@@ -1148,7 +1150,7 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed: {err}"
     if WRITE_ORIGIN == "curator" and (
-        refusal := mutation_refusal("edit", name, md.parent, content)
+        refusal := mutation_refusal(get_db(), "edit", name, md.parent, content)
     ):
         return refusal
     if refusal := _skill_md_growth_refusal(md.read_text(encoding="utf-8"), content):
@@ -1198,7 +1200,7 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
     if err := _validate_skill_md(updated, name):
         return f"ERR validate_failed_after_patch: {err}"
     if WRITE_ORIGIN == "curator" and (
-        refusal := mutation_refusal("edit", name, md.parent, updated)
+        refusal := mutation_refusal(get_db(), "edit", name, md.parent, updated)
     ):
         return refusal
     if refusal := _skill_md_growth_refusal(cur, updated):
@@ -1368,7 +1370,7 @@ def _action_delete(
         return refusal
     evidence_action = "retire_rule" if retirement else "delete"
     if WRITE_ORIGIN == "curator" and (
-        refusal := mutation_refusal(evidence_action, name, sdir, replacement=replacement_name)
+        refusal := mutation_refusal(conn, evidence_action, name, sdir, replacement=replacement_name)
     ):
         return refusal
     if reason := admit_curator_destructive_action(
@@ -1886,7 +1888,7 @@ def _thread_notes_dump(conn, thread_id: str) -> str:
     if not t:
         return ""
     notes = conn.execute(
-        "SELECT kind, content, created_at FROM notes "
+        "SELECT id, kind, content, created_at FROM notes "
         "WHERE thread_id=? ORDER BY created_at",
         (thread_id,),
     ).fetchall()
@@ -1898,7 +1900,7 @@ def _thread_notes_dump(conn, thread_id: str) -> str:
     ]
     for n in notes:
         snip = n["content"][:400].replace("\n", " ")
-        lines.append(f"  [{n['kind']}] {snip}")
+        lines.append(f"  [note:{n['id']} {n['kind']}] {snip}")
     return "\n".join(lines)
 
 
@@ -1955,6 +1957,10 @@ def review_thread(thread_id: str,
         f"{recent_skills_dump}"
         f"---\n\n"
         f"{base_prompt}\n\n"
+        "When creating a skill, pass the note:<id> that explains why the skill is "
+        "needed as skill_manage(source=...). If the need only appears in the thread "
+        "question or outcome, add a short synthetic summary under "
+        "SKILL.md metadata.threadkeeper-eval-context. "
         f"When you write any skill, finish with "
         f"mark_skill_materialized(thread_id='{thread_id}', skill_path=...) "
         f"so the brief's skill_hint clears."

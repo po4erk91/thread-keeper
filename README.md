@@ -1022,8 +1022,9 @@ This makes the report directory an untrusted transport: a stray or forged
 ### Test skill behaviour during Curator passes
 
 Curator can run a skill's benchmark with and without the skill, then try a
-proposed repair on the same cases. The independent verifier schedules these
-checks during its normal pass. It uses the result to keep the skill, apply the
+proposed repair on the same cases. The independent verifier builds at least
+five cases from why the skill was created or added. At least three represent
+mutually exclusive conditions. It uses the result to keep the skill, apply the
 tested repair, or confirm a standalone removal under the existing snapshot
 and recovery rules. An unavailable or inconclusive result leaves the skill in
 place. [Set up Caliper for Curator](docs/CURATOR_CALIPER.md).
@@ -1728,7 +1729,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |
 | `THREADKEEPER_CURATOR_WEB_RESEARCH` | `0` (off) | explicit consent for the isolated Curator web researcher; it receives only fixed public compatibility queries, and decisions that need facts the handoff lacks are marked `DEFER` for a later pass |
 | `THREADKEEPER_CURATOR_DESTRUCTIVE` | `1` (on) | curator child writes its REPORT then applies its own PATCH/PRUNE/CONSOLIDATE directly (incl. `lesson_remove` for prune/consolidate); set `0` for advisory REPORT-only. `[PROTECTED]` entries are refused server-side |
-| `THREADKEEPER_CURATOR_CALIPER_DIR` | unset | Private Caliper login and suite directory. Enables verifier-led skill benchmarks. |
+| `THREADKEEPER_CURATOR_CALIPER_DIR` | unset | Private Caliper login directory. Enables verifier-led skill benchmarks. |
 | `THREADKEEPER_CURATOR_CALIPER_MODEL` | unset | Exact model available to the Caliper Codex subscription login. Used for all comparison arms. |
 | `THREADKEEPER_CURATOR_MAX_DESTRUCTIVE_PER_PASS` | 30 | shared server-side ceiling for one destructive Curator pass across `lesson_remove` and `skill_manage(action='delete')`; `0` disables autonomous deletes and foreground deletes bypass it |
 | `THREADKEEPER_CURATOR_SNAPSHOT_RETENTION` | 10 | number of destructive curator pre-mutation snapshots to retain under `<reports_dir>/snapshots`; current pass is always retained |

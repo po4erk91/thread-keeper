@@ -741,12 +741,13 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mismatched file. The web-free evaluator reads each full assigned skill,
   writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
-  Skills with a [Caliper suite](CURATOR_CALIPER.md) get a verification
-  proposal even if static checks found no defect. Only the authorized
-  verifier can launch the isolated evaluation. A small receipt binds the
-  outcome to the suite, current skill bundle, and any tested replacement.
+  Managed skills with [recorded use context](CURATOR_CALIPER.md) can get a
+  verification proposal even when static checks pass. The authorized
+  verifier builds the scenarios from that context and runs them in isolation.
+  A receipt binds the outcome to the context, cases, current skill bundle,
+  and any tested replacement.
   Curator checks that binding again before applying an edit or standalone
-  deletion. The pass stores counts and hashes, while temporary transcripts
+  deletion. The pass stores synthetic cases, counts, and hashes. Transcripts
   and model output are discarded.
   The evaluator reports a usefulness score from 1 to 10 when its checks are
   complete, and the verifier updates it after testing or repair. For a
