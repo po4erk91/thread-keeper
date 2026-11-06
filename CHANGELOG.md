@@ -7,6 +7,16 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.24.0 — 2026-11-06
+
+- **Added: lesson integrity evidence in Curator audits (#396).** Operators
+  can see which lesson revision was reviewed and whether it changed during
+  the pass. Versioned manifests record hashes, safe provenance, usage times,
+  links, and duplicate candidates without copying lesson text or source paths.
+  Frozen batches and final reports verify the same saved evidence. Earlier
+  skill-only manifests keep their existing behavior; unknown versions report
+  a clear error.
+
 ## v0.23.0 — 2026-11-05
 
 - **Added: hidden managed-skill fixtures (#381).** Maintainers can keep test

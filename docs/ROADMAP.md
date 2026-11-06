@@ -30,10 +30,9 @@ findings and plans from those dates.
   Status still infers roles from prompt wording on main. The proposed change
   is in [PR #391](https://github.com/po4erk91/thread-keeper/pull/391), which
   remains open; this behavior has not shipped.
-- **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387))**
-  and **record the lesson revision Curator reviewed ([#396](https://github.com/po4erk91/thread-keeper/issues/396)).**
-  These remain separate from the completed skill-manifest slices and search
-  evidence links.
+- **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
+  This remains separate from the completed audit-manifest and search evidence
+  work.
 - **Authenticate upstream skill publishers ([#403](https://github.com/po4erk91/thread-keeper/issues/403)),
   package portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404)),
   and verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
@@ -54,6 +53,11 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Lesson integrity evidence for Curator ([#396](https://github.com/po4erk91/thread-keeper/issues/396)).**
+  Audit schema 3 records lesson hashes, reviewed revisions, safe provenance,
+  usage times, links, and duplicate candidates. Frozen batches and reports
+  verify the same manifest; reports flag live lesson changes without copying
+  lesson bodies or source paths. Legacy schema 1/2 remains readable.
 - **Batch-scoped Curator audit slices ([#413](https://github.com/po4erk91/thread-keeper/issues/413))
   shipped in v0.23.0 through [PR #429](https://github.com/po4erk91/thread-keeper/pull/429).**
   Workers receive their assigned skill evidence, lesson-only batches receive
