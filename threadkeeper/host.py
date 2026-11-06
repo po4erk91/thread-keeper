@@ -227,6 +227,11 @@ def ensure_host_running() -> bool:
         # host (so a child-initiated spawn still gets a full host), which
         # would otherwise turn the pause into a no-op under host mode.
         return False
+    if _db_is_disposable():
+        # A test or eval run. The spawned host drops the daemon gates and
+        # reads ~/.threadkeeper/.env, so it would run every loop against the
+        # throwaway DB and outlive the run that created it.
+        return False
     if _host_alive():
         return False
     with single_flight_lock("daemon-host-spawn") as locked:
@@ -283,6 +288,14 @@ def _host_env() -> dict[str, str]:
     # parent identity of every child it launches.
     env["THREADKEEPER_FORCE_CID"] = str(uuid.uuid4())
     return env
+
+
+def _db_is_disposable() -> bool:
+    """True when the configured DB lives under the system temp dir or /tmp:
+    a test or eval run, never someone's memory."""
+    db_path = Path(config.DB_PATH).expanduser().resolve()
+    temp_roots = {Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve()}
+    return any(db_path.is_relative_to(root) for root in temp_roots)
 
 
 def _host_alive() -> bool:

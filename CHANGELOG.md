@@ -7,7 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
-## v0.22.1 — 2026-10-31
+- **Fixed: a test or eval run can no longer leave a live daemon host
+  behind.** A thread-keeper process whose database lives under the system
+  temp directory or `/tmp` no longer spawns a detached host. Such a host
+  dropped the daemon gates, read `~/.threadkeeper/.env`, and ran every
+  background loop against the throwaway database. One ran for four days,
+  taking roadmap issues in parallel with the real host and spending model
+  budget on reviews.
+
+## v0.23.1 — 2026-11-06
 
 ### Fixed
 
@@ -15,6 +23,16 @@ version bumps follow semver per the policy in
   task history, and child failure notifications use the stored role before
   considering prompt hints. Custom roles remain visible as child tasks;
   legacy rows without a role retain the prompt-based fallback.
+
+## v0.23.0 — 2026-11-05
+
+- **Added: hidden managed-skill fixtures (#381).** Maintainers can keep test
+  seeds and probes without showing them as normal guidance or counting them
+  in production usage and Curator health totals. Listing, validation, and test
+  telemetry support explicit fixture inclusion. Legacy entries require a
+  reviewed migration preview and matching file hash; names never classify
+  guidance automatically. Mirrors, semantic bundles, and trash/restore retain
+  the classification.
 
 ## v0.22.0 — 2026-10-29
 

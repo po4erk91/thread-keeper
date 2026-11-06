@@ -338,7 +338,9 @@ def _scan_positive(conn: sqlite3.Connection, ev_floor: int, ev_ceil: int,
     try:
         rows = conn.execute(
             f"SELECT id, kind, target, summary FROM events "
-            f"WHERE id > ? AND id <= ? AND kind IN ({ph}) ORDER BY id",
+            f"WHERE id > ? AND id <= ? AND kind IN ({ph}) "
+            "AND NOT EXISTS (SELECT 1 FROM skill_usage s WHERE s.name=events.target "
+            "AND s.classification='fixture' AND events.kind LIKE 'skill_%') ORDER BY id",
             (ev_floor, ev_ceil, *kinds),
         ).fetchall()
     except sqlite3.OperationalError:

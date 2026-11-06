@@ -573,6 +573,8 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     pinned            INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL DEFAULT 'active'
                       CHECK(state IN ('active','stale','archived')),
+    classification    TEXT NOT NULL DEFAULT 'production'
+                      CHECK(classification IN ('production','fixture')),
     -- Source availability is independent of the aging lifecycle. A source
     -- that disappears must not look compatible merely because its last valid
     -- lifecycle state was active or stale.
@@ -1258,6 +1260,8 @@ CREATE TABLE IF NOT EXISTS semantic_bundle_import_records (
 # These columns are independently additive: current databases deliberately do
 # not bump PRAGMA user_version for safe telemetry-only extensions.
 ADDITIVE_RUNTIME_COLUMN_MIGRATIONS = (
+    "ALTER TABLE skill_usage ADD COLUMN classification "
+    "TEXT NOT NULL DEFAULT 'production' CHECK(classification IN ('production','fixture'))",
     "ALTER TABLE tasks ADD COLUMN traceparent TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_tracestate TEXT",
     "ALTER TABLE tasks ADD COLUMN trace_baggage TEXT",

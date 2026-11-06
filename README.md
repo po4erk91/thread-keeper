@@ -665,6 +665,36 @@ optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 CLI-agnostic fallback for clients without a native skills loader (Copilot and
 bare MCP clients).
 
+**Hidden test fixtures.** Maintainers can keep seeds and probes without adding
+them to the guidance that agents discover or to Curator's production health
+totals. Create one with
+`skill_manage(action="create", name="validator-example", description="Validation only", content="...", classification="fixture")`.
+Fixtures live beside each skill root under
+`<root parent>/.threadkeeper-fixtures/<root name>/<name>/`, outside recursive
+skill discovery. The durable
+classification is separate from the active/stale/archived aging state;
+fixtures never age automatically.
+
+Use `skill_list(include_fixtures=True)` to list them and
+`skill_validate(name="validator-example", include_fixtures=True)` to run the
+usual file, link, consumer, and mirror checks. Dedicated test runs can record
+their own counters with `skill_record(..., include_fixtures=True)`; passive
+usage and ordinary production totals exclude fixtures. Retire a fixture with
+`skill_manage(action="delete", name="validator-example", force=True)` from a
+foreground session. The usual protection and trash/restore rules still apply.
+Semantic bundle export/import and hidden mirror copies preserve classification.
+
+For a legacy fixture, first select the entry using known test provenance and
+call `skill_fixture_migrate(name="...", evidence="why this is validation data")`.
+This preview returns the candidate's current classification, origin, evidence,
+and SHA-256 without changing it. After reviewing that evidence, call it again
+with `dry_run=False` and `expected_sha256="<preview sha256>"` from a foreground
+session. It moves the entry into hidden storage and removes ordinary mirror
+copies. Retry partial mirror failures with `skill_manage(action="reconcile", name="...")`.
+Names such as `test-*`, `seed-*`, or `probe-*` never trigger classification.
+Existing and user-authored guidance stays production guidance until an explicit
+maintainer migration; startup performs no fixture data migration.
+
 **Harvest boundary (issue #36).** The dialog-reading loops share
 `threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
 still persisted for diagnostics, but shadow-review, extract, dialectic mining,
@@ -1780,7 +1810,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |
 | `THREADKEEPER_DIALECTIC_OBS_MAX_REQUEUES` | 3 | requeues (validator child exited without resolving) before an observation is terminally skipped as poison; 0 = uncapped |
-| `THREADKEEPER_DAEMON_HOST` | `1` (on) | One headless host (`python -m threadkeeper.host`) owns the background loops + the warm embedding model + the embed socket, and per-session servers go thin (no daemons, no ONNX). `0` reverts to the legacy mode where every foreground MCP server runs its own daemon threads. See [Embeddings](#embeddings) below |
+| `THREADKEEPER_DAEMON_HOST` | `1` (on) | One headless host (`python -m threadkeeper.host`) owns the background loops + the warm embedding model + the embed socket, and per-session servers go thin (no daemons, no ONNX). `0` reverts to the legacy mode where every foreground MCP server runs its own daemon threads. No host is spawned for a `THREADKEEPER_DB` under the system temp directory or `/tmp` (test and eval runs). See [Embeddings](#embeddings) below |
 | `THREADKEEPER_ROLE` | `server` | process role: `server` (default; per-session MCP server) or `host`. Set to `host` only by `python -m threadkeeper.host` — do not set this by hand |
 | `THREADKEEPER_HOST_SOCK` | (auto) | embed-only unix socket the thin servers dial and the host binds; empty resolves to `<db dir>/host.sock` |
 | `THREADKEEPER_HOST_HEARTBEAT_TTL_S` | 120 | host liveness window (s): how stale the host's presence heartbeat may get before `memory_guard`/a thin server treats it as dead and spawns a replacement |

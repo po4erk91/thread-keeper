@@ -252,10 +252,12 @@ Evolve suggestions, and the October research digest. The remaining work is:
   expiry without raw arguments, output, transcript text, paths, or secrets.
   Its synthetic comparison gates usefulness, privacy leakage, storage, and
   false links against dialogue-only evidence; live ingestion remains absent.
-- **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
-  fixtures an explicit lifecycle that remains available to validators but is
-  excluded from normal discovery, routing, and Curator production-health
-  counts.
+- ✅ DONE (#381). **Hidden managed-skill fixtures.** Explicit fixture
+  classification and hidden canonical/mirror storage keep seeds and probes
+  out of ordinary discovery, routing, usage totals, and Curator health counts.
+  Maintainers can opt into validation and test telemetry, migrate a reviewed
+  candidate with a dry-run/hash guard, and retain classification in bundles
+  and trash/restore. Existing names never trigger automatic reclassification.
 - ✅ DONE (#382). **Skill validator coverage.** Curator audit and
   `skill_validate` now detect missing local Markdown-link and path-like
   inline-code resources, plus substantial repeated normalized paragraphs within

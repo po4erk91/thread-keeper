@@ -26,10 +26,11 @@ def _reimport(monkeypatch, tmp_path):
 
 
 def _allow_spawn_path(monkeypatch, host):
-    """Clear the suite-hygiene daemon pause so ensure_host_running() is
-    reachable, and stub the replacement spawn."""
+    """Clear the suite-hygiene daemon pause and the temp-dir DB guard so
+    ensure_host_running() is reachable, and stub the replacement spawn."""
     from threadkeeper import config
     monkeypatch.setattr(config, "DISABLE_BG_DAEMONS", False)
+    monkeypatch.setattr(host, "_db_is_disposable", lambda: False)
     spawns = []
     monkeypatch.setattr(host.subprocess, "Popen",
                         lambda *a, **k: spawns.append((a, k)) or object())
