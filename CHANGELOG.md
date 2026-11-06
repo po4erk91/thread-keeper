@@ -9,6 +9,14 @@ version bumps follow semver per the policy in
 
 ## v0.23.0 — 2026-11-05
 
+- **Added: hidden managed-skill fixtures (#381).** Maintainers can keep test
+  seeds and probes without showing them as normal guidance or counting them
+  in production usage and Curator health totals. Listing, validation, and test
+  telemetry support explicit fixture inclusion. Legacy entries require a
+  reviewed migration preview and matching file hash; names never classify
+  guidance automatically. Mirrors, semantic bundles, and trash/restore retain
+  the classification.
+
 - **Fixed: a test or eval run can no longer leave a live daemon host
   behind.** A thread-keeper process whose database lives under the system
   temp directory or `/tmp` no longer spawns a detached host. Such a host

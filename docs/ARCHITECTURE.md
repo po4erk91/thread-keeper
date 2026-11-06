@@ -426,7 +426,10 @@ Steady-state access is split by intent:
 5. **skill_usage** — telemetry for mirrored Skill.md entries. Fields:
    `created_at`, `last_used_at`, `last_viewed_at`, `last_patched_at`, counters, `state`
    (active/stale/archived), `pinned`, `created_by_origin` (foreground vs
-   background_review vs shadow_review). Agent-created skills set `created_at`
+   background_review vs shadow_review), and `classification`
+   (production/fixture, default production). Classification is additive on
+   current-version databases; no existing rows are inferred to be fixtures.
+   Agent-created skills set `created_at`
    directly through `skill_manage`; for skills first found by `skill_watcher`,
    it is the filesystem `st_birthtime` when available (macOS/Windows), falling
    back to `min(mtime, scan time)` on filesystems without a birth timestamp.
@@ -1665,6 +1668,28 @@ remains the only fingerprint eligible for `unchanged_inventory`.
 skill directory is mirrored to Codex/Antigravity/shared/canonical roots.
 Optional subfolders: `references/`, `templates/`, `scripts/`, `assets/`.
 
+Fixtures use an explicit `skill_usage.classification='fixture'` and
+`<root parent>/.threadkeeper-fixtures/<root name>/<name>/SKILL.md` for the
+canonical store and every mirror. Storage sits outside each skill root because
+some consumers recursively discover `SKILL.md` even inside hidden folders.
+Classification is independent of production aging and tier. Ordinary skill
+lists, MCP Skills/resources, review routing, passive use accounting, dashboard
+totals, and Curator inventories/fingerprints exclude fixtures. Maintainers opt
+in through `include_fixtures=True` on `skill_list`, `skill_validate`, and
+`skill_record`; explicit records remain separate from production totals.
+Semantic bundles carry the classification with telemetry and materialize
+imports into hidden directories. External hidden fixture copies retain their
+classification when mirrored and cannot replace same-named production entries.
+
+`skill_manage(action='create', classification='fixture')` creates a fixture;
+normal edits preserve its classification and deletion/restore preserve it in
+trash metadata. `skill_fixture_migrate` previews a single maintainer-selected
+legacy candidate and evidence without changing state. Apply requires a
+foreground writer, nonempty evidence, and the exact previewed SKILL.md hash;
+it moves the canonical directory and converges hidden mirrors while removing
+visible copies. No naming heuristic reclassifies existing guidance. The tool
+belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
+
 - **skill_manage(action, …)** — a single atomic tool. Actions:
   `create | edit | patch | write_file | remove_file | delete | restore |
   reconcile | cleanup_orphan`. `cleanup_orphan` is scoped to a Curator verifier and can
@@ -2272,7 +2297,7 @@ below).
 | threads | auto_review_trigger, brief, close_thread, compost, context, evolve_decide, evolve_format, evolve_issue_create, evolve_review, idle_thread, mark_skill_materialized, note, open_thread, search |
 | peers | whoami, peers, presence, broadcast, whisper, ask, respond, wait, inbox, live_status, search_via_parent |
 | spawn | spawn, tournament, tasks, tasks_refresh, task_logs, spawn_status, spawn_budget_status, spawn_budget_set |
-| skills | skill_manage, skill_record, skill_list, curator_run, review_thread |
+| skills | skill_manage, skill_record, skill_list, skill_fixture_migrate, curator_run, review_thread |
 | dialectic | dialectic_claim, dialectic_evidence, dialectic_observation_resolve, dialectic_review, dialectic_synthesis, dialectic_supersede |
 | dialectic_feed | dialectic_mine_run, dialectic_mine_status, dialectic_validate_run, dialectic_validate_status |
 | model_router | model_route_write, model_router_run, model_router_status |

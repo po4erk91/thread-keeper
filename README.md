@@ -665,6 +665,36 @@ optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 CLI-agnostic fallback for clients without a native skills loader (Copilot and
 bare MCP clients).
 
+**Hidden test fixtures.** Maintainers can keep seeds and probes without adding
+them to the guidance that agents discover or to Curator's production health
+totals. Create one with
+`skill_manage(action="create", name="validator-example", description="Validation only", content="...", classification="fixture")`.
+Fixtures live beside each skill root under
+`<root parent>/.threadkeeper-fixtures/<root name>/<name>/`, outside recursive
+skill discovery. The durable
+classification is separate from the active/stale/archived aging state;
+fixtures never age automatically.
+
+Use `skill_list(include_fixtures=True)` to list them and
+`skill_validate(name="validator-example", include_fixtures=True)` to run the
+usual file, link, consumer, and mirror checks. Dedicated test runs can record
+their own counters with `skill_record(..., include_fixtures=True)`; passive
+usage and ordinary production totals exclude fixtures. Retire a fixture with
+`skill_manage(action="delete", name="validator-example", force=True)` from a
+foreground session. The usual protection and trash/restore rules still apply.
+Semantic bundle export/import and hidden mirror copies preserve classification.
+
+For a legacy fixture, first select the entry using known test provenance and
+call `skill_fixture_migrate(name="...", evidence="why this is validation data")`.
+This preview returns the candidate's current classification, origin, evidence,
+and SHA-256 without changing it. After reviewing that evidence, call it again
+with `dry_run=False` and `expected_sha256="<preview sha256>"` from a foreground
+session. It moves the entry into hidden storage and removes ordinary mirror
+copies. Retry partial mirror failures with `skill_manage(action="reconcile", name="...")`.
+Names such as `test-*`, `seed-*`, or `probe-*` never trigger classification.
+Existing and user-authored guidance stays production guidance until an explicit
+maintainer migration; startup performs no fixture data migration.
+
 **Harvest boundary (issue #36).** The dialog-reading loops share
 `threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
 still persisted for diagnostics, but shadow-review, extract, dialectic mining,

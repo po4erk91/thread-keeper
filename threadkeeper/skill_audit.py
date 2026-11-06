@@ -373,7 +373,7 @@ def _telemetry_rows(conn: sqlite3.Connection, include_archived: bool) -> dict[st
             "SELECT name, created_at, created_by_origin, last_used_at, "
             "last_viewed_at, last_patched_at, use_count, view_count, "
             "patch_count, foreground_use_count, pinned, state, tier, "
-            "availability, unavailable_since, unavailable_prior_state "
+            "availability, unavailable_since, unavailable_prior_state, classification "
             "FROM skill_usage" + where
             + " ORDER BY name"
         ).fetchall()
@@ -401,9 +401,12 @@ def _source_for(
     roots: Iterable[Path],
     state: str,
     external_index: dict[str, list[Path]],
+    classification: str = "production",
 ) -> tuple[Path | None, str]:
-    candidates = [CLAUDE_SKILLS_DIR / name / "SKILL.md"]
-    candidates.extend(root / name / "SKILL.md" for root in roots)
+    from .skill_lifecycle import skill_directory
+
+    candidates = [skill_directory(CLAUDE_SKILLS_DIR, name, classification) / "SKILL.md"]
+    candidates.extend(skill_directory(root, name, classification) / "SKILL.md" for root in roots)
     if state == "archived":
         candidates.append(CLAUDE_SKILLS_DIR / ".archive" / name / "SKILL.md")
     seen: set[Path] = set()
@@ -527,8 +530,9 @@ def _record_for(
 
     telemetry = telemetry or {}
     state = str(telemetry.get("state") or "untracked")
+    classification = str(telemetry.get("classification") or "production")
     origin = str(telemetry.get("created_by_origin") or "untracked")
-    source, source_kind = _source_for(name, roots, state, external_index)
+    source, source_kind = _source_for(name, roots, state, external_index, classification)
     protected = bool(
         telemetry.get("pinned")
         or source_kind == "external_plugin"
@@ -542,6 +546,7 @@ def _record_for(
         "name": name,
         "origin": origin,
         "state": state,
+        "classification": classification,
         "availability": telemetry.get("availability") or "available",
         "unavailable_since": telemetry.get("unavailable_since"),
         "unavailable_prior_state": telemetry.get("unavailable_prior_state"),
@@ -657,8 +662,10 @@ def _record_for(
         return record
 
     canonical_tree_hash = _tree_hash(skill_dir)
+    from .skill_lifecycle import skill_directory
+
     for root in roots:
-        mirror_dir = root / name
+        mirror_dir = skill_directory(root, name, classification)
         if mirror_dir.resolve() == skill_dir.resolve():
             status = "canonical"
         elif not mirror_dir.exists():
@@ -681,6 +688,7 @@ def build_skill_audit(
     conn: sqlite3.Connection,
     *,
     include_archived: bool = True,
+    include_fixtures: bool = False,
 ) -> dict:
     """Return the complete deterministic audit manifest as JSON data."""
     telemetry = _telemetry_rows(conn, include_archived)
@@ -689,6 +697,7 @@ def build_skill_audit(
     records = [
         _record_for(name, telemetry.get(name), roots, external_index)
         for name in _managed_names(telemetry)
+        if include_fixtures or telemetry.get(name, {}).get("classification") != "fixture"
     ]
     exact_groups: dict[str, list[str]] = defaultdict(list)
     for record in records:
