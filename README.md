@@ -994,8 +994,13 @@ trees, validators, and mirror state. It persists the full pass audit manifest
 for parent coordination and provenance, then writes one smaller, hash-checked
 audit slice for every frozen batch. A worker reads only its slice: assigned
 skill records and their relevant consumer, link, mirror, source, duplicate, and
-candidate findings. A lesson-only batch receives an explicit no-skills slice
-instead of the full skill inventory. The scheduler stores the expected reports,
+candidate findings, plus integrity evidence for its assigned lessons and any
+promotion source lessons. A lesson-only batch receives its lesson evidence
+with an explicit no-skills marker. Curator audit schema 3 records exact and
+normalized lesson body hashes, content-addressed revisions, safe provenance,
+usage times, sorted link targets and unresolved links, and duplicate candidates.
+Lesson text and lesson source paths stay out of the manifest; free-form
+provenance is hashed. The scheduler stores the expected reports,
 slice hashes, and rendered text before launching any child. A dispatch is not
 completion: every batch must exit successfully and have a final, matching
 provenance record before the inventory is endorsed.
@@ -1009,7 +1014,16 @@ successfully empty source remains valid, while a failed one records
 creating a recovery snapshot, or launching a child.
 
 A pass keeps reviewing the batches it froze even when the live inventory
-changes, and resuming it never re-reads the inventory. Failed and timed-out
+changes. Before evaluation and report writing, it checks the assigned lessons'
+live revisions. The prompt flags changed or removed lessons for DEFER, and the
+server adds a `CURATOR_AUDIT` header to each report with the frozen manifest
+schema version, SHA-256, reviewed revisions, and observed revision changes.
+Report writing and completion verify the saved manifest and batch slice;
+changed audit files cannot authorize a final report or endorsement. The frozen
+manifest stays unchanged, so a later pass can review the new lesson revision.
+Schema 1 and 2 skill-only manifests retain their original report contract;
+unsupported versions fail with `unsupported_curator_audit_version`.
+Resuming does not rebuild the full inventory. Failed and timed-out
 batches are retried without redispatching completed work, up to three launched
 attempts per batch; a spawn memory or spend-budget refusal leaves the batch
 waiting without using an attempt (a spend-cap refusal also alerts). A pass

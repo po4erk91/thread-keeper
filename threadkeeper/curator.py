@@ -8,9 +8,8 @@ minutes, the Curator REVIEWS THE STORE every few days:
      support-file tree, validator result, and mirror state.
   3. Manual duplicate invocations debounce an unchanged inventory; scheduled
      passes still run so web-backed freshness is re-checked every interval.
-  4. Writes AUDIT-<isodate>.json: an exhaustive numbered skill manifest with
-     consumer validation, link/resource findings, exact duplicate groups, and
-     semantic-review candidates.
+  4. Writes a versioned AUDIT-<isodate>.json with skill validation and lesson
+     revision hashes, safe provenance, links, and duplicate-review evidence.
   5. Spawns one or more read-only research children with bounded inventory
      batches, web access, and a destination-scoped handoff writer.
   6. A web-free evaluator consumes each provenanced handoff as fenced data,
@@ -66,7 +65,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,10 +93,21 @@ from .curator_snapshots import (
     write_verify_scope,
 )
 from .skill_audit import (
-    build_batch_skill_audit_slice,
     build_skill_audit,
     format_skill_checklist,
     write_skill_audit_manifest,
+)
+from .curator_audit import (
+    CURATOR_AUDIT_SCHEMA_VERSION,
+    WIKILINK_RE,
+    audit_receipt,
+    batch_lesson_slugs,
+    batch_manifest_binding,
+    build_batch_audit_slice,
+    build_curator_audit,
+    report_audit_header,
+    report_matches_audit,
+    validate_manifest_version,
 )
 from .consequential_state import owner_review_warning
 
@@ -109,9 +119,7 @@ INVENTORY_FINGERPRINT_KEY = "inventory_sha256"
 _INVENTORY_FINGERPRINT_RE = re.compile(
     rf"\b{INVENTORY_FINGERPRINT_KEY}=([0-9a-f]{{64}})\b"
 )
-_WIKILINK_RE = re.compile(
-    r"\[\[([A-Za-z0-9][A-Za-z0-9_.:-]*)(?:\|[^\]]+)?\]\]"
-)
+_WIKILINK_RE = WIKILINK_RE
 _MAX_MERGE_VERDICT_REASON_CHARS = 500
 
 _CURATABLE_SKILL_ORIGINS = {
@@ -1582,7 +1590,7 @@ def _write_batch_audit_slices(
         path = CURATOR_REPORTS_DIR / _audit_slice_name(
             pass_id, batch.index, total,
         )
-        payload = build_batch_skill_audit_slice(
+        payload = build_batch_audit_slice(
             manifest,
             pass_id=pass_id,
             batch_index=batch.index,
@@ -1590,6 +1598,7 @@ def _write_batch_audit_slices(
             inventory_fingerprint=fingerprint,
             canonical_manifest_sha256=manifest_sha256,
             assigned_skill_names=batch.skill_names,
+            assigned_lesson_slugs=batch_lesson_slugs(batch.text),
         )
         write_skill_audit_manifest(payload, path)
         raw = path.read_text(encoding="utf-8")
@@ -1700,7 +1709,52 @@ def _provenanced_report(
     if not any(required.issubset(set((event["summary"] or "").split()))
                for event in events):
         return None
+    if not curator_report_matches_audit(conn, pass_id, report_name, report):
+        return None
     return report, digest
+
+
+def _batch_for_report(
+    conn: sqlite3.Connection, pass_id: str, report_name: str,
+) -> sqlite3.Row | None:
+    rows = conn.execute(
+        "SELECT b.*, p.expected_batches FROM curator_batches b "
+        "JOIN curator_passes p USING(pass_id) WHERE b.pass_id=? ORDER BY b.batch_index",
+        (pass_id,),
+    ).fetchall()
+    for row in rows:
+        verify_name = _report_name_for_batch(
+            pass_id, row["batch_index"], row["expected_batches"], phase=VERIFY_PHASE,
+        )
+        if report_name in {row["report_name"], verify_name}:
+            return row
+    return None
+
+
+def curator_report_matches_audit(
+    conn: sqlite3.Connection, pass_id: str, report_name: str, report: str,
+) -> bool:
+    """Verify current audit bindings while retaining pre-manifest reports."""
+    batch = _batch_for_report(conn, pass_id, report_name)
+    if batch is None:
+        return True
+    pass_row = conn.execute(
+        "SELECT * FROM curator_passes WHERE pass_id=?", (pass_id,),
+    ).fetchone()
+    if not pass_row["audit_manifest_sha256"]:
+        return True
+    return _report_has_matching_audit(pass_row, batch, report)
+
+
+def _report_has_matching_audit(
+    pass_row: sqlite3.Row, batch: sqlite3.Row, report: str,
+) -> bool:
+    manifest, error = _verified_batch_audit_document(
+        pass_row, batch, batch["expected_batches"],
+    )
+    if error:
+        return False
+    return report_matches_audit(report, manifest)
 
 
 def _has_valid_batch_report(
@@ -1737,6 +1791,22 @@ def _failure_reason(row: sqlite3.Row) -> str:
     if code is None:
         return "child_ended_without_exit_code"
     return f"child_exit={code}"
+
+
+def _invalidate_unbound_batch_reports(conn, pass_id: str, now: int) -> bool:
+    rows = conn.execute(
+        "SELECT * FROM curator_batches WHERE pass_id=? AND state='complete'",
+        (pass_id,),
+    ).fetchall()
+    invalid = [row for row in rows if _has_valid_batch_report(conn, row) is None]
+    for row in invalid:
+        conn.execute(
+            "UPDATE curator_batches SET state='failed', failed_at=?, "
+            "failure_reason='audit_report_binding_invalid' "
+            "WHERE pass_id=? AND batch_index=?",
+            (now, pass_id, row["batch_index"]),
+        )
+    return bool(invalid)
 
 
 def _refresh_pass_completion(
@@ -1822,6 +1892,8 @@ def _refresh_pass_completion(
         (pass_id, CURATOR_BATCH_MAX_ATTEMPTS),
     ).fetchone()[0]
     transitioned = not manifest["endorsed_at"] and complete == manifest["expected_batches"]
+    if transitioned and _invalidate_unbound_batch_reports(conn, pass_id, now):
+        transitioned = False
     if transitioned:
         conn.execute(
             "UPDATE curator_passes SET completed_at=?, endorsed_at=?, "
@@ -2386,6 +2458,7 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
 def _collect_inventory_entry_groups(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
+    lesson_snapshot: list[dict] | None = None,
 ) -> tuple[
     list[_InventoryEntry], list[_InventoryEntry], list[_InventoryEntry],
     str, list[dict[str, str]], int, int,
@@ -2395,8 +2468,11 @@ def _collect_inventory_entry_groups(
     lesson_items: list[dict] = []
     usage: dict[str, dict] = {}
     try:
-        usage = lessons.lesson_usage_map(conn)
-        items = list(lessons.iter_lessons())
+        usage = (
+            lessons.lesson_usage_map(conn) if lesson_snapshot is None
+            else {item["slug"]: item["usage"] for item in lesson_snapshot}
+        )
+        items = list(lessons.iter_lessons()) if lesson_snapshot is None else lesson_snapshot
         adjacency = _lesson_adjacency(items)
         from .lesson_violations import violation_counts
         from .lesson_freshness import verification_warnings
@@ -2744,6 +2820,7 @@ def _render_batch_inventory(
 def _collect_inventory_batches(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
+    lesson_snapshot: list[dict] | None = None,
 ) -> tuple[list[_InventoryBatch], int, int, int]:
     (
         lesson_entries,
@@ -2754,7 +2831,9 @@ def _collect_inventory_batches(
         n_lessons,
         n_skills,
     ) = (
-        _collect_inventory_entry_groups(conn, skill_audit=skill_audit)
+        _collect_inventory_entry_groups(
+            conn, skill_audit=skill_audit, lesson_snapshot=lesson_snapshot,
+        )
     )
     concept_entries, n_concepts = _collect_concept_entries(conn)
     entries = promotion_entries + lesson_entries + skill_entries + concept_entries
@@ -3001,7 +3080,10 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # batches.
         try:
             batches, _n_lessons, _n_skills, _n_concepts = (
-                _collect_inventory_batches(conn, skill_audit=skill_audit)
+                _collect_inventory_batches(
+                    conn, skill_audit=skill_audit,
+                    lesson_snapshot=collection.snapshot["lessons"],
+                )
             )
         except _InventoryCollectionError as exc:
             out = exc.outcome()
@@ -3018,8 +3100,9 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         ).fetchone():
             pass_id = f"{base_pass_id}-{suffix}"
             suffix += 1
+        audit_manifest = build_curator_audit(skill_audit, collection.snapshot["lessons"])
         manifest_path = write_skill_audit_manifest(
-            skill_audit,
+            audit_manifest,
             CURATOR_REPORTS_DIR / (
                 f"AUDIT-{time.strftime('%Y%m%d')}-{secrets.token_hex(4)}.json"
             ),
@@ -3027,8 +3110,13 @@ def run_curator_pass(force: bool = False, *, scheduled: bool = False) -> str:
         manifest_sha256 = curator_report_sha256(
             Path(manifest_path).read_text(encoding="utf-8"),
         )
+        binding = batch_manifest_binding(audit_manifest["schema_version"], manifest_sha256)
+        batches = [
+            replace(batch, text=batch.text + binding, char_count=len(batch.text + binding))
+            for batch in batches
+        ]
         audit_slices = _write_batch_audit_slices(
-            skill_audit,
+            audit_manifest,
             pass_id=pass_id,
             fingerprint=fingerprint,
             manifest_sha256=manifest_sha256,
@@ -3434,11 +3522,11 @@ def _snapshotted_pass(
     return refreshed, snapshot_dir
 
 
-def _verified_batch_audit_slice(
+def _verified_batch_audit_document(
     pass_row: sqlite3.Row,
     row: sqlite3.Row,
     total: int,
-) -> tuple[str | None, str | None]:
+) -> tuple[dict | None, str | None]:
     """Return a batch slice only when its frozen binding still matches.
 
     The canonical manifest is parent-owned provenance. A worker gets the
@@ -3487,18 +3575,63 @@ def _verified_batch_audit_slice(
         or not isinstance(slice_manifest, dict)
     ):
         return None, "audit_slice_malformed"
-    expected_manifest = build_batch_skill_audit_slice(
-        canonical_manifest,
-        pass_id=pass_row["pass_id"],
-        batch_index=int(row["batch_index"]),
-        batch_total=total,
-        inventory_fingerprint=pass_row["inventory_fingerprint"],
-        canonical_manifest_sha256=canonical_digest,
-        assigned_skill_names=names,
-    )
+    try:
+        validate_manifest_version(canonical_manifest)
+        version = canonical_manifest["schema_version"]
+        if version >= CURATOR_AUDIT_SCHEMA_VERSION and not row["batch_text"].endswith(
+            batch_manifest_binding(version, canonical_digest),
+        ):
+            return None, "audit_batch_manifest_binding_mismatch"
+        expected_manifest = build_batch_audit_slice(
+            canonical_manifest,
+            pass_id=pass_row["pass_id"],
+            batch_index=int(row["batch_index"]),
+            batch_total=total,
+            inventory_fingerprint=pass_row["inventory_fingerprint"],
+            canonical_manifest_sha256=canonical_digest,
+            assigned_skill_names=names,
+            assigned_lesson_slugs=batch_lesson_slugs(row["batch_text"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"audit_manifest_invalid:{exc}"
     if slice_manifest != expected_manifest:
         return None, "audit_slice_content_mismatch"
-    return str(path), None
+    return slice_manifest, None
+
+
+def _verified_batch_audit_slice(
+    pass_row: sqlite3.Row, row: sqlite3.Row, total: int,
+) -> tuple[str | None, str | None]:
+    _manifest, error = _verified_batch_audit_document(pass_row, row, total)
+    return (None, error) if error else (str(row["audit_slice_path"]), None)
+
+
+def curator_report_audit_header(
+    conn: sqlite3.Connection, pass_id: str, report_name: str,
+) -> tuple[str, str | None]:
+    """Check the frozen evidence and stamp any lesson changes observed now.
+
+    Legacy reports without a manifest keep their existing provenance contract.
+    Current passes require both saved audit files before accepting a report.
+    """
+    batch = _batch_for_report(conn, pass_id, report_name)
+    if batch is None:
+        return "", None
+    pass_row = conn.execute(
+        "SELECT * FROM curator_passes WHERE pass_id=?", (pass_id,),
+    ).fetchone()
+    if not pass_row["audit_manifest_sha256"]:
+        return "", None
+    manifest, error = _verified_batch_audit_document(pass_row, batch, batch["expected_batches"])
+    if error:
+        return "", error
+    try:
+        if manifest["canonical_manifest"]["schema_version"] < CURATOR_AUDIT_SCHEMA_VERSION:
+            return "", None
+        receipt = audit_receipt(manifest, list(lessons.iter_lessons()))
+    except (OSError, KeyError, TypeError, ValueError):
+        return "", "lesson_revision_check_failed"
+    return report_audit_header(receipt), None
 
 
 def _evaluate_spec(
@@ -3515,6 +3648,9 @@ def _evaluate_spec(
     )
     if slice_error:
         return slice_error
+    audit_header, audit_error = curator_report_audit_header(conn, pass_id, row["report_name"])
+    if audit_error:
+        return audit_error
     action, research_block = _evaluation_research_block(
         conn, pass_id, row, action, total,
     )
@@ -3536,6 +3672,10 @@ def _evaluate_spec(
         + row["batch_text"]
         + "\n\n"
         + f"AUDIT_MANIFEST_SLICE_PATH = {audit_slice_path}\n"
+        + audit_header
+        + "The audit header identifies the frozen manifest revision and digest. "
+        + "If lesson_revision_changes is nonempty, mark those lessons DEFER; "
+        + "their live text differs from the reviewed revision.\n"
         + "<curator_research_data>\n"
         + research_block
         + "\n</curator_research_data>\n"
@@ -3570,6 +3710,9 @@ def _verify_spec(
 ) -> _LaunchSpec | str:
     pass_id = pass_row["pass_id"]
     index = int(row["batch_index"])
+    audit_header, audit_error = curator_report_audit_header(conn, pass_id, row["report_name"])
+    if audit_error:
+        return audit_error
     found = _provenanced_report(
         conn, pass_id, row["report_name"], CURATOR_REPORT_COMPLETE_MARKER,
     )
@@ -3589,6 +3732,7 @@ def _verify_spec(
     )
     prompt = (
         CURATOR_VERIFY_PROMPT
+        + audit_header
         + "<curator_verify_proposals>\n"
         + _fence_proposals(proposals)
         + "\n</curator_verify_proposals>\n\n"

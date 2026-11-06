@@ -136,7 +136,9 @@ def _complete_manifest_batch(pkg, *, pass_id: str | None = None) -> str:
     ).fetchone()
     report = pkg["reports_dir"] / batch["report_name"]
     report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text("# report\n\nCURATOR_PASS_COMPLETE\n", encoding="utf-8")
+    header, error = pkg["curator"].curator_report_audit_header(conn, pass_id, batch["report_name"])
+    assert error is None
+    report.write_text(header + "# report\n\nCURATOR_PASS_COMPLETE\n", encoding="utf-8")
     digest = pkg["curator"].curator_report_sha256(report.read_text())
     now = int(time.time())
     conn.execute(
@@ -967,7 +969,7 @@ def test_run_curator_pass_spawns_when_threshold_met(tmp_path, monkeypatch):
         if not path.name.startswith("AUDIT-SLICE-")
     ]
     assert len(manifests) == 1
-    assert json.loads(manifests[0].read_text())["schema_version"] == 2
+    assert json.loads(manifests[0].read_text())["schema_version"] == 3
     slices = list(pkg["reports_dir"].glob("AUDIT-SLICE-*.json"))
     assert len(slices) == 1
     assert f"AUDIT_MANIFEST_SLICE_PATH = {slices[0]}" in kw["prompt"]
@@ -1072,6 +1074,14 @@ def test_curator_reuses_verified_audit_slice_and_rejects_tampering(
     assert first.prompt == second.prompt
     assert slice_path.read_text() == original
 
+    altered_batch = dict(batch_row)
+    altered_batch["batch_text"] = batch_row["batch_text"].replace(
+        "AUDIT_MANIFEST_SCHEMA_VERSION = 3", "AUDIT_MANIFEST_SCHEMA_VERSION = 2",
+    )
+    assert pkg["curator"]._evaluate_spec(
+        conn, pass_row, altered_batch, "evaluate", 1,
+    ) == "audit_batch_manifest_binding_mismatch"
+
     slice_path.write_text("{}\n", encoding="utf-8")
     assert pkg["curator"]._evaluate_spec(
         conn, pass_row, batch_row, "evaluate", 1,
@@ -1117,6 +1127,91 @@ def test_worker_audit_input_scales_with_assigned_skill_records():
 
     assert sum(len(item["skills"]) for item in slices) == len(records)
     assert worker_input_size < canonical_size * len(slices) // 2
+
+
+def test_lesson_changes_during_a_pass_are_in_prompt_and_final_report(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+    pkg["curator"].run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    batch = conn.execute("SELECT * FROM curator_batches").fetchone()
+    frozen_raw = Path(pass_row["audit_manifest_path"]).read_text()
+    manifest = json.loads(frozen_raw)
+    assert len(manifest["lesson_audit"]["lessons"]) == 2
+    assert f"AUDIT_MANIFEST_SHA256 = {pass_row['audit_manifest_sha256']}" in batch["batch_text"]
+    original = pkg["lessons_path"].read_text()
+    pkg["lessons_path"].write_text(original.replace("body one", "updated body one"))
+    spec = pkg["curator"]._evaluate_spec(conn, pass_row, batch, "evaluate", 1)
+    assert '"lesson_revision_changes":[{"current_revision":' in spec.prompt
+    assert '"slug":"lesson-one"' in spec.prompt
+    assert "mark those lessons DEFER" in spec.prompt
+
+    from threadkeeper.tools import curator as tool_mod
+    from threadkeeper._mcp import mcp
+    from threadkeeper.curator_audit import REPORT_AUDIT_PREFIX
+    monkeypatch.setattr(tool_mod, "WRITE_ORIGIN", "curator")
+    monkeypatch.setattr(tool_mod, "SPAWNED_CHILD", True)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", pass_row["pass_id"])
+    _bind_curator_writer(pkg, pass_row["pass_id"])
+    write = mcp._tool_manager._tools["curator_report_write"].fn
+    assert write(content="Changed lesson: DEFER\nCURATOR_PASS_COMPLETE").startswith("ok path=")
+    report = (pkg["reports_dir"] / batch["report_name"]).read_text()
+    receipt = json.loads(report.splitlines()[0][len(REPORT_AUDIT_PREFIX):-4])
+    assert receipt["schema_version"] == 3
+    assert receipt["sha256"] == pass_row["audit_manifest_sha256"]
+    assert [change["slug"] for change in receipt["lesson_revision_changes"]] == ["lesson-one"]
+    assert pkg["curator"]._provenanced_report(
+        conn, pass_row["pass_id"], batch["report_name"], "CURATOR_PASS_COMPLETE",
+    ) is not None
+    assert Path(pass_row["audit_manifest_path"]).read_text() == frozen_raw
+
+
+@pytest.mark.parametrize("state", ["running", "complete"])
+def test_changed_audit_file_blocks_report_write_and_completion(tmp_path, monkeypatch, state):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+    pkg["curator"].run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    pass_id = _complete_manifest_batch(pkg)
+    pass_row = conn.execute("SELECT * FROM curator_passes").fetchone()
+    batch = conn.execute("SELECT * FROM curator_batches").fetchone()
+    conn.execute("UPDATE curator_batches SET state=?", (state,))
+    conn.commit()
+    Path(pass_row["audit_manifest_path"]).write_text("{}\n")
+    header, error = pkg["curator"].curator_report_audit_header(conn, pass_id, batch["report_name"])
+    assert header == ""
+    assert error == "canonical_manifest_mismatch"
+    from threadkeeper import evolve_applier
+    report = pkg["reports_dir"] / batch["report_name"]
+    assert not evolve_applier._curator_report_provenanced(conn, report, report.read_text())
+    assert not pkg["curator"]._refresh_pass_completion(conn, pass_id, int(time.time()))
+    assert conn.execute("SELECT endorsed_at FROM curator_passes").fetchone()[0] is None
+
+
+def test_report_provenance_requires_the_frozen_lesson_revision_receipt(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+    pkg["curator"].run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    pass_id = _complete_manifest_batch(pkg)
+    batch = conn.execute("SELECT * FROM curator_batches").fetchone()
+    report = pkg["reports_dir"] / batch["report_name"]
+    content = report.read_text().replace('"schema_version":3', '"schema_version":2', 1)
+    report.write_text(content)
+    digest = pkg["curator"].curator_report_sha256(content)
+    conn.execute(
+        "INSERT INTO events (session_id, kind, target, summary, created_at) VALUES (?, ?, ?, ?, ?)",
+        (_FAKE_CID, pkg["curator"].CURATOR_REPORT_PROVENANCE_KIND, str(report.resolve()),
+         f"pass_id={pass_id} sha256={digest}", int(time.time())),
+    )
+    conn.commit()
+    assert pkg["curator"]._provenanced_report(
+        conn, pass_id, batch["report_name"], "CURATOR_PASS_COMPLETE",
+    ) is None
 
 
 def test_web_research_receives_only_public_brief_and_narrow_tools(
@@ -2892,7 +2987,12 @@ def _finish_child(pkg, *, task_id, report_name, content, return_code=0):
     conn = pkg["db"].get_db()
     report = pkg["reports_dir"] / report_name
     report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(content, encoding="utf-8")
+    pass_id = conn.execute(
+        "SELECT pass_id FROM curator_passes ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()["pass_id"]
+    header, error = pkg["curator"].curator_report_audit_header(conn, pass_id, report_name)
+    assert error is None
+    report.write_text(header + content, encoding="utf-8")
     digest = pkg["curator"].curator_report_sha256(report.read_text())
     now = int(time.time())
     conn.execute(
@@ -2901,9 +3001,6 @@ def _finish_child(pkg, *, task_id, report_name, content, return_code=0):
         "VALUES (?, 0, '/tmp', 'curator', ?, ?, ?)",
         (task_id, now - 1, now, return_code),
     )
-    pass_id = conn.execute(
-        "SELECT pass_id FROM curator_passes ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()["pass_id"]
     conn.execute(
         "INSERT INTO events (session_id, kind, target, summary, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
