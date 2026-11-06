@@ -8,12 +8,71 @@ remains a live question.
 
 ---
 
+## 2026-11-06 roadmap status
+
+This is the current status of the work below. Earlier dated audits retain the
+findings and plans from those dates.
+
+**Remaining issue-backed work**
+
+- **Bound Curator memory before launching a worker ([#437](https://github.com/po4erk91/thread-keeper/issues/437)).**
+  Large skill resources still load in full while the parent checks their
+  contents and mirrors. Read them in bounded chunks, preserve existing hashes,
+  and report incomplete checks when files cannot be read or change during the
+  check. Worker admission limits do not bound this parent-side allocation.
+- **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
+  Agree how existing search vectors will move to the new generation before
+  changing the fastembed dependency. Keep the issue behind `needs-design`
+  until the migration cost, search behavior, and recovery path are agreed.
+  The Pillow audit exceptions point to this issue and next require review on
+  2026-11-21.
+- **Show the task's recorded role ([#389](https://github.com/po4erk91/thread-keeper/issues/389)).**
+  Status still infers roles from prompt wording on main. The proposed change
+  is in [PR #391](https://github.com/po4erk91/thread-keeper/pull/391), which
+  remains open; this behavior has not shipped.
+- **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387))**
+  and **record the lesson revision Curator reviewed ([#396](https://github.com/po4erk91/thread-keeper/issues/396)).**
+  These remain separate from the completed skill-manifest slices and search
+  evidence links.
+- **Authenticate upstream skill publishers ([#403](https://github.com/po4erk91/thread-keeper/issues/403)),
+  package portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404)),
+  and verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
+  Existing content hashes, host adapters, and violation counters do not yet
+  complete these respective contracts.
+
+**Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
+
+The phase checks recorded on 2026-10-30 also need to cover Evolve. A reviewer
+can select the `full` child profile while its parent hides
+`evolve_issue_create`, queue decisions, and reporting tools. The parent
+allowlist correctly stays an upper bound, but dispatch does not check whether
+the child can finish its assigned work. Validate the required tools for each
+phase against both the server profile and adapter grants before reserving or
+launching a child. If the parent does not grant them, report the missing
+capability without widening access or spending a worker attempt. Preserve the
+existing separation of web research and privileged writes.
+
+**Delivered work**
+
+- **Batch-scoped Curator audit slices ([#413](https://github.com/po4erk91/thread-keeper/issues/413))
+  shipped in v0.23.0 through [PR #429](https://github.com/po4erk91/thread-keeper/pull/429).**
+  Workers receive their assigned skill evidence, lesson-only batches receive
+  a small no-skills slice, and retries reject changed slices. The issue is
+  still open, but its implementation is present on main.
+- **Safe finished-task checkout cleanup ([#431](https://github.com/po4erk91/thread-keeper/issues/431))
+  is complete.** Cleanup previews size and preserves active, changed,
+  unpublished, or uncertain work, with ownership records retained for retries.
+  The 2026-10-29 entry below describes the original gap.
+
+---
+
 ## 2026-10-28 curator scale audit
 
-- **Batch-scoped Curator audit slices (#413).** Keep the full audit manifest
-  for parent coordination, but give each worker only the skill records and
-  related checks for its assigned batch. Lesson-only workers receive a small
-  no-skills marker, and retries verify the same saved slice before use.
+- **Done: batch-scoped Curator audit slices (#413).** The full audit manifest
+  stays with the parent for coordination, while each worker receives only the
+  skill records and related checks for its assigned batch. Lesson-only workers
+  receive a small no-skills marker, and retries verify the same saved slice
+  before use. Shipped in v0.23.0; the GitHub issue remains open.
 
 
 ---
