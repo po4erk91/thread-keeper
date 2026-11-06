@@ -580,13 +580,21 @@ default it checks twice per week
   canonical `~/.threadkeeper/skills` fallback;
 - source-tracked updates: skills with `.threadkeeper-skill-source.json`, or
   skills whose name can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`,
-  are compared with upstream GitHub directories and updated when the remote tree
-  changes.
+  are compared with upstream GitHub directories. Updates resolve an immutable
+  commit and verify the locally chosen publisher before replacing or mirroring
+  the skill. Unsigned updates require an explicit per-source policy.
 
 The pass is single-flight across live MCP servers and backs up replaced local
 skills under the thread-keeper state dir. If a source-tracked skill has local
 edits after the last applied upstream hash, the updater skips it instead of
 overwriting. Disable it with `THREADKEEPER_SKILL_UPDATE_INTERVAL_S=0`.
+
+Existing source records without a trust policy pause with `policy_required`.
+Install `threadkeeper[skill-signing]` for detached `skill.oms.sig` verification,
+then set the expected signer in the primary source record. The updater never
+learns a trusted signer from a download. See [source locks, policy, and
+recovery](docs/SKILL_SOURCES.md). Latest `skill_update_pass` status includes
+verification outcome counts, including `unsigned_allowed` and refusal reasons.
 
 Manual fallback from a source checkout:
 

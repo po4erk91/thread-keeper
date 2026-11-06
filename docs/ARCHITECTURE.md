@@ -588,6 +588,19 @@ observability only: the supervisor restarts dead threads, never a live child.
   deleted or archived is not imported back from an older leftover copy: the
   leftovers are removed instead (`removed_strays`). A copy written after the
   removal counts as a new install and is imported.
+  Source-tracked groups bypass local newest-copy sync: every replacement and
+  mirror passes the upstream trust gate first. GitHub refs resolve once per
+  repository/ref per pass, archives are fetched by full commit, and the archive
+  prefix must match it. Source lock v2 retains the commit, whole-directory
+  digest, explicit unsigned policy, locally configured signer, and last
+  accepted verification result. `skill_provenance` verifies detached OMS file
+  manifests through OpenSSF `model-signing`, with full-directory coverage and
+  an exact certificate fingerprint or Sigstore identity/issuer. Downloaded
+  locks, links, mismatches, and missing trust configuration fail closed before
+  replacement. Local edits in either the primary or another consumer root
+  prevent an overwrite. Verification counts use bounded result codes in
+  `skill_update_pass`, without verifier output or private configuration. See
+  [source lock format and recovery](SKILL_SOURCES.md).
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats **two** targets, each
   with its own mtime cursor (#2, generalized cross-CLI in #133):

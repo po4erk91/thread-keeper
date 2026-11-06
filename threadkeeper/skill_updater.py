@@ -16,13 +16,14 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import tempfile
-import threading
 import time
 from urllib import request
+from urllib.parse import quote
 import zipfile
 
 from . import identity
@@ -38,6 +39,7 @@ from .config import (
 )
 from .db import get_db
 from .helpers import daemon_sleep, single_flight_lock
+from .skill_provenance import verify_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ class RemoteSkill:
     source: GithubSource
     path: Path
     tree_sha256: str
+    resolved_commit: str
 
 
 @dataclass
@@ -80,7 +83,7 @@ def _record_skill_update_pass(summary: str) -> None:
             (
                 identity._session_id or "",
                 EVENT_KIND,
-                summary[:300],
+                summary,
                 int(time.time()),
             ),
         )
@@ -119,10 +122,6 @@ def _update_lock():
     return single_flight_lock("skill-update")
 
 
-def _short(text: str, limit: int = 120) -> str:
-    return " ".join((text or "").split())[:limit]
-
-
 def _is_skill_dir(path: Path) -> bool:
     return path.is_dir() and (path / "SKILL.md").is_file()
 
@@ -137,6 +136,19 @@ def _skip_rel(rel: Path) -> bool:
 
 
 def _tree_sha256(root: Path) -> str:
+    """Hash every file except our local lock with unambiguous framing."""
+    h = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if rel.as_posix() == SOURCE_FILE or not path.is_file():
+            continue
+        h.update(rel.as_posix().encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(path.read_bytes()).digest())
+    return h.hexdigest()
+
+
+def _legacy_tree_sha256(root: Path) -> str:
     h = hashlib.sha256()
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
@@ -333,6 +345,9 @@ def _sync_local_roots() -> dict[str, int]:
         if primary is None and _drop_stale_strays(name, copies):
             counts["removed_strays"] += 1
             continue
+        # Tracked copies move only through the upstream verification gate.
+        if any((copy.path / SOURCE_FILE).exists() for copy in copies):
+            continue
         newest_mtime = max(c.mtime for c in copies)
         newest = [c for c in copies if c.mtime == newest_mtime]
         newest_hashes = {c.tree_sha256 for c in newest}
@@ -387,52 +402,58 @@ def _parse_sources(raw: str) -> list[GithubSource]:
         repo = repo.strip().strip("/")
         ref = (ref or "main").strip()
         path = path.strip().strip("/")
-        if "/" not in repo or not path:
+        if not _valid_source(repo, path):
             logger.warning("Ignoring invalid skill update source: %s", item)
             continue
         specs.append(GithubSource(repo=repo, ref=ref, path=path))
     return specs
 
 
-def _read_source_file(skill_dir: Path) -> GithubSource | None:
-    path = skill_dir / SOURCE_FILE
-    if not path.is_file():
-        return None
+def _valid_source(repo: str, path: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+                and all(part not in {"", ".", ".."} for part in repo.split("/"))
+                and path and not Path(path).is_absolute()
+                and all(part not in {"", ".", ".."} for part in path.split("/")))
+
+
+def _source_record(skill_dir: Path) -> dict:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        data = json.loads((skill_dir / SOURCE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_source_file(skill_dir: Path) -> GithubSource | None:
+    data = _source_record(skill_dir)
     if data.get("type") != "github":
         return None
     repo = str(data.get("repo") or "").strip().strip("/")
     ref = str(data.get("ref") or "main").strip()
     src_path = str(data.get("path") or "").strip().strip("/")
-    if "/" not in repo or not src_path:
+    if not _valid_source(repo, src_path):
         return None
     return GithubSource(repo=repo, ref=ref, path=src_path)
 
 
-def _read_source_sha(skill_dir: Path) -> str:
-    path = skill_dir / SOURCE_FILE
-    if not path.is_file():
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    return str(data.get("tree_sha256") or "")
-
-
-def _write_source_file(skill_dir: Path, remote: RemoteSkill, *, inferred: bool) -> None:
+def _write_source_file(
+    skill_dir: Path, remote: RemoteSkill, *, inferred: bool,
+    record: dict, verification: str,
+) -> None:
     data = {
+        "lock_version": 2,
         "type": "github",
         "repo": remote.source.repo,
         "ref": remote.source.ref,
         "path": remote.source.path,
         "tree_sha256": remote.tree_sha256,
+        "resolved_commit": remote.resolved_commit,
+        "verification_policy": record["verification_policy"],
+        "expected_signer": record.get("expected_signer"),
+        "last_verification": {"result": verification, "checked_at": int(time.time())},
         "source_url": (
             f"https://github.com/{remote.source.repo}/tree/"
-            f"{remote.source.ref}/{remote.source.path}"
+            f"{remote.resolved_commit}/{remote.source.path}"
         ),
         "inferred": bool(inferred),
         "updated_at": int(time.time()),
@@ -446,6 +467,9 @@ def _write_source_file(skill_dir: Path, remote: RemoteSkill, *, inferred: bool) 
 def _safe_extract_zip(zip_file: zipfile.ZipFile, dest_dir: Path) -> None:
     dest_root = dest_dir.resolve()
     for info in zip_file.infolist():
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError("archive_symlink")
         extracted = (dest_dir / info.filename).resolve()
         if extracted == dest_root or dest_root in extracted.parents:
             continue
@@ -453,21 +477,38 @@ def _safe_extract_zip(zip_file: zipfile.ZipFile, dest_dir: Path) -> None:
     zip_file.extractall(dest_dir)
 
 
-def _download_repo_zip(source: GithubSource, dest_dir: Path) -> Path:
-    url = f"https://codeload.github.com/{source.repo}/zip/{source.ref}"
+def _resolve_commit(source: GithubSource) -> str:
+    url = f"https://api.github.com/repos/{source.repo}/commits/{quote(source.ref, safe='')}"
+    req = request.Request(url, headers={"User-Agent": "threadkeeper-skill-updater",
+                                        "Accept": "application/vnd.github+json"})
+    with request.urlopen(req, timeout=SKILL_UPDATE_TIMEOUT_S) as res:
+        commit = json.load(res).get("sha", "")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("commit_mismatch")
+    if re.fullmatch(r"[0-9a-fA-F]{40}", source.ref) and source.ref.lower() != commit:
+        raise ValueError("commit_mismatch")
+    return commit
+
+
+def _download_repo_zip(source: GithubSource, dest_dir: Path, commit: str) -> Path:
+    url = f"https://codeload.github.com/{source.repo}/zip/{commit}"
     req = request.Request(url, headers={"User-Agent": "threadkeeper-skill-updater"})
     zip_path = dest_dir / "repo.zip"
     with request.urlopen(req, timeout=SKILL_UPDATE_TIMEOUT_S) as res:
         zip_path.write_bytes(res.read())
     with zipfile.ZipFile(zip_path, "r") as zf:
-        _safe_extract_zip(zf, dest_dir)
         top_levels = {name.split("/")[0] for name in zf.namelist() if name}
-    if len(top_levels) != 1:
-        raise ValueError("unexpected archive layout")
+        if top_levels != {f"{source.repo.split('/')[-1]}-{commit}"}:
+            raise ValueError("commit_mismatch")
+        _safe_extract_zip(zf, dest_dir)
     return dest_dir / next(iter(top_levels))
 
 
-def _remote_skills_from_source(source: GithubSource, repo_root: Path) -> list[RemoteSkill]:
+def _remote_skills_from_source(
+    source: GithubSource, repo_root: Path, commit: str,
+) -> list[RemoteSkill]:
+    if not _valid_source(source.repo, source.path):
+        raise ValueError("source_invalid")
     base = repo_root / source.path
     candidates: list[Path]
     if _is_skill_dir(base):
@@ -495,6 +536,7 @@ def _remote_skills_from_source(source: GithubSource, repo_root: Path) -> list[Re
                 source=exact_source,
                 path=path,
                 tree_sha256=_tree_sha256(path),
+                resolved_commit=commit,
             )
         )
     return out
@@ -508,26 +550,30 @@ def _build_remote_index(
     by_name: dict[str, RemoteSkill] = {}
     ambiguous: set[str] = set()
     errors: list[str] = []
-    repo_cache: dict[tuple[str, str], Path] = {}
+    repo_cache: dict[tuple[str, str], tuple[Path, str]] = {}
 
     for source in sources:
         try:
+            if not _valid_source(source.repo, source.path):
+                raise ValueError("source_invalid")
             key = (source.repo, source.ref)
             if key not in repo_cache:
-                repo_tmp = tmp_root / (
-                    source.repo.replace("/", "_") + "@" + source.ref.replace("/", "_")
-                )
+                repo_tmp = tmp_root / str(len(repo_cache))
                 repo_tmp.mkdir(parents=True, exist_ok=True)
-                repo_cache[key] = _download_repo_zip(source, repo_tmp)
-            for remote in _remote_skills_from_source(source, repo_cache[key]):
+                commit = _resolve_commit(source)
+                repo_cache[key] = (_download_repo_zip(source, repo_tmp, commit), commit)
+            repo_root, commit = repo_cache[key]
+            for remote in _remote_skills_from_source(source, repo_root, commit):
                 exact = (remote.source.repo, remote.source.ref, remote.source.path)
                 by_exact[exact] = remote
                 if remote.name in by_name and by_name[remote.name].source != remote.source:
                     ambiguous.add(remote.name)
                 else:
                     by_name[remote.name] = remote
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"{source.repo}:{source.path}: {_short(str(e))}")
+        except Exception as exc:  # Network errors can contain paths or credentials.
+            reason = str(exc) if isinstance(exc, ValueError) else ""
+            errors.append(reason if reason in {"commit_mismatch", "source_invalid", "archive_symlink"}
+                          else "source_fetch_failed")
 
     for name in ambiguous:
         by_name.pop(name, None)
@@ -568,36 +614,76 @@ def _apply_remote_update(
     remote: RemoteSkill,
     *,
     inferred: bool,
-) -> str:
+) -> tuple[str, str]:
     name = _skill_name(skill_dir)
-    if err := _validate_skill_dir(remote.path, remote.name):
-        return f"error_remote_invalid={name}:{_short(err)}"
+    if remote.name != name or _validate_skill_dir(remote.path, name):
+        return "error_remote_invalid", "remote_invalid"
+    record = _source_record(skill_dir)
     local_hash = _tree_sha256(skill_dir)
+    expected_hash = record.get("tree_sha256")
+    guard_hash = local_hash if record.get("lock_version") == 2 else _legacy_tree_sha256(skill_dir)
+    if expected_hash and expected_hash != guard_hash:
+        return "skipped_local_changes", "not_checked"
+    verification = _verify_remote(remote, record)
+    if verification not in {"verified", "unsigned_allowed"}:
+        return "error_verification", verification
+    if _mirror_has_local_changes(skill_dir, record, guard_hash):
+        return "skipped_local_changes", verification
+    if inferred and local_hash != remote.tree_sha256 and not SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE:
+        return "skipped_untracked_changed", verification
     if local_hash == remote.tree_sha256:
-        _write_source_file(skill_dir, remote, inferred=inferred)
-        return "no_update"
-
-    if inferred and not SKILL_UPDATE_ALLOW_UNTRACKED_OVERWRITE:
-        return "skipped_untracked_changed"
-
-    expected_hash = _read_source_sha(skill_dir)
-    if expected_hash and expected_hash != local_hash:
-        return "skipped_local_changes"
+        _write_source_file(skill_dir, remote, inferred=inferred,
+                           record=record, verification=verification)
+        _mirror_skill(name)
+        return "no_update", verification
 
     _backup_skill_dir(skill_dir)
     _replace_skill_tree(remote.path, skill_dir)
-    _write_source_file(skill_dir, remote, inferred=inferred)
+    _write_source_file(skill_dir, remote, inferred=inferred,
+                       record=record, verification=verification)
     _mirror_skill(remote.name)
-    return "updated"
+    return "updated", verification
 
 
-def _update_source_tracked_skills() -> dict[str, int | list[str]]:
-    counts: dict[str, int | list[str]] = {
+def _mirror_has_local_changes(skill_dir: Path, record: dict, baseline: str) -> bool:
+    hash_tree = _tree_sha256 if record.get("lock_version") == 2 else _legacy_tree_sha256
+    for root in _skill_roots():
+        mirror = root / skill_dir.name
+        if mirror.resolve() == skill_dir.resolve() or not _is_skill_dir(mirror):
+            continue
+        if hash_tree(mirror) != baseline:
+            return True
+    return False
+
+
+def _verify_remote(remote: RemoteSkill, record: dict) -> str:
+    if record.get("lock_version", 2) != 2:
+        return "lock_version_unsupported"
+    commit = remote.resolved_commit
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return "commit_mismatch"
+    if re.fullmatch(r"[0-9a-fA-F]{40}", remote.source.ref) and remote.source.ref.lower() != commit:
+        return "commit_mismatch"
+    if (remote.path / SOURCE_FILE).exists():
+        return "upstream_lock_refused"
+    if any(path.is_symlink() for path in remote.path.rglob("*")):
+        return "remote_symlink"
+    if _tree_sha256(remote.path) != remote.tree_sha256:
+        return "digest_mismatch"
+    if (record.get("lock_version") == 2 and record.get("resolved_commit") == commit
+            and record.get("tree_sha256") != remote.tree_sha256):
+        return "digest_mismatch"
+    return verify_publisher(remote.path, record)
+
+
+def _update_source_tracked_skills() -> dict:
+    counts: dict = {
         "remote_checked": 0,
         "remote_updated": 0,
         "remote_no_update": 0,
         "remote_skipped": 0,
         "remote_errors": [],
+        "verification": {},
     }
     sources = _source_specs_for_primary_skills()
     if not sources:
@@ -605,6 +691,9 @@ def _update_source_tracked_skills() -> dict[str, int | list[str]]:
     with tempfile.TemporaryDirectory(prefix="threadkeeper-skill-update-") as td:
         by_exact, by_name, errors = _build_remote_index(sources, Path(td))
         counts["remote_errors"] = errors
+        for error in errors:
+            outcomes = counts["verification"]
+            outcomes[error] = outcomes.get(error, 0) + 1
         for skill_dir in _primary_skill_dirs():
             source = _read_source_file(skill_dir)
             remote: RemoteSkill | None = None
@@ -617,7 +706,9 @@ def _update_source_tracked_skills() -> dict[str, int | list[str]]:
             if not remote:
                 continue
             counts["remote_checked"] = int(counts["remote_checked"]) + 1
-            result = _apply_remote_update(skill_dir, remote, inferred=inferred)
+            result, verification = _apply_remote_update(skill_dir, remote, inferred=inferred)
+            outcomes = counts["verification"]
+            outcomes[verification] = outcomes.get(verification, 0) + 1
             if result == "updated":
                 counts["remote_updated"] = int(counts["remote_updated"]) + 1
             elif result == "no_update":
@@ -634,7 +725,10 @@ def _run_update() -> str:
     remote = _update_source_tracked_skills()
     remote_errors = remote.get("remote_errors", [])
     error_count = len(remote_errors) if isinstance(remote_errors, list) else 0
+    verification = ",".join(f"{result}:{count}" for result, count
+                            in sorted(remote["verification"].items())) or "none"
     return (
+        f"verification={verification} "
         f"local_updates={local['local_updates']} mirrored={local['mirrored']} "
         f"conflicts={local['conflicts']} local_checked={local['local_checked']} "
         f"removed_strays={local['removed_strays']} "
@@ -664,7 +758,7 @@ def run_skill_update_pass(*, force: bool = False) -> str:
             result = _run_update()
         except Exception as e:  # noqa: BLE001
             logger.debug("skill_updater: pass failed", exc_info=True)
-            result = f"error {type(e).__name__}: {e}"
+            result = f"error {type(e).__name__}"
 
     _record_skill_update_pass(result)
     return result

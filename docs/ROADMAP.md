@@ -33,11 +33,10 @@ findings and plans from those dates.
 - **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
   This remains separate from the completed audit-manifest and search evidence
   work.
-- **Authenticate upstream skill publishers ([#403](https://github.com/po4erk91/thread-keeper/issues/403)),
-  package portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404)),
+- **Package portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404)),
   and verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
-  Existing content hashes, host adapters, and violation counters do not yet
-  complete these respective contracts.
+  Existing host adapters and violation counters do not yet complete these
+  respective contracts.
 
 **Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
 
@@ -52,6 +51,13 @@ capability without widening access or spending a worker attempt. Preserve the
 existing separation of web research and privileged writes.
 
 **Delivered work**
+
+- **Authenticated upstream skill publishers ([#403](https://github.com/po4erk91/thread-keeper/issues/403)).**
+  Source lock v2 records an immutable commit and whole-directory digest.
+  Locally chosen signer identities gate detached OMS verification before
+  replacement and all-root mirroring. Unsigned sources require an explicit
+  policy, legacy records pause for that choice, and status reports safe
+  verification counts. Backups and local-edit protection remain in place.
 
 - **Lesson integrity evidence for Curator ([#396](https://github.com/po4erk91/thread-keeper/issues/396)).**
   Audit schema 3 records lesson hashes, reviewed revisions, safe provenance,
@@ -255,10 +261,9 @@ issue-backed items were identified:
   ordinary task reads still count, even with a maintenance-looking origin
   label. Repeated passes, multiple batches, and retries preserve the
   consultation telemetry used for decay and stale-lesson ranking.
-- **Authenticated source-tracked skill updates (#403).** Resolve immutable
-  commits, retain whole-directory provenance, verify supported detached
-  publisher signatures, and make unsigned-source policy explicit before an
-  upstream skill is mirrored into auto-loaded roots.
+- ✅ DONE (#403). **Authenticated source-tracked skill updates.** Immutable
+  commit locks, whole-directory digests, detached OMS publisher verification,
+  and explicit unsigned policy now gate upstream replacement and mirroring.
 - **Portable Agent Plugins package (#404).** Generate validated `plugin.json`
   and `mcp.json` manifests plus a bootstrap skill from the same canonical
   setup metadata as `thread-keeper-setup`, while retaining current installers
