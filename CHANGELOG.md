@@ -7,6 +7,20 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.25.0 — 2026-11-06
+
+- **Added: authenticated source-tracked skill updates (#403).** People who
+  track upstream skills can choose a trusted publisher before updates reach
+  their installed skill folders. Updates retain an immutable GitHub commit
+  and a whole-directory digest. Detached OMS signatures must cover the full
+  skill and match the locally configured signer. Unsigned sources need an
+  explicit policy; older source records pause until that choice is made.
+  Refused updates leave installed copies unchanged, and successful updates
+  retain backups, local-edit protection, and all-root mirroring. Status records
+  verification outcomes without private paths or credentials. Signed sources
+  require the optional `skill-signing` extra; see
+  [source trust and recovery](docs/SKILL_SOURCES.md).
+
 ## v0.24.0 — 2026-11-06
 
 - **Added: lesson integrity evidence in Curator audits (#396).** Operators

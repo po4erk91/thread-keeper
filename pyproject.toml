@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "threadkeeper"
-version = "0.24.0"
+version = "0.25.0"
 description = "Multi-agent shared brain across Claude Code/Desktop, Codex, Antigravity CLI, Copilot, and VS Code. Cross-session memory, self-improving skill loops, inter-agent signaling — one local MCP server."
 requires-python = ">=3.11"
 authors = [{ name = "thread-keeper contributors" }]
@@ -36,6 +36,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Publisher verification for source-tracked skills. Missing tooling refuses
+# signed updates; an explicitly unsigned source does not need this extra.
+skill-signing = [
+    "model-signing>=1.1.1,<2",
+    # model-signing imports OpenSSL but does not declare this dependency.
+    "pyopenssl>=26.4.0",
+]
 # Semantic cross-language search + sub-linear vector index. Recommended
 # for any real use — without it, dialog_search falls back to FTS5 only.
 # Default backend is fastembed/ONNX Runtime: no PyTorch, ~700MB footprint.
@@ -70,6 +77,8 @@ encrypted = [
 # not compose with --forked (collides on the xdist worker tmp dir) and a few
 # tests still race under it. See CONTRIBUTING → Running tests.
 dev = [
+    "model-signing>=1.1.1,<2",
+    "pyopenssl>=26.4.0",
     # pytest 9.2.0 breaks pytest-forked 1.7.5: every forked test exits with
     # status 3 before reporting. Lift the cap once pytest-forked supports it.
     "pytest>=9.1.1,<9.2",
