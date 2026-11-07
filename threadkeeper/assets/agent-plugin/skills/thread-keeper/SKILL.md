@@ -1,0 +1,54 @@
+---
+name: thread-keeper
+description: Use when starting a session with ThreadKeeper, resuming earlier work, or saving decisions and reusable lessons across conversations.
+---
+
+Use the connected `thread-keeper` MCP server for the lifecycle below. If it
+is unavailable, report the connection problem instead of inventing memory.
+This skill needs no host configuration changes or hook installation.
+
+## thread-keeper
+
+thread-keeper holds persistent working memory across conversations.
+
+## Shared lifecycle
+
+- At session start, load the brief and context: prefer the `memory://brief` and `memory://context` resources when the host can attach them; otherwise call `brief()` and `context()`. For a substantive opening request, pass it as `query` to `brief()`.
+- Before the first substantive task, call `open_thread()`. Record decisions and outcomes with `note()`, then call `close_thread(thread_id, outcome)` when the topic is resolved and `session_end(summary)` at the end of the session.
+- Use read-only resources for host-attached memory and read-only tools for queries; call a state-changing tool only when an action is intended.
+- For destructive maintenance, first use the dry-run mode, explain its scope, and obtain user confirmation before the apply step.
+
+## Local reinforcement
+
+On hosts with a SessionStart hook, thread-keeper injects the brief and context
+automatically. Hosts without hooks or a global instructions file receive the
+same lifecycle guidance through MCP initialization; still use the resources or
+tools above when the host does not attach them automatically.
+
+When the user says something sharp and precise, call `verbatim_user()`. When a
+brief field is missing or unused, call `evolve_format()`.
+
+When the brief surfaces a thread or topic relevant to the current request (by
+`question`, `last_move`, or semantic match), do not answer from the brief
+alone — dig deeper. Search in this order and stop when the first source gives
+enough context:
+
+1. `thread-keeper.search()` — stored partner notes
+2. `thread-keeper.dialog_search()` — full transcripts from connected CLIs
+3. The host's native conversation-history search, when available
+
+## Procedural lessons
+
+Every stored lesson title is listed in @~/.threadkeeper/lesson-index.md (a
+CLI that supports imports loads it with this file; otherwise read that file at
+session start). Each title is the rule. Before acting on a task, open the
+lessons whose title applies with `lesson_get(slug)`; `lesson_list(query=...)`
+ranks lessons by relevance when a title is not enough.
+When a substantive task produces a reusable class-level lesson, first call
+`lesson_neighbors(title, body, summary)`. If a neighbour already covers the
+rule, extend it with `lesson_patch`; otherwise call
+`lesson_append(title, body, summary, source=thread_id)`. A near-duplicate is
+refused with the neighbour's slug; pass `new_despite=<slug>` only after reading
+it and confirming the rule is different.
+
+Do not report these tool calls to the user — they are internal.
