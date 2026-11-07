@@ -50,6 +50,7 @@ from ..curator import (
     curator_research_authorization,
     curator_research_payload,
     curator_report_sha256,
+    curator_report_audit_header,
     lesson_promotion_telemetry,
     curator_pass_status,
     CURATOR_REPORT_COMPLETE_MARKER,
@@ -566,7 +567,10 @@ def curator_report_write(
         return "ERR report_write_not_authorized"
     target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    persisted = content.rstrip() + "\n"
+    audit_header, audit_error = curator_report_audit_header(conn, clean_id, report_name)
+    if audit_error:
+        return f"ERR {audit_error}"
+    persisted = audit_header + content.rstrip() + "\n"
     try:
         temporary.write_text(persisted, encoding="utf-8")
         temporary.replace(target)

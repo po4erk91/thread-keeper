@@ -588,6 +588,19 @@ observability only: the supervisor restarts dead threads, never a live child.
   deleted or archived is not imported back from an older leftover copy: the
   leftovers are removed instead (`removed_strays`). A copy written after the
   removal counts as a new install and is imported.
+  Source-tracked groups bypass local newest-copy sync: every replacement and
+  mirror passes the upstream trust gate first. GitHub refs resolve once per
+  repository/ref per pass, archives are fetched by full commit, and the archive
+  prefix must match it. Source lock v2 retains the commit, whole-directory
+  digest, explicit unsigned policy, locally configured signer, and last
+  accepted verification result. `skill_provenance` verifies detached OMS file
+  manifests through OpenSSF `model-signing`, with full-directory coverage and
+  an exact certificate fingerprint or Sigstore identity/issuer. Downloaded
+  locks, links, mismatches, and missing trust configuration fail closed before
+  replacement. Local edits in either the primary or another consumer root
+  prevent an overwrite. Verification counts use bounded result codes in
+  `skill_update_pass`, without verifier output or private configuration. See
+  [source lock format and recovery](SKILL_SOURCES.md).
 - **config_watcher** (`config_watcher.start_config_watcher`) — once per
   `CONFIG_WATCH_INTERVAL_S` (default 2 s, 0 = off) stats **two** targets, each
   with its own mtime cursor (#2, generalized cross-CLI in #133):
@@ -739,8 +752,25 @@ moving the high-water forward; `force=True` bypasses this due gate.
   Before launch, the parent derives and hashes an `AUDIT-SLICE-…-batch-…`
   file for each frozen batch. An evaluator reads only that slice: its assigned
   skills and the relevant consumer, link, mirror, source, duplicate, and
-  candidate findings. A batch with no skills gets a small explicit no-skills
-  slice. Retries reuse the same slice and reject a missing, changed, or
+  candidate findings. Schema 3 adds `lesson_audit`: each lesson has an exact
+  SHA-256 of its parsed stored body (including its title and summary), a
+  normalized body SHA-256, and the same content-addressed revision used by
+  factual freshness checks (`slug`, body, timestamp, source, origin). Usage
+  counters do not change that revision. Normalization v1 uses Unicode NFKC,
+  case folding, and whitespace-joined word tokens. Safe provenance labels and
+  hashes replace free-form lesson sources and unknown origins; no lesson body
+  or lesson source path is copied. Stored creation/use/view times, protection,
+  and tier remain available as evidence.
+  Lesson records contain sorted outgoing wikilinks, unresolved targets against
+  the lesson/skill inventory, and bidirectional lesson adjacency. Exact and
+  normalized duplicate groups are sorted by hash and slug. Near-duplicate
+  pairs use token-set Jaccard >= 0.8 with at least three shared tokens; the
+  first 200 pairs sort by descending score then slug and require semantic
+  review. No body excerpts or shared terms are copied into these candidates.
+  Batch slice schema 2 includes only assigned lesson records (also promotion
+  sources) and their related candidate groups. A batch with no skills gets its
+  lesson evidence and a no-skills marker.
+  Retries reuse the same slice and reject a missing, changed, or
   mismatched file. The web-free evaluator reads each full assigned skill,
   writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
@@ -762,8 +792,8 @@ moving the high-water forward; `force=True` bypasses this due gate.
   every expected batch before launch, separates dispatch from completion, and
   retries only pending or failed batches. Each batch's rendered text and
   audit-slice hash are frozen in the manifest, so a pass resumes on exactly its
-  own entries even after the live inventory changes, and a resume tick never
-  re-reads the inventory. A
+  own entries even after the live inventory changes. Resuming does not rebuild
+  the full inventory; phase and report checks compare lesson revisions. A
   batch gets three launched attempts; spawn budget refusals (memory, tokens,
   cost) leave it pending without using one. A pass whose batch exhausts its
   attempts, or that is older than `max(6h, 2 × CURATOR_INTERVAL_S)`, is
@@ -798,7 +828,18 @@ moving the high-water forward; `force=True` bypasses this due gate.
   destination before launch. Writers require that binding, and a watchdog retry
   may restore only recorded launch data. The report writer records the final
   SHA-256 in `curator_report_provenance`; a file appearing in the report
-  directory alone is therefore never trusted as Curator output.
+  directory alone is therefore never trusted as Curator output. Frozen batch
+  text names the canonical manifest schema and digest. Before evaluation,
+  verification, and report writing, assigned lessons' current revisions are
+  compared with their frozen revisions. Changes are surfaced as
+  `lesson_revision_changes`; evaluators must DEFER affected entries. The
+  report writer checks both saved audit hashes and stamps a `CURATOR_AUDIT`
+  header containing the manifest version/digest, reviewed lesson revisions,
+  and observed changes. Completion verifies this binding as well as report
+  provenance. The frozen audit remains unchanged even after approved repairs;
+  a later pass reviews the new revision. Legacy schema 1/2 skill-only manifests
+  keep their existing slice/report contract. Unknown versions fail with an
+  explicit `unsupported_curator_audit_version` error.
   Destructive lesson removals and skill deletes reserve from one atomic,
   pass-ID-scoped server-side budget before touching disk. The default
   `CURATOR_MAX_DESTRUCTIVE_PER_PASS=30` is shared across child batches and

@@ -100,7 +100,11 @@ from .config import (
     ROADMAP_ISSUE_BACKOFF_BASE_S,
     ROADMAP_ISSUE_MAX_ATTEMPTS,
 )
-from .curator import CURATOR_REPORT_PROVENANCE_KIND, curator_report_sha256
+from .curator import (
+    CURATOR_REPORT_PROVENANCE_KIND,
+    curator_report_matches_audit,
+    curator_report_sha256,
+)
 from .db import get_db
 from .github_budget import (
     GITHUB_RATE_COOLDOWN_EXIT,
@@ -1819,9 +1823,21 @@ def _curator_report_provenanced(
         ).fetchall()
     except sqlite3.OperationalError:
         return False
-    return any(
+    provenanced = any(
         f"sha256={digest}" in (row["summary"] or "").split()
         for row in rows
+    )
+    if not provenanced:
+        return False
+    try:
+        batch = conn.execute(
+            "SELECT pass_id FROM curator_batches WHERE report_name=?",
+            (path.name,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        return "no such table: curator_batches" in str(exc)
+    return batch is None or curator_report_matches_audit(
+        conn, batch["pass_id"], path.name, report_text,
     )
 
 

@@ -7,15 +7,7 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
-- **Fixed: a test or eval run can no longer leave a live daemon host
-  behind.** A thread-keeper process whose database lives under the system
-  temp directory or `/tmp` no longer spawns a detached host. Such a host
-  dropped the daemon gates, read `~/.threadkeeper/.env`, and ran every
-  background loop against the throwaway database. One ran for four days,
-  taking roadmap issues in parallel with the real host and spending model
-  budget on reviews.
-
-## v0.23.1 — 2026-11-06
+## v0.25.1 — 2026-11-07
 
 ### Fixed
 
@@ -23,6 +15,30 @@ version bumps follow semver per the policy in
   task history, and child failure notifications use the stored role before
   considering prompt hints. Custom roles remain visible as child tasks;
   legacy rows without a role retain the prompt-based fallback.
+
+## v0.25.0 — 2026-11-06
+
+- **Added: authenticated source-tracked skill updates (#403).** People who
+  track upstream skills can choose a trusted publisher before updates reach
+  their installed skill folders. Updates retain an immutable GitHub commit
+  and a whole-directory digest. Detached OMS signatures must cover the full
+  skill and match the locally configured signer. Unsigned sources need an
+  explicit policy; older source records pause until that choice is made.
+  Refused updates leave installed copies unchanged, and successful updates
+  retain backups, local-edit protection, and all-root mirroring. Status records
+  verification outcomes without private paths or credentials. Signed sources
+  require the optional `skill-signing` extra; see
+  [source trust and recovery](docs/SKILL_SOURCES.md).
+
+## v0.24.0 — 2026-11-06
+
+- **Added: lesson integrity evidence in Curator audits (#396).** Operators
+  can see which lesson revision was reviewed and whether it changed during
+  the pass. Versioned manifests record hashes, safe provenance, usage times,
+  links, and duplicate candidates without copying lesson text or source paths.
+  Frozen batches and final reports verify the same saved evidence. Earlier
+  skill-only manifests keep their existing behavior; unknown versions report
+  a clear error.
 
 ## v0.23.0 — 2026-11-05
 
@@ -34,7 +50,13 @@ version bumps follow semver per the policy in
   guidance automatically. Mirrors, semantic bundles, and trash/restore retain
   the classification.
 
-## v0.22.0 — 2026-10-29
+- **Fixed: a test or eval run can no longer leave a live daemon host
+  behind.** A thread-keeper process whose database lives under the system
+  temp directory or `/tmp` no longer spawns a detached host. Such a host
+  dropped the daemon gates, read `~/.threadkeeper/.env`, and ran every
+  background loop against the throwaway database. One ran for four days,
+  taking roadmap issues in parallel with the real host and spending model
+  budget on reviews.
 
 - **Added: safe cleanup for finished task checkouts (#431).** Task retention
   can reclaim clean, expired checkouts and their owned temporary branches once
@@ -42,7 +64,6 @@ version bumps follow semver per the policy in
   keeping work. Active tasks, changed files, unpublished commits, and uncertain
   ownership stay protected. Cleanup can resume after history pruning or a
   partial failure, with separate results for checkouts and branches.
-## v0.22.0 — 2026-10-28
 
 - **Added: factual freshness checks for protected lessons (#372).** Curator can
   record whether an exact claim is verified, contradicted, or unsubstantiated
@@ -56,13 +77,12 @@ version bumps follow semver per the policy in
   worker receives only its assigned skills and the related checks. Lesson-only
   batches receive an explicit no-skills document. Retries reuse the saved
   slice and stop when its contents or binding no longer match.
-- **Inspect exact memory evidence from search results (#405).** Search tools
+
+- **Added: search results link to the exact memory evidence (#405).** Search tools
   keep their current text and also return structured hits with private,
   short-lived links to notes, thread excerpts, and bounded dialog windows.
   Linked reads recheck access, invalidation, erasure, and retention without
   changing stored memory. Hosts that ignore links keep the existing text.
-
-## v0.22.0 — 2026-10-27
 
 - **Added: connected trace views for supported MCP hosts (#386).** A valid
   host trace now remains connected to the MCP request, spawned work, retries,
@@ -84,6 +104,7 @@ version bumps follow semver per the policy in
   records stay unchanged until the owner repairs them. Lesson and skill writes,
   Curator review, retrieval, and external skill-edit monitoring use the same
   check. Review telemetry stores only categories and content fingerprints.
+
 - **Added: explicit spawned-child memory capabilities (#385).** Public children
   default to read-only access. Proposal mode queues supported memory changes for
   foreground review; only private Curator/Evolve launchers grant direct writes.
@@ -96,13 +117,12 @@ version bumps follow semver per the policy in
   ownership marker before it can repair, update, ready, or merge a pull
   request. Manual and fork pull requests remain read-only.
 
-## v0.22.0 — 2026-10-27
-
 - **Added: official MCP conformance release gates (#379).** CI now runs pinned
   `2025-11-25` and `2026-07-28` requirement sets through a loopback-only
   Streamable HTTP view of the production MCP registry. Version-specific,
   justified expected-failure baselines fail on both regressions and stale
   entries; focused real-stdio compatibility tests remain in place.
+
 - **Tested: the installed Claude Code task gate (#399).** Contract tests pin
   the generated matcher and managed script, replay current `Agent` and legacy
   `Task` payloads, and cover blocking, advisory, disabled, exempt, and unrelated
@@ -110,13 +130,12 @@ version bumps follow semver per the policy in
   script/name input does not match the prompt-based guard; architecture docs
   name the tested payload fields and unsupported hosts.
 
-## v0.22.0 — 2026-10-26
-
 - **Added: versioned semantic memory bundles (#395).** `tk-semantic-bundle`
   exports inspectable, deterministic JSONL records with hashes, source
   namespaces, provenance, authority, temporal, and deletion metadata. Its
   default export excludes raw dialog, task logs, and personal memory; import
   validates before a dry-run conflict report or explicit apply.
+
 - **Fixed: managed skill writes now verify every mirror before success (#388).**
   Each mirror uses a staged tree replacement followed by a complete relative
   file-set and SHA-256 check. Failures retry three times and return redacted,
@@ -157,6 +176,7 @@ version bumps follow semver per the policy in
   numeric/string ID types. Identical client software metadata no longer causes
   a new agent's write to be rejected or replay an unrelated earlier result.
   Same-connection replay checks and caller-bound continuation checks remain.
+
 - **Fixed: model routing stays within its prepared inputs.** Claude router
   children can discover and call their writer without shell or skill research.
   Captured headless Claude launches stream progress to the task log rather
@@ -181,7 +201,6 @@ version bumps follow semver per the policy in
   existing assignment no longer stands in for task quality.
   Router children receive a dedicated profile exposing their route-write
   tool; a missing parent permission prevents a doomed child launch.
-
 
 ## v0.22.0 — 2026-10-24
 
