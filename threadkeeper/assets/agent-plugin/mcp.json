@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "thread-keeper": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "threadkeeper[semantic]==0.26.0",
+        "python",
+        "-m",
+        "threadkeeper.server"
+      ],
+      "env": {
+        "PYTHONSAFEPATH": "1",
+        "THREADKEEPER_TOOL_PROFILE": "core",
+        "PYTHONPATH": "",
+        "THREADKEEPER_AUTO_UPDATE_INTERVAL_S": "0"
+      }
+    }
+  }
+}

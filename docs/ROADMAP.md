@@ -33,10 +33,12 @@ findings and plans from those dates.
 - **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
   This remains separate from the completed audit-manifest and search evidence
   work.
-- **Package portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404)),
-  and verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
-  Existing host adapters and violation counters do not yet complete these
-  respective contracts.
+- **Portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404))
+  is implemented in v0.26.0.** Releases include a validated Agent Plugins 1.0
+  bundle generated from shared setup metadata and lifecycle instructions.
+  Adapter setup and filesystem skill mirroring remain supported.
+- **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
+  Existing violation counters do not yet complete this contract.
 
 **Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
 
@@ -264,10 +266,11 @@ issue-backed items were identified:
 - ✅ DONE (#403). **Authenticated source-tracked skill updates.** Immutable
   commit locks, whole-directory digests, detached OMS publisher verification,
   and explicit unsigned policy now gate upstream replacement and mirroring.
-- **Portable Agent Plugins package (#404).** Generate validated `plugin.json`
-  and `mcp.json` manifests plus a bootstrap skill from the same canonical
-  setup metadata as `thread-keeper-setup`, while retaining current installers
-  for hosts without plugin support.
+- **Portable Agent Plugins package (done, #404, v0.26.0).** Releases contain
+  validated `plugin.json` and `mcp.json` manifests and a bootstrap skill,
+  generated from canonical setup metadata and lifecycle guidance. CI checks
+  published schemas, installer parity and installed wheel/sdist contents.
+  Existing adapters and filesystem skill mirroring remain supported.
 - **Progressive memory evidence links (done, #405).** `search` and
   `dialog_search` preserve their text fallback and return structured hits plus
   caller/project-bound `resource_link` blocks for notes, thread excerpts, and

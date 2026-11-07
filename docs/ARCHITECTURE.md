@@ -2420,6 +2420,30 @@ test. It contains no rendered memory, local paths, identifiers, credentials, or
 transcript content. Hooks and per-client managed instruction files remain the
 fallback and reinforcement for hosts that ignore server instructions.
 
+### Portable Agent Plugins bundle (#404)
+
+`setup_metadata.py` owns the server name, module arguments and default
+environment. `_setup.py` resolves the installed interpreter and adds its
+installation path; `agent_plugin.py` uses `uvx` and a release-pinned package
+with the same module, server identity and core tool profile. The portable
+launcher clears inherited `PYTHONPATH` and disables in-process self-updates:
+the host owns plugin upgrades. Memory still uses the normal ThreadKeeper
+storage profile, outside the plugin directory.
+
+`instructions.py` owns both the setup-managed instructions and bootstrap
+skill. Generated `assets/agent-plugin/` contains the fixed Agent Plugins 1.0
+layout: `plugin.json`, `mcp.json`, and `skills/thread-keeper/SKILL.md`. The
+wheel and sdist carry that directory; the release also attaches its zip.
+`thread-keeper-setup --export-plugin DIRECTORY` exports only these files and
+supports `--dry-run`. Ordinary setup continues to use the existing adapters,
+hooks and managed instruction writers. Learned-skill mirroring is unchanged.
+
+CI checks generated-file drift, validates both manifests against the published
+versioned schemas and pinned offline copies, compares plugin metadata with a
+captured setup registration, and builds/installs the wheel in an isolated
+environment. Agent Plugins 1.0 does not standardize hooks, installation,
+upgrades or uninstall. See [installation](INSTALLATION.md) for host boundaries.
+
 ### MCP resources, prompts, and Apps (#78, #364)
 
 Tools are only one of MCP's three server primitives. thread-keeper also adopts

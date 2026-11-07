@@ -7,6 +7,18 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.26.0 — 2026-11-07
+
+- **Added: portable Agent Plugins installation (#404).** People using a
+  compatible host can load ThreadKeeper's memory server and starter skill
+  together from one release bundle. The bundle and existing installer share
+  server metadata and lifecycle guidance. Releases include the bundle in
+  Python packages and as a separate zip; CI checks published schemas,
+  installer parity and clean package installation. Existing setup adapters,
+  hooks and learned-skill mirrors remain supported. See
+  [installation choices](docs/INSTALLATION.md) for host requirements,
+  upgrades and removal.
+
 ## v0.25.0 — 2026-11-06
 
 - **Added: authenticated source-tracked skill updates (#403).** People who

@@ -30,6 +30,7 @@ from typing import Any
 from .config_io import mutate_text_file
 from .instructions import MANAGED_INSTRUCTIONS_BLOCK
 from .permissions import chmod_private_dir
+from .setup_metadata import installed_server
 
 # ----------------------------------------------------------------------
 # Paths
@@ -76,18 +77,7 @@ def install_mcp_servers(dry_run: bool) -> list[str]:
     venv_python = REPO_ROOT / ".venv" / "bin" / "python"
     if venv_python.exists():
         python_bin = str(venv_python)
-    args = ["-m", "threadkeeper.server"]
-    env = {
-        "PYTHONPATH": str(REPO_ROOT),
-        # MCP clients often launch the server from the agent's current
-        # checkout.  Without safe-path mode, ``python -m`` puts that checkout
-        # ahead of the configured install and can import unmerged Evolve code
-        # against the live DB.
-        "PYTHONSAFEPATH": "1",
-        # New registrations start with the daily-memory surface. Existing
-        # configurations without this key retain the full compatibility profile.
-        "THREADKEEPER_TOOL_PROFILE": "core",
-    }
+    registration = installed_server(python_bin, REPO_ROOT)
 
     lines: list[str] = []
     adapters = installed_adapters()
@@ -95,10 +85,7 @@ def install_mcp_servers(dry_run: bool) -> list[str]:
         return ["mcp_server: no CLI detected — nothing to wire"]
     for adapter in adapters:
         result = adapter.register_mcp_server(
-            name="thread-keeper",
-            command=python_bin,
-            args=args,
-            env=env,
+            **registration,
             dry_run=dry_run,
         )
         lines.append(f"mcp_server[{adapter.name}]: {result}")
@@ -282,7 +269,16 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="thread-keeper-setup")
     p.add_argument("--dry-run", action="store_true",
                    help="Show what would change without writing anything.")
+    p.add_argument("--export-plugin", type=Path, metavar="DIRECTORY",
+                   help="Export the portable plugin only; leave host configuration untouched.")
     args = p.parse_args(argv)
+    if args.export_plugin is not None:
+        from importlib.metadata import version
+        from .agent_plugin import write_bundle
+
+        for name in write_bundle(args.export_plugin, version("threadkeeper"), dry_run=args.dry_run):
+            print(f"plugin: {'would export' if args.dry_run else 'exported'} {name}")
+        return 0
 
     print(f"thread-keeper setup ({'dry-run' if args.dry_run else 'apply'})")
     print(f"  repo: {REPO_ROOT}")
