@@ -8,18 +8,13 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-07 roadmap status
+## 2026-11-08 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
 **Remaining issue-backed work**
 
-- **Bound Curator memory before launching a worker ([#437](https://github.com/po4erk91/thread-keeper/issues/437)).**
-  Large skill resources still load in full while the parent checks their
-  contents and mirrors. Read them in bounded chunks, preserve existing hashes,
-  and report incomplete checks when files cannot be read or change during the
-  check. Worker admission limits do not bound this parent-side allocation.
 - **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
   Agree how existing search vectors will move to the new generation before
   changing the fastembed dependency. Keep the issue behind `needs-design`
@@ -50,6 +45,11 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Bound Curator resource hashing ([#437](https://github.com/po4erk91/thread-keeper/issues/437))
+  is implemented in v0.26.1.** Source and mirror integrity checks reuse one
+  64 KiB buffer before worker admission and preserve existing digests. Read
+  failures and observed file/tree changes report incomplete integrity rather
+  than matching mirrors. Metadata still scales with the number of entries.
 - **Portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404))
   is implemented in v0.26.0.** Releases include a validated Agent Plugins 1.0
   bundle generated from shared setup metadata and lifecycle instructions.

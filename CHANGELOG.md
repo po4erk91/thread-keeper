@@ -7,6 +7,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.26.1 — 2026-11-08
+
+- **Fixed: bounded Curator resource integrity checks (#437).** Large skill
+  assets no longer load in full when background audits compare installed
+  copies. Hashing reuses one 64 KiB buffer and keeps existing digests. Failed
+  reads and observed file changes report incomplete integrity instead of
+  claiming that copies match. Failure findings exclude private paths and
+  resource contents.
+
 ## v0.26.0 — 2026-11-07
 
 - **Added: portable Agent Plugins installation (#404).** People using a

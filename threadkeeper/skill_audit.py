@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import time
 from typing import Iterable
 
@@ -33,6 +34,7 @@ from .config import (
 
 AUDIT_SCHEMA_VERSION = 2
 AUDIT_BATCH_SLICE_SCHEMA_VERSION = 1
+_TREE_HASH_BUFFER_BYTES = 64 * 1024
 _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
@@ -59,22 +61,77 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _stat_signature(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def _tree_snapshot(
+    root: Path,
+) -> tuple[dict[Path, tuple[int, ...]], dict[Path, tuple[int, ...]]]:
+    """Keep metadata only; unlike rglob, traversal failures must not be skipped."""
+    files: dict[Path, tuple[int, ...]] = {}
+    directories: dict[Path, tuple[int, ...]] = {}
+    for directory, _subdirs, names in os.walk(root, onerror=_raise_walk_error):
+        parent = Path(directory)
+        directories[parent] = _stat_signature(parent.stat())
+        for name in names:
+            path = parent / name
+            info = path.stat()
+            if stat.S_ISREG(info.st_mode):
+                files[path] = _stat_signature(info)
+    if root not in directories:
+        raise OSError("incomplete skill tree")
+    return files, directories
+
+
+def _hash_tree_file(
+    digest, path: Path, expected: tuple[int, ...], buffer: memoryview,
+) -> bool:
+    with path.open("rb", buffering=0) as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or _stat_signature(before) != expected:
+            return False
+        digest.update(before.st_size.to_bytes(8, "big"))
+        remaining = before.st_size
+        while remaining:
+            count = stream.readinto(buffer[:min(remaining, len(buffer))])
+            if not count:
+                return False
+            digest.update(buffer[:count])
+            remaining -= count
+        return _stat_signature(os.fstat(stream.fileno())) == expected
+
+
 def _tree_hash(root: Path) -> str | None:
-    if not root.is_dir():
-        return None
-    digest = hashlib.sha256()
-    files = sorted(p for p in root.rglob("*") if p.is_file())
-    for path in files:
-        rel = path.relative_to(root).as_posix().encode("utf-8")
-        digest.update(len(rel).to_bytes(4, "big"))
-        digest.update(rel)
-        try:
-            body = path.read_bytes()
-        except OSError:
+    """Preserve path/length/content framing with one fixed resource buffer.
+
+    None means integrity is incomplete, including observed changes anywhere
+    in the tree between the metadata snapshots. No filesystem snapshot or
+    lock is held, so changes after the final check remain possible.
+    """
+    try:
+        snapshot = _tree_snapshot(root)
+        files, _directories = snapshot
+        digest = hashlib.sha256()
+        buffer = memoryview(bytearray(_TREE_HASH_BUFFER_BYTES))
+        for path in sorted(files):
+            rel = path.relative_to(root).as_posix().encode("utf-8")
+            digest.update(len(rel).to_bytes(4, "big"))
+            digest.update(rel)
+            if not _hash_tree_file(digest, path, files[path], buffer):
+                return None
+        if _tree_snapshot(root) != snapshot:
             return None
-        digest.update(len(body).to_bytes(8, "big"))
-        digest.update(body)
-    return digest.hexdigest()
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _frontmatter(content: str) -> tuple[dict, str, str | None]:
@@ -662,18 +719,26 @@ def _record_for(
         return record
 
     canonical_tree_hash = _tree_hash(skill_dir)
+    if canonical_tree_hash is None:
+        record["findings"].append("source_integrity_incomplete")
     from .skill_lifecycle import skill_directory
 
     for root in roots:
         mirror_dir = skill_directory(root, name, classification)
         if mirror_dir.resolve() == skill_dir.resolve():
-            status = "canonical"
+            status = "canonical" if canonical_tree_hash is not None else "integrity_incomplete"
         elif not mirror_dir.exists():
             status = "missing"
         else:
-            status = "in_sync" if _tree_hash(mirror_dir) == canonical_tree_hash else "drift"
+            mirror_tree_hash = _tree_hash(mirror_dir)
+            if canonical_tree_hash is None or mirror_tree_hash is None:
+                status = "integrity_incomplete"
+            else:
+                status = "in_sync" if mirror_tree_hash == canonical_tree_hash else "drift"
         record["mirrors"].append({"root": _root_label(root), "status": status})
     mirror_states = {item["status"] for item in record["mirrors"]}
+    if "integrity_incomplete" in mirror_states:
+        record["findings"].append("mirror_integrity_incomplete")
     if "drift" in mirror_states:
         record["findings"].append("mirror_drift")
     if state in {"active", "stale", "untracked"}:
