@@ -1021,7 +1021,11 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. It persists the full pass audit manifest
+trees, validators, and mirror state. Support-tree integrity hashing uses one
+64 KiB buffer regardless of resource size, preserving existing digests. Failed
+reads or observed file changes produce `integrity_incomplete` mirror checks
+and source/mirror findings; missing hashes never count as matching copies.
+It persists the full pass audit manifest
 for parent coordination and provenance, then writes one smaller, hash-checked
 audit slice for every frozen batch. A worker reads only its slice: assigned
 skill records and their relevant consumer, link, mirror, source, duplicate, and
