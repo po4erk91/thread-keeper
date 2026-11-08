@@ -81,3 +81,16 @@ it and confirming the rule is different.
 
 Do not report these tool calls to the user — they are internal.
 """
+
+
+BOOTSTRAP_SKILL = """\
+---
+name: thread-keeper
+description: Use when starting a session with ThreadKeeper, resuming earlier work, or saving decisions and reusable lessons across conversations.
+---
+
+Use the connected `thread-keeper` MCP server for the lifecycle below. If it
+is unavailable, report the connection problem instead of inventing memory.
+This skill needs no host configuration changes or hook installation.
+
+""" + MANAGED_INSTRUCTIONS_BLOCK

@@ -742,7 +742,22 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
   exact duplicates, repeated substantial paragraphs, and lexical semantic
-  candidates. Resource checks cover Markdown links and only unambiguous
+  candidates. Source and mirror tree hashing streams through one reusable
+  64 KiB buffer with unbuffered file reads; resource-content memory is fixed
+  as individual files grow. Sorted relative UTF-8 paths retain the original
+  4-byte path-length / path / 8-byte content-length / content framing,
+  including binary and empty files. File and directory metadata inventories
+  still scale with entry count. Hashing checks device/inode, mode, size, and
+  nanosecond modification/change times before reading, on the open descriptor
+  after reading, and across a final tree scan. Traversal/read failures, short
+  reads, replacements, and observed tree changes return no digest. A failed
+  source adds `source_integrity_incomplete`; comparisons without two complete
+  hashes have status `integrity_incomplete` and add
+  `mirror_integrity_incomplete`, never `in_sync`. These findings contain fixed
+  labels rather than exception text, private paths, or resource contents.
+  This detects observed changes during hashing, not changes after the final
+  metadata check; it does not hold a filesystem snapshot or lock.
+  Resource checks cover Markdown links and only unambiguous
   slash-containing inline-code paths that remain inside the skill directory;
   URLs, absolute or escaping paths, commands, frontmatter, headings, and
   fenced examples are excluded. Repeated-prose findings require a normalized
@@ -2419,6 +2434,30 @@ same lifecycle fragments as the setup-managed instruction block, with a drift
 test. It contains no rendered memory, local paths, identifiers, credentials, or
 transcript content. Hooks and per-client managed instruction files remain the
 fallback and reinforcement for hosts that ignore server instructions.
+
+### Portable Agent Plugins bundle (#404)
+
+`setup_metadata.py` owns the server name, module arguments and default
+environment. `_setup.py` resolves the installed interpreter and adds its
+installation path; `agent_plugin.py` uses `uvx` and a release-pinned package
+with the same module, server identity and core tool profile. The portable
+launcher clears inherited `PYTHONPATH` and disables in-process self-updates:
+the host owns plugin upgrades. Memory still uses the normal ThreadKeeper
+storage profile, outside the plugin directory.
+
+`instructions.py` owns both the setup-managed instructions and bootstrap
+skill. Generated `assets/agent-plugin/` contains the fixed Agent Plugins 1.0
+layout: `plugin.json`, `mcp.json`, and `skills/thread-keeper/SKILL.md`. The
+wheel and sdist carry that directory; the release also attaches its zip.
+`thread-keeper-setup --export-plugin DIRECTORY` exports only these files and
+supports `--dry-run`. Ordinary setup continues to use the existing adapters,
+hooks and managed instruction writers. Learned-skill mirroring is unchanged.
+
+CI checks generated-file drift, validates both manifests against the published
+versioned schemas and pinned offline copies, compares plugin metadata with a
+captured setup registration, and builds/installs the wheel in an isolated
+environment. Agent Plugins 1.0 does not standardize hooks, installation,
+upgrades or uninstall. See [installation](INSTALLATION.md) for host boundaries.
 
 ### MCP resources, prompts, and Apps (#78, #364)
 

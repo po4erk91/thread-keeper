@@ -94,6 +94,21 @@ jobs:
           echo "pytest shards: $SHARDS"
           test "$SHARDS" = "success"
 
+  agent-plugin:
+    name: Agent Plugins package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install validation dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Validate published schemas and installer parity
+        run: |
+          python scripts/validate_agent_plugin.py --published
+          python -m pytest tests/test_agent_plugin.py tests/test_setup.py -o addopts='' -q
+
   conformance:
     name: MCP conformance requirements
     runs-on: ubuntu-latest

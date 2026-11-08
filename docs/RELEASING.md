@@ -192,3 +192,30 @@ git tag -s v0.5.0rc1 -m "release: v0.5.0rc1"    # release candidate
 ```
 
 Users opt in via `pip install --pre threadkeeper`.
+
+## Portable Agent Plugins bundle
+
+Every release also ships `thread-keeper-agent-plugin-vX.Y.Z.zip` as a GitHub
+Release asset. The Python wheel and sdist include the same directory under
+`threadkeeper/assets/agent-plugin/`. This is separate from the MCP Registry's
+`server.json`, whose version must still match the Python release.
+
+After changing the version, shared setup metadata or lifecycle guidance,
+regenerate the bundle in the same PR:
+
+```bash
+python -m pip install -e '.[dev]'
+python -m threadkeeper.agent_plugin
+python scripts/validate_agent_plugin.py --published
+python -m pytest tests/test_agent_plugin.py tests/test_setup.py
+```
+
+Commit the generated manifests and bootstrap skill. CI rejects missing,
+stale or extra bundle files, schema differences and installer parity failures.
+Offline tests use pinned copies of the published Agent Plugins 1.0.0 schemas.
+The package-content test builds the sdist and its wheel in a clean source copy,
+checks the bundled files, then exports the plugin from an isolated wheel
+installation. `publish.yml` validates the published schemas again and builds
+the zip before the existing protected PyPI upload. The zip stays in its own
+artifact directory so PyPI receives only Python distributions. The GitHub
+Release attaches both after the protected publish job succeeds.

@@ -7,7 +7,7 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
-## v0.25.1 — 2026-11-07
+## v0.26.2 — 2026-11-08
 
 ### Fixed
 
@@ -15,6 +15,27 @@ version bumps follow semver per the policy in
   task history, and child failure notifications use the stored role before
   considering prompt hints. Custom roles remain visible as child tasks;
   legacy rows without a role retain the prompt-based fallback.
+
+## v0.26.1 — 2026-11-08
+
+- **Fixed: bounded Curator resource integrity checks (#437).** Large skill
+  assets no longer load in full when background audits compare installed
+  copies. Hashing reuses one 64 KiB buffer and keeps existing digests. Failed
+  reads and observed file changes report incomplete integrity instead of
+  claiming that copies match. Failure findings exclude private paths and
+  resource contents.
+
+## v0.26.0 — 2026-11-07
+
+- **Added: portable Agent Plugins installation (#404).** People using a
+  compatible host can load ThreadKeeper's memory server and starter skill
+  together from one release bundle. The bundle and existing installer share
+  server metadata and lifecycle guidance. Releases include the bundle in
+  Python packages and as a separate zip; CI checks published schemas,
+  installer parity and clean package installation. Existing setup adapters,
+  hooks and learned-skill mirrors remain supported. See
+  [installation choices](docs/INSTALLATION.md) for host requirements,
+  upgrades and removal.
 
 ## v0.25.0 — 2026-11-06
 

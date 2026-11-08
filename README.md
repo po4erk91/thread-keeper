@@ -116,6 +116,29 @@ resources for host-attached context, and use dry-run plus confirmation before
 destructive maintenance. Hooks and the managed files remain reinforcement for
 clients that do not surface server instructions.
 
+### Portable plugin install
+
+Hosts that load **Agent Plugins 1.0** skills and stdio MCP servers can use the
+`thread-keeper-agent-plugin-vX.Y.Z.zip` asset from
+[GitHub Releases](https://github.com/po4erk91/thread-keeper/releases).
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) so `uvx`
+is on the host's PATH, extract the archive, then use the host's plugin loader
+on that directory. The plugin starts the matching ThreadKeeper release and
+provides a bootstrap skill with the same lifecycle guidance as setup.
+
+You can also export the plugin from an installed release without changing
+any host configuration:
+
+```bash
+thread-keeper-setup --export-plugin ./thread-keeper-plugin
+```
+
+Plugin support depends on the host and version; an MCP or Skills loader alone
+does not imply Agent Plugins support. For hosts without that support, use
+pipx/uv plus `thread-keeper-setup` as above. Adapter hooks and learned-skill
+mirroring remain available. See [installation, upgrades and removal](docs/INSTALLATION.md)
+for the differences, including how to avoid duplicate registrations.
+
 ### Alternative installs
 
 If you don't have `pipx` and don't want to install it:
@@ -998,7 +1021,11 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. It persists the full pass audit manifest
+trees, validators, and mirror state. Support-tree integrity hashing uses one
+64 KiB buffer regardless of resource size, preserving existing digests. Failed
+reads or observed file changes produce `integrity_incomplete` mirror checks
+and source/mirror findings; missing hashes never count as matching copies.
+It persists the full pass audit manifest
 for parent coordination and provenance, then writes one smaller, hash-checked
 audit slice for every frozen batch. A worker reads only its slice: assigned
 skill records and their relevant consumer, link, mirror, source, duplicate, and
