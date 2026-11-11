@@ -8,7 +8,7 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-08 roadmap status
+## 2026-11-11 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
@@ -45,6 +45,16 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Evidence for Curator skill changes is on main, pending release
+  ([PR #443](https://github.com/po4erk91/thread-keeper/pull/443)).** When
+  Caliper is configured, the verifier compares at least five task cases with
+  and without a skill, with three attempts per case. A repair must pass every
+  case with the exact replacement loaded; missing or mixed results do not
+  authorize a change. Low-value rule-only skills can be retired only after
+  the complete rule is preserved in a lesson, with a score, reason, and
+  recovery reference in the deletion log. These checks are optional and do
+  not replace format, mirror, protection, or recovery checks. See
+  [Caliper setup and limits](CURATOR_CALIPER.md).
 - **Bound Curator resource hashing ([#437](https://github.com/po4erk91/thread-keeper/issues/437))
   is implemented in v0.26.1.** Source and mirror integrity checks reuse one
   64 KiB buffer before worker admission and preserve existing digests. Read

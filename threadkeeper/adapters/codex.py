@@ -26,6 +26,7 @@ from .base import (
     CHILD_MCP_ENV_KEYS, CLIAdapter, NormalizedMessage, child_mcp_entry_env,
     find_cli_executable,
 )
+from ..config import CURATOR_CALIPER_TOOL_TIMEOUT_S
 from ..config_io import mutate_text_file
 
 _FORCED_CID_RE = re.compile(
@@ -506,6 +507,10 @@ class CodexAdapter(CLIAdapter):
         # Expose exactly the granted tools, as --allowedTools does for Claude;
         # approvals alone left every tool the user pre-approved callable.
         granted = _granted_thread_keeper_tools(extra_allowed_tools)
+        if "curator_evaluate_skill" in granted:
+            overrides.append(
+                f"mcp_servers.thread-keeper.tool_timeout_sec={CURATOR_CALIPER_TOOL_TIMEOUT_S}"
+            )
         overrides.append(
             "mcp_servers.thread-keeper.enabled_tools=" + json.dumps(granted)
         )

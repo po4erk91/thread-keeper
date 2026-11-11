@@ -7,6 +7,17 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Added: evidence for Curator skill repairs and removals.** With Caliper
+  configured, the verifier builds cases from why the skill was created or
+  added. If that reason is unknown, the verifier infers a use case from the
+  skill. It tests at least five cases, including three mutually exclusive
+  alternatives, with and without the skill. Missing or mixed results do not
+  authorize a change.
+- **Added: user usefulness scores and a log for rule-only skill retirements.**
+  Curator explains each score. When a low-value standalone skill is retired,
+  its rule remains in a lesson and its score, reason, and recovery reference
+  are recorded.
+
 ## v0.26.1 — 2026-11-08
 
 - **Fixed: bounded Curator resource integrity checks (#437).** Large skill
