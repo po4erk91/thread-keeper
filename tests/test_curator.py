@@ -3076,6 +3076,12 @@ def test_evaluator_proposals_launch_a_verifier_before_endorsement(
     assert prompt.startswith(curator.CURATOR_PROMPT_PREFIX + "'s VERIFIER phase")
     assert "<curator_verify_proposals>\nPROPOSAL 1: REMOVE lesson" in prompt
     assert "lesson_remove" in verifier["kwargs"]["extra_allowed_tools"]
+    assert "whole number from 1 to 10" in launches[0]["kwargs"]["prompt"]
+    assert "whole number from 1 to 10" in prompt
+    assert "RETIRE RULE" in prompt
+    assert "no_measured_benefit=true" in prompt
+    assert "curator_evaluate_skill" in verifier["kwargs"]["extra_allowed_tools"]
+    assert "curator_evaluate_skill" not in launches[0]["kwargs"]["extra_allowed_tools"]
     assert verifier["snapshot"]
     assert verifier["kwargs"]["write_origin"] == "curator"
     assert curator.run_curator_pass(force=True).startswith("curator_pending")
@@ -3400,3 +3406,98 @@ def test_pinned_lessons_never_count_toward_a_promotion(tmp_path, monkeypatch):
 
     assert detection.candidates == ()
     assert dict(detection.rejected_by_reason)["pinned_member"] == 1
+
+
+def test_caliper_creation_context_schedules_check_and_changes_pass_identity(tmp_path, monkeypatch):
+    settings = tmp_path / "caliper"
+    settings.mkdir()
+    monkeypatch.setenv("THREADKEEPER_CURATOR_CALIPER_DIR", str(settings))
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _add_skill(pkg, "example-skill")
+    curator = pkg["curator"]
+    conn = pkg["db"].get_db()
+    before = curator._current_inventory_fingerprint(conn)
+
+    assert "[CALIPER_CHECK]" in curator._collect_inventory(conn)[0]
+    skill = pkg["skills_dir"] / "example-skill" / "SKILL.md"
+    skill.write_text(
+        "---\nname: example-skill\ndescription: Example\nmetadata:\n"
+        "  threadkeeper-eval-context: User needs to sort entries by workflow state.\n"
+        "---\n\nHandle workflow entries.\n"
+    )
+    assert "[CALIPER_CHECK]" in curator._collect_inventory(conn)[0]
+    assert curator._current_inventory_fingerprint(conn) != before
+
+
+def test_caliper_tool_rejects_unbound_verifier_before_running(tmp_path, monkeypatch):
+    from inspect import unwrap
+
+    _bootstrap(tmp_path, monkeypatch, write_origin="curator", spawned_child="1")
+    from threadkeeper import curator_skill_eval, curator_snapshots
+    from threadkeeper.tools import curator as curator_tools
+
+    snapshot = tmp_path / "snapshots" / "test-pass"
+    snapshot.mkdir(parents=True)
+    curator_snapshots.write_verify_scope(snapshot, 1, "test-pass", "CHECK example-skill")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "test-pass")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PHASE", "verify")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_VERIFY_BATCH", "1")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snapshot))
+
+    def fail(*args):
+        pytest.fail("an unbound verifier must not run Caliper")
+
+    monkeypatch.setattr(curator_skill_eval, "evaluate", fail)
+    tool = curator_tools.curator_evaluate_skill
+    assert tool("example-skill") == "ERR memory_access_denied"
+    assert unwrap(tool)("example-skill") == "ERR caliper_verifier_not_authorized"
+
+
+def test_caliper_tool_runs_only_for_its_authorized_skill_and_batch(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _add_skill(pkg, "example-skill")
+    from threadkeeper import curator_skill_eval, curator_snapshots, memory_access
+    from threadkeeper.tools import curator as curator_tools
+
+    snapshot = pkg["reports_dir"] / "snapshots" / "test-pass"
+    snapshot.mkdir(parents=True)
+    curator_snapshots.write_verify_scope(snapshot, 1, "test-pass", "CHECK example-skill")
+    _bind_curator_writer(
+        pkg, "test-pass", phase="verify", verify_batch=1, snapshot_dir=snapshot,
+    )
+    conn = pkg["db"].get_db()
+    task_id = conn.execute(
+        "SELECT id FROM tasks WHERE spawned_cid=? AND ended_at IS NULL", (_FAKE_CID,),
+    ).fetchone()["id"]
+    token = "test-caliper-writer"
+    with memory_access.issuing_grant():
+        conn.execute(
+            "INSERT INTO child_memory_grants VALUES (?, ?, ?, 'write', '*', 'curator', ?)",
+            (_FAKE_CID, task_id, memory_access.token_digest(token), int(time.time())),
+        )
+    conn.commit()
+    monkeypatch.setenv("THREADKEEPER_MEMORY_TOKEN", token)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", "test-pass")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PHASE", "verify")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_VERIFY_BATCH", "1")
+    monkeypatch.setenv("THREADKEEPER_CURATOR_SNAPSHOT_DIR", str(snapshot))
+    monkeypatch.setattr(curator_tools, "SPAWNED_CHILD", True)
+    monkeypatch.setattr(curator_snapshots, "WRITE_ORIGIN", "curator")
+    monkeypatch.setattr("threadkeeper.tools.skills.WRITE_ORIGIN", "curator")
+    calls = []
+
+    def evaluate(connection, name, skill, candidate, scenarios):
+        calls.append((name, skill, candidate, scenarios))
+        return {"decision": "defer", "reason": "test_runtime_unavailable"}
+
+    monkeypatch.setattr(curator_skill_eval, "evaluate", evaluate)
+    tool = curator_tools.curator_evaluate_skill
+    assert "outside_verify_scope" in tool("another-skill")
+    assert tool("example-skill", batch_index=1, batch_total=2) == (
+        "ERR caliper_verifier_not_authorized"
+    )
+    assert not calls
+    assert json.loads(tool("example-skill", scenarios="test cases")) == {
+        "decision": "defer", "reason": "test_runtime_unavailable",
+    }
+    assert calls == [("example-skill", pkg["skills_dir"] / "example-skill", "", "test cases")]

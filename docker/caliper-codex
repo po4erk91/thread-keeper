@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+    exec /usr/local/bin/codex --version
+fi
+
+# The Caliper harness keeps its login, suite and results outside the attempt.
+# Codex gets only the short-lived subscription token and its own workspace.
+case "$HOME" in
+    /tmp/caliper-*) ;;
+    *) exit 2 ;;
+esac
+[ "$(dirname "$HOME")" = /tmp ]
+[ "$PWD" = "$HOME/work" ]
+[ "${CODEX_HOME:-}" = "$HOME/.codex" ]
+[ "${1:-}" = exec ]
+[ -n "${CALIPER_CHATGPT_ACCESS_TOKEN:-}" ]
+
+attempt_uid=$((100000 + $$))
+chown -R "$attempt_uid:$attempt_uid" "$HOME"
+exec setpriv --reuid="$attempt_uid" --regid="$attempt_uid" --clear-groups \
+    --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+    /usr/local/bin/codex "$@"

@@ -960,3 +960,18 @@ def test_copilot_naive_utc_timestamp_is_independent_of_local_tz(
         else:
             monkeypatch.setenv("TZ", original_tz)
         time.tzset()
+
+
+def test_codex_curator_caliper_grant_has_time_to_finish(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    import threadkeeper.adapters.codex as codex_mod
+
+    monkeypatch.setattr(codex_mod.shutil, "which", lambda _bin: "/usr/local/bin/codex")
+    argv = pkg["codex"].spawn_argv(
+        "audit", extra_allowed_tools="mcp__thread-keeper__curator_evaluate_skill",
+    )
+    timeout = f"mcp_servers.thread-keeper.tool_timeout_sec={codex_mod.CURATOR_CALIPER_TOOL_TIMEOUT_S}"
+    assert timeout in argv
+    forwarded = next(arg for arg in argv if arg.startswith("mcp_servers.thread-keeper.env_vars="))
+    assert "THREADKEEPER_MEMORY_TOKEN" in forwarded
+    assert timeout not in pkg["codex"].spawn_argv("audit")

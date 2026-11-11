@@ -27,6 +27,13 @@ from .storage import normalize_profile
 
 logger = logging.getLogger(__name__)
 
+CURATOR_CALIPER_ATTEMPT_TIMEOUT_S = 75
+CURATOR_CALIPER_ARM_TIMEOUT_S = 300
+CURATOR_CALIPER_CLEANUP_TIMEOUT_S = 10
+CURATOR_CALIPER_TOOL_TIMEOUT_S = 3 * (
+    CURATOR_CALIPER_ARM_TIMEOUT_S + CURATOR_CALIPER_CLEANUP_TIMEOUT_S
+) + 30
+
 # These immutable Hugging Face commits identify the two artifacts used by the
 # default embedding backends.  FastEmbed consumes Qdrant's optimized ONNX port;
 # sentence-transformers consumes the upstream model repository, so the commits
@@ -419,6 +426,8 @@ class Settings(BaseSettings):
     # this explicit operator consent to allow a separate, brief-only web
     # researcher to look up the fixed public compatibility topics.
     curator_web_research: bool = False
+    curator_caliper_dir: Optional[Path] = None
+    curator_caliper_model: str = ""
     # Keep the last N destructive curator snapshots under
     # CURATOR_REPORTS_DIR/snapshots. The current pass is always retained, so
     # values below 1 behave as 1.
@@ -977,6 +986,10 @@ def _derive_constants(s: "Settings") -> dict:
         "CURATOR_DESTRUCTIVE": s.curator_destructive,
         "CURATOR_MANAGE_FOREGROUND_SKILLS": s.curator_manage_foreground_skills,
         "CURATOR_WEB_RESEARCH": s.curator_web_research,
+        "CURATOR_CALIPER_DIR": (
+            s.curator_caliper_dir.expanduser().resolve() if s.curator_caliper_dir else None
+        ),
+        "CURATOR_CALIPER_MODEL": s.curator_caliper_model.strip(),
         "CURATOR_SNAPSHOT_RETENTION": s.curator_snapshot_retention,
         "CURATOR_TRASH_DIR": curator_reports_dir / "trash",
         "CURATOR_TRASH_TTL_DAYS": s.curator_trash_ttl_days,
