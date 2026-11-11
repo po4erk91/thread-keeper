@@ -15,6 +15,12 @@ findings and plans from those dates.
 
 **Remaining issue-backed work**
 
+- **Keep public GitHub writes guarded ([#453](https://github.com/po4erk91/thread-keeper/issues/453)).**
+  A login shell can replace the worker's PATH and skip the body scrubber even
+  when the worker invokes plain `gh`. Keep redaction and request-budget checks
+  effective through supported shell startup, and refuse publication when the
+  guard is unavailable. A local fake GitHub executable confirmed the gap;
+  the matching non-login control received a redacted synthetic body.
 - **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
   Agree how existing search vectors will move to the new generation before
   changing the fastembed dependency. Keep the issue behind `needs-design`
@@ -33,8 +39,10 @@ findings and plans from those dates.
 
 **Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
 
-The phase checks recorded on 2026-10-30 also need to cover Evolve. A reviewer
-can select the `full` child profile while its parent hides
+Curator's phase tool sets and cold-host catalog were repaired in
+[PR #452](https://github.com/po4erk91/thread-keeper/pull/452), on main and pending
+release. The remaining gap is checking required tools before dispatch,
+including Evolve. A reviewer can request `full` while its parent hides
 `evolve_issue_create`, queue decisions, and reporting tools. The parent
 allowlist correctly stays an upper bound, but dispatch does not check whether
 the child can finish its assigned work. Validate the required tools for each
@@ -45,6 +53,16 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Curator reviews can finish after a cold start
+  ([PR #452](https://github.com/po4erk91/thread-keeper/pull/452)), on main and
+  pending release.** Each phase has its required tool set within the parent's
+  restrictions, and the host loads the full catalog before starting its loops.
+  Batch sizing includes skill source/support files and full referenced lesson
+  bodies. A report counts as complete only when its completion marker is on a
+  separate final line; a marker inside unfinished prose cannot complete a batch
+  or release a report for application. These fixes address the corresponding
+  Curator tool-set gaps recorded in the October audits; the dispatch validation
+  follow-up above remains open.
 - **Evidence for Curator skill changes is on main, pending release
   ([PR #443](https://github.com/po4erk91/thread-keeper/pull/443)).** When
   Caliper is configured, the verifier compares at least five task cases with
