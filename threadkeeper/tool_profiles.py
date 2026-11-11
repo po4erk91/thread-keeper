@@ -96,14 +96,24 @@ LEARNING_LOOP_TOOLS = CORE_TOOLS | {
     "candidate_review_run",
     "candidate_review_status",
     "consolidate",
+    "concept_manage",
     "curator_evaluate_skill",
+    "curator_merge_verdict",
     "curator_report_write",
     "curator_restore",
     "curator_review",
     "curator_review_status",
     "curator_run",
     "curator_verify_lesson",
+    "evolve_format",
+    "expand_concept",
+    "lesson_append",
+    "lesson_get",
+    "lesson_list",
+    "lesson_patch",
+    "lesson_remove",
     "lesson_verifications",
+    "list_concepts",
     "dialectic_claim",
     "dialectic_evidence",
     "dialectic_mine_run",
@@ -146,6 +156,7 @@ PROFILE_TOOL_NAMES: Mapping[str, frozenset[str]] = {
     "coordination": frozenset(COORDINATION_TOOLS),
     "memory-admin": frozenset(MEMORY_ADMIN_TOOLS),
     "learning-loops": frozenset(LEARNING_LOOP_TOOLS),
+    "curator-research": frozenset({"curator_research_write"}),
     "model-router": frozenset({"model_route_write"}),
 }
 PROFILE_NAMES = frozenset((*PROFILE_TOOL_NAMES, "full"))
@@ -293,6 +304,8 @@ def child_profile_for_role(role: str, configured_profile: str = "") -> str:
     role_name = role.strip().lower()
     if role_name == "model_router":
         return "model-router"
+    if role_name == "curator_researcher":
+        return "curator-research"
     if role_name in {
         "archivist", "background_review", "candidate_reviewer", "curator",
         "dialectic_validator", "probe_runner", "shadow_observer",

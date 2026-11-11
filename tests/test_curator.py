@@ -1362,6 +1362,110 @@ def test_run_curator_pass_batches_large_inventory_without_oversize_prompt(
     assert "batch_entries=" in row["summary"]
 
 
+def test_skill_batches_include_source_and_support_file_sizes(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    for name in ("audit-one", "audit-two", "audit-three"):
+        _add_skill(pkg, name)
+        root = pkg["skills_dir"] / name
+        with (root / "SKILL.md").open("a") as source:
+            source.write("read " * 6_000)
+        (root / "reference.md").write_text("evidence " * 8_000)
+
+    batches, _, count, _ = pkg["curator"]._collect_inventory_batches(pkg["db"].get_db())
+
+    assert count == 3
+    assert [batch.skill_count for batch in batches] == [1, 1, 1]
+    assert {name for batch in batches for name in batch.skill_names} == {
+        "audit-one", "audit-two", "audit-three",
+    }
+
+
+def test_oversized_skill_is_isolated_without_dropping_inventory():
+    from threadkeeper.curator import _InventoryEntry, _chunk_inventory_entries
+
+    entries = [
+        _InventoryEntry("skill", "large", "large", review_bytes=1_000_000),
+        _InventoryEntry("skill", "small-one", "small", review_bytes=100),
+        _InventoryEntry("skill", "small-two", "small", review_bytes=100),
+    ]
+
+    batches = _chunk_inventory_entries(entries)
+
+    assert [[entry.key for entry in batch] for batch in batches] == [
+        ["large"], ["small-one", "small-two"],
+    ]
+
+
+@pytest.mark.parametrize(("body_chars", "expected_entries"), [
+    (240, [1, 3]), (60_000, [1, 2, 1]),
+])
+def test_lesson_clusters_budget_the_full_referenced_bodies(
+    tmp_path, monkeypatch, body_chars, expected_entries,
+):
+    from types import SimpleNamespace
+
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    _write_bulk_lessons(pkg["lessons_path"], 3)
+    content = pkg["lessons_path"].read_text().replace("x" * 240, "x" * body_chars)
+    pkg["lessons_path"].write_text(content)
+    curator = pkg["curator"]
+    monkeypatch.setattr(curator, "CURATOR_BATCH_MAX_ENTRIES", 3)
+    candidate = curator._LessonPromotionCandidate(
+        topic_terms=("bulk", "topic"),
+        lesson_slugs=tuple(f"bulk-lesson-{index:04d}" for index in range(3)),
+        protected_slugs=(), cohesion_terms=("mechanism", "review"),
+    )
+    monkeypatch.setattr(
+        curator, "_analyze_lesson_promotion_candidates",
+        lambda *_: SimpleNamespace(candidates=[candidate]),
+    )
+
+    batches, count, _, _ = curator._collect_inventory_batches(pkg["db"].get_db())
+
+    assert count == 3
+    assert [batch.entry_count for batch in batches] == expected_entries
+    assert [batch.lesson_count for batch in batches] == [0, *expected_entries[1:]]
+
+
+@pytest.mark.parametrize("marker", ["CURATOR_PASS_COMPLETE", "CURATOR_VERIFY_COMPLETE"])
+@pytest.mark.parametrize(("template", "expected"), [
+    ("# Results\n{marker}\n\n", True),
+    ("{marker}", True),
+    ("INCOMPLETE: continue before issuing {marker}.\n", False),
+    ("# Plan\n{marker}\nStill incomplete.\n", False),
+    ("`{marker}`\n", False),
+])
+def test_report_completion_requires_a_final_literal_line(marker, template, expected):
+    from threadkeeper.curator import report_has_completion_footer
+
+    assert report_has_completion_footer(template.format(marker=marker), marker) is expected
+
+
+def test_partial_report_with_marker_in_prose_cannot_complete_a_batch(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, min_lessons="2")
+    _two_shadow_lessons(pkg)
+    _recording_spawn(monkeypatch)
+    pkg["curator"].run_curator_pass(force=True)
+    conn = pkg["db"].get_db()
+    batch = conn.execute("SELECT * FROM curator_batches").fetchone()
+    from threadkeeper.tools import curator as tool_mod
+    from threadkeeper._mcp import mcp
+
+    monkeypatch.setattr(tool_mod, "WRITE_ORIGIN", "curator")
+    monkeypatch.setattr(tool_mod, "SPAWNED_CHILD", True)
+    monkeypatch.setenv("THREADKEEPER_CURATOR_PASS_ID", batch["pass_id"])
+    _bind_curator_writer(pkg, batch["pass_id"])
+    result = mcp._tool_manager._tools["curator_report_write"].fn(
+        content="AUDIT_INCOMPLETE: continue before issuing CURATOR_PASS_COMPLETE.",
+    )
+
+    assert result.startswith("ok path=")
+    assert conn.execute("SELECT provenance_sha256 FROM curator_batches").fetchone()[0] is None
+    assert pkg["curator"]._provenanced_report(
+        conn, batch["pass_id"], batch["report_name"], "CURATOR_PASS_COMPLETE",
+    ) is None
+
+
 _RAM_REFUSAL = (
     "ERR budget_exceeded: running_subagents=4000MB + new_child=500MB = "
     "4500MB > limit=4096MB. Wait for a child to finish, raise "
@@ -1884,7 +1988,8 @@ def test_curator_budget_refusal_keeps_successful_batch_and_retries_missing_one(
     pkg = _bootstrap(
         tmp_path, monkeypatch, min_lessons="2", max_concurrent="2",
     )
-    _write_bulk_lessons(pkg["lessons_path"], 201)
+    lesson_count = pkg["curator"].CURATOR_BATCH_MAX_ENTRIES + 1
+    _write_bulk_lessons(pkg["lessons_path"], lesson_count)
     import threadkeeper.tools.spawn as spawn_mod
     calls: list[dict] = []
 

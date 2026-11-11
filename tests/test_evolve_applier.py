@@ -580,6 +580,19 @@ def test_apply_curator_report_requires_complete_unapplied_report(
     )
 
 
+def test_curator_applier_rejects_completion_marker_inside_partial_report(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    path = _write_report(pkg, complete=False)
+    path.write_text("AUDIT_INCOMPLETE: continue before issuing CURATOR_PASS_COMPLETE.\n")
+    conn = pkg["db"].get_db()
+
+    assert not pkg["ea"]._is_complete_curator_report(path)
+    assert pkg["ea"].apply_curator_report(str(path)) == f"ERR report_incomplete={path.name}"
+    assert pkg["ea"].mark_curator_report_applied(
+        conn, str(path), pkg["ea"].curator_report_sha256(path.read_text()), "partial",
+    ) == f"ERR report_incomplete={path.name}"
+
+
 def test_mark_curator_report_applied_tool_records_idempotency_event(
     tmp_path, monkeypatch,
 ):

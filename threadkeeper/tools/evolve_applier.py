@@ -197,7 +197,7 @@ def evolve_mark_curator_report_applied(
     """Mark a Curator report as processed by the evolve_applier child.
 
     The report must live under `THREADKEEPER_CURATOR_REPORTS_DIR`, match
-    `REPORT-*.md`, contain `CURATOR_PASS_COMPLETE`, and still match the
+    `REPORT-*.md`, end with a separate `CURATOR_PASS_COMPLETE` line, and still match the
     parent-verified content hash. The hash and applied event prevent a swapped
     report or replay from being accepted."""
     if not (report_path or "").strip():

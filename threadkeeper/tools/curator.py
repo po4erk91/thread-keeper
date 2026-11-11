@@ -50,6 +50,7 @@ from ..curator import (
     curator_research_authorization,
     curator_research_payload,
     curator_report_sha256,
+    report_has_completion_footer,
     curator_report_audit_header,
     lesson_promotion_telemetry,
     curator_pass_status,
@@ -649,7 +650,7 @@ def curator_report_write(
             pass_id=clean_id,
             report_name=report_name,
             digest=digest,
-            complete=CURATOR_REPORT_COMPLETE_MARKER in persisted,
+            complete=report_has_completion_footer(persisted, CURATOR_REPORT_COMPLETE_MARKER),
             now=int(time.time()),
         )
         conn.commit()

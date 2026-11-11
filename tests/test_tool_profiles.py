@@ -60,7 +60,9 @@ def test_full_profile_preserves_the_complete_registry(tmp_path, monkeypatch):
     assert "capability_search" in names
 
 
-@pytest.mark.parametrize("profile", ["coordination", "memory-admin", "learning-loops", "model-router"])
+@pytest.mark.parametrize("profile", [
+    "coordination", "memory-admin", "learning-loops", "model-router", "curator-research",
+])
 def test_named_profile_membership_is_pinned(tmp_path, monkeypatch, profile):
     pkg = _load_profile(tmp_path, monkeypatch, profile)
     from threadkeeper.tool_profiles import PROFILE_TOOL_NAMES
@@ -119,6 +121,7 @@ def test_child_profile_is_intersected_with_its_parent_surface():
     ("evolve_researcher", "full"),
     ("memory_admin", "memory-admin"),
     ("model_router", "model-router"),
+    ("curator_researcher", "curator-research"),
 ])
 def test_spawn_roles_choose_their_smallest_profile(role, profile):
     from threadkeeper.tool_profiles import child_profile_for_role
@@ -145,6 +148,39 @@ def test_model_router_child_does_not_regain_a_write_tool_denied_by_parent():
     from threadkeeper.tool_profiles import TOOL_PARENT_ALLOWLIST_ENV, child_profile_environment
     child_env = child_profile_environment({"brief", "note"}, "model_router")
     assert child_env[TOOL_PARENT_ALLOWLIST_ENV] == ""
+
+
+def test_curator_profile_covers_evaluation_and_verification_contracts(tmp_path, monkeypatch):
+    pkg = _load_profile(tmp_path, monkeypatch, "learning-loops")
+    from threadkeeper.curator import _VERIFY_TOOLS, _evaluation_contract
+
+    contracts = [_VERIFY_TOOLS]
+    for mode in ("advisory", "destructive"):
+        contracts.append(_evaluation_contract(mode, "/snapshot")[1])
+    required = {
+        tool.removeprefix("mcp__thread-keeper__")
+        for contract in contracts
+        for tool in contract.split(",")
+        if tool.startswith("mcp__thread-keeper__")
+    }
+
+    assert required <= set(pkg["mcp"]._tool_manager._tools)
+
+
+def test_curator_research_profile_only_exposes_its_handoff(tmp_path, monkeypatch):
+    pkg = _load_profile(tmp_path, monkeypatch, "curator-research")
+
+    assert set(pkg["mcp"]._tool_manager._tools) == {"curator_research_write"}
+
+
+def test_curator_child_does_not_regain_tools_denied_by_parent():
+    from threadkeeper.tool_profiles import (
+        TOOL_PARENT_ALLOWLIST_ENV, child_profile_environment,
+    )
+
+    child_env = child_profile_environment({"brief", "whisper"}, "curator")
+
+    assert set(child_env[TOOL_PARENT_ALLOWLIST_ENV].split(",")) == {"brief", "whisper"}
 
 
 def test_setup_registers_new_hosts_with_core_profile(monkeypatch):
