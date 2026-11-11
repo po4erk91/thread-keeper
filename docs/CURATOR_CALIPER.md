@@ -32,6 +32,9 @@ the container. It has its attempt workspace and a short-lived subscription
 token. The live ThreadKeeper database, installed skills, checkout, and personal
 Codex settings are outside the container. Keep suite prompts, fixtures and
 skill content suitable for the model provider. The cases below use synthetic data.
+The container allows six concurrent attempts within 1 GiB of memory and a
+512-process/thread limit, which includes Codex runtime worker threads.
+Each attempt has 75 seconds; one comparison arm is stopped after 285 seconds.
 
 ## Where scenarios come from
 

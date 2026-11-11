@@ -218,8 +218,16 @@ def skill_catalog() -> tuple[SkillEntry, ...]:
         return ()
 
     entries: list[SkillEntry] = []
+    from .db import read_db
+
+    with read_db() as conn:
+        fixtures = {row[0] for row in conn.execute(
+            "SELECT name FROM skill_usage WHERE classification='fixture'",
+        )}
     for skill_dir in skill_dirs:
         name = skill_dir.name
+        if name.startswith(".") or name in fixtures:
+            continue
         skill_md = skill_dir / "SKILL.md"
         frontmatter = _parse_skill_frontmatter(skill_md, name)
         if frontmatter is None:

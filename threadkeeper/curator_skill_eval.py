@@ -18,6 +18,7 @@ import yaml
 
 from .adapters.base import find_cli_executable
 from .config import (
+    CURATOR_CALIPER_ATTEMPT_TIMEOUT_S,
     CURATOR_CALIPER_ARM_TIMEOUT_S,
     CURATOR_CALIPER_CLEANUP_TIMEOUT_S,
     CURATOR_CALIPER_DIR,
@@ -359,14 +360,15 @@ def _docker_run(
     command = [
         *docker_command, "run", "--rm", "--name", container, "--pull=never", "--init",
         "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=512m",
-        "--memory=1g", "--pids-limit=128", "--security-opt=no-new-privileges",
+        "--memory=1g", "--pids-limit=512", "--security-opt=no-new-privileges",
         "--env", "CALIPER_TELEMETRY_DISABLED=1", "--env", f"XDG_CONFIG_HOME={PRIVATE_ROOT}",
         "--mount", f"type=bind,src={auth},dst={PRIVATE_ROOT}/caliper",
         "--mount", f"type=bind,src={inputs},dst={PRIVATE_ROOT}/input,readonly",
         "--mount", f"type=bind,src={outputs},dst={PRIVATE_ROOT}/output",
         IMAGE, "run", f"{PRIVATE_ROOT}/input/{arm}.eval.yaml", "--model", f"codex:{model}",
         "--no-user-customizations", "--k", str(ATTEMPTS), "--workers", "6",
-        "--timeout", "35", "--fail-fast", "1", "--output", f"{PRIVATE_ROOT}/output/run.json",
+        "--timeout", str(CURATOR_CALIPER_ATTEMPT_TIMEOUT_S),
+        "--fail-fast", "1", "--output", f"{PRIVATE_ROOT}/output/run.json",
     ]
     if arm == "control":
         command.extend(("--ablate", name))

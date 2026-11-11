@@ -50,7 +50,7 @@ DELETE_CLASS_TOOLS = {
     "agent_memory_cleanup", "concept_manage", "consolidate", "core_remove",
     "curator_restore", "curator_run", "forget", "lesson_patch", "lesson_remove",
     "evolve_prune_managed_venv", "memory_guard_check", "mp_cleanup",
-    "skill_manage", "unlink", "memory_proposal_decide",
+    "skill_manage", "skill_fixture_migrate", "unlink", "memory_proposal_decide",
 }
 
 # --- non-destructive mutating tools ------------------------------------------

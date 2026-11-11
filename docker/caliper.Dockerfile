@@ -11,4 +11,4 @@ RUN apt-get update \
 COPY --chmod=0755 docker/caliper-codex /usr/local/bin/caliper-codex
 ENV CODEX_CLI_PATH=/usr/local/bin/caliper-codex PYTHONSAFEPATH=1
 WORKDIR /tmp
-ENTRYPOINT ["timeout", "--kill-after=5s", "175s", "/opt/caliper/bin/caliper"]
+ENTRYPOINT ["timeout", "--kill-after=5s", "285s", "/opt/caliper/bin/caliper"]

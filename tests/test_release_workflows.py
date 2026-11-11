@@ -162,3 +162,25 @@ def test_ci_security_scanning_covers_code_and_resolved_dependencies():
 
     ecosystems = {entry["package-ecosystem"] for entry in dependabot["updates"]}
     assert "docker" in ecosystems
+
+
+def test_portable_plugin_ci_and_release_assets_are_separate_from_pypi():
+    ci = _workflow("test.yml")["jobs"]["agent-plugin"]
+    validation = next(s for s in ci["steps"] if s.get("name") == "Validate published schemas and installer parity")
+    assert "validate_agent_plugin.py --published" in validation["run"]
+    assert "tests/test_agent_plugin.py tests/test_setup.py" in validation["run"]
+
+    publish = _workflow("publish.yml")["jobs"]
+    build_steps = publish["build"]["steps"]
+    names = [s.get("name") for s in build_steps]
+    assert names.index("Validate portable plugin") < names.index("Build portable plugin archive")
+    plugin_upload = next(s for s in build_steps if s.get("name") == "Upload plugin archive")
+    assert plugin_upload["with"] == {"name": "agent-plugin", "path": "plugin-dist/*.zip"}
+    pypi_steps = publish["publish-pypi"]["steps"]
+    assert pypi_steps[0]["with"] == {"name": "dist", "path": "dist/"}
+    release_steps = publish["github-release"]["steps"]
+    plugin_download = next(s for s in release_steps if s.get("name") == "Download plugin archive")
+    assert plugin_download["with"] == {"name": "agent-plugin", "path": "plugin-dist/"}
+    release_commands = [s["run"] for s in release_steps if s.get("name", "").startswith("Create GitHub Release")]
+    assert len(release_commands) == 2
+    assert all("dist/* plugin-dist/*.zip" in command for command in release_commands)

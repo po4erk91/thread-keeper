@@ -309,6 +309,8 @@ of the normal PR flow:
 2. **Same PR**: bump `version` in `pyproject.toml` (and both
    `server.json` version fields) per the bump policy below and add a
    `CHANGELOG.md` entry under a new `## vX.Y.Z — YYYY-MM-DD` heading.
+   Update the Dockerfile pin and regenerate the portable plugin as described
+   in [release packaging](docs/RELEASING.md#portable-agent-plugins-bundle).
 3. `.github/workflows/test.yml` runs the full pytest matrix on the
    merge push.
 4. On a green run, `.github/workflows/release-tag.yml` creates the
@@ -345,7 +347,11 @@ typically prevents this), pick the highest bump that applies.
 # Update pyproject.toml `version` per the bump table; bump server.json
 # `version` AND `packages[0].version` to the same value (MCP Registry
 # ownership verification matches PyPI version); add a CHANGELOG.md entry
-# under a new `## vX.Y.Z — YYYY-MM-DD` heading.
+# under a new `## vX.Y.Z — YYYY-MM-DD` heading. Update the Dockerfile pin.
+# Refresh installed version metadata, then regenerate and validate the plugin.
+python -m pip install --no-deps -e .
+python -m threadkeeper.agent_plugin
+python scripts/validate_agent_plugin.py --published
 
 git add pyproject.toml server.json CHANGELOG.md <other files for this change>
 git commit -m "feat: <imperative summary>"

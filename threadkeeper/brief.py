@@ -679,6 +679,8 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
             "WHERE session_id = ? "
             "  AND kind IN ('skill_view', 'skill_use', 'skill_patch', "
             "               'skill_create', 'skill_outcome') "
+            "  AND NOT EXISTS (SELECT 1 FROM skill_usage s "
+            "                  WHERE s.name=events.target AND s.classification='fixture') "
             "ORDER BY created_at ASC",
             (sess,),
         ).fetchall()

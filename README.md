@@ -116,6 +116,29 @@ resources for host-attached context, and use dry-run plus confirmation before
 destructive maintenance. Hooks and the managed files remain reinforcement for
 clients that do not surface server instructions.
 
+### Portable plugin install
+
+Hosts that load **Agent Plugins 1.0** skills and stdio MCP servers can use the
+`thread-keeper-agent-plugin-vX.Y.Z.zip` asset from
+[GitHub Releases](https://github.com/po4erk91/thread-keeper/releases).
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) so `uvx`
+is on the host's PATH, extract the archive, then use the host's plugin loader
+on that directory. The plugin starts the matching ThreadKeeper release and
+provides a bootstrap skill with the same lifecycle guidance as setup.
+
+You can also export the plugin from an installed release without changing
+any host configuration:
+
+```bash
+thread-keeper-setup --export-plugin ./thread-keeper-plugin
+```
+
+Plugin support depends on the host and version; an MCP or Skills loader alone
+does not imply Agent Plugins support. For hosts without that support, use
+pipx/uv plus `thread-keeper-setup` as above. Adapter hooks and learned-skill
+mirroring remain available. See [installation, upgrades and removal](docs/INSTALLATION.md)
+for the differences, including how to avoid duplicate registrations.
+
 ### Alternative installs
 
 If you don't have `pipx` and don't want to install it:
@@ -580,13 +603,21 @@ default it checks twice per week
   canonical `~/.threadkeeper/skills` fallback;
 - source-tracked updates: skills with `.threadkeeper-skill-source.json`, or
   skills whose name can be inferred from `THREADKEEPER_SKILL_UPDATE_SOURCES`,
-  are compared with upstream GitHub directories and updated when the remote tree
-  changes.
+  are compared with upstream GitHub directories. Updates resolve an immutable
+  commit and verify the locally chosen publisher before replacing or mirroring
+  the skill. Unsigned updates require an explicit per-source policy.
 
 The pass is single-flight across live MCP servers and backs up replaced local
 skills under the thread-keeper state dir. If a source-tracked skill has local
 edits after the last applied upstream hash, the updater skips it instead of
 overwriting. Disable it with `THREADKEEPER_SKILL_UPDATE_INTERVAL_S=0`.
+
+Existing source records without a trust policy pause with `policy_required`.
+Install `threadkeeper[skill-signing]` for detached `skill.oms.sig` verification,
+then set the expected signer in the primary source record. The updater never
+learns a trusted signer from a download. See [source locks, policy, and
+recovery](docs/SKILL_SOURCES.md). Latest `skill_update_pass` status includes
+verification outcome counts, including `unsigned_allowed` and refusal reasons.
 
 Manual fallback from a source checkout:
 
@@ -664,6 +695,36 @@ optional `THREADKEEPER_EXTRA_SKILLS_DIRS`, plus the canonical
 `~/.threadkeeper/skills/` mirror), with `~/.threadkeeper/lessons.md` as a
 CLI-agnostic fallback for clients without a native skills loader (Copilot and
 bare MCP clients).
+
+**Hidden test fixtures.** Maintainers can keep seeds and probes without adding
+them to the guidance that agents discover or to Curator's production health
+totals. Create one with
+`skill_manage(action="create", name="validator-example", description="Validation only", content="...", classification="fixture")`.
+Fixtures live beside each skill root under
+`<root parent>/.threadkeeper-fixtures/<root name>/<name>/`, outside recursive
+skill discovery. The durable
+classification is separate from the active/stale/archived aging state;
+fixtures never age automatically.
+
+Use `skill_list(include_fixtures=True)` to list them and
+`skill_validate(name="validator-example", include_fixtures=True)` to run the
+usual file, link, consumer, and mirror checks. Dedicated test runs can record
+their own counters with `skill_record(..., include_fixtures=True)`; passive
+usage and ordinary production totals exclude fixtures. Retire a fixture with
+`skill_manage(action="delete", name="validator-example", force=True)` from a
+foreground session. The usual protection and trash/restore rules still apply.
+Semantic bundle export/import and hidden mirror copies preserve classification.
+
+For a legacy fixture, first select the entry using known test provenance and
+call `skill_fixture_migrate(name="...", evidence="why this is validation data")`.
+This preview returns the candidate's current classification, origin, evidence,
+and SHA-256 without changing it. After reviewing that evidence, call it again
+with `dry_run=False` and `expected_sha256="<preview sha256>"` from a foreground
+session. It moves the entry into hidden storage and removes ordinary mirror
+copies. Retry partial mirror failures with `skill_manage(action="reconcile", name="...")`.
+Names such as `test-*`, `seed-*`, or `probe-*` never trigger classification.
+Existing and user-authored guidance stays production guidance until an explicit
+maintainer migration; startup performs no fixture data migration.
 
 **Harvest boundary (issue #36).** The dialog-reading loops share
 `threadkeeper.harvest` as their session exclusion boundary. Raw transcripts are
@@ -960,12 +1021,21 @@ have increased its patch counter. Patches are maintenance activity, not proof
 that a foreground user or agent consulted the skill.
 
 Before spawning, the scheduler hashes lessons, concepts, skill bodies, support
-trees, validators, and mirror state. It persists the full pass audit manifest
+trees, validators, and mirror state. Support-tree integrity hashing uses one
+64 KiB buffer regardless of resource size, preserving existing digests. Failed
+reads or observed file changes produce `integrity_incomplete` mirror checks
+and source/mirror findings; missing hashes never count as matching copies.
+It persists the full pass audit manifest
 for parent coordination and provenance, then writes one smaller, hash-checked
 audit slice for every frozen batch. A worker reads only its slice: assigned
 skill records and their relevant consumer, link, mirror, source, duplicate, and
-candidate findings. A lesson-only batch receives an explicit no-skills slice
-instead of the full skill inventory. The scheduler stores the expected reports,
+candidate findings, plus integrity evidence for its assigned lessons and any
+promotion source lessons. A lesson-only batch receives its lesson evidence
+with an explicit no-skills marker. Curator audit schema 3 records exact and
+normalized lesson body hashes, content-addressed revisions, safe provenance,
+usage times, sorted link targets and unresolved links, and duplicate candidates.
+Lesson text and lesson source paths stay out of the manifest; free-form
+provenance is hashed. The scheduler stores the expected reports,
 slice hashes, and rendered text before launching any child. A dispatch is not
 completion: every batch must exit successfully and have a final, matching
 provenance record before the inventory is endorsed.
@@ -979,7 +1049,16 @@ successfully empty source remains valid, while a failed one records
 creating a recovery snapshot, or launching a child.
 
 A pass keeps reviewing the batches it froze even when the live inventory
-changes, and resuming it never re-reads the inventory. Failed and timed-out
+changes. Before evaluation and report writing, it checks the assigned lessons'
+live revisions. The prompt flags changed or removed lessons for DEFER, and the
+server adds a `CURATOR_AUDIT` header to each report with the frozen manifest
+schema version, SHA-256, reviewed revisions, and observed revision changes.
+Report writing and completion verify the saved manifest and batch slice;
+changed audit files cannot authorize a final report or endorsement. The frozen
+manifest stays unchanged, so a later pass can review the new lesson revision.
+Schema 1 and 2 skill-only manifests retain their original report contract;
+unsupported versions fail with `unsupported_curator_audit_version`.
+Resuming does not rebuild the full inventory. Failed and timed-out
 batches are retried without redispatching completed work, up to three launched
 attempts per batch; a spawn memory or spend-budget refusal leaves the batch
 waiting without using an attempt (a spend-cap refusal also alerts). A pass

@@ -1,19 +1,96 @@
 # Roadmap
 
 The old version of this file described five phases: portability, three-tier
-memory, ML-extraction, ACL, federation. Since then the architecture has
-moved in a different direction — the priority became spawn-driven learning
-loop and skills, not multi-user / sync. Below — what landed and what
-remains a live question.
+memory, ML-extraction, ACL, federation. The product now supports several
+clients, autonomous learning and skills, and optional sync between one user's
+machines. A hosted service for independent users remains a separate design
+question. Below is the current work and the history behind it.
+
+---
+
+## 2026-11-08 roadmap status
+
+This is the current status of the work below. Earlier dated audits retain the
+findings and plans from those dates.
+
+**Remaining issue-backed work**
+
+- **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
+  Agree how existing search vectors will move to the new generation before
+  changing the fastembed dependency. Keep the issue behind `needs-design`
+  until the migration cost, search behavior, and recovery path are agreed.
+  The Pillow audit exceptions point to this issue and next require review on
+  2026-11-21.
+- **Show the task's recorded role ([#389](https://github.com/po4erk91/thread-keeper/issues/389)).**
+  Status still infers roles from prompt wording on main. The proposed change
+  is in [PR #391](https://github.com/po4erk91/thread-keeper/pull/391), which
+  remains open; this behavior has not shipped.
+- **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
+  This remains separate from the completed audit-manifest and search evidence
+  work.
+- **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
+  Existing violation counters do not yet complete this contract.
+
+**Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
+
+The phase checks recorded on 2026-10-30 also need to cover Evolve. A reviewer
+can select the `full` child profile while its parent hides
+`evolve_issue_create`, queue decisions, and reporting tools. The parent
+allowlist correctly stays an upper bound, but dispatch does not check whether
+the child can finish its assigned work. Validate the required tools for each
+phase against both the server profile and adapter grants before reserving or
+launching a child. If the parent does not grant them, report the missing
+capability without widening access or spending a worker attempt. Preserve the
+existing separation of web research and privileged writes.
+
+**Delivered work**
+
+- **Bound Curator resource hashing ([#437](https://github.com/po4erk91/thread-keeper/issues/437))
+  is implemented in v0.26.1.** Source and mirror integrity checks reuse one
+  64 KiB buffer before worker admission and preserve existing digests. Read
+  failures and observed file/tree changes report incomplete integrity rather
+  than matching mirrors. Metadata still scales with the number of entries.
+- **Portable installation ([#404](https://github.com/po4erk91/thread-keeper/issues/404))
+  is implemented in v0.26.0.** Releases include a validated Agent Plugins 1.0
+  bundle generated from shared setup metadata and lifecycle instructions.
+  Adapter setup and filesystem skill mirroring remain supported.
+- **Optional sync between one user's machines is implemented.** The earlier
+  portability and federation entries below now reflect the existing adapters
+  and sync service. Sync stays off until explicitly configured and migrated;
+  it does not provide a hosted service for independent users. See the
+  [sync design](SYNC.md) and [deployment runbook](sync-deployment.md).
+
+- **Authenticated upstream skill publishers ([#403](https://github.com/po4erk91/thread-keeper/issues/403)).**
+  Source lock v2 records an immutable commit and whole-directory digest.
+  Locally chosen signer identities gate detached OMS verification before
+  replacement and all-root mirroring. Unsigned sources require an explicit
+  policy, legacy records pause for that choice, and status reports safe
+  verification counts. Backups and local-edit protection remain in place.
+
+- **Lesson integrity evidence for Curator ([#396](https://github.com/po4erk91/thread-keeper/issues/396)).**
+  Audit schema 3 records lesson hashes, reviewed revisions, safe provenance,
+  usage times, links, and duplicate candidates. Frozen batches and reports
+  verify the same manifest; reports flag live lesson changes without copying
+  lesson bodies or source paths. Legacy schema 1/2 remains readable.
+- **Batch-scoped Curator audit slices ([#413](https://github.com/po4erk91/thread-keeper/issues/413))
+  shipped in v0.23.0 through [PR #429](https://github.com/po4erk91/thread-keeper/pull/429).**
+  Workers receive their assigned skill evidence, lesson-only batches receive
+  a small no-skills slice, and retries reject changed slices. The issue is
+  still open, but its implementation is present on main.
+- **Safe finished-task checkout cleanup ([#431](https://github.com/po4erk91/thread-keeper/issues/431))
+  is complete.** Cleanup previews size and preserves active, changed,
+  unpublished, or uncertain work, with ownership records retained for retries.
+  The 2026-10-29 entry below describes the original gap.
 
 ---
 
 ## 2026-10-28 curator scale audit
 
-- **Batch-scoped Curator audit slices (#413).** Keep the full audit manifest
-  for parent coordination, but give each worker only the skill records and
-  related checks for its assigned batch. Lesson-only workers receive a small
-  no-skills marker, and retries verify the same saved slice before use.
+- **Done: batch-scoped Curator audit slices (#413).** The full audit manifest
+  stays with the parent for coordination, while each worker receives only the
+  skill records and related checks for its assigned batch. Lesson-only workers
+  receive a small no-skills marker, and retries verify the same saved slice
+  before use. Shipped in v0.23.0; the GitHub issue remains open.
 
 
 ---
@@ -192,14 +269,14 @@ issue-backed items were identified:
   ordinary task reads still count, even with a maintenance-looking origin
   label. Repeated passes, multiple batches, and retries preserve the
   consultation telemetry used for decay and stale-lesson ranking.
-- **Authenticated source-tracked skill updates (#403).** Resolve immutable
-  commits, retain whole-directory provenance, verify supported detached
-  publisher signatures, and make unsigned-source policy explicit before an
-  upstream skill is mirrored into auto-loaded roots.
-- **Portable Agent Plugins package (#404).** Generate validated `plugin.json`
-  and `mcp.json` manifests plus a bootstrap skill from the same canonical
-  setup metadata as `thread-keeper-setup`, while retaining current installers
-  for hosts without plugin support.
+- ✅ DONE (#403). **Authenticated source-tracked skill updates.** Immutable
+  commit locks, whole-directory digests, detached OMS publisher verification,
+  and explicit unsigned policy now gate upstream replacement and mirroring.
+- **Portable Agent Plugins package (done, #404, v0.26.0).** Releases contain
+  validated `plugin.json` and `mcp.json` manifests and a bootstrap skill,
+  generated from canonical setup metadata and lifecycle guidance. CI checks
+  published schemas, installer parity and installed wheel/sdist contents.
+  Existing adapters and filesystem skill mirroring remain supported.
 - **Progressive memory evidence links (done, #405).** `search` and
   `dialog_search` preserve their text fallback and return structured hits plus
   caller/project-bound `resource_link` blocks for notes, thread excerpts, and
@@ -252,10 +329,12 @@ Evolve suggestions, and the October research digest. The remaining work is:
   expiry without raw arguments, output, transcript text, paths, or secrets.
   Its synthetic comparison gates usefulness, privacy leakage, storage, and
   false links against dialogue-only evidence; live ingestion remains absent.
-- **Hidden managed-skill fixtures (#381).** Give seeds, probes, and test
-  fixtures an explicit lifecycle that remains available to validators but is
-  excluded from normal discovery, routing, and Curator production-health
-  counts.
+- ✅ DONE (#381). **Hidden managed-skill fixtures.** Explicit fixture
+  classification and hidden canonical/mirror storage keep seeds and probes
+  out of ordinary discovery, routing, usage totals, and Curator health counts.
+  Maintainers can opt into validation and test telemetry, migrate a reviewed
+  candidate with a dry-run/hash guard, and retain classification in bundles
+  and trash/restore. Existing names never trigger automatic reclassification.
 - ✅ DONE (#382). **Skill validator coverage.** Curator audit and
   `skill_validate` now detect missing local Markdown-link and path-like
   inline-code resources, plus substantial repeated normalized paragraphs within
@@ -636,45 +715,21 @@ chasing each tool's config conventions and keeping up with their
 schema churn. Scope: S per adapter, ongoing. Triage by user demand —
 don't pre-build adapters for tools no one runs.
 
-**Multi-user / remote deployment** (re-opens former Phase 4 ACL +
-Phase 5 federation). Today thread-keeper is single-user / single-
-machine by design; the SQLite store lives at
-`~/.threadkeeper/db.sqlite` and every adapter assumes local file
-paths. Move to a hosted topology where N users connect their CLIs to
-one shared MCP server (e.g. running on AWS / VPS / Tailscale-net):
+**Hosted multi-user deployment (former Phase 4 ACL).** The current product
+keeps a local store for one user, supports project-scoped memory within that
+store, and can sync trusted machines belonging to that user. A service for
+independent users remains an open design question. Agree user authentication,
+tenant isolation, sharing rules, abuse limits, and operational ownership
+before choosing a hosted topology or estimating delivery. The sync bearer
+token authenticates equal-trust peers; it does not identify separate users.
+No hosted rollout is selected here.
 
-- **HTTP / SSE transport.** MCPServer already supports
-  `streamable_http`; expose via env knob (`THREADKEEPER_HTTP_PORT`).
-  Scope: S.
-- **Per-user auth.** Bearer token in `Authorization` header on every
-  MCP call. Token → user_id binding stored in a new `users` table.
-  Scope: M.
-- **Row-level isolation.** Every existing table (threads, notes,
-  dialog_messages, skill_usage, ...) gains a `user_id` column;
-  queries filter by the authenticated session's user. Migration is
-  the painful part — existing single-user data assigned to a default
-  user. Scope: M-L.
-- **ACL: what's shared vs private.** Some data is private per user
-  (verbatim_user, personal threads); some is shared infrastructure
-  (skills, lessons, dialectic about a common subject). Need a sharing
-  model — explicit `share_with` field, or roles, or scopes
-  (`private` / `team` / `global`). Open design question. Scope: L.
-- **Cloud deployment playbook.** Containerise, document AWS / Fly.io /
-  Railway recipes, secrets handling, backups. Scope: M.
-- **Cost / threat model.** Hosted means one bad client can flood the
-  server; rate limiting + abuse mitigation become real concerns.
-  Scope: M.
-
-Total scope: XL. Decision-needed up front: are we building a SaaS
-posture (multi-tenant hosted with paid plans) or a self-host enabler
-(team installs their own instance behind Tailscale)? The two paths
-diverge on auth, abuse-handling, and what we put in the docs.
-
-**Portability (former Phase 1).** Originally planned to extract
-`IdentityProvider` / `TranscriptSource` interfaces for other stacks.
-Counter-argument: the target client is Claude Code, the rest is YAGNI.
-Leave as pending until an actual second stack appears. Scope: L (if done),
-but most likely never. **Decision needed: dropping vs deferring.**
+**Client portability (former Phase 1).** Implemented through `CLIAdapter`,
+normalized transcript messages, and shared lifecycle guidance across the six
+registered clients. Transcript ingestion still depends on each client's
+available history format; registration alone does not imply ingest support.
+Additional adapters remain demand-led work in the item above. The old
+Claude-only premise is no longer a reason to defer portability.
 
 **Three-tier memory (former Phase 2).** Idea of promotion/eviction between
 working_set / recall / archival. In practice brief() with priority +
@@ -693,28 +748,29 @@ first need to understand — why. Possibly a UX problem, not ML. Scope: M.
 class-level rules are tracked as `memory-insufficient`, and the learning loop
 can recommend escalation from passive guidance to an active hook guard.
 
-**ACL (former Phase 4).** Folded into the "Multi-user / remote
-deployment" item above — see the ACL sub-bullet there.
+**ACL (former Phase 4).** User identity and sharing remain part of the hosted
+multi-user design question above. Project namespaces already scope local
+memory; they do not provide separate hosted-user accounts.
 
-**Federation / sync (former Phase 5).** Subsumed by the
-"Multi-user / remote deployment" item above. Hosted multi-tenant
-deployment is the more concrete need; cross-machine CRDT-based sync
-between independent installs is a strictly harder problem and
-probably never the right answer here.
+**Cross-machine sync (former Phase 5).** Implemented as an opt-in peer mesh
+for one user's trusted machines, with offline writes, deterministic conflict
+resolution, and deletion tombstones. Setup requires the explicit sync
+migration, a separate identity for each writable replica, and a private or
+encrypted network. The [sync design](SYNC.md) records remaining learning-loop
+duplication, counter-merge, and transport follow-ups; the
+[deployment runbook](sync-deployment.md) covers operation and verification.
+This capability is separate from hosted multi-user access control.
 
-**Hot-config reload.** ✅ DONE (#2). The `config_watcher` daemon polls
-`~/.claude/settings.json` (one mtime stat per tick, default 2 s) and, on a
-change, mirrors the threadkeeper-relevant `env` keys into the live process,
-calls `config.reload_settings()` to re-instantiate `Settings` and re-publish
-the module constants, and propagates each changed value into every loaded
-`threadkeeper.*` module that imported a copy — so daemons and tools pick up
-the new knob without a Claude Code restart. Newly-enabled daemons (interval
-0 → >0) are started; already-running ones self-adjust on their next tick
-(`daemon_sleep` keeps a hot-disabled loop from busy-spinning). Manual trigger
-`config_reload()`; diagnostics `config_watch_status()`; off via
-`THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0`. Does not help host-CLI hooks (those
-are read by the CLI, not us); half-written files are debounced via an
-mtime-cursor + JSON-parse guard.
+**Hot-config reload.** ✅ DONE (#2, #133). Every host can reload the universal
+ThreadKeeper `.env` file, including an explicit `THREADKEEPER_ENV_FILE`.
+Supported CLI settings are an additional input; currently only Claude's user
+settings have a parsed environment block. Process and higher-priority settings
+keep precedence. Newly enabled daemons start and existing loops pick up
+changed schedules. Host hooks remain controlled by the host; managed-checkout
+source settings require a restart. Manual trigger: `config_reload()`;
+diagnostics: `config_watch_status()`; disable with
+`THREADKEEPER_CONFIG_WATCH_INTERVAL_S=0`. An explicit
+`THREADKEEPER_CONFIG_WATCH_PATH` retains the single-file override behavior.
 
 **Telemetry dashboard.** ✅ DONE. `mp_dashboard(window_days)` is the
 aggregate the point views (`shadow_review_status`, `spawn_budget_status`,

@@ -50,6 +50,7 @@ from ..curator import (
     curator_research_authorization,
     curator_research_payload,
     curator_report_sha256,
+    curator_report_audit_header,
     lesson_promotion_telemetry,
     curator_pass_status,
     CURATOR_REPORT_COMPLETE_MARKER,
@@ -354,7 +355,8 @@ def curator_evaluate_skill(
 
 
 @write_tool(idempotent=True)
-def skill_validate(name: str = "", include_archived: bool = True) -> str:
+def skill_validate(name: str = "", include_archived: bool = True,
+                   include_fixtures: bool = False) -> str:
     """Validate ThreadKeeper-managed skills across supported CLI consumers.
 
     With `name`, returns the complete deterministic record for one logical
@@ -363,13 +365,16 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
     candidates involving that skill. Curator must call this after every skill
     mutation. Without `name`, returns a compact complete numbered inventory.
     Semantic candidates are leads, never automatic delete decisions.
+    Pass include_fixtures=True to include hidden validation fixtures.
     """
     conn = get_db()
     _ensure_session(conn)
-    manifest = build_skill_audit(conn, include_archived=include_archived)
+    manifest = build_skill_audit(conn, include_archived=include_archived,
+                                include_fixtures=include_fixtures)
     reconciled = reconcile_source_availability(conn, manifest["skills"])
     if reconciled:
-        manifest = build_skill_audit(conn, include_archived=include_archived)
+        manifest = build_skill_audit(conn, include_archived=include_archived,
+                                    include_fixtures=include_fixtures)
     requested = name.strip()
     if requested:
         record = next(
@@ -405,6 +410,7 @@ def skill_validate(name: str = "", include_archived: bool = True) -> str:
             "index": index,
             "name": record["name"],
             "state": record["state"],
+            "classification": record["classification"],
             "availability": record["availability"],
             "compatible": record["compatible"],
             "owner_action": record["owner_action"],
@@ -611,7 +617,10 @@ def curator_report_write(
         return "ERR report_write_not_authorized"
     target = CURATOR_REPORTS_DIR / report_name
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    persisted = content.rstrip() + "\n"
+    audit_header, audit_error = curator_report_audit_header(conn, clean_id, report_name)
+    if audit_error:
+        return f"ERR {audit_error}"
+    persisted = audit_header + content.rstrip() + "\n"
     try:
         temporary.write_text(persisted, encoding="utf-8")
         temporary.replace(target)
