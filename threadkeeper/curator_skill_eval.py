@@ -360,7 +360,7 @@ def _docker_run(
     command = [
         *docker_command, "run", "--rm", "--name", container, "--pull=never", "--init",
         "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=512m",
-        "--memory=1g", "--pids-limit=512", "--security-opt=no-new-privileges",
+        "--memory=2g", "--pids-limit=512", "--security-opt=no-new-privileges",
         "--env", "CALIPER_TELEMETRY_DISABLED=1", "--env", f"XDG_CONFIG_HOME={PRIVATE_ROOT}",
         "--mount", f"type=bind,src={auth},dst={PRIVATE_ROOT}/caliper",
         "--mount", f"type=bind,src={inputs},dst={PRIVATE_ROOT}/input,readonly",
