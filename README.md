@@ -922,8 +922,15 @@ locks.
 
 Every `THREADKEEPER_CURATOR_INTERVAL_S` seconds (default `259200`, three days)
 reviews the existing lessons, concepts, and **every skill tracked or
-materialized by ThreadKeeper** through bounded slim-child batches. Before the
-children start, a deterministic validator writes
+materialized by ThreadKeeper** through bounded slim-child batches. Skill source
+and support-file sizes, full lesson bodies, and the bodies referenced by lesson
+clusters limit each batch to 125,000 bytes of review material and 40 review
+entries, counting every cluster member.
+A larger individual entry stays in its own batch; its content is never cut off
+to fit the limit. Workers read large files
+in pages and must finish the review before declaring completion.
+
+Before the children start, a deterministic validator writes
 `~/.threadkeeper/curator/AUDIT-<isodate>.json`: one logical record per skill
 (physical CLI mirrors are grouped), full source path, telemetry, frontmatter,
 ThreadKeeper/Claude Code/Codex/Agent Skills compatibility, resource/link
@@ -1187,7 +1194,7 @@ trash writes. Advisory mode does not write snapshots. The existing Evolve
 applier is
 also the Curator apply worker: after the roadmap issue queue is empty, it
 enumerates every complete, unapplied report in the oldest endorsed Curator pass
-(`CURATOR_PASS_COMPLETE`) whose path and current SHA-256 match an unapplied
+(`CURATOR_PASS_COMPLETE` as a separate final line) whose path and current SHA-256 match an unapplied
 `curator_report_provenance` event, then spawns an `evolve_applier` child to
 apply only safe, still-current memory
 maintenance through `lesson_append` / `lesson_patch` / `lesson_remove` /
@@ -1727,6 +1734,7 @@ the host after changing it:
 | `coordination` | `core` plus child spawning, task status, pickup, and delegated search |
 | `memory-admin` | `core` plus durable memory, concepts, lessons, graph links, and explicit erasure |
 | `learning-loops` | `core` plus extraction, validation, skills, Curator, probes, and dialectic workflows |
+| `curator-research` | only the pass-authorized research handoff writer |
 | `model-router` | only the pass-authorized `model_route_write` tool |
 | `full` | every registered tool; the compatibility default when no profile is configured |
 
@@ -1740,20 +1748,24 @@ Spawned children default to `core`; archival, Curator, candidate-review,
 shadow-review, probe-runner, and dialectic-validator roles use
 `learning-loops`, model-router children use `model-router`, and Evolve roles
 request `full`. A router refuses to spawn if its parent cannot expose the
-route-write tool. The server receives the
+route-write tool. Curator web researchers use `curator-research`; evaluators
+and verifiers use `learning-loops`, including their lesson and concept tools.
+The background host loads the complete configured tool catalog before starting
+any loop, so its children inherit the same resolved surface as MCP-launched
+children. The server receives the
 parent’s resolved allowlist and intersects it with the child profile, so a
 child cannot regain a tool its parent did not expose.
 `THREADKEEPER_CHILD_TOOL_PROFILE` explicitly selects a different child profile,
 still under that parent constraint.
 
-Every non-full profile includes read-only `capability_search(query)`. It returns
+Profiles based on `core` include read-only `capability_search(query)`. It returns
 at most six matching capability *families* with a summary and the profile that
 would expose them. It does not list hidden concrete tools or enable any action;
 use it as the fallback on hosts that lack native deferred tool discovery.
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, `model-router`, or `full`; read at server start |
+| `THREADKEEPER_TOOL_PROFILE` | `full` | MCP registry profile: `core`, `coordination`, `memory-admin`, `learning-loops`, `curator-research`, `model-router`, or `full`; read at server start |
 | `THREADKEEPER_TOOL_INCLUDE` | "" | exact comma-separated tool names to add to the selected profile; unknown names fail closed |
 | `THREADKEEPER_TOOL_EXCLUDE` | "" | exact comma-separated tool names to remove from the selected profile; unknown or overlapping names fail closed |
 | `THREADKEEPER_CHILD_TOOL_PROFILE` | role default | spawned-child profile override; always intersected with the parent’s resolved tool surface |

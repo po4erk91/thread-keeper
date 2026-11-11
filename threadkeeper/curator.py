@@ -242,6 +242,10 @@ candidate pairs relevant to this batch's assigned skills only. If it says
 `no_skills=true`, this batch has no skills to audit; do not read a pass-wide
 skill inventory.
 
+Read source and support files in bounded pages. Do not concatenate the whole
+batch into one tool response: a truncated response leaves those files unread.
+Continue with the remaining pages before declaring the audit complete.
+
 For EACH skill, put a numbered row in REPORT.md with:
   name | relevance/currentness | actual capability | uniqueness | consumer
   compatibility | research status | usefulness (/10) | score evidence |
@@ -639,8 +643,10 @@ _VERIFY_TOOLS = (
 
 # Bounded curator slices. The spawn layer has its own argv safety net; these
 # limits keep each curator child reviewing a complete, context-sized slice.
-CURATOR_BATCH_MAX_ENTRIES = 200
+# Source-tree size is separate from the short checklist sent in the prompt.
+CURATOR_BATCH_MAX_ENTRIES = 40
 CURATOR_BATCH_MAX_CHARS = 55_000
+CURATOR_BATCH_MAX_REVIEW_BYTES = 125_000
 CURATOR_INVENTORY_PREVIEW_MAX_CHARS = 80_000
 
 
@@ -649,6 +655,8 @@ class _InventoryEntry:
     kind: str
     key: str
     text: str
+    review_bytes: int = 0
+    review_entries: int = 1
 
 
 @dataclass(frozen=True)
@@ -1760,6 +1768,10 @@ def _record_batch_report_provenance(
         )
 
 
+def report_has_completion_footer(report: str, marker: str) -> bool:
+    return report.rstrip().rpartition("\n")[2] == marker
+
+
 def _provenanced_report(
     conn: sqlite3.Connection,
     pass_id: str,
@@ -1772,7 +1784,7 @@ def _provenanced_report(
         report = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    if marker not in report:
+    if not report_has_completion_footer(report, marker):
         return None
     digest = curator_report_sha256(report)
     try:
@@ -2536,6 +2548,17 @@ def _collect_stale_lessons(conn: sqlite3.Connection) -> tuple[str, int]:
     return "\n".join(lines), len(rows)
 
 
+def _skill_review_bytes(record: dict) -> int:
+    source = record.get("source_path")
+    if not source:
+        return 0
+    path = Path(source)
+    return path.stat().st_size + sum(
+        (path.parent / relative).stat().st_size
+        for relative in record.get("support_files", ())
+    )
+
+
 def _collect_inventory_entry_groups(
     conn: sqlite3.Connection,
     skill_audit: dict | None = None,
@@ -2569,6 +2592,7 @@ def _collect_inventory_entry_groups(
                         item, usage.get(slug), adjacency.get(slug, ()),
                         violations.get(slug, 0),
                     ) + "".join(f"\n    {warning}" for warning in verification_warnings(conn, item)),
+                    review_bytes=len((item.get("body") or "").encode("utf-8")),
                 )
             )
     except Exception as exc:
@@ -2578,11 +2602,14 @@ def _collect_inventory_entry_groups(
     promotion_detection = _analyze_lesson_promotion_candidates(
         lesson_items, usage,
     )
+    lesson_review_bytes = {entry.key: entry.review_bytes for entry in lesson_entries}
     promotion_entries = [
         _InventoryEntry(
             "lesson_promotion",
             "/".join(candidate.lesson_slugs),
             _format_lesson_promotion_candidate(candidate),
+            review_bytes=sum(lesson_review_bytes[slug] for slug in candidate.lesson_slugs),
+            review_entries=len(candidate.lesson_slugs),
         )
         for candidate in promotion_detection.candidates
     ]
@@ -2608,6 +2635,7 @@ def _collect_inventory_entry_groups(
             _InventoryEntry(
                 "skill", record["name"],
                 line + caliper_labels.get(record["name"], ""),
+                review_bytes=_skill_review_bytes(record),
             )
             for record, line in zip(audit["skills"], checklist_lines)
         ]
@@ -2793,29 +2821,41 @@ def _chunk_inventory_entries(
     *,
     max_entries: int | None = None,
     max_chars: int | None = None,
+    max_review_bytes: int | None = None,
 ) -> list[list[_InventoryEntry]]:
     max_entries = CURATOR_BATCH_MAX_ENTRIES if max_entries is None else max_entries
     max_chars = CURATOR_BATCH_MAX_CHARS if max_chars is None else max_chars
+    max_review_bytes = (
+        CURATOR_BATCH_MAX_REVIEW_BYTES if max_review_bytes is None else max_review_bytes
+    )
     entry_limit = max(1, int(max_entries))
     char_limit = max(1_000, int(max_chars))
+    review_limit = max(1, int(max_review_bytes))
     batches: list[list[_InventoryEntry]] = []
     current: list[_InventoryEntry] = []
     current_chars = 0
+    current_review_bytes = 0
+    current_review_entries = 0
     for entry in entries:
         cost = _entry_cost(entry)
         should_flush = (
             current
             and (
-                len(current) >= entry_limit
+                current_review_entries + entry.review_entries > entry_limit
                 or current_chars + cost > char_limit
+                or current_review_bytes + entry.review_bytes > review_limit
             )
         )
         if should_flush:
             batches.append(current)
             current = []
             current_chars = 0
+            current_review_bytes = 0
+            current_review_entries = 0
         current.append(entry)
         current_chars += cost
+        current_review_bytes += entry.review_bytes
+        current_review_entries += entry.review_entries
     if current:
         batches.append(current)
     return batches

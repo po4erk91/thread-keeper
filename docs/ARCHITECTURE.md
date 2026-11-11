@@ -738,7 +738,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
   audits lessons, concepts, and every tracked/materialized skill through
-  bounded slim-child batches. A deterministic parent phase writes
+  bounded slim-child batches. Besides prompt length and entry count, batches
+  have a 125,000-byte budget for skill source/support files and full lesson
+  bodies, including the lessons referenced by promotion clusters, with at most
+  40 review entries per batch, counting every cluster member. An oversized
+  individual entry stays alone rather than
+  being truncated. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
   exact duplicates, repeated substantial paragraphs, and lexical semantic
@@ -2346,12 +2351,21 @@ availability can no longer disable lexical recall for partially embedded data.
 `server.py` registers the complete catalog, then
 `_mcp.configure_tool_profile()` removes tools before the SDK can answer
 `tools/list`. `THREADKEEPER_TOOL_PROFILE` selects `core`, `coordination`,
-`memory-admin`, `learning-loops`, or compatibility `full`; exact
+`memory-admin`, `learning-loops`, `curator-research`, `model-router`, or
+compatibility `full`; exact
 `THREADKEEPER_TOOL_INCLUDE` and `THREADKEEPER_TOOL_EXCLUDE` overrides fail
 closed. A child profile is intersected with its parent surface, so a spawned
 child cannot widen its authority. Narrowed profiles retain the read-only
 `capability_search(query)` tool, which returns bounded family metadata without
 revealing hidden tool names.
+
+The daemon host imports the assembled server registry before starting any
+background loop. Child permissions therefore use the complete configured
+surface rather than a partial set of lazily imported tool modules. Curator
+evaluators and verifiers use `learning-loops`, which includes the lesson and
+concept operations in their launch contracts. Web researchers use the
+single-tool `curator-research` profile for their authorized evidence handoff.
+All three phases remain constrained by their parent's resolved surface.
 
 ## MCP tools
 

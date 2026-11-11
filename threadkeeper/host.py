@@ -64,6 +64,10 @@ def start_daemons() -> list[str]:
     """Start every background loop once, in THIS process. Mirrors the block
     that used to live in identity._ensure_session; each starter is idempotent
     and single-flight-guarded, so a double call is safe."""
+    # Child permissions must use the assembled registry, not whichever tool
+    # modules a daemon happened to import before its first spawn.
+    from . import server  # noqa: F401
+
     started: list[str] = []
     # periodic background ingester (moved from _ensure_session)
     try:
