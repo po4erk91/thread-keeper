@@ -902,10 +902,20 @@ def audit_fingerprint_payload(conn: sqlite3.Connection) -> list[dict]:
             "source_kind": record["source_kind"],
             "content_sha256": record["content_sha256"],
             "mirrors": record["mirrors"],
-            "findings": record["findings"],
+            "findings": _fingerprint_findings(record["findings"]),
         }
         for record in manifest["skills"]
     ]
+
+
+def _fingerprint_findings(findings: list[str]) -> list[str]:
+    """Findings that change only when the inventory itself changes.
+
+    Quality findings follow the content hash already in the fingerprint, and
+    staleness findings depend on the reading process (PATH, home directory),
+    so neither may trigger a new Curator pass on its own.
+    """
+    return [item for item in findings if not item.startswith(("quality:", "stale:"))]
 
 
 def write_skill_audit_manifest(manifest: dict, path: Path) -> Path:

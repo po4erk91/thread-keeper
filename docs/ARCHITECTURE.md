@@ -1825,7 +1825,9 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   from `child_memory_grants`, so a background reviewer's skill keeps its loop
   origin and the loop gates. With `SESSION_SKILL_WRITES=propose` (default),
   foreground writes are queued in `memory_proposals` under a `session:<cid>`
-  proposer and applied by `memory_proposal_decide`.
+  proposer and applied by `memory_proposal_decide`; `brief()` shows
+  `skill_proposals pending=N`. Curator and Evolve writers repair and merge
+  under their own verification, so only the wikilink rule applies to them.
 
 - **Skill catalog** (`skill_catalog.py`) — every local skill root plus
   read-only plugin skills, with name, description, protection and uses. The

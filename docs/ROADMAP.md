@@ -31,8 +31,8 @@ findings and plans from those dates.
   the matching non-login control received a redacted synthetic body.
 - **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
   [PR #450](https://github.com/po4erk91/thread-keeper/pull/450) already widened
-  main's fastembed range to `>=0.8,<0.10`; the dependency change is on main,
-  pending release. Existing stores still need a verified migration and
+  main's fastembed range to `>=0.8,<0.10`; the dependency change ships in
+  v0.27.0. Existing stores still need a verified migration and
   recovery plan because the installed runtime's major/minor version is part
   of the search-vector generation. Keep the remaining design work behind
   `needs-design`, check the staged-generation path from #337, and reconcile

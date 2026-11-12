@@ -21,6 +21,10 @@ PATCH_REASONS = frozenset({"used_failed", "used_corrected", "contradicted"})
 PATCH_USE_WINDOW_S = 14 * 86400
 MIN_EVIDENCE_CHARS = 20
 LEARNING_LOOP_ORIGINS = frozenset({"background_review", "candidate_review", "shadow_review"})
+# Writers that author new skill knowledge. Maintenance writers (curator,
+# evolve) repair and merge existing skills under their own verification, so
+# only the wikilink rule applies to them.
+GATED_ORIGINS = LEARNING_LOOP_ORIGINS | {"foreground"}
 
 
 @dataclass(frozen=True)
@@ -110,17 +114,25 @@ def _check_template(write: SkillWrite, result: GateResult) -> None:
             result.warnings.append(message.replace("ERR ", "warn ", 1))
 
 
+def _declared_project(content: str) -> str:
+    from .skill_audit import _frontmatter
+
+    metadata = _frontmatter(content or "")[0].get("metadata")
+    return str(metadata.get("threadkeeper-project") or "") if isinstance(metadata, dict) else ""
+
+
 def _check_project(write: SkillWrite, terms: tuple[str, ...], result: GateResult) -> None:
-    project = write.project.strip().lower()
+    description = (_split_frontmatter(write.full)[0] or write.description).lower()
+    project = (write.project or _declared_project(write.full)).strip().lower()
     if project:
-        description, _body = _split_frontmatter(write.full)
-        if project not in (description or write.description).lower():
+        if project not in description:
             result.error = result.error or (
                 f"ERR skill_project_not_in_description project={project}; name "
                 "the project in the description so the skill only routes there"
             )
         return
-    mentioned = quality.project_mentions(write.added, terms)
+    scoped = set(quality.project_mentions(description, terms))
+    mentioned = [term for term in quality.project_mentions(write.added, terms) if term not in scoped]
     if mentioned:
         result.refuse_or_warn(write, (
             f"ERR skill_project_examples projects={','.join(mentioned)}; a shared "
@@ -290,6 +302,8 @@ def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
     """
     result = GateResult()
     _check_wikilinks(write, result)
+    if write.origin not in GATED_ORIGINS:
+        return result
     _check_history(write, result)
     _check_project(write, settings.project_terms, result)
     if write.action == "create":

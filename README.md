@@ -623,7 +623,7 @@ Session-agent writes are queued like background writes
 (`THREADKEEPER_SESSION_SKILL_WRITES=propose`). Show the proposal to the user,
 then apply it with `memory_proposal_decide(id, accept=True)`. An accepted
 proposal keeps its proposer's origin, so the gates run again with the same
-rules.
+rules. `brief()` shows `skill_proposals pending=N` while any wait.
 
 Skill use is counted from every CLI. Claude Code reports the Skill tool;
 Codex, Gemini/Antigravity and Copilot count a tool reading

@@ -220,3 +220,54 @@ def test_child_proposal_text_gates_run_at_queue_time(gated):
 def test_gates_off_restores_legacy_behaviour(gated, monkeypatch):
     monkeypatch.setattr(gated["skills_mod"], "SKILL_QUALITY_GATES", False)
     assert _create(gated, content="# Title\n\nSee [[a]].").startswith("ok path=SKILL.md")
+
+
+def test_project_skill_patch_may_name_its_project(gated, monkeypatch):
+    monkeypatch.setattr(gated["skills_mod"], "SKILL_PROJECT_TERMS", ("naris",))
+    result = _create(
+        gated, project="naris", description="Use when reviewing a Naris pull request before merge.",
+    )
+    assert result.startswith("ok path=SKILL.md")
+    patched = _tool(gated, "skill_manage")(
+        action="patch", name="pr-review", old_string="- Each finding reproduces.",
+        new_string="- Each finding reproduces on the Naris stand.",
+    )
+    assert patched.startswith("ok")
+
+
+def test_maintenance_writers_only_get_the_wikilink_rule(gated, monkeypatch):
+    _as_loop(gated, monkeypatch, "curator")
+    monkeypatch.setattr(gated["skills_mod"], "curator_skill_refusal", lambda name, action: "")
+    assert _create(gated, content="# Merged umbrella\n\nT5a3 notes.").startswith("ok path=SKILL.md")
+    second = _create(gated, name="other", content="# x\n\n[[a-lesson]]")
+    assert second.startswith("ERR skill_wikilink")
+
+
+def test_brief_shows_pending_skill_proposals(gated, monkeypatch):
+    monkeypatch.setattr(gated["skills_mod"], "SESSION_SKILL_WRITES", "propose")
+    assert _create(gated).startswith("ok proposal=1")
+    from threadkeeper import brief
+
+    rendered = brief.render_brief(gated["db"].get_db())
+    assert "skill_proposals pending=1" in rendered
+
+
+def test_child_proposals_keep_the_per_pass_create_limit(fresh_mp, monkeypatch):
+    from threadkeeper import config
+    from threadkeeper.memory_access import token_digest
+
+    conn = fresh_mp["db"].get_db()
+    conn.execute(
+        "INSERT INTO child_memory_grants VALUES (?,?,?,?,?,?,?)",
+        ("child-9", "tk", token_digest("tok"), "propose", "", "candidate_review", 1),
+    )
+    conn.commit()
+    monkeypatch.setenv("THREADKEEPER_FORCE_CID", "child-9")
+    monkeypatch.setenv("THREADKEEPER_MEMORY_TOKEN", "tok")
+    monkeypatch.setattr(config, "SPAWNED_CHILD", True)
+    monkeypatch.setattr(config, "LEARNING_LOOP_SKILL_CREATE_LIMIT", 1)
+    sm = fresh_mp["mcp"]._tool_manager._tools["skill_manage"].fn
+    first = sm(action="create", name="one", description=DESCRIPTION, content=BODY)
+    assert first.startswith("ok proposal=")
+    second = sm(action="create", name="two", description=DESCRIPTION, content=BODY)
+    assert second.startswith("ERR autonomous_skill_create_limit_exceeded origin=candidate_review")

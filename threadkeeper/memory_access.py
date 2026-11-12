@@ -191,7 +191,11 @@ def _skill_proposal_refusal(conn: sqlite3.Connection, policy: MemoryAccess, argu
                 'ERR autonomous_skill_create_limit_exceeded '
                 f'origin={policy.origin} limit={limit} created={proposed}'
             )
-    return proposal_quality_refusal(arguments, policy.origin)
+    try:
+        return proposal_quality_refusal(arguments, policy.origin)
+    except (sqlite3.DatabaseError, OSError, ValueError):
+        # Acceptance runs every gate again with full store access.
+        return ''
 
 
 def propose(conn: sqlite3.Connection, policy: MemoryAccess, name: str, arguments: dict) -> str:
