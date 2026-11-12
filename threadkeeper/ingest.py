@@ -25,6 +25,7 @@ from .config import (
 )
 from .db import get_db
 from .embeddings import _embed, embed_tag
+from .skill_outcomes import classify_pending_outcomes
 
 _ingest_thread: Optional[threading.Thread] = None
 _initial_ingest_thread: Optional[threading.Thread] = None
@@ -391,7 +392,8 @@ def _normalize_codex_spawned_session_ids(conn: sqlite3.Connection) -> int:
 
 def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
                      created_at: int,
-                     session_id: Optional[str] = None) -> None:
+                     session_id: Optional[str] = None,
+                     source: str = "claude_code") -> None:
     """Record one observed Skill invocation against skill_usage.
 
     `use_count` (raw) always increments. `foreground_use_count` — the
@@ -404,6 +406,11 @@ def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
     won't double-count). Single combined UPDATE so the guard sees the
     pre-update last_used_at for both counters."""
     fg = 0 if _is_spawned_child_session(conn, session_id) else 1
+    from .skill_usage_ledger import insert_use_event
+    insert_use_event(
+        conn, skill_name, source, session_id or "", "skill_tool",
+        created_at, foreground=bool(fg),
+    )
     try:
         conn.execute(
             "INSERT INTO skill_usage "
@@ -428,6 +435,73 @@ def _record_skill_use(conn: sqlite3.Connection, skill_name: str,
             _recompute_skill_tier(conn, skill_name, created_at)
         except (ImportError, sqlite3.OperationalError):
             pass
+
+
+def _skill_roots() -> list[Path]:
+    """Every skills root a CLI on this machine reads."""
+    from .adapters import installed_adapters
+
+    roots = [CLAUDE_SKILLS_DIR]
+    for adapter in installed_adapters():
+        root = adapter.skills_dir()
+        if root is not None and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _record_cli_skill_signals(conn: sqlite3.Connection, adapter, fp: Path) -> int:
+    """Count skill opens and ``$name`` invocations for CLIs without a Skill
+    tool call (Codex, Antigravity, Copilot). Idempotent per transcript."""
+    scan = getattr(adapter, "iter_skill_signals", None)
+    if scan is None:
+        return 0
+    try:
+        signals = scan(fp)
+    except OSError:
+        return 0
+    if not signals:
+        return 0
+    from .skill_usage_ledger import record_signals
+
+    return record_signals(
+        conn, adapter.name, signals,
+        roots=_skill_roots(), is_excluded_session=_is_spawned_child_session,
+    )
+
+
+SKILL_SIGNAL_BACKFILL_KEY = "skill_signal_backfill_v1"
+
+
+def backfill_cli_skill_signals(conn: sqlite3.Connection, *, force: bool = False) -> int:
+    """One-time count of historical non-Claude skill uses.
+
+    Ingest only rereads a transcript when it grows, so history that was
+    ingested before the signal scan existed needs one full pass. A style key
+    records completion; ``force`` reruns it (the ledger keeps it idempotent).
+    """
+    try:
+        done = conn.execute(
+            "SELECT value FROM style WHERE key=?", (SKILL_SIGNAL_BACKFILL_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    if done and not force:
+        return 0
+    from .adapters import installed_adapters
+
+    counted = 0
+    for adapter in installed_adapters():
+        for fp in adapter.transcript_files():
+            counted += _record_cli_skill_signals(conn, adapter, fp)
+            conn.commit()
+    conn.execute(
+        "INSERT INTO style (key, value, updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+        "updated_at=excluded.updated_at",
+        (SKILL_SIGNAL_BACKFILL_KEY, str(counted), int(time.time())),
+    )
+    conn.commit()
+    return counted
 
 
 def _extract_text(msg: dict) -> str:
@@ -613,7 +687,10 @@ def _ingest_file(conn: sqlite3.Connection, fp: Path, max_msgs: int,
         # timestamp guard inside _record_skill_use provides idempotency.
         if inserted or not text:
             for skill_name in item["skills"]:
-                _record_skill_use(conn, skill_name, nm.created_at, nm.session_id)
+                _record_skill_use(
+                    conn, skill_name, nm.created_at, nm.session_id, adapter.name,
+                )
+    _record_cli_skill_signals(conn, adapter, fp)
     next_size = last_size if hit_cap else size
     next_mtime = last_mtime if hit_cap else mtime
     conn.execute(
@@ -1026,6 +1103,9 @@ def _start_background_ingester() -> None:
                             max_msgs=200,
                             max_age_s=_ingest_recent_window_s,
                         )
+                        # Mark settled skill uses helped or corrected from
+                        # the user turns that followed them.
+                        classify_pending_outcomes(bg_conn)
                         # Embed a bounded slice of NULL rows. On migrated DBs
                         # this runs under applying_guard so derived embedding
                         # UPDATEs never become LWW sync writes; the sync helper
@@ -1067,6 +1147,8 @@ def _start_initial_ingest() -> None:
             try:
                 _ingest_all(conn, max_msgs=INGEST_CAP_PER_CALL)
                 _backfill_dialog_fts_if_empty(conn)
+                backfill_cli_skill_signals(conn)
+                classify_pending_outcomes(conn)
             finally:
                 conn.close()
 

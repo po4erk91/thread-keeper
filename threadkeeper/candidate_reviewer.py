@@ -41,6 +41,7 @@ import threading
 import time
 
 from .config import (
+    CANDIDATE_REVIEW_CANARY_EVERY,
     CANDIDATE_REVIEW_FLUSH_AGE_S,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
@@ -50,6 +51,8 @@ from .db import get_db
 from .project_scope import recall_where
 from .helpers import daemon_sleep, single_flight_lock
 from . import daemon_state, identity
+from .review_prompts import SKILL_WRITING_RULES
+from . import reviewer_canaries
 
 logger = logging.getLogger(__name__)
 
@@ -64,36 +67,42 @@ CANDIDATE_REVIEW_PROMPT = (
 The extract daemon harvests heuristic candidates from agent dialog
 into the `extract_candidates` table (status='pending'). Your job is to
 decide each candidate's fate. Inventory below lists every pending
-candidate with its kind heuristic, rationale, and content snippet,
-PLUS the list of recently-active skills (so you can prefer
-PATCH-existing over CREATE-new).
+candidate with its kind heuristic, rationale, session, day and content
+snippet, PLUS the SKILL CATALOG of every installed skill (name and
+description), so you can tell a real gap from a duplicate.
 
 PROCEDURE — for each candidate (or coherent cluster of candidates),
 choose exactly one action:
 
-  1. SKILL.create — candidate (or merged cluster of 2+ related ones)
-     expresses a class-level rule worth a durable SKILL.md. Call:
+  1. SKILL.create — a cluster of related candidates from at least two
+     distinct sessions or days expresses a
+     class-level rule worth a durable SKILL.md, and no catalog skill
+     covers that task class. Call:
         skill_manage(
             action='create',
             name='<kebab-case-class-name>',
-            description='<frontmatter description triggering the skill>',
-            content='<body markdown>'
+            description='Use when <triggers>; not for <boundary>.',
+            content='<body with ## Steps, ## Check, ## Not for, ## Why>',
+            evidence_sessions='<session>,<session>'
         )
      Then for every candidate id that fed into this skill, call:
         reject_candidate(id=<id>, reason='materialized as skill:<name>')
      The skill IS the materialization; the candidates are no longer
      pending business.
 
-  2. SKILL.patch — candidate refines a skill listed under RECENTLY
-     ACTIVE SKILLS (or one you'd consult by name). Call:
+  2. SKILL.patch — candidate refines a skill from the catalog with the
+     same task class and the same trigger: that skill was used and failed,
+     was corrected by the user, or is contradicted by new facts. Call:
         skill_manage(
-            action='patch', name=..., old_string=..., new_string=...
+            action='patch', name=..., old_string=..., new_string=...,
+            patch_reason='used_failed'|'used_corrected'|'contradicted',
+            evidence='<one line>'
         )
      Then reject the underlying candidate(s).
 
-  3. SKILL.write_file — candidate is detail worth keeping under an
-     existing skill but not in the main SKILL.md. Add as a
-     references/ sub-file:
+  3. SKILL.write_file — candidate is a related detail with a different
+     trigger, worth keeping under an existing skill but not in its main
+     SKILL.md. Add as a references/ sub-file:
         skill_manage(
             action='write_file', name=..., sub_path='references/<topic>.md',
             content=...
@@ -127,16 +136,16 @@ choose exactly one action:
 
 DECISION RULES:
 
-- PREFER PATCH over CREATE. If the candidate territory overlaps with
-  a listed recent skill, patch that one. New skills that overlap
-  existing ones pollute the auto-trigger surface.
+- A single episode is not a skill. When a cluster comes from one
+  session and one day, prefer a LESSON, or leave it pending until the
+  task repeats.
 - MERGE before CREATE. If 2-5 candidates form a coherent cluster
   (same domain, same rule, paraphrased), create ONE skill that
-  references all of them. Don't spawn N narrow skills.
+  covers all of them. Don't spawn N narrow skills.
 - LIMIT 2 new skills per pass. If the queue suggests more, pick the
   2 highest-leverage clusters; leave the rest pending for next pass.
-- NEVER touch [PROTECTED] skills in the active-skills list — those
-  are pinned or foreground-authored. If a candidate seems to belong
+- NEVER touch [PROTECTED] or [PLUGIN] skills in the catalog — those
+  are pinned, foreground-authored, or owned by a plugin. If a candidate seems to belong
   to a protected skill, REJECT the candidate (don't patch protected).
 - For action=NOTE without a clear thread_id — DON'T guess. Leave the
   candidate pending; an agent may pick the right thread later.
@@ -148,6 +157,8 @@ DECISION RULES:
 - Skip-and-leave-pending IS a valid action — but ONLY when no other
   action fits, not as a default. Most candidates should resolve to
   one of REJECT / NOTE / VERBATIM / SKILL.
+
+""" + SKILL_WRITING_RULES + """
 
 OUTPUT — write a one-paragraph summary at the end of your run:
    "Processed N candidates: K created skills, P patched skills,
@@ -200,50 +211,32 @@ def _pass_due(conn: sqlite3.Connection, now_t: int) -> bool:
 
 
 def _format_candidate(row: dict) -> str:
-    """One inventory line per pending candidate."""
+    """One inventory line per pending candidate.
+
+    The full source session and its day let the reviewer pass real
+    evidence_sessions when a cluster repeats across sessions.
+    """
     snip = (row.get("content") or "")[:300].replace("\n", " ")
     if len(row.get("content") or "") > 300:
         snip += "…"
+    day = time.strftime("%Y-%m-%d", time.gmtime(int(row.get("created_at") or 0)))
     return (
         f"  #{row['id']} kind={row['kind']} "
-        f"cid={(row.get('source_cid') or '-')[:8]} "
+        f"session={row.get('source_cid') or '-'} day={day} "
         f"why={(row.get('rationale') or '?')[:60]}\n"
         f"    content: {snip}"
     )
 
 
-def _active_skills_dump(conn: sqlite3.Connection, limit: int = 15,
-                       window_days: int = 14) -> str:
-    """Same active-update bias context the auto-review fork gets.
-    Imported logic from tools.skills but duplicated to avoid circular
-    import at daemon load time."""
-    now = int(time.time())
-    cutoff = now - window_days * 86400
+def _active_skills_dump(conn: sqlite3.Connection) -> str:
+    """Every installed skill (name + description) for the reviewer."""
+    from .skill_catalog import catalog_prompt_block
+
     try:
-        rows = conn.execute(
-            "SELECT name, use_count, pinned, created_by_origin, "
-            "       MAX(COALESCE(last_used_at,0), "
-            "           COALESCE(last_viewed_at,0), "
-            "           COALESCE(last_patched_at,0)) AS last_active "
-            "FROM skill_usage WHERE state='active' AND classification='production' AND last_active > ? "
-            "ORDER BY last_active DESC LIMIT ?",
-            (cutoff, limit),
-        ).fetchall()
-    except sqlite3.OperationalError:
+        return catalog_prompt_block(conn)
+    except (OSError, sqlite3.OperationalError):
+        logger.debug("candidate_reviewer: catalog unavailable", exc_info=True)
         return ""
-    if not rows:
-        return ""
-    lines = [
-        "RECENTLY ACTIVE SKILLS (prefer PATCH over CREATE — see rules):",
-    ]
-    for r in rows:
-        protected = ""
-        if r["pinned"] or r["created_by_origin"] == "foreground":
-            protected = " [PROTECTED]"
-        lines.append(
-            f"  - {r['name']}{protected} (uses={r['use_count']})"
-        )
-    return "\n".join(lines) + "\n\n"
 
 
 def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
@@ -350,6 +343,11 @@ def _review_spawn_lock():
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
 
+def _canaries_for_this_pass(conn: sqlite3.Connection) -> list:
+    due, number = reviewer_canaries.canary_due(conn, int(CANDIDATE_REVIEW_CANARY_EVERY))
+    return reviewer_canaries.canaries_for_pass(number) if due else []
+
+
 def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one candidate review pass synchronously.
 
@@ -378,6 +376,16 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
         if not locked:
             return "candidate_review_running n=1 (single-flight lock)"
 
+        reviewer_canaries.evaluate_finished(conn)
+        if reviewer_canaries.reviewer_paused(conn) and not force:
+            out = (
+                "paused_lenient_reviewer: the reviewer accepted known-bad canary "
+                "candidates twice in a row; run candidate_review_run(force=True) "
+                "after fixing its prompt or model"
+            )
+            _record_review_pass(conn, now, out)
+            return out
+
         running = _running_reviewer_children(conn)
         if running:
             out = f"candidate_review_running n={len(running)} (single-flight)"
@@ -403,6 +411,9 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             # min-count gate until the 30-day stale window silently drops
             # them — review the undersized queue anyway.
 
+        canaries = _canaries_for_this_pass(conn)
+        if canaries:
+            inventory += "\n" + "\n".join(reviewer_canaries.inventory_lines(conn, canaries))
         active_skills = _active_skills_dump(conn)
         # The harvested candidate `content` snippets are untrusted observed
         # dialog (issue #76) — fence them as data. The active-skills list
@@ -457,6 +468,8 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             conn, now,
             f"spawned pending={n_pending} :: {spawn_result.text[:140]}",
         )
+        if canaries and spawn_result.task_id:
+            reviewer_canaries.record_canary_pass(conn, spawn_result.task_id, canaries)
         return spawn_result.text
 
 

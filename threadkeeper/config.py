@@ -474,6 +474,34 @@ class Settings(BaseSettings):
     lesson_violation_threshold: int = Field(default=3, ge=1)
     lesson_violation_window_days: int = Field(default=90, ge=1)
     learning_loop_skill_create_limit: int = 2
+    # ── Skill quality gates ──────────────────────────────────────────────────
+    # Master switch for the write-time skill quality gates below (template,
+    # history noise, wikilinks, duplicates, repetition, patch evidence).
+    skill_quality_gates: bool = True
+    # Cosine similarity (name + description) at which a new skill is refused
+    # as a duplicate of an installed one. Real near-duplicates scored 0.55-0.78.
+    skill_duplicate_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
+    # Comma-separated project names. A shared skill may not mention them;
+    # a project skill passes project=<name> and names it in its description.
+    skill_project_terms: str = ""
+    # Distinct sessions (or days) a topic must appear in before a new skill.
+    skill_create_min_sessions: int = Field(default=2, ge=1)
+    # Patches allowed to a skill that has no recorded use since its last patch.
+    skill_patch_cap_without_use: int = Field(default=2, ge=0)
+    # 'propose' queues session-agent skill writes for review like background
+    # writes; 'direct' applies them at once after the same quality gates.
+    session_skill_writes: str = "propose"
+    # Active production skills thread-keeper keeps. Above it, loop writers may
+    # not create and the aging pass stales the lowest-contribution loop skills.
+    skill_active_cap: int = Field(default=100, ge=0)
+    # Corrections (plus 'wrong' outcomes) after which a used skill is retired
+    # when they outnumber its clean uses.
+    skill_retire_min_harmful: int = Field(default=3, ge=1)
+    # Run Caliper's with/without-skill check on new loop skills during the
+    # Curator verifier pass and retire those the model already handles.
+    skill_value_check: bool = False
+    # Every Nth candidate-review pass carries known-bad canary candidates.
+    candidate_review_canary_every: int = Field(default=5, ge=0)
 
     # ── Probe daemon ─────────────────────────────────────────────────────────
     probe_interval_s: float = 0.0
@@ -1009,6 +1037,20 @@ def _derive_constants(s: "Settings") -> dict:
         "LESSON_VIOLATION_THRESHOLD": int(s.lesson_violation_threshold),
         "LESSON_VIOLATION_WINDOW_DAYS": int(s.lesson_violation_window_days),
         "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
+        "SKILL_QUALITY_GATES": bool(s.skill_quality_gates),
+        "SKILL_DUPLICATE_THRESHOLD": float(s.skill_duplicate_threshold),
+        "SKILL_PROJECT_TERMS": tuple(
+            term.strip() for term in s.skill_project_terms.split(",") if term.strip()
+        ),
+        "SKILL_CREATE_MIN_SESSIONS": int(s.skill_create_min_sessions),
+        "SKILL_PATCH_CAP_WITHOUT_USE": int(s.skill_patch_cap_without_use),
+        "SESSION_SKILL_WRITES": (
+            "direct" if s.session_skill_writes.strip().lower() == "direct" else "propose"
+        ),
+        "SKILL_ACTIVE_CAP": int(s.skill_active_cap),
+        "SKILL_RETIRE_MIN_HARMFUL": int(s.skill_retire_min_harmful),
+        "SKILL_VALUE_CHECK": bool(s.skill_value_check),
+        "CANDIDATE_REVIEW_CANARY_EVERY": int(s.candidate_review_canary_every),
         "PROBE_INTERVAL_S": s.probe_interval_s,
         "PROBE_COOLDOWN_S": s.probe_cooldown_s,
         "PANEL_SIZE": s.panel_size,

@@ -132,6 +132,19 @@ def _lesson_reconciliation_candidates() -> list[tuple[str, str, str]]:
     return candidates
 
 
+def _pending_skill_proposals(conn: sqlite3.Connection) -> int:
+    """Pending skill_manage proposals; 0 when the queue is unreadable
+    (children are not authorized to read it)."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memory_proposals "
+            "WHERE status='pending' AND tool_name='skill_manage'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return 0
+    return int(row[0] if row else 0)
+
+
 def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
                  scope: str = "full", lean: Optional[bool] = None,
                  consumer_cli: Optional[str] = None) -> str:
@@ -526,6 +539,16 @@ def render_brief(conn: sqlite3.Connection, query: str = "", k: int = 6,
     if mem_nudge and not eff_lean:
         out.append("")
         out.append(mem_nudge)
+
+    # Skill writes from loops and session agents wait as proposals; surface
+    # the queue so they do not sit unseen.
+    pending_skill_proposals = _pending_skill_proposals(conn)
+    if pending_skill_proposals:
+        out.append("")
+        out.append(
+            f"skill_proposals pending={pending_skill_proposals} "
+            "(review with memory_proposals, apply with memory_proposal_decide)"
+        )
 
     # ── skill_hint ────────────────────────────────────────────────────────
     # Behavioral nudge: after a rich thread closes, the lessons inside

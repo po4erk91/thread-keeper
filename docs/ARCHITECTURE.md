@@ -682,10 +682,10 @@ moving the high-water forward; `force=True` bypasses this due gate.
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
   pending candidates. New skill creation is also capped server-side in
-  `skill_manage(action="create")`: `candidate_review`, `shadow_review`, and
-  `background_review` children may create at most
-  `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their own session, while
-  foreground sessions bypass that autonomous-write cap. The last
+  `skill_manage(action="create")` and in the proposal queue:
+  `candidate_review`, `shadow_review`, and `background_review` children may
+  create or propose at most `LEARNING_LOOP_SKILL_CREATE_LIMIT` skills in their
+  own session, while foreground sessions bypass that autonomous-write cap. The last
   `candidate_review_pass` timestamp is also an interval high-water, so restarts
   inside the interval return `not_due`.
 - **probe_daemon** — once per `PROBE_INTERVAL_S` (default 0 = off) grades
@@ -1800,6 +1800,44 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   when it is at least 160 characters and appears at least three times; headings,
   frontmatter, fenced examples, and short boilerplate are excluded.
 
+- **Skill quality gates** (`skill_write_gates.py`, `skill_quality.py`) —
+  `create`, `edit`, `patch` and `write_file` run one shared check before any
+  disk write. The writer origin decides strictness: the learning loops
+  (`background_review`, `candidate_review`, `shadow_review`) and untrusted
+  proposing children (granted as `spawned`) are refused;
+  a foreground session agent is refused for template gaps, project examples,
+  wikilinks and duplicates, warned for the rest, and may pass `force=True`
+  for template and project exceptions. Checks: fixed template on create
+  (description starts with "Use when"; `## Steps`, `## Check`, `## Not for`,
+  one-line `## Why`); no `[[wikilinks]]`; no incident history in the text a
+  write adds (thread/ticket/PR IDs, dates, incident counters, version
+  narrative, user quotes, personal paths); no names from
+  `SKILL_PROJECT_TERMS` in a shared skill (a project skill passes `project`
+  and names it in its description); no near-duplicate of any catalog skill by
+  embedding similarity (`SKILL_DUPLICATE_THRESHOLD`, override with
+  `new_despite`); a loop create cites `evidence_sessions` from at least
+  `SKILL_CREATE_MIN_SESSIONS` sessions or days; a loop patch passes
+  `patch_reason` + `evidence`, and loop patches to a skill unused since its
+  last patches stop at `SKILL_PATCH_CAP_WITHOUT_USE`; loop creates stop at
+  `SKILL_ACTIVE_CAP` local skills. `SKILL_QUALITY_GATES=0` turns the gates
+  off. A proposing child runs the store-free checks when its proposal is
+  queued (`memory_access.propose`); the store checks run on acceptance.
+  `_writer_origin()` resolves an accepted proposal to its proposer's origin
+  from `child_memory_grants`, so a background reviewer's skill keeps its loop
+  origin and the loop gates. With `SESSION_SKILL_WRITES=propose` (default),
+  foreground writes are queued in `memory_proposals` under a `session:<cid>`
+  proposer and applied by `memory_proposal_decide`; `brief()` shows
+  `skill_proposals pending=N`. Curator and Evolve writers repair and merge
+  under their own verification, so only the wikilink rule applies to them.
+
+- **Skill catalog** (`skill_catalog.py`) — every local skill root plus
+  read-only plugin skills, with name, description, protection and uses. The
+  candidate, shadow and thread reviewers receive the whole catalog instead of
+  recently active skills, and the duplicate gate and `skill_validate`'s
+  `semantic_duplicates` use it. `skill_recurrence.py` lists other real
+  sessions whose user turns match a reviewed thread, so a thread review can
+  cite evidence or fall back to a lesson.
+
 - **skill_record(name, kind, outcome)** — manual bump of
   `use_count/view_count/patch_count`. Under `WRITE_ORIGIN=foreground`,
   `kind='use'` also bumps `foreground_use_count` and recomputes the
@@ -1814,8 +1852,50 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   consultation: it never bumps `view_count` or revives a stale row, because
   autonomous loops list every skill on each pass. Views come only from
   explicit `skill_record(kind='view')`. The curator checklist shows raw uses,
-  foreground uses, views, and patches. The `skill_watcher` daemon catches
-  external edits to `SKILL.md` (Edit/Write directly, not through skill_manage).
+  foreground uses, views, patches, and helpful/harmful counts. The
+  `skill_watcher` daemon catches external edits to `SKILL.md` (Edit/Write
+  directly, not through skill_manage).
+  Other CLIs have no Skill tool, so each adapter may return
+  `iter_skill_signals(fp)` (`skill_signals.py`): Codex counts
+  `function_call` / `custom_tool_call` / `local_shell_call` arguments that
+  read `skills/<name>/SKILL.md` and `$name` in real user turns (injected
+  context blocks are skipped); Antigravity and Copilot count assistant text
+  naming a SKILL.md path and user `$name` or `/name`. Sessions spawned by
+  thread-keeper and `open` signals of sessions that read more than 10 skills
+  are dropped. Every counted use, Claude's included, is one row in
+  `skill_use_events` (UNIQUE per skill/source/session/signal/time), so a
+  transcript reread is idempotent; a one-time backfill (`style` key
+  `skill_signal_backfill_v1`) counts existing history.
+  `skill_outcomes.py` later marks each settled foreground use `corrected`
+  when one of the next three user turns matches `i18n.CORRECTION_RE`, else
+  `helped`. `contribution()` is harmful = corrected + `wrong_count`,
+  helpful = foreground uses − harmful. `curator_run` retires a loop skill
+  whose harmful count reaches `SKILL_RETIRE_MIN_HARMFUL` and exceeds its
+  helpful count (recent use does not reactivate it), and stales the
+  lowest-contribution loop skills quiet for a week while the primary root
+  holds more than `SKILL_ACTIVE_CAP` active skills.
+
+- **Skill audit findings** — `build_skill_audit` adds `quality:*` findings
+  (history noise, wikilinks, split candidates, project examples) and
+  `stale:*` findings (missing concrete paths, unregistered
+  `mcp__thread-keeper__*` tools, commands missing from PATH in shell fences,
+  version pins to re-check), plus per-skill helpful/harmful telemetry.
+  `skill_validate` also returns `semantic_duplicates` by embedding similarity.
+
+- **Reviewer self-audit** (`reviewer_canaries.py`) — every
+  `CANDIDATE_REVIEW_CANARY_EVERY`th spawned candidate-review pass appends two
+  known-bad canary candidates (one-off task, transient fix, incident history,
+  generic advice), each with a made-up marker word, and records the task.
+  Later passes judge finished canary passes: a proposal from that child that
+  contains a marker fails the pass and is rejected. Two failed passes in a
+  row pause the reviewer (`paused_lenient_reviewer`) until a forced pass.
+  `candidate_review_status` shows recent verdicts.
+
+- **Skill value check** — with `SKILL_VALUE_CHECK=1` and Caliper configured,
+  new hypothesis-tier learning-loop skills are scheduled first and labelled
+  `[CALIPER_VALUE_CHECK]`. A keep verdict with `no_measured_benefit=true`
+  (the model passes every case without the skill) authorizes the verifier's
+  `skill_manage(action='delete')`.
 
 - **Source availability** — validation keeps `availability` separate from the
   active/stale/archived lifecycle. If no configured root or external cache has

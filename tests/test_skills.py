@@ -868,27 +868,21 @@ def test_review_thread_rejects_unknown_thread(skills_pkg):
     assert result.startswith("ERR thread_not_found")
 
 
-def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
-    """Active-update bias: the review fork should see a list of skills
-    the parent has recently touched so it prefers PATCHing existing
-    skills (Q4 of the rubric) over creating new ones that overlap."""
-    import time as _t
-    conn = skills_pkg["db"].get_db()
-    now = int(_t.time())
-    # Seed skill_usage with three skills of varying recency.
-    conn.execute(
-        "INSERT INTO skill_usage "
-        "(name, created_at, created_by_origin, last_used_at, "
-        " use_count, state) "
-        "VALUES "
-        "  ('ios-testing-recovery', ?, 'foreground', ?, 7, 'active'),"
-        "  ('plaid-network-flake', ?, 'foreground', ?, 3, 'active'),"
-        "  ('ancient-skill', ?, 'foreground', ?, 1, 'active')",
-        (now - 86400, now - 3600,        # 1d old, used 1h ago
-         now - 172800, now - 7200,       # 2d old, used 2h ago
-         now - 90 * 86400, now - 60 * 86400),  # ancient
-    )
-    conn.commit()
+def test_review_thread_inline_injects_full_skill_catalog(skills_pkg):
+    """The review fork sees every installed skill (name + description), not
+    only recently active ones, so an old skill is never re-created under a
+    new name. A thread with no matching session elsewhere is a single
+    episode and gets the lesson-not-skill note."""
+    root = skills_pkg["skills_root"]
+    for name, description in (
+        ("ios-testing-recovery", "Use when an iOS test run needs recovery."),
+        ("plaid-network-flake", "Use when Plaid flakes on the network."),
+        ("ancient-skill", "Use when an old task comes back."),
+    ):
+        (root / name).mkdir(parents=True)
+        (root / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n\nBody\n"
+        )
 
     open_t = _tool(skills_pkg, "open_thread")
     note = _tool(skills_pkg, "note")
@@ -903,18 +897,12 @@ def test_review_thread_inline_injects_recently_active_skills(skills_pkg):
     rev = _tool(skills_pkg, "review_thread")
     out = rev(thread_id=tid, focus="skills", mode="inline")
 
-    # Section header is the literal marker — distinct from the in-prose
-    # reference to "RECENTLY ACTIVE SKILLS block" inside the rubric text
-    assert "RECENTLY ACTIVE SKILLS (prefer PATCH/extend over CREATE" in out
-    assert "ios-testing-recovery" in out
-    assert "plaid-network-flake" in out
-    # Ancient skill (outside 14-day default window) should NOT appear
-    assert "ancient-skill" not in out
-    # Most recent is listed first
-    ios_idx = out.find("ios-testing-recovery")
-    plaid_idx = out.find("plaid-network-flake")
-    assert 0 < ios_idx < plaid_idx
-    # The rubric Q4 is reachable from the prompt
+    assert "SKILL CATALOG — all 3 installed skills (3 local, 0 plugin)" in out
+    for name in ("ios-testing-recovery", "plaid-network-flake", "ancient-skill"):
+        assert name in out
+    assert "Use when Plaid flakes on the network." in out
+    assert "RELATED SESSIONS: fewer than two sessions" in out
+    assert "SKILL WRITING RULES" in out
     assert "Q4." in out
 
 

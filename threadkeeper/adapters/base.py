@@ -275,6 +275,16 @@ class CLIAdapter(ABC):
         """
         return None
 
+    def iter_skill_signals(self, fp: Path) -> list:
+        """Skill uses in one transcript that ingest cannot see as a Skill
+        tool call: a tool reading ``skills/<name>/SKILL.md`` or a user typing
+        ``$name``. Returns ``threadkeeper.skill_signals.SkillSignal`` items.
+
+        Default: none. Claude Code records the native Skill tool call, which
+        ingest counts from its messages.
+        """
+        return []
+
     # ------------------------------------------------------------------
     # Hooks (optional)
     # ------------------------------------------------------------------

@@ -204,6 +204,41 @@ WANT_RE = re.compile(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# User corrections right after an agent result (skill_outcomes.py).
+# A match in one of the next user turns after a skill ran marks that use
+# as corrected (harmful). Keep these markers strong: a plain "no" inside a
+# sentence is not a correction, only one that opens the message.
+# ─────────────────────────────────────────────────────────────────────
+
+_CORRECTION_EN = (
+    r"(?:^\s*no[,.!]|\b(?:that'?s\s+(?:wrong|not\s+(?:right|what\s+i))|"
+    r"this\s+is\s+wrong|not\s+what\s+i\s+(?:asked|meant|wanted)|"
+    r"you\s+(?:didn'?t|did\s+not|forgot|missed|broke|ignored)|"
+    r"wrong\s+(?:again|answer|file|approach)|why\s+did\s+you|"
+    r"i\s+(?:told|asked)\s+you|stop\s+doing|(?:undo|revert)\s+(?:that|this|it)\b))"
+)
+_CORRECTION_RU = (
+    r"(?:^\s*нет[,.!]|неправильно|не\s+так(?:\s*[,.!]|\s*$)|это\s+не\s+то|не\s+то\s+что\s+я|"
+    r"я\s+же\s+(?:просил|говорил|сказал)|зачем\s+ты|"
+    r"ты\s+(?:опять|снова|забыл|сломал|проигнорировал)|опять\s+не\b|"
+    r"верни\s+(?:как\s+было|обратно)|откати)"
+)
+_CORRECTION_ES = r"\b(?:está\s+mal|eso\s+no\s+es|no\s+es\s+lo\s+que|te\s+dije|por\s+qué\s+hiciste)"
+_CORRECTION_PT = r"\b(?:está\s+errado|não\s+é\s+isso|eu\s+(?:disse|pedi)|por\s+que\s+você)"
+_CORRECTION_FR = r"(?:c'est\s+faux|ce\s+n'est\s+pas\s+ce\s+que|je\s+t'ai\s+dit|pourquoi\s+as-tu)"
+_CORRECTION_DE = r"\b(?:das\s+ist\s+falsch|nicht\s+das,?\s+was|ich\s+habe\s+(?:dir\s+)?gesagt|warum\s+hast\s+du)"
+_CORRECTION_ZH = r"(?:不对|错了|不是这样|我说过|你为什么)"
+_CORRECTION_JA = r"(?:違う|間違って|そうじゃない|言ったでしょ)"
+
+CORRECTION_RE = re.compile(
+    f"(?:{_CORRECTION_EN})|(?:{_CORRECTION_RU})|(?:{_CORRECTION_ES})|"
+    f"(?:{_CORRECTION_PT})|(?:{_CORRECTION_FR})|(?:{_CORRECTION_DE})|"
+    f"(?:{_CORRECTION_ZH})|(?:{_CORRECTION_JA})",
+    re.IGNORECASE | re.UNICODE | re.MULTILINE,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Conclusion / takeaway markers (extract.py INSIGHT_MARKERS_RE)
 # ─────────────────────────────────────────────────────────────────────
 

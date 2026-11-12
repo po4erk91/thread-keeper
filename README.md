@@ -591,6 +591,66 @@ rollback, pin the previous version explicitly, for example
 `pip install threadkeeper==<previous>`. Each real check records an
 `auto_update_pass` event that appears in dashboard/status telemetry.
 
+### Skill quality gates
+
+Every `skill_manage` write from a learning loop (background, candidate or
+shadow review), any proposing child, or a session agent passes the same
+checks. Loop writers and children are refused. A session agent gets a warning for history noise, missing
+repetition, the active cap and patches without use, and can pass
+`force=True` to keep a deliberate template or project exception.
+
+- **Template.** A new skill's description starts with "Use when". The body has
+  `## Steps`, `## Check`, `## Not for` (required) and a one-line `## Why`.
+- **Rules, not history.** No thread, ticket or PR IDs, dates, incident
+  counts, version stories, user quotes or `/Users/...` paths.
+- **No wikilinks.** `[[lesson]]` links work only inside thread-keeper; write
+  the rule text into the skill.
+- **Project scope.** A shared skill names no project from
+  `THREADKEEPER_SKILL_PROJECT_TERMS`. A project skill passes `project=<name>`
+  (stored as `metadata.threadkeeper-project`) and names it in its
+  description.
+- **No duplicates by meaning.** A new skill is compared with every installed
+  local and plugin skill by embedding similarity. Pass
+  `new_despite=<neighbor>` when the task class really differs.
+- **Create on repetition.** A loop create cites `evidence_sessions` from at
+  least two sessions or days. One episode becomes a lesson.
+- **Patch on evidence.** A loop patch passes `patch_reason`
+  (`used_failed`, `used_corrected` or `contradicted`) and a one-line
+  `evidence`. Patches to a skill nobody has used since its last patches are
+  capped.
+
+Session-agent writes are queued like background writes
+(`THREADKEEPER_SESSION_SKILL_WRITES=propose`). Show the proposal to the user,
+then apply it with `memory_proposal_decide(id, accept=True)`. An accepted
+proposal keeps its proposer's origin, so the gates run again with the same
+rules. `brief()` shows `skill_proposals pending=N` while any wait.
+
+Skill use is counted from every CLI. Claude Code reports the Skill tool;
+Codex, Gemini/Antigravity and Copilot count a tool reading
+`skills/<name>/SKILL.md` and a user typing `$name`. Sessions spawned by
+thread-keeper and bulk reads of more than 10 skills are not counted. Each use
+is marked *helpful* or *harmful* (the user corrected the result in the next
+turns). `skill_list` and `skill_validate` show both numbers. The aging pass
+retires a used skill when corrections outnumber clean uses, and keeps the
+primary skills root under `THREADKEEPER_SKILL_ACTIVE_CAP`.
+
+`skill_validate` also flags `quality:*` defects (history noise, wikilinks,
+split candidates, project examples), `stale:*` drift (missing paths, unknown
+thread-keeper tools, missing commands, version pins to re-check) and pairs of
+skills that duplicate each other by meaning. Claude Code's `/doctor` prompt
+audit covers the same staleness ground for its own settings.
+
+The candidate reviewer is audited too: every
+`THREADKEEPER_CANDIDATE_REVIEW_CANARY_EVERY`th pass carries known-bad canary
+candidates. If the reviewer proposes one, those proposals are rejected; two
+such passes in a row pause it until `candidate_review_run(force=True)`.
+
+With `THREADKEEPER_SKILL_VALUE_CHECK=1` and Caliper configured (see
+[Test skill behaviour during Curator passes](#test-skill-behaviour-during-curator-passes)),
+Curator checks new learning-loop skills first, with and without the skill. A
+skill the model already handles without it is removed. Each check costs one
+Caliper comparison, so it is off by default.
+
 ### Skill Update
 
 The MCP server also starts a skill updater in foreground parent processes. By
@@ -1815,7 +1875,17 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_LESSON_VIOLATION_THRESHOLD` | 3 | violations of one lesson inside the window that make it memory-insufficient (recommend a hook) |
 | `THREADKEEPER_LESSON_VIOLATION_WINDOW_DAYS` | 90 | window for counting `lesson_violation` records |
 | `THREADKEEPER_CANDIDATE_REVIEW_BATCH_SIZE` | 40 | most pending candidates (oldest first) one reviewer child receives; the rest stay pending for the next pass |
-| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create in its session; foreground creation is unaffected |
+| `THREADKEEPER_LEARNING_LOOP_SKILL_CREATE_LIMIT` | 2 | max new skills one autonomous learning-loop child (`candidate_review`, `shadow_review`, or `background_review`) may create or propose in its session; foreground creation is unaffected |
+| `THREADKEEPER_SKILL_QUALITY_GATES` | 1 (on) | write-time skill quality gates (template, history noise, wikilinks, duplicates by meaning, repetition, patch evidence); see [Skill quality gates](#skill-quality-gates). `0` restores the old unchecked writes |
+| `THREADKEEPER_SESSION_SKILL_WRITES` | `propose` | `propose` queues a session agent's skill writes for review, like background writes (accept with `memory_proposal_decide`); `direct` applies them at once after the same gates |
+| `THREADKEEPER_SKILL_DUPLICATE_THRESHOLD` | 0.62 | embedding similarity (name + description) at which a new skill is refused as a duplicate of an installed one; real near-duplicates scored 0.55–0.78 |
+| `THREADKEEPER_SKILL_PROJECT_TERMS` | "" | comma-separated project names; a shared skill may not mention them, a project skill passes `project=<name>` and names it in its description |
+| `THREADKEEPER_SKILL_CREATE_MIN_SESSIONS` | 2 | distinct sessions (or days) a learning-loop create must cite in `evidence_sessions` |
+| `THREADKEEPER_SKILL_PATCH_CAP_WITHOUT_USE` | 2 | learning-loop patches allowed to a skill nobody has used since its last patch (`0` = no cap) |
+| `THREADKEEPER_SKILL_ACTIVE_CAP` | 100 | active skills in the primary skills root (plugin skills do not count); above it loop writers cannot create and the aging pass stales the lowest-contribution quiet loop skills (`0` = no cap) |
+| `THREADKEEPER_SKILL_RETIRE_MIN_HARMFUL` | 3 | corrections plus `wrong` reports after which a used skill retires when they outnumber its clean uses |
+| `THREADKEEPER_SKILL_VALUE_CHECK` | 0 (off) | with Caliper configured, Curator checks each new learning-loop skill with and without it first, and removes one that makes no measurable difference. Costs one Caliper comparison per new skill |
+| `THREADKEEPER_CANDIDATE_REVIEW_CANARY_EVERY` | 5 | every Nth candidate-review pass carries known-bad canary candidates; a reviewer that proposes them twice in a row is paused (`0` = off) |
 | `THREADKEEPER_CURATOR_INTERVAL_S` | 259200 | deep curator audit every three days; set `0` to disable |
 | `THREADKEEPER_CURATOR_MANAGE_FOREGROUND_SKILLS` | 0 | let the Curator evaluator make in-place repairs to foreground skills; the verifier changes foreground skills its proposals name regardless, and pinned skills stay protected |
 | `THREADKEEPER_CURATOR_MIN_LESSONS` | 3 | min lessons before curator engages |

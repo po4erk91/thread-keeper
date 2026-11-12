@@ -7,6 +7,46 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+## v0.27.0 — 2026-11-12
+
+- **Added: skill use counted from every CLI.** Codex, Gemini/Antigravity and
+  Copilot sessions now count when a tool reads a skill's `SKILL.md` or the
+  user types `$name`. Sessions spawned by thread-keeper and bulk reads of
+  more than 10 skills do not count. A one-time backfill counts existing
+  history. Every use is one row in a new ledger, so rereading a transcript
+  never double-counts.
+- **Added: quality gates for every skill write.** Learning-loop writers and
+  session agents pass the same checks: a fixed template (Use when, Not for,
+  Steps, Check, one-line Why), no `[[wikilinks]]`, no incident history (IDs,
+  dates, incident counts, version stories, user quotes, personal paths), no
+  project examples in a shared skill, no near-duplicate of an installed skill
+  by meaning, creation only after the task repeats across sessions, and
+  patches only with evidence. Loop writers are refused; session agents get
+  warnings for history noise and can keep a deliberate template exception
+  with `force=True`. `THREADKEEPER_SKILL_QUALITY_GATES=0` turns this off.
+- **Changed: session-agent skill writes are proposals.** Like background
+  writes, they wait in the proposal queue until `memory_proposal_decide`
+  accepts them (`THREADKEEPER_SESSION_SKILL_WRITES=direct` restores direct
+  writes). An accepted proposal now keeps its proposer's origin, so a
+  background reviewer's skill stays curatable and its gates still apply.
+- **Changed: learning-loop writers see the whole skill catalog** (name and
+  description of every local and plugin skill) and share one set of rules:
+  patch only the same task and trigger, patch only on evidence, create only
+  on repetition, generalize first, skip what the model already knows.
+- **Added: helpful and harmful counts per skill.** A use the user corrects in
+  the next turns counts as harmful. `skill_list`, `skill_validate` and the
+  Curator inventory show both counts. The aging pass retires a used skill
+  when corrections outnumber clean uses, and keeps the primary skills root
+  under `THREADKEEPER_SKILL_ACTIVE_CAP` (100).
+- **Added: staleness and quality findings in `skill_validate`**: missing
+  paths, unknown thread-keeper tools, missing commands, version pins,
+  history noise, wikilinks, split candidates, project examples, and
+  duplicates by meaning.
+- **Added: canary audit for the candidate reviewer.** Every Nth pass carries
+  known-bad candidates; a reviewer that proposes them twice in a row pauses.
+- **Added: optional value check for new skills.** With
+  `THREADKEEPER_SKILL_VALUE_CHECK=1` and Caliper configured, Curator removes a
+  new learning-loop skill that makes no measurable difference.
 - **Fixed: Curator reviews keep their required tools after a cold start.**
   Background reviews can read their assigned lessons and save their reports.
   The host prepares the complete tool catalog before starting its loops, and
