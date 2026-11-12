@@ -62,7 +62,9 @@ _started = False
 # the class-vs-incident decision rubric inline so the child doesn't need
 # to (and can't, in slim mode) load the ai-memory-learning-loop skill.
 from .i18n import SHADOW_CLASS_SIGNAL_EXAMPLES
-from .review_prompts import POSITIVE_EXAMPLES, DATA_FENCE, fence_observed
+from .review_prompts import (
+    POSITIVE_EXAMPLES, DATA_FENCE, SKILL_WRITING_RULES, fence_observed,
+)
 
 SHADOW_REVIEW_PROMPT_PREFIX = "You are a SHADOW LEARNING OBSERVER"
 
@@ -96,12 +98,13 @@ PROCEDURE
 1. Read the dialog window below.
 2. If nothing class-level emerges → output exactly `SKIP: <one-line reason>` and stop.
 3. If class-level learning is present, run the duplicate gate BEFORE writing:
-   a. Call `mcp__thread-keeper__lesson_list(k=80)` and
-      `mcp__thread-keeper__skill_list()`.
-   b. If a close slug/skill already exists, read it with `lesson_get` when
-      needed and PATCH the existing skill, use `lesson_patch` for a narrow
-      lesson correction, or reuse the exact existing lesson title so
-      lesson_append replaces in-place. `lesson_append`
+   a. Read SKILL CATALOG below (every installed skill) and call
+      `mcp__thread-keeper__lesson_list(k=80)`.
+   b. If a close lesson or skill already exists, read it with `lesson_get`
+      when needed. PATCH the skill only when it is the same task class and
+      trigger and it failed in use or new facts contradict it; use
+      `lesson_patch` for a narrow lesson correction, or reuse the exact
+      existing lesson title so lesson_append replaces in-place. `lesson_append`
       also enforces slug and semantic body duplicate gates for shadow
       writes; do not append a second overlapping lesson.
    c. Before a genuinely new `lesson_append`, call
@@ -116,16 +119,21 @@ PROCEDURE
       `lesson_violation(slug=<existing>, evidence=<one line>)`. Repeated
       violations escalate the rule to an active guard; do not write a
       duplicate lesson for it.
-4. Materialization preference order:
-   a. BEST: `mcp__thread-keeper__skill_manage(action='patch'|...)` when an
-      existing auto-triggered skill covers the rule.
-   b. NEXT: `skill_manage(action='create')` for a new broad umbrella skill.
-   c. FALLBACK: `lesson_append(title, body, summary, source='shadow')`.
-      The lesson body must be compact: target <220 words, hard cap 450.
+4. Materialization order:
+   a. A rule seen in one session and one day: `lesson_append(title, body,
+      summary, source='shadow')`.
+   b. `skill_manage(action='patch', ..., patch_reason=..., evidence=...)`
+      when a catalog skill with the same task and trigger failed in use or
+      is contradicted by new facts.
+   c. `skill_manage(action='create', ..., evidence_sessions=...)` for a new
+      class-level skill only when the same task came up in two or more of
+      the sessions or days shown in the window headers.
+   d. Lesson size:
+      the lesson body must be compact: target <220 words, hard cap 450.
       A same-slug replacement may repair an older long shadow lesson only
       when it does not increase the body size. For larger detail, write a
       skill reference file instead.
-   d. Output `MATERIALIZED: <slug-or-skill>` on success.
+   e. Output `MATERIALIZED: <slug-or-skill>` on success.
 
 CONSTRAINTS
 - Be conservative. False negatives (skipping) cost nothing; false
@@ -136,6 +144,8 @@ CONSTRAINTS
   or SKIP.
 - Do NOT cite internal IDs in human-readable output (no T-codes, cids,
   task IDs). The user style requires plain prose.
+
+{SKILL_WRITING_RULES}
 
 {DATA_FENCE}
 
@@ -363,8 +373,9 @@ def _collect_window(conn: sqlite3.Connection,
         high_water = max(high_water, int(r["rowid"]))
         if not oldest_ts:
             oldest_ts = int(r["created_at"] or 0)
-        sid = (r["session_id"] or "?")[-6:]
-        lines.append(f"[{r['role']} @{sid}]\n{body}\n")
+        sid = (r["session_id"] or "?")[:12]
+        day = time.strftime("%Y-%m-%d", time.gmtime(int(r["created_at"] or 0)))
+        lines.append(f"[{r['role']} @session={sid} day={day}]\n{body}\n")
     return ("\n".join(lines), high_water, char_count, oldest_ts)
 
 
@@ -552,6 +563,17 @@ def shadow_telemetry(conn: sqlite3.Connection,
             "log_dir": str(log_dir)}
 
 
+def _catalog_block(conn: sqlite3.Connection) -> str:
+    """Every installed skill, so the observer can tell a gap from a duplicate."""
+    from .skill_catalog import catalog_prompt_block
+
+    try:
+        return catalog_prompt_block(conn)
+    except (OSError, sqlite3.OperationalError):
+        logger.debug("shadow_review: catalog unavailable", exc_info=True)
+        return ""
+
+
 def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one shadow pass synchronously. Used by the daemon AND by
     the MCP tool for manual triggering / testing.
@@ -622,7 +644,7 @@ def run_shadow_pass(force: bool = False, *, scheduled: bool = False) -> str:
         # being lifted into an auto-loaded skill.
         full_prompt = SHADOW_REVIEW_PROMPT + fence_observed(
             dump, "recent dialog"
-        )
+        ) + "\n\n" + _catalog_block(conn)
 
         # Late import — spawn module imports identity / config; importing it
         # at module load time would create cycles.

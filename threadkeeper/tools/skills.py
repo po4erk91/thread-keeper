@@ -2258,6 +2258,23 @@ def curator_run(stale_after_days: int = 30,
 # review_thread — auto background fork
 # ──────────────────────────────────────────────────────────────────────────
 
+def _review_context_blocks(conn: sqlite3.Connection, thread_id: str) -> str:
+    """SKILL CATALOG and RELATED SESSIONS blocks for a thread review."""
+    from ..skill_catalog import catalog_prompt_block
+    from ..skill_recurrence import related_sessions_block
+
+    row = conn.execute(
+        "SELECT question, COALESCE(outcome, '') AS outcome FROM threads WHERE id=?",
+        (thread_id,),
+    ).fetchone()
+    topic = f"{row['question']} {row['outcome']}".strip() if row else ""
+    try:
+        catalog = catalog_prompt_block(conn)
+    except (OSError, sqlite3.OperationalError):
+        catalog = _recent_active_skills_dump(conn)
+    return catalog + (related_sessions_block(conn, topic) if topic else "")
+
+
 def _thread_notes_dump(conn, thread_id: str) -> str:
     """Build a compact text dump of all notes + outcome for a thread."""
     t = conn.execute(
@@ -2321,11 +2338,10 @@ def review_thread(thread_id: str,
         return f"ERR invalid_focus={focus} (memory|skills|combined)"
 
     notes_dump = _thread_notes_dump(conn, thread_id)
-    # Active-update bias: inject the list of skills the parent has
-    # touched recently so the fork prefers PATCHing an existing skill
-    # over creating a new one — see Q4 in the rubric. Falls back to
-    # empty when the library is fresh.
-    recent_skills_dump = _recent_active_skills_dump(conn)
+    # The whole catalog (every local and plugin skill), so the fork can tell
+    # a real gap from a duplicate, plus the other sessions where this topic
+    # came up — a single episode becomes a lesson, not a skill.
+    recent_skills_dump = _review_context_blocks(conn, thread_id)
     # The thread notes are observed dialog (issue #76) — fence them as data
     # so a stated-policy injection planted in a note can't be lifted
     # verbatim into an auto-loaded skill. The DATA_FENCE instruction is
