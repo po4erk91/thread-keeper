@@ -738,7 +738,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   back off for 6 h. State lives in `model_router_passes`.
 - **curator** — once per `CURATOR_INTERVAL_S` (default 259200 = three days)
   audits lessons, concepts, and every tracked/materialized skill through
-  bounded slim-child batches. A deterministic parent phase writes
+  bounded slim-child batches. Besides prompt length and entry count, batches
+  have a 125,000-byte budget for skill source/support files and full lesson
+  bodies, including the lessons referenced by promotion clusters, with at most
+  40 review entries per batch, counting every cluster member. An oversized
+  individual entry stays alone rather than
+  being truncated. A deterministic parent phase writes
   `AUDIT-<pass-id>.json` with
   per-consumer validation, link/resource checks, mirror integrity, normalized
   exact duplicates, repeated substantial paragraphs, and lexical semantic
@@ -789,6 +794,19 @@ moving the high-water forward; `force=True` bypasses this due gate.
   mismatched file. The web-free evaluator reads each full assigned skill,
   writes a numbered verdict, applies safe
   repairs/merges/deletes after the report, and revalidates each changed skill.
+  Managed skills can get a [verification proposal](CURATOR_CALIPER.md) even
+  when static checks pass. The authorized verifier builds scenarios from the
+  recorded context or a use case inferred from the skill and runs them in
+  isolation. A receipt binds the outcome to the source, cases, current skill
+  bundle, and any tested replacement.
+  Curator checks that binding again before applying an edit or standalone
+  deletion. The pass stores synthetic cases, counts, and hashes. Transcripts
+  and model output are discarded.
+  The evaluator reports a usefulness score from 1 to 10 when its checks are
+  complete, and the verifier updates it after testing or repair. For a
+  rule-only retirement, the skill lock and lessons lock protect the exact
+  rule and its retained lesson during deletion. A separate event preserves the
+  score, reason, lesson, and recovery reference for `skill_deletion_log`.
   External research is a separate opt-in capability: when
   `THREADKEEPER_CURATOR_WEB_RESEARCH=1`, a Claude-only `curator_researcher`
   receives a deterministic public brief containing only fixed compatibility
@@ -2333,12 +2351,21 @@ availability can no longer disable lexical recall for partially embedded data.
 `server.py` registers the complete catalog, then
 `_mcp.configure_tool_profile()` removes tools before the SDK can answer
 `tools/list`. `THREADKEEPER_TOOL_PROFILE` selects `core`, `coordination`,
-`memory-admin`, `learning-loops`, or compatibility `full`; exact
+`memory-admin`, `learning-loops`, `curator-research`, `model-router`, or
+compatibility `full`; exact
 `THREADKEEPER_TOOL_INCLUDE` and `THREADKEEPER_TOOL_EXCLUDE` overrides fail
 closed. A child profile is intersected with its parent surface, so a spawned
 child cannot widen its authority. Narrowed profiles retain the read-only
 `capability_search(query)` tool, which returns bounded family metadata without
 revealing hidden tool names.
+
+The daemon host imports the assembled server registry before starting any
+background loop. Child permissions therefore use the complete configured
+surface rather than a partial set of lazily imported tool modules. Curator
+evaluators and verifiers use `learning-loops`, which includes the lesson and
+concept operations in their launch contracts. Web researchers use the
+single-tool `curator-research` profile for their authorized evidence handoff.
+All three phases remain constrained by their parent's resolved surface.
 
 ## MCP tools
 
@@ -2368,7 +2395,7 @@ below).
 | lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation, lesson_verifications |
 | shadow_review | shadow_review_run, shadow_review_status, shadow_review_snapshot |
 | candidate_reviewer | candidate_review_run, candidate_review_status |
-| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson |
+| curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson, curator_evaluate_skill, skill_deletion_log |
 | evolve_research | evolve_research_handoff |
 | evolve_applier | evolve_apply, evolve_apply_conflicted_pr, evolve_apply_roadmap_issue, evolve_apply_curator_report, evolve_mark_applied, evolve_mark_roadmap_issue_applied, evolve_mark_curator_report_applied, evolve_apply_status, evolve_prune_managed_venv |
 | style | style_set, verbatim_user |

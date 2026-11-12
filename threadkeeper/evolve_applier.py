@@ -104,6 +104,7 @@ from .curator import (
     CURATOR_REPORT_PROVENANCE_KIND,
     curator_report_matches_audit,
     curator_report_sha256,
+    report_has_completion_footer,
 )
 from .db import get_db
 from .github_budget import (
@@ -1798,7 +1799,7 @@ def _read_curator_report(path: Path) -> str:
 
 
 def _is_complete_curator_report(path: Path) -> bool:
-    return CURATOR_REPORT_MARKER in _read_curator_report(path)
+    return report_has_completion_footer(_read_curator_report(path), CURATOR_REPORT_MARKER)
 
 
 def _curator_report_provenanced(
@@ -1870,7 +1871,7 @@ def _latest_complete_curator_report(
         return None
     for path in reports:
         report_text = _read_curator_report(path)
-        if CURATOR_REPORT_MARKER not in report_text:
+        if not report_has_completion_footer(report_text, CURATOR_REPORT_MARKER):
             return None
         # An unprovenanced file is not a curator pass and must not supersede a
         # prior authentic report just because it has a newer mtime.
@@ -3954,7 +3955,7 @@ def mark_curator_report_applied(
     if not path.exists():
         return f"ERR report_not_found={path}"
     report_text = _read_curator_report(path)
-    if CURATOR_REPORT_MARKER not in report_text:
+    if not report_has_completion_footer(report_text, CURATOR_REPORT_MARKER):
         return f"ERR report_incomplete={path.name}"
     expected = (report_sha256 or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected):

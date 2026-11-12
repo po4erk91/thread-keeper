@@ -7,6 +7,27 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: Curator reviews keep their required tools after a cold start.**
+  Background reviews can read their assigned lessons and save their reports.
+  The host prepares the complete tool catalog before starting its loops, and
+  each Curator phase has the tools it needs within the parent's restrictions.
+- **Fixed: incomplete Curator audits stay incomplete.** A report must end
+  with its completion marker on a separate final line. Mentioning the marker
+  in an unfinished report cannot complete a batch or release it for application.
+  Batches also account for source/support files and full lesson bodies,
+  including promotion-cluster references, so short checklist entries cannot
+  hide an oversized review assignment.
+- **Added: evidence for Curator skill repairs and removals.** With Caliper
+  configured, the verifier builds cases from why the skill was created or
+  added. If that reason is unknown, the verifier infers a use case from the
+  skill. It tests at least five cases, including three mutually exclusive
+  alternatives, with and without the skill. Missing or mixed results do not
+  authorize a change.
+- **Added: user usefulness scores and a log for rule-only skill retirements.**
+  Curator explains each score. When a low-value standalone skill is retired,
+  its rule remains in a lesson and its score, reason, and recovery reference
+  are recorded.
+
 ## v0.26.2 — 2026-11-08
 
 ### Fixed

@@ -2,6 +2,36 @@ from __future__ import annotations
 import sys, importlib
 
 
+def test_cold_host_resolves_curator_tools_before_starting_loops(monkeypatch, tmp_path):
+    monkeypatch.setenv("THREADKEEPER_DB", str(tmp_path / "db.sqlite"))
+    monkeypatch.setenv("THREADKEEPER_DISABLE_BG_DAEMONS", "1")
+    monkeypatch.setenv("THREADKEEPER_NO_EMBEDDINGS", "1")
+    for name in [name for name in sys.modules if name.startswith("threadkeeper")]:
+        del sys.modules[name]
+    host = importlib.import_module("threadkeeper.host")
+    ingest = importlib.import_module("threadkeeper.ingest")
+    monkeypatch.setattr(ingest, "_start_initial_ingest", lambda: None)
+    monkeypatch.setattr(ingest, "_start_background_ingester", lambda: None)
+    observed = {}
+
+    def start_curator():
+        from threadkeeper._mcp import active_tool_names
+        from threadkeeper.tool_profiles import (
+            TOOL_PARENT_ALLOWLIST_ENV, child_profile_environment,
+        )
+
+        child_env = child_profile_environment(active_tool_names(), "curator")
+        observed["tools"] = set(child_env[TOOL_PARENT_ALLOWLIST_ENV].split(","))
+
+    curator = importlib.import_module("threadkeeper.curator")
+    monkeypatch.setattr(curator, "start_curator_daemon", start_curator)
+    monkeypatch.setattr(host, "_DAEMON_STARTERS", [("curator", "start_curator_daemon")])
+
+    host.start_daemons()
+
+    assert {"curator_report_write", "lesson_get", "whisper"} <= observed["tools"]
+
+
 def _reimport(monkeypatch, tmp_path):
     for k, v in {"THREADKEEPER_DB": str(tmp_path / "db.sqlite"),
                  "THREADKEEPER_DAEMON_HOST": "1",
