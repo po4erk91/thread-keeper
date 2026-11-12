@@ -165,12 +165,43 @@ def protect_connection(conn: sqlite3.Connection) -> None:
     conn.set_authorizer(authorize)
 
 
+def _skill_create_proposals(conn: sqlite3.Connection, child_cid: str) -> int:
+    rows = conn.execute(
+        "SELECT arguments FROM memory_proposals WHERE child_cid=? AND tool_name='skill_manage'",
+        (child_cid,),
+    ).fetchall()
+    return sum(json.loads(row[0]).get('action') == 'create' for row in rows)
+
+
+def _skill_proposal_refusal(conn: sqlite3.Connection, policy: MemoryAccess, arguments: dict) -> str:
+    """A loop child's per-pass create limit and the skill text gates.
+
+    Proposals never run skill_manage in the child, so its own write checks
+    cannot fire there; this keeps the same limits on the queue.
+    """
+    from .config import LEARNING_LOOP_SKILL_CREATE_LIMIT
+    from .tools.skills import SKILL_CREATE_LIMITED_ORIGINS, proposal_quality_refusal
+
+    limit = max(0, int(LEARNING_LOOP_SKILL_CREATE_LIMIT))
+    creating = arguments.get('action') == 'create'
+    if creating and policy.origin in SKILL_CREATE_LIMITED_ORIGINS:
+        proposed = _skill_create_proposals(conn, policy.child_cid)
+        if proposed >= limit:
+            return (
+                'ERR autonomous_skill_create_limit_exceeded '
+                f'origin={policy.origin} limit={limit} created={proposed}'
+            )
+    return proposal_quality_refusal(arguments, policy.origin)
+
+
 def propose(conn: sqlite3.Connection, policy: MemoryAccess, name: str, arguments: dict) -> str:
     """Queue data only; no accepted artifact or authority stamp is created."""
     if policy.access != 'propose' or name not in PROPOSABLE_TOOLS:
         return 'ERR memory_access_denied'
     if name == 'skill_manage' and arguments.get('action') not in {'create', 'edit', 'patch', 'write_file'}:
         return 'ERR proposal_action_not_supported'
+    if name == 'skill_manage' and (refusal := _skill_proposal_refusal(conn, policy, arguments)):
+        return refusal
     payload = json.dumps(arguments, ensure_ascii=False)
     if len(payload.encode()) > 128_000:
         return 'ERR proposal_too_large'

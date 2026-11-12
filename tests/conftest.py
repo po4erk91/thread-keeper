@@ -89,6 +89,12 @@ def isolated_cli_homes(tmp_path, monkeypatch):
         )
     monkeypatch.setenv("THREADKEEPER_AUTO_UPDATE_INTERVAL_S", "0")
     monkeypatch.setenv("THREADKEEPER_SKILL_UPDATE_INTERVAL_S", "0")
+    # Skill quality gates, the session proposal queue and reviewer canaries
+    # have dedicated tests that switch them on. Other tests write free-form
+    # fixture skills directly and run fixed reviewer prompts.
+    monkeypatch.setenv("THREADKEEPER_SKILL_QUALITY_GATES", "0")
+    monkeypatch.setenv("THREADKEEPER_SESSION_SKILL_WRITES", "direct")
+    monkeypatch.setenv("THREADKEEPER_CANDIDATE_REVIEW_CANARY_EVERY", "0")
     monkeypatch.delenv("THREADKEEPER_EXTRA_SKILLS_DIRS", raising=False)
     # Test fixtures need the foreground server defaults. A host process may
     # pass child-only tool and writer settings that change the behavior under

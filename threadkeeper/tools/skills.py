@@ -25,6 +25,7 @@ Validator enforces the agentskills.io-compatible frontmatter shape:
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -44,6 +45,13 @@ from ..config import (
     CLAUDE_SKILLS_DIR,
     CURATOR_MANAGE_FOREGROUND_SKILLS,
     LEARNING_LOOP_SKILL_CREATE_LIMIT,
+    SESSION_SKILL_WRITES,
+    SKILL_ACTIVE_CAP,
+    SKILL_CREATE_MIN_SESSIONS,
+    SKILL_DUPLICATE_THRESHOLD,
+    SKILL_PATCH_CAP_WITHOUT_USE,
+    SKILL_PROJECT_TERMS,
+    SKILL_QUALITY_GATES,
     WRITE_ORIGIN,
 )
 from ..authority import (
@@ -87,6 +95,8 @@ from ..consequential_state import (
     host_mutation_refusal, review_warning, skill_review_categories,
 )
 from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
+from ..skill_quality import added_text
+from ..skill_write_gates import GateSettings, SkillWrite, check_skill_write
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -752,9 +762,85 @@ SKILL_CREATE_LIMITED_ORIGINS = {
     "shadow_review",
 }
 
-# WRITE_ORIGIN values that screen synthesized bodies for inbound injection
-# markers (issue #76). Foreground (human) writes are never screened.
-_SCREENED_WRITE = WRITE_ORIGIN != FOREGROUND_ORIGIN
+SESSION_PROPOSAL_PREFIX = "session:"
+_PROPOSABLE_SKILL_ACTIONS = frozenset({"create", "edit", "patch", "write_file"})
+
+
+def _writer_origin() -> str:
+    """The origin whose rules apply to this write.
+
+    An accepted proposal runs in the reviewing foreground process, but it keeps
+    the origin of the writer that proposed it: a background reviewer's skill
+    stays loop-authored (and curatable), and a session agent's stays foreground.
+    """
+    from ..memory_access import _review_origin
+
+    proposer = _review_origin.get()
+    if not proposer:
+        return WRITE_ORIGIN
+    if proposer.startswith(SESSION_PROPOSAL_PREFIX):
+        return FOREGROUND_ORIGIN
+    row = get_db().execute(
+        "SELECT origin FROM child_memory_grants WHERE child_cid=?", (proposer,),
+    ).fetchone()
+    return str(row["origin"]) if row and row["origin"] else "spawned"
+
+
+def _screened_write(force: bool = False) -> bool:
+    """Whether a write is screened for injection and host-mutation markers
+    (issue #76). Loop writers always are. With the quality gates on, a session
+    agent's write is screened too unless the foreground writer forces it."""
+    if _writer_origin() != FOREGROUND_ORIGIN:
+        return True
+    return bool(SKILL_QUALITY_GATES) and not force
+
+
+@dataclass(frozen=True)
+class SkillWriteRequest:
+    """The quality-gate inputs a skill_manage call may carry."""
+
+    project: str = ""
+    evidence_sessions: str = ""
+    patch_reason: str = ""
+    evidence: str = ""
+    new_despite: str = ""
+    force: bool = False
+
+
+def _gate_settings() -> GateSettings:
+    return GateSettings(
+        duplicate_threshold=float(SKILL_DUPLICATE_THRESHOLD),
+        project_terms=tuple(SKILL_PROJECT_TERMS),
+        min_sessions=int(SKILL_CREATE_MIN_SESSIONS),
+        patch_cap=int(SKILL_PATCH_CAP_WITHOUT_USE),
+        active_cap=int(SKILL_ACTIVE_CAP),
+    )
+
+
+def _quality_gate(
+    action: str, name: str, added: str, full: str,
+    request: "SkillWriteRequest | None", *, description: str = "",
+    origin: str = "", history_checks: bool = True,
+) -> tuple[str, list[str]]:
+    """(error, warnings) from the shared write gates; ('', []) when off."""
+    if not SKILL_QUALITY_GATES:
+        return "", []
+    req = request or SkillWriteRequest()
+    write = SkillWrite(
+        action=action, name=name, added=added, full=full, description=description,
+        project=req.project, evidence_sessions=req.evidence_sessions,
+        patch_reason=req.patch_reason, evidence=req.evidence,
+        new_despite=req.new_despite, force=req.force,
+        origin=origin or _writer_origin(),
+    )
+    result = check_skill_write(get_db(), write, _gate_settings(), history_checks=history_checks)
+    return result.error, result.warnings
+
+
+def _with_warnings(result: str, warnings: list[str]) -> str:
+    if not warnings or result.startswith("ERR"):
+        return result
+    return result + "\nwarnings:\n" + "\n".join(f"  {w}" for w in warnings)
 
 
 def is_loop_authored_origin(origin: Optional[str]) -> bool:
@@ -820,13 +906,13 @@ def skill_provenance(conn: sqlite3.Connection, name: str) -> dict:
     }
 
 
-def _screen_synthesized_body(body: str) -> Optional[str]:
-    """Refuse-reason if a loop-origin write trips an injection marker, else
+def _screen_synthesized_body(body: str, force: bool = False) -> Optional[str]:
+    """Refuse-reason if a screened write trips an injection marker, else
     None. Inbound analogue of the secret scrubber (#37): a synthesized
     skill/lesson body that contains an imperative-override / remote-exec
     idiom is almost certainly laundering observed-content injection into an
-    auto-loaded artifact. Foreground writes are never screened."""
-    if not _SCREENED_WRITE:
+    auto-loaded artifact. See _screened_write for who is screened."""
+    if not _screened_write(force):
         return None
     hits = screen_injection_markers(body)
     if not hits:
@@ -861,7 +947,7 @@ def _record_event(name: str, kind: str) -> None:
             "created_by_origin=excluded.created_by_origin, tier='hypothesis', "
             "tier_changed_at=excluded.tier_changed_at, stale_since=NULL "
             "WHERE skill_usage.state='archived'",
-            (name, now, cid, WRITE_ORIGIN, now),
+            (name, now, cid, _writer_origin(), now),
         )
         memory_provenance(
             conn, "skill", name, source_event_kind="skill_create",
@@ -1000,7 +1086,12 @@ def skill_manage(action: str,
                  deletion_reason: str = "",
                  rule_lesson_slug: str = "",
                  rule_excerpt: str = "",
-                 classification: str = "production") -> str:
+                 classification: str = "production",
+                 project: str = "",
+                 evidence_sessions: str = "",
+                 patch_reason: str = "",
+                 evidence: str = "",
+                 new_despite: str = "") -> str:
     """Create, edit, patch, or delete skills under the primary skills root.
 
     Atomic primary write with frontmatter validation before disk hits, then
@@ -1042,9 +1133,33 @@ def skill_manage(action: str,
       cleanup_orphan — Curator verifier only. Archive or remove an already
                     validated registry-only orphan without requiring a skill
                     directory. Set `orphan_action` to `archive` or `remove`.
+
+    Quality gates (create, edit, patch, write_file). Learning-loop writers are
+    refused; a session agent gets warnings for history noise, repetition, the
+    active cap and patches without use, and may pass force=True to keep a
+    deliberate template or project exception:
+      - a new skill follows the template: description starts with "Use when",
+        body has "## Not for", "## Steps", "## Check" and a one-line "## Why";
+      - no [[wikilinks]] (write the rule text), no thread/ticket/PR IDs, dates,
+        incident counts, version stories, user quotes or personal paths;
+      - a shared skill names no project from SKILL_PROJECT_TERMS; a project
+        skill passes `project` and names it in the description;
+      - no near-duplicate of any installed skill by meaning; pass
+        `new_despite=<neighbor>` when the task class really differs;
+      - a learning-loop create passes `evidence_sessions` (ids from at least
+        two sessions or days where the task came up);
+      - a learning-loop edit or patch passes `patch_reason` (used_failed |
+        used_corrected | contradicted) and a one-line `evidence`.
+    Session-agent writes are queued as proposals (SESSION_SKILL_WRITES=propose);
+    show the proposal to the user and accept it with memory_proposal_decide.
     """
     action = action.strip()
     name = name.strip()
+    request = SkillWriteRequest(
+        project=project, evidence_sessions=evidence_sessions,
+        patch_reason=patch_reason, evidence=evidence,
+        new_despite=new_despite.strip(), force=bool(force),
+    )
     rule_requested = bool(usefulness_score or deletion_reason or rule_lesson_slug or rule_excerpt)
     if rule_requested and (
         action != "delete" or replacement_name or force
@@ -1055,17 +1170,27 @@ def skill_manage(action: str,
         return f"ERR {err}"
     if refusal := _guarded_skill_write_refusal(name, action):
         return refusal
+    if _session_write_needs_proposal(action, classification):
+        return _queue_session_proposal(action, name, {
+            "action": action, "name": name, "content": content,
+            "old_string": old_string, "new_string": new_string,
+            "sub_path": sub_path, "description": description, "source": source,
+            "force": force, "classification": classification,
+            "project": project, "evidence_sessions": evidence_sessions,
+            "patch_reason": patch_reason, "evidence": evidence,
+            "new_despite": new_despite,
+        }, request)
     with _managed_skill_lock(name) as locked:
         if not locked:
             return f"ERR skill_write_in_progress name={name}"
         if action == "create":
-            return _action_create(name, content, description, source, classification)
+            return _action_create(name, content, description, source, classification, request)
         if action == "edit":
-            return _action_edit(name, content, source)
+            return _action_edit(name, content, source, request)
         if action == "patch":
-            return _action_patch(name, old_string, new_string, source)
+            return _action_patch(name, old_string, new_string, source, request)
         if action == "write_file":
-            return _action_write_file(name, sub_path, content, source)
+            return _action_write_file(name, sub_path, content, source, request)
         if action == "remove_file":
             return _action_remove_file(name, sub_path)
         if action == "delete":
@@ -1090,6 +1215,104 @@ def skill_manage(action: str,
             f"ERR unknown_action={action} "
             "(create|edit|patch|write_file|remove_file|delete|restore|reconcile|cleanup_orphan)"
         )
+
+
+def _session_write_needs_proposal(action: str, classification: str) -> bool:
+    """Session-agent writes go through the proposal queue, like loop writes."""
+    from ..memory_access import _review_origin
+
+    return (
+        SESSION_SKILL_WRITES == "propose"
+        and WRITE_ORIGIN == FOREGROUND_ORIGIN
+        and not _review_origin.get()
+        and action in _PROPOSABLE_SKILL_ACTIONS
+        and classification == "production"
+    )
+
+
+def _prospective_skill_md(action: str, name: str, arguments: dict) -> tuple[str, str, str]:
+    """(error, full SKILL.md or file text after the write, text the write adds)."""
+    content = arguments.get("content") or ""
+    if action == "create":
+        if content.startswith("---"):
+            return "", content, content
+        full = _frontmatter_for(name, arguments.get("description") or "", arguments.get("project") or "")
+        full += content.strip() + "\n"
+        return "", full, full
+    md = _skill_md_path(name)
+    if not md.exists():
+        return f"ERR skill_not_found={name}", "", ""
+    current = md.read_text(encoding="utf-8")
+    if action == "edit":
+        return "", content, added_text(current, content)
+    if action == "patch":
+        old, new = arguments.get("old_string") or "", arguments.get("new_string") or ""
+        if not old or current.count(old) != 1:
+            return "ERR old_string_not_unique_or_missing", "", ""
+        return "", current.replace(old, new, 1), added_text(old, new)
+    return "", content, content
+
+
+def _queue_session_proposal(action: str, name: str, arguments: dict,
+                            request: SkillWriteRequest) -> str:
+    """Queue a session agent's skill write for explicit review.
+
+    The gates run now, so the agent sees refusals at once, and again when the
+    proposal is accepted.
+    """
+    error, full, added = _prospective_skill_md(action, name, arguments)
+    if error:
+        return error
+    if action in {"create", "edit"} and (err := _validate_skill_md(full, name)):
+        return f"ERR validate_failed: {err}"
+    gate_error, warnings = _quality_gate(
+        action, name, added, full, request,
+        description=arguments.get("description") or "", origin=FOREGROUND_ORIGIN,
+    )
+    if gate_error:
+        return gate_error
+    conn = get_db()
+    proposer = SESSION_PROPOSAL_PREFIX + (_detect_self_cid() or "session")
+    cursor = conn.execute(
+        "INSERT INTO memory_proposals "
+        "(child_cid, tool_name, arguments, project_id, memory_scope, created_at) "
+        "VALUES (?, 'skill_manage', ?, NULL, 'unresolved', ?)",
+        (proposer, json.dumps(arguments, ensure_ascii=False), int(time.time())),
+    )
+    conn.commit()
+    proposal = cursor.lastrowid
+    return _with_warnings(
+        f"ok proposal={proposal} status=pending action={action} name={name}; "
+        "show this skill change to the user and apply it with "
+        f"memory_proposal_decide(id={proposal}, accept=True) only after they agree",
+        warnings,
+    )
+
+
+def proposal_quality_refusal(arguments: dict, origin: str) -> str:
+    """Store-free gates for a child's skill_manage proposal, run at queue time.
+
+    A proposing child cannot read the full memory store, so repetition, use
+    and cap gates wait for acceptance; the text gates run here so the child
+    can fix its write at once.
+    """
+    action = str(arguments.get("action") or "")
+    name = str(arguments.get("name") or "").strip()
+    if action not in _PROPOSABLE_SKILL_ACTIONS or _validate_name(name):
+        return ""
+    error, full, added = _prospective_skill_md(action, name, arguments)
+    if error:
+        return error
+    request = SkillWriteRequest(
+        project=str(arguments.get("project") or ""),
+        new_despite=str(arguments.get("new_despite") or ""),
+    )
+    gate_error, _warnings = _quality_gate(
+        action, name, added, full, request,
+        description=str(arguments.get("description") or ""),
+        origin=origin, history_checks=False,
+    )
+    return gate_error
 
 
 @read_tool()
@@ -1178,7 +1401,7 @@ def _skill_md_growth_refusal(current: str, updated: str) -> str:
     Shrinking or same-size rewrites stay allowed, so an oversized skill can
     always be split down. Foreground authors keep the hard limit only.
     """
-    if WRITE_ORIGIN == FOREGROUND_ORIGIN:
+    if _writer_origin() == FOREGROUND_ORIGIN:
         return ""
     if len(updated) <= SKILL_MD_SOFT_CAP_CHARS or len(updated) <= len(current):
         return ""
@@ -1190,8 +1413,16 @@ def _skill_md_growth_refusal(current: str, updated: str) -> str:
     )
 
 
+def _frontmatter_for(name: str, description: str, project: str) -> str:
+    lines = [f"name: {_yaml_str(name)}", f"description: {_yaml_str(description.strip())}"]
+    if project.strip():
+        lines += ["metadata:", f"  threadkeeper-project: {_yaml_str(project.strip().lower())}"]
+    return "---\n" + "\n".join(lines) + "\n---\n\n"
+
+
 def _action_create(name: str, content: str, description: str, source: str = "",
-                   classification: str = "production") -> str:
+                   classification: str = "production",
+                   request: SkillWriteRequest | None = None) -> str:
     from ..memory_access import require_write
     require_write()
     if classification not in {"production", "fixture"}:
@@ -1214,21 +1445,23 @@ def _action_create(name: str, content: str, description: str, source: str = "",
             return "ERR description_required when content lacks frontmatter"
         if not content.strip():
             return "ERR content_required (body markdown after frontmatter)"
-        body = (
-            f"---\n"
-            f"name: {_yaml_str(name)}\n"
-            f"description: {_yaml_str(description.strip())}\n"
-            f"---\n\n"
-            f"{content.strip()}\n"
-        )
+        project = request.project if request else ""
+        body = _frontmatter_for(name, description, project) + f"{content.strip()}\n"
     if err := _validate_skill_md(body, name):
         return f"ERR validate_failed: {err}"
     if refusal := _skill_md_growth_refusal("", body):
         return refusal
-    if reason := _screen_synthesized_body(body):
+    force = bool(request and request.force)
+    if reason := _screen_synthesized_body(body, force):
         return f"ERR {reason}"
-    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), body)):
+    if _screened_write(force) and (refusal := host_mutation_refusal(get_db(), body)):
         return refusal
+    gate_error, warnings = (
+        _quality_gate("create", name, body, body, request, description=description)
+        if classification == "production" else ("", [])
+    )
+    if gate_error:
+        return gate_error
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -1251,10 +1484,11 @@ def _action_create(name: str, content: str, description: str, source: str = "",
         )
     conn.commit()
     outcome = _mirror_skill_dir(name)
-    return _result_with_mirror_outcome("ok path=SKILL.md", outcome)
+    return _with_warnings(_result_with_mirror_outcome("ok path=SKILL.md", outcome), warnings)
 
 
-def _action_edit(name: str, content: str, source: str = "") -> str:
+def _action_edit(name: str, content: str, source: str = "",
+                 request: SkillWriteRequest | None = None) -> str:
     from ..memory_access import require_write
     require_write()
     md = _skill_md_path(name)
@@ -1266,12 +1500,19 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
         refusal := mutation_refusal(get_db(), "edit", name, md.parent, content)
     ):
         return refusal
-    if refusal := _skill_md_growth_refusal(md.read_text(encoding="utf-8"), content):
+    current = md.read_text(encoding="utf-8")
+    if refusal := _skill_md_growth_refusal(current, content):
         return refusal
-    if reason := _screen_synthesized_body(content):
+    force = bool(request and request.force)
+    if reason := _screen_synthesized_body(content, force):
         return f"ERR {reason}"
-    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), content)):
+    if _screened_write(force) and (refusal := host_mutation_refusal(get_db(), content)):
         return refusal
+    gate_error, warnings = _quality_gate(
+        "edit", name, added_text(current, content), content, request,
+    )
+    if gate_error:
+        return gate_error
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -1290,10 +1531,11 @@ def _action_edit(name: str, content: str, source: str = "") -> str:
         )
     conn.commit()
     outcome = _mirror_skill_dir(name)
-    return _result_with_mirror_outcome("ok path=SKILL.md", outcome)
+    return _with_warnings(_result_with_mirror_outcome("ok path=SKILL.md", outcome), warnings)
 
 
-def _action_patch(name: str, old_string: str, new_string: str, source: str = "") -> str:
+def _action_patch(name: str, old_string: str, new_string: str, source: str = "",
+                  request: SkillWriteRequest | None = None) -> str:
     from ..memory_access import require_write
     require_write()
     md = _skill_md_path(name)
@@ -1321,10 +1563,16 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
     # Screen only the newly-introduced text — an existing skill that
     # already documents an injection marker (e.g. a security skill) must
     # stay patchable.
-    if reason := _screen_synthesized_body(new_string):
+    force = bool(request and request.force)
+    if reason := _screen_synthesized_body(new_string, force):
         return f"ERR {reason}"
-    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), updated)):
+    if _screened_write(force) and (refusal := host_mutation_refusal(get_db(), updated)):
         return refusal
+    gate_error, warnings = _quality_gate(
+        "patch", name, added_text(old_string, new_string), updated, request,
+    )
+    if gate_error:
+        return gate_error
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
@@ -1343,10 +1591,11 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "")
         )
     conn.commit()
     outcome = _mirror_skill_dir(name)
-    return _result_with_mirror_outcome("ok", outcome)
+    return _with_warnings(_result_with_mirror_outcome("ok", outcome), warnings)
 
 
-def _action_write_file(name: str, sub_path: str, content: str, source: str = "") -> str:
+def _action_write_file(name: str, sub_path: str, content: str, source: str = "",
+                       request: SkillWriteRequest | None = None) -> str:
     from ..memory_access import require_write
     require_write()
     sdir = _skill_dir(name)
@@ -1368,14 +1617,21 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "")
         return "ERR path_traversal_blocked"
     if len(content.encode("utf-8")) > MAX_SKILL_FILE_BYTES:
         return f"ERR file_exceeds_{MAX_SKILL_FILE_BYTES}_bytes"
-    if reason := _screen_synthesized_body(content):
+    force = bool(request and request.force)
+    if reason := _screen_synthesized_body(content, force):
         return f"ERR {reason}"
-    if _SCREENED_WRITE and (refusal := host_mutation_refusal(get_db(), content)):
+    if _screened_write(force) and (refusal := host_mutation_refusal(get_db(), content)):
         return refusal
+    target = sdir / sub_path
+    previous = target.read_text(encoding="utf-8") if target.is_file() else ""
+    gate_error, warnings = _quality_gate(
+        "write_file", name, added_text(previous, content), content, request,
+    )
+    if gate_error:
+        return gate_error
     conn = get_db()
     if not _authority_write_allowed(conn, name, source):
         return "ERR authority_source_unknown"
-    target = sdir / sub_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     _record_event(name, "patch")
@@ -1392,7 +1648,7 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "")
         )
     conn.commit()
     outcome = _mirror_skill_dir(name)
-    return _result_with_mirror_outcome(f"ok path={sub_path}", outcome)
+    return _with_warnings(_result_with_mirror_outcome(f"ok path={sub_path}", outcome), warnings)
 
 
 def _action_remove_file(name: str, sub_path: str) -> str:
@@ -1696,7 +1952,7 @@ def _action_restore(name: str) -> str:
     content = md.read_text(encoding="utf-8")
     if err := _validate_skill_md(content, name):
         return f"ERR validate_failed_from_trash: {err}"
-    if _SCREENED_WRITE and (categories := skill_review_categories(src)):
+    if _writer_origin() != FOREGROUND_ORIGIN and (categories := skill_review_categories(src)):
         return f"ERR owner_review_required {review_warning(categories)}"
     sdir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, sdir, copy_function=shutil.copy2)
