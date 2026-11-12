@@ -91,6 +91,45 @@ def test_bootstrap_adds_schema_table_missing_from_current_version_db(fresh_mp):
         conn.close()
 
 
+def test_bootstrap_creates_missing_curator_tables_before_adding_columns(fresh_mp):
+    db = fresh_mp["db"]
+
+    conn = db.get_db()
+    try:
+        # Model a database already at the current version before Curator
+        # manifests were added to the baseline schema.
+        conn.execute("DROP TABLE curator_batches")
+        conn.execute("DROP TABLE curator_passes")
+        conn.execute(
+            "INSERT INTO threads (id, question, state, opened_at, last_touched_at) "
+            "VALUES ('T1', 'existing question', 'active', 1, 1)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    for _ in range(2):
+        db.bootstrap_db(force=True)
+        conn = db.get_db()
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+                db.CURRENT_SCHEMA_VERSION
+            )
+            assert conn.execute("SELECT COUNT(*) FROM curator_passes").fetchone()[0] == 0
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(curator_batches)")
+            }
+            assert {
+                "workflow_batch_sha256",
+                "workflow_batch_summary",
+                "workflow_compacted_at",
+            } <= columns
+            threads = conn.execute("SELECT id, question FROM threads").fetchall()
+            assert [tuple(row) for row in threads] == [("T1", "existing question")]
+        finally:
+            conn.close()
+
+
 def test_non_duplicate_column_migration_error_surfaces(
     fresh_mp, monkeypatch, caplog
 ):
