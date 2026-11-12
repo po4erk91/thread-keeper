@@ -48,6 +48,28 @@ findings and plans from those dates.
 - **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
   Existing violation counters do not yet complete this contract.
 
+**Shadow input-memory follow-up after [#437](https://github.com/po4erk91/thread-keeper/issues/437)**
+
+The Curator resource-hashing fix is complete. A similar allocation path remains
+in Shadow review: a large conversation backlog can consume substantial memory
+in the shared daemon before any worker is admitted. `_collect_window()` fetches
+up to 4,000 full dialog bodies before truncating turns and applying the rendered
+character budget added in [PR #459](https://github.com/po4erk91/thread-keeper/pull/459).
+
+With a 6,000-character budget, a synthetic SQLite probe returned the same
+4,631-character window and cursor for 64 messages of either 2 KiB or 1 MiB.
+Peak Python allocations grew from 0.171 MiB to 64.045 MiB. Iterating the SQLite
+cursor in a separate test bench preserved the result and reduced the large-body
+peak to 2.017 MiB. This measures allocations, not process RSS or a production
+outage; streaming still carries the cost of individual full message bodies.
+
+Stream eligible rows, stop when the window fills, and release the read cursor
+on early exit and errors. Preserve scope and child-session filters, tool-noise
+handling, and the ingest-order cursor so the first excluded turn remains for
+the next pass. Regression checks should bound unconsumed input allocation as
+the backlog grows, compare output and cursor behavior, and document the
+remaining per-message cost separately from the prompt limit.
+
 **Issue-dedup follow-up after [#103](https://github.com/po4erk91/thread-keeper/issues/103)**
 
 The mechanical gate accepted the exact title of an existing open issue when
