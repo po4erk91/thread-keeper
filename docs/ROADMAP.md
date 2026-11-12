@@ -8,13 +8,21 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-11 roadmap status
+## 2026-11-12 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
 **Remaining issue-backed work**
 
+- **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
+  People who enable conversation expiry can still have the same raw text kept
+  in the behavioral-inference buffer. A synthetic probe deleted two expired
+  source conversations, but both copied observations retained their quotes
+  and context. Tie pending and processed copies to an explicit expiry policy,
+  coordinate active validators, and retain only bounded metadata needed for
+  safe deduplication and provenance. Document the collected fields and controls
+  before considering any increase to the current context limit.
 - **Keep public GitHub writes guarded ([#453](https://github.com/po4erk91/thread-keeper/issues/453)).**
   A login shell can replace the worker's PATH and skip the body scrubber even
   when the worker invokes plain `gh`. Keep redaction and request-budget checks
@@ -22,11 +30,14 @@ findings and plans from those dates.
   guard is unavailable. A local fake GitHub executable confirmed the gap;
   the matching non-login control received a redacted synthetic body.
 - **Plan the embedding upgrade ([#441](https://github.com/po4erk91/thread-keeper/issues/441)).**
-  Agree how existing search vectors will move to the new generation before
-  changing the fastembed dependency. Keep the issue behind `needs-design`
-  until the migration cost, search behavior, and recovery path are agreed.
-  The Pillow audit exceptions point to this issue and next require review on
-  2026-11-21.
+  [PR #450](https://github.com/po4erk91/thread-keeper/pull/450) already widened
+  main's fastembed range to `>=0.8,<0.10`; the dependency change is on main,
+  pending release. Existing stores still need a verified migration and
+  recovery plan because the installed runtime's major/minor version is part
+  of the search-vector generation. Keep the remaining design work behind
+  `needs-design`, check the staged-generation path from #337, and reconcile
+  the Pillow audit exceptions, which still describe a 0.8-only pin and next
+  require review on 2026-11-21.
 - **Show the task's recorded role ([#389](https://github.com/po4erk91/thread-keeper/issues/389)).**
   Status still infers roles from prompt wording on main. The proposed change
   is in [PR #391](https://github.com/po4erk91/thread-keeper/pull/391), which
@@ -36,6 +47,22 @@ findings and plans from those dates.
   work.
 - **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
   Existing violation counters do not yet complete this contract.
+
+**Issue-dedup follow-up after [#103](https://github.com/po4erk91/thread-keeper/issues/103)**
+
+The mechanical gate accepted the exact title of an existing open issue when
+the proposed body contained different evidence. The duplicate was closed and
+the evidence moved to the earlier tracker. Check normalized title equality
+before body-token similarity across GitHub history, the local ledger, and
+same-pass candidates, including closed `not_planned` issues. Verify that this
+case records a duplicate skip without sending a create request.
+
+The current research leads map to the existing outcome and forgetting
+evaluations (#347, #371), evidence links (#405), protocol conformance and
+read-only boundaries (#344, #348, #379), and immutable memory authority
+(#338). They do not require parallel roadmap issues. The legacy
+behavioral-inference suggestion now has its verified retention gap in #455;
+provider policy and inference-quality work remain covered by #74 and #339.
 
 **Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
 
