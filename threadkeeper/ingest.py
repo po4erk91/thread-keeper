@@ -452,8 +452,11 @@ def _skill_roots() -> list[Path]:
 def _record_cli_skill_signals(conn: sqlite3.Connection, adapter, fp: Path) -> int:
     """Count skill opens and ``$name`` invocations for CLIs without a Skill
     tool call (Codex, Antigravity, Copilot). Idempotent per transcript."""
+    scan = getattr(adapter, "iter_skill_signals", None)
+    if scan is None:
+        return 0
     try:
-        signals = adapter.iter_skill_signals(fp)
+        signals = scan(fp)
     except OSError:
         return 0
     if not signals:

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "thread-keeper",
-  "version": "0.26.1",
+  "version": "0.27.0",
   "description": "Persistent working memory across agent conversations.",
   "repository": "https://github.com/po4erk91/thread-keeper",
   "license": "MIT"

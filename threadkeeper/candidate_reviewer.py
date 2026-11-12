@@ -75,8 +75,9 @@ PROCEDURE — for each candidate (or coherent cluster of candidates),
 choose exactly one action:
 
   1. SKILL.create — a cluster of related candidates from at least two
-     distinct sessions or days expresses a class-level rule worth a
-     durable SKILL.md, and no catalog skill covers that task class. Call:
+     distinct sessions or days expresses a
+     class-level rule worth a durable SKILL.md, and no catalog skill
+     covers that task class. Call:
         skill_manage(
             action='create',
             name='<kebab-case-class-name>',
@@ -89,9 +90,9 @@ choose exactly one action:
      The skill IS the materialization; the candidates are no longer
      pending business.
 
-  2. SKILL.patch — candidate shows that a catalog skill with the same
-     task class and the same trigger was used and failed, was corrected by
-     the user, or is contradicted by new facts. Call:
+  2. SKILL.patch — candidate refines a skill from the catalog with the
+     same task class and the same trigger: that skill was used and failed,
+     was corrected by the user, or is contradicted by new facts. Call:
         skill_manage(
             action='patch', name=..., old_string=..., new_string=...,
             patch_reason='used_failed'|'used_corrected'|'contradicted',

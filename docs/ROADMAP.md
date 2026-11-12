@@ -67,8 +67,8 @@ provider policy and inference-quality work remain covered by #74 and #339.
 **Capability follow-up after [#353](https://github.com/po4erk91/thread-keeper/issues/353)**
 
 Curator's phase tool sets and cold-host catalog were repaired in
-[PR #452](https://github.com/po4erk91/thread-keeper/pull/452), on main and pending
-release. The remaining gap is checking required tools before dispatch,
+[PR #452](https://github.com/po4erk91/thread-keeper/pull/452), released in
+v0.27.0. The remaining gap is checking required tools before dispatch,
 including Evolve. A reviewer can request `full` while its parent hides
 `evolve_issue_create`, queue decisions, and reporting tools. The parent
 allowlist correctly stays an upper bound, but dispatch does not check whether
@@ -80,9 +80,20 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Skill generation quality is implemented in v0.27.0.** Skill use is
+  counted from Codex, Gemini/Antigravity and Copilot as well as Claude Code.
+  Every skill write from a learning loop or a session agent passes the same
+  gates: fixed template, no incident history or wikilinks, project scope,
+  no duplicates by meaning, creation only after repetition, and patches only
+  on evidence. Session-agent writes are proposals like background writes.
+  Each use is marked helpful or harmful, the aging pass retires skills that
+  keep getting corrected and holds an active-skill cap, `skill_validate`
+  flags stale references, and canary candidates audit the reviewer. A
+  with/without-skill value check is available through Caliper; it is off
+  by default because each check costs one comparison.
 - **Curator reviews can finish after a cold start
-  ([PR #452](https://github.com/po4erk91/thread-keeper/pull/452)), on main and
-  pending release.** Each phase has its required tool set within the parent's
+  ([PR #452](https://github.com/po4erk91/thread-keeper/pull/452)), released in
+  v0.27.0.** Each phase has its required tool set within the parent's
   restrictions, and the host loads the full catalog before starting its loops.
   Batch sizing includes skill source/support files and full referenced lesson
   bodies. A report counts as complete only when its completion marker is on a
@@ -90,7 +101,7 @@ existing separation of web research and privileged writes.
   or release a report for application. These fixes address the corresponding
   Curator tool-set gaps recorded in the October audits; the dispatch validation
   follow-up above remains open.
-- **Evidence for Curator skill changes is on main, pending release
+- **Evidence for Curator skill changes is released in v0.27.0
   ([PR #443](https://github.com/po4erk91/thread-keeper/pull/443)).** When
   Caliper is configured, the verifier compares at least five task cases with
   and without a skill, with three attempts per case. A repair must pass every
