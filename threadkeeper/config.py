@@ -401,6 +401,10 @@ class Settings(BaseSettings):
     # then reviewed anyway so sparse dialog is never silently dropped.
     # 0 = never flush (accumulate until min_chars).
     shadow_review_flush_age_s: float = 21600.0
+    # Rendered dialog characters one shadow window may carry. A backlog stops
+    # here and the cursor stays on the last included turn, so the next pass
+    # takes the rest; it keeps the prompt well under CLI input limits.
+    shadow_review_max_chars: int = Field(default=300_000, ge=10_000)
 
     # ── Curator daemon ───────────────────────────────────────────────────────
     # Deep library audit every three days by default. The pass snapshots before
@@ -481,6 +485,10 @@ class Settings(BaseSettings):
     # Cosine similarity (name + description) at which a new skill is refused
     # as a duplicate of an installed one. Real near-duplicates scored 0.55-0.78.
     skill_duplicate_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
+    # Rarity-weighted word similarity at which a new skill or reference file
+    # is refused as a restatement of a stored lesson (0 = off). Restated
+    # lessons scored 0.24-0.30; unrelated new skills 0.16-0.18.
+    skill_lesson_overlap_threshold: float = Field(default=0.22, ge=0.0, le=1.0)
     # Comma-separated project names. A shared skill may not mention them;
     # a project skill passes project=<name> and names it in its description.
     skill_project_terms: str = ""
@@ -1007,6 +1015,7 @@ def _derive_constants(s: "Settings") -> dict:
         "SHADOW_REVIEW_WINDOW_S": s.shadow_review_window_s,
         "SHADOW_REVIEW_MIN_CHARS": s.shadow_review_min_chars,
         "SHADOW_REVIEW_FLUSH_AGE_S": float(s.shadow_review_flush_age_s),
+        "SHADOW_REVIEW_MAX_CHARS": int(s.shadow_review_max_chars),
         "CURATOR_INTERVAL_S": s.curator_interval_s,
         "CURATOR_MIN_LESSONS": s.curator_min_lessons,
         "CURATOR_PROMOTION_MIN_LESSONS": s.curator_promotion_min_lessons,
@@ -1039,6 +1048,7 @@ def _derive_constants(s: "Settings") -> dict:
         "LEARNING_LOOP_SKILL_CREATE_LIMIT": s.learning_loop_skill_create_limit,
         "SKILL_QUALITY_GATES": bool(s.skill_quality_gates),
         "SKILL_DUPLICATE_THRESHOLD": float(s.skill_duplicate_threshold),
+        "SKILL_LESSON_OVERLAP_THRESHOLD": float(s.skill_lesson_overlap_threshold),
         "SKILL_PROJECT_TERMS": tuple(
             term.strip() for term in s.skill_project_terms.split(",") if term.strip()
         ),

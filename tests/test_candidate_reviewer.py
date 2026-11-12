@@ -523,3 +523,118 @@ def test_collect_pending_bounds_the_prompt_and_keeps_fifo_order(
     assert "PENDING CANDIDATES (n=3 of 7;" in dump
     assert "candidate number 0" in dump and "candidate number 2" in dump
     assert "candidate number 3" not in dump
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Scope of the queue and reviewer dispositions
+# ──────────────────────────────────────────────────────────────────────
+
+_CHILD = "11111111-2222-3333-4444-555555555555"
+_OTHER_PROJECT = "prj_bbbbbbbbbbbbbbbbbbbb"
+_REVIEW_PROJECT = "prj_aaaaaaaaaaaaaaaaaaaa"
+
+
+def _seed_scoped(conn, content, memory_scope, project_id=None):
+    cursor = conn.execute(
+        "INSERT INTO extract_candidates (kind, source_uuid, source_cid, content, "
+        "rationale, status, created_at, project_id, memory_scope) "
+        "VALUES ('verbatim', ?, 'real-sess', ?, 'H1', 'pending', ?, ?, ?)",
+        (f"u-{content}", content, int(time.time()) - 60, project_id, memory_scope),
+    )
+    return cursor.lastrowid
+
+
+def _as_reviewer_child(conn, monkeypatch):
+    from threadkeeper.memory_access import token_digest
+
+    conn.execute(
+        "INSERT INTO tasks (id, pid, cwd, prompt, started_at, ended_at, spawned_cid) "
+        "VALUES ('tk_review', 1, '/', ?, 1, 2, ?)",
+        ("You are a CANDIDATE REVIEWER for thread-keeper's extract queue.", _CHILD),
+    )
+    conn.execute(
+        "INSERT INTO child_memory_grants VALUES (?,?,?,?,?,?,?)",
+        (_CHILD, "tk_review", token_digest("review-token"), "propose",
+         _REVIEW_PROJECT, "spawned", 1),
+    )
+    conn.commit()
+    monkeypatch.setenv("THREADKEEPER_FORCE_CID", _CHILD)
+    monkeypatch.setenv("THREADKEEPER_MEMORY_TOKEN", "review-token")
+
+
+def _as_owner(monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_FORCE_CID", _FAKE_CID)
+    monkeypatch.delenv("THREADKEEPER_MEMORY_TOKEN")
+
+
+def _tool(name):
+    from threadkeeper._mcp import mcp
+    return mcp._tool_manager._tools[name].fn
+
+
+def test_collect_pending_includes_every_scope_with_its_label(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    _seed_scoped(conn, "unresolved want", "unresolved")
+    _seed_scoped(conn, "other project want", "project", _OTHER_PROJECT)
+    conn.commit()
+
+    dump, n = pkg["candidate_reviewer"]._collect_pending(conn)
+
+    assert n == 2
+    assert "scope=unresolved" in dump
+    assert f"scope=project project={_OTHER_PROJECT}" in dump
+
+
+def test_reviewer_child_proposes_dispositions_and_owner_applies_rejections(
+    tmp_path, monkeypatch,
+):
+    import asyncio
+
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    # The reviewer child inherits the project of the server that spawned it.
+    monkeypatch.setenv("THREADKEEPER_PROJECT_NAMESPACE", _REVIEW_PROJECT)
+    reviewer = pkg["candidate_reviewer"]
+    conn = pkg["db"].get_db()
+    noise = _seed_scoped(conn, "log dump noise", "unresolved")
+    keep = _seed_scoped(conn, "I want quotes kept", "unresolved")
+    conn.commit()
+
+    _as_reviewer_child(conn, monkeypatch)
+    assert _tool("reject_candidate")(noise, "log dump").startswith("ok proposal=")
+    assert _tool("accept_candidate")(keep, "verbatim").startswith("ok proposal=")
+    _as_owner(monkeypatch)
+
+    statuses = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM extract_candidates")}
+    assert statuses == {noise: "pending", keep: "pending"}
+    assert reviewer._collect_pending(conn) == ("", 0)
+
+    assert reviewer.apply_reviewer_rejections(conn) == 1
+    rejected = conn.execute(
+        "SELECT status, rationale FROM extract_candidates WHERE id=?", (noise,),
+    ).fetchone()
+    assert rejected["status"] == "rejected" and "log dump" in rejected["rationale"]
+    proposals = dict(conn.execute("SELECT tool_name, status FROM memory_proposals").fetchall())
+    assert proposals == {"reject_candidate": "accepted", "accept_candidate": "pending"}
+
+    accept_id = conn.execute(
+        "SELECT id FROM memory_proposals WHERE tool_name='accept_candidate'"
+    ).fetchone()[0]
+    decided = asyncio.run(_tool("memory_proposal_decide")(accept_id, True))
+    assert "status=accepted" in decided
+    verbatim = conn.execute("SELECT memory_scope, project_id FROM verbatim").fetchone()
+    assert tuple(verbatim) == ("unresolved", None)
+
+
+def test_declined_acceptance_is_not_reviewed_again(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    candidate = _seed_scoped(conn, "declined candidate", "unresolved")
+    conn.execute(
+        "INSERT INTO memory_proposals (child_cid, tool_name, arguments, memory_scope, "
+        "created_at, status) VALUES ('c', 'accept_candidate', ?, 'unresolved', 1, 'rejected')",
+        (f'{{"id": {candidate}}}',),
+    )
+    conn.commit()
+
+    assert pkg["candidate_reviewer"]._collect_pending(conn) == ("", 0)

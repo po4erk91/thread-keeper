@@ -35,6 +35,7 @@ Hardstops:
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -48,7 +49,7 @@ from .config import (
     CANDIDATE_REVIEW_BATCH_SIZE,
 )
 from .db import get_db
-from .project_scope import recall_where
+from .project_scope import format_provenance, learning_input_where
 from .helpers import daemon_sleep, single_flight_lock
 from . import daemon_state, identity
 from .review_prompts import SKILL_WRITING_RULES
@@ -102,7 +103,8 @@ choose exactly one action:
 
   3. SKILL.write_file — candidate is a related detail with a different
      trigger, worth keeping under an existing skill but not in its main
-     SKILL.md. Add as a references/ sub-file:
+     SKILL.md. First patch SKILL.md with a line that points to the new
+     file, then add it as a references/ sub-file:
         skill_manage(
             action='write_file', name=..., sub_path='references/<topic>.md',
             content=...
@@ -149,6 +151,9 @@ DECISION RULES:
   to a protected skill, REJECT the candidate (don't patch protected).
 - For action=NOTE without a clear thread_id — DON'T guess. Leave the
   candidate pending; an agent may pick the right thread later.
+- NOTE and VERBATIM keep the candidate's scope. A candidate marked
+  scope=unresolved came from a session outside any known project, where
+  recall never reaches, so resolve it as SKILL, LESSON or REJECT.
 - An `operational_recovery` candidate is bounded metadata, not a transcript.
   Never infer or request raw arguments, raw output, paths, secrets, or an
   unrecorded causal link. If it becomes a LESSON, pass
@@ -220,8 +225,9 @@ def _format_candidate(row: dict) -> str:
     if len(row.get("content") or "") > 300:
         snip += "…"
     day = time.strftime("%Y-%m-%d", time.gmtime(int(row.get("created_at") or 0)))
+    scope = format_provenance(row.get("memory_scope"), row.get("project_id"))
     return (
-        f"  #{row['id']} kind={row['kind']} "
+        f"  #{row['id']} kind={row['kind']} {scope} "
         f"session={row.get('source_cid') or '-'} day={day} "
         f"why={(row.get('rationale') or '?')[:60]}\n"
         f"    content: {snip}"
@@ -239,6 +245,27 @@ def _active_skills_dump(conn: sqlite3.Connection) -> str:
         return ""
 
 
+# The reviewer already proposed a fate for these candidates: the proposal is
+# still waiting, or the user declined to keep the candidate.
+_DISPOSITION_OPEN = (
+    "EXISTS (SELECT 1 FROM memory_proposals p "
+    "WHERE p.tool_name IN ('accept_candidate','reject_candidate') "
+    "AND CAST(json_extract(p.arguments, '$.id') AS INTEGER)=extract_candidates.id "
+    "AND (p.status IN ('pending','applying') "
+    "OR (p.status='rejected' AND p.tool_name='accept_candidate')))"
+)
+
+
+def _reviewable_where(stale_cutoff: int) -> tuple[str, tuple]:
+    """Pending, fresh candidates of any scope with no disposition in flight."""
+    scope, params = learning_input_where("extract_candidates")
+    return (
+        f"status='pending' AND created_at > ? AND {scope} "
+        f"AND NOT {_DISPOSITION_OPEN}",
+        (stale_cutoff, *params),
+    )
+
+
 def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     """Build the inventory the reviewer child will read.
 
@@ -249,23 +276,18 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
     the rest stay pending for the next pass instead of growing the prompt
     without bound (#24).
     """
-    now = int(time.time())
-    stale_cutoff = now - 30 * 86400
-    candidate_scope, candidate_params = recall_where("extract_candidates")
+    where, params = _reviewable_where(int(time.time()) - 30 * 86400)
     limit = max(1, int(CANDIDATE_REVIEW_BATCH_SIZE))
     try:
         total = int(conn.execute(
-            "SELECT COUNT(*) FROM extract_candidates "
-            f"WHERE status='pending' AND created_at > ? AND {candidate_scope}",
-            (stale_cutoff, *candidate_params),
+            f"SELECT COUNT(*) FROM extract_candidates WHERE {where}", params,
         ).fetchone()[0])
         rows = conn.execute(
             "SELECT id, kind, source_uuid, source_cid, content, "
-            "       rationale, created_at "
-            "FROM extract_candidates "
-            f"WHERE status='pending' AND created_at > ? AND {candidate_scope} "
+            "       rationale, created_at, project_id, memory_scope "
+            f"FROM extract_candidates WHERE {where} "
             "ORDER BY created_at ASC, id ASC LIMIT ?",
-            (stale_cutoff, *candidate_params, limit),
+            (*params, limit),
         ).fetchall()
     except sqlite3.OperationalError:
         return ("", 0)
@@ -282,17 +304,66 @@ def _collect_pending(conn: sqlite3.Connection) -> tuple[str, int]:
 
 def _oldest_pending_ts(conn: sqlite3.Connection) -> int:
     """created_at of the oldest surfaced (non-stale) pending candidate, or 0."""
-    stale_cutoff = int(time.time()) - 30 * 86400
-    candidate_scope, candidate_params = recall_where("extract_candidates")
+    where, params = _reviewable_where(int(time.time()) - 30 * 86400)
     try:
         row = conn.execute(
-            "SELECT MIN(created_at) FROM extract_candidates "
-            f"WHERE status='pending' AND created_at > ? AND {candidate_scope}",
-            (stale_cutoff, *candidate_params),
+            f"SELECT MIN(created_at) FROM extract_candidates WHERE {where}", params,
         ).fetchone()
     except sqlite3.OperationalError:
         return 0
     return int(row[0]) if row and row[0] else 0
+
+
+def _reviewer_rejections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Pending reject proposals made by candidate-reviewer children."""
+    return conn.execute(
+        "SELECT id, arguments FROM memory_proposals "
+        "WHERE status='pending' AND tool_name='reject_candidate' "
+        "AND child_cid IN (SELECT spawned_cid FROM tasks WHERE prompt LIKE ?) "
+        "ORDER BY id",
+        (CANDIDATE_REVIEW_PROMPT_PREFIX + "%",),
+    ).fetchall()
+
+
+def _proposal_arguments(raw: str) -> dict:
+    try:
+        arguments = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def _candidate_id(arguments: dict) -> int:
+    try:
+        return int(arguments.get("id") or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def apply_reviewer_rejections(conn: sqlite3.Connection) -> int:
+    """Apply the reviewer's reject proposals; return how many candidates closed.
+
+    The reviewer child only proposes. A rejection closes a queue entry and
+    creates no durable memory, so the trusted loop owner applies it here.
+    Acceptances, skills and lessons stay pending for foreground review.
+    """
+    from .tools.extract import reject_pending_candidate
+
+    closed = 0
+    for row in _reviewer_rejections(conn):
+        arguments = _proposal_arguments(row["arguments"])
+        result = reject_pending_candidate(
+            conn, _candidate_id(arguments), str(arguments.get("reason") or ""),
+        )
+        status = "failed" if result.startswith("ERR") else "accepted"
+        conn.execute(
+            "UPDATE memory_proposals SET status=?, decided_at=?, result=? "
+            "WHERE id=? AND status='pending'",
+            (status, int(time.time()), result, row["id"]),
+        )
+        conn.commit()
+        closed += status == "accepted"
+    return closed
 
 
 def _running_reviewer_children(conn: sqlite3.Connection) -> list[str]:
@@ -377,6 +448,7 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             return "candidate_review_running n=1 (single-flight lock)"
 
         reviewer_canaries.evaluate_finished(conn)
+        apply_reviewer_rejections(conn)
         if reviewer_canaries.reviewer_paused(conn) and not force:
             out = (
                 "paused_lenient_reviewer: the reviewer accepted known-bad canary "

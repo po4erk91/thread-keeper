@@ -150,6 +150,37 @@ def test_run_extract_pass_picks_up_user_want_pattern(tmp_path, monkeypatch):
     assert "verbatim" in kinds, f"got kinds: {kinds}"
 
 
+def test_run_extract_pass_harvests_unresolved_dialog_in_its_own_scope(tmp_path, monkeypatch):
+    """Most transcripts are stored unresolved; the owner's loop still reads
+    them, and each candidate keeps the scope of the dialog it came from."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    want = ("I want you to always verify the state transition, not just the "
+            "destination label being visible, before you call it fixed.")
+    other = "prj_bbbbbbbbbbbbbbbbbbbb"
+    conn.executemany(
+        "INSERT INTO dialog_messages (uuid, source, session_id, role, content, "
+        "created_at, project_id, memory_scope) VALUES (?, 'claude-code', ?, 'user', ?, ?, ?, ?)",
+        [
+            ("u-unresolved", "sess-u", want, now - 60, None, "unresolved"),
+            ("u-other", "sess-o", want + " Other project.", now - 50, other, "project"),
+        ],
+    )
+    conn.commit()
+
+    assert "ok" in pkg["extract_daemon"].run_extract_pass(force=True)
+
+    scopes = {
+        (r["source_uuid"], r["memory_scope"], r["project_id"])
+        for r in conn.execute(
+            "SELECT source_uuid, memory_scope, project_id FROM extract_candidates"
+        )
+    }
+    assert ("u-unresolved", "unresolved", None) in scopes
+    assert ("u-other", "project", other) in scopes
+
+
 def test_run_extract_pass_covers_gap_and_late_ingest(tmp_path, monkeypatch):
     """The ingest-order cursor keeps both kinds of stragglers (issue #69):
     messages landing between ticks (interval > window) AND late-ingested rows

@@ -317,6 +317,59 @@ def test_collect_window_caps_long_messages(tmp_path, monkeypatch):
     assert "…" in dump
 
 
+def test_collect_window_stops_at_char_budget_and_keeps_the_rest(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    shadow = pkg["shadow_review"]
+    monkeypatch.setattr(shadow, "SHADOW_REVIEW_MAX_CHARS", 4000)
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    for index in range(6):
+        _seed_dialog(conn, "user", f"turn-{index} " + "y" * 1400, now - 60 + index)
+    conn.commit()
+    rowids = [r[0] for r in conn.execute("SELECT rowid FROM dialog_messages ORDER BY rowid")]
+
+    first, high_water, _, _ = shadow._collect_window(conn, 0, 3600)
+
+    assert len(first) <= 4000
+    assert "turn-0" in first and "turn-1" in first and "turn-2" not in first
+    assert high_water == rowids[1]
+    rest = []
+    while high_water < rowids[-1]:
+        dump, high_water, _, _ = shadow._collect_window(conn, high_water, 3600)
+        assert dump and len(dump) <= 4000
+        rest.append(dump)
+    assert all(f"turn-{index}" in "".join(rest) for index in range(2, 6))
+
+
+def test_collect_window_reads_unresolved_dialog_only_in_the_owner_process(tmp_path, monkeypatch):
+    from threadkeeper.memory_access import MemoryAccess
+
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    shadow = pkg["shadow_review"]
+    conn = pkg["db"].get_db()
+    now = int(time.time())
+    conn.executemany(
+        "INSERT INTO dialog_messages (uuid, source, session_id, role, content, "
+        "created_at, project_id, memory_scope) VALUES (?, 'claude-code', ?, 'user', ?, ?, ?, ?)",
+        [
+            ("u-unresolved", "sess-u", "unresolved dialog turn", now - 30, None, "unresolved"),
+            ("u-other", "sess-o", "other project dialog turn", now - 20,
+             "prj_bbbbbbbbbbbbbbbbbbbb", "project"),
+        ],
+    )
+    conn.commit()
+
+    owner_dump, _, _, _ = shadow._collect_window(conn, 0, 3600)
+    assert "unresolved dialog turn" in owner_dump
+    assert "other project dialog turn" in owner_dump
+
+    import threadkeeper.memory_access as memory_access
+    monkeypatch.setattr(memory_access, "current_access",
+                        lambda: MemoryAccess("propose", "prj_aaaaaaaaaaaaaaaaaaaa"))
+    child_dump, _, _, _ = shadow._collect_window(conn, 0, 3600)
+    assert child_dump == ""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # run_shadow_pass: dispatch logic
 # ──────────────────────────────────────────────────────────────────────

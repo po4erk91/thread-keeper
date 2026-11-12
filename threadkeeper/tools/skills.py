@@ -49,6 +49,7 @@ from ..config import (
     SKILL_ACTIVE_CAP,
     SKILL_CREATE_MIN_SESSIONS,
     SKILL_DUPLICATE_THRESHOLD,
+    SKILL_LESSON_OVERLAP_THRESHOLD,
     SKILL_PATCH_CAP_WITHOUT_USE,
     SKILL_PROJECT_TERMS,
     SKILL_QUALITY_GATES,
@@ -97,7 +98,10 @@ from ..consequential_state import (
 )
 from ..wikilinks import format_inbound_wikilinks, rewrite_inbound_wikilinks
 from ..skill_quality import added_text
-from ..skill_write_gates import GateSettings, SkillWrite, check_skill_write
+from ..skill_write_gates import (
+    REFERENCE_LINK, GateSettings, ReferenceFile, SkillWrite, check_skill_write,
+    is_reference_link,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -816,6 +820,7 @@ def _gate_settings() -> GateSettings:
         patch_cap=int(SKILL_PATCH_CAP_WITHOUT_USE),
         active_cap=int(SKILL_ACTIVE_CAP),
         skills_root=CLAUDE_SKILLS_DIR,
+        lesson_overlap_threshold=float(SKILL_LESSON_OVERLAP_THRESHOLD),
     )
 
 
@@ -823,6 +828,7 @@ def _quality_gate(
     action: str, name: str, added: str, full: str,
     request: "SkillWriteRequest | None", *, description: str = "",
     origin: str = "", history_checks: bool = True,
+    file: ReferenceFile | None = None,
 ) -> tuple[str, list[str]]:
     """(error, warnings) from the shared write gates; ('', []) when off."""
     if not SKILL_QUALITY_GATES:
@@ -833,10 +839,45 @@ def _quality_gate(
         project=req.project, evidence_sessions=req.evidence_sessions,
         patch_reason=req.patch_reason, evidence=req.evidence,
         new_despite=req.new_despite, force=req.force,
-        origin=origin or _writer_origin(),
+        origin=origin or _writer_origin(), file=file or ReferenceFile(),
     )
     result = check_skill_write(get_db(), write, _gate_settings(), history_checks=history_checks)
     return result.error, result.warnings
+
+
+def pending_skill_text(conn: sqlite3.Connection, name: str) -> str:
+    """Text that pending SKILL.md proposals (patch or edit) would add to ``name``."""
+    rows = conn.execute(
+        "SELECT arguments FROM memory_proposals WHERE status='pending' "
+        "AND tool_name='skill_manage' AND json_extract(arguments, '$.name')=? "
+        "AND json_extract(arguments, '$.action') IN ('patch','edit')",
+        (name,),
+    ).fetchall()
+    proposed = (json.loads(row[0]) for row in rows)
+    return "\n".join(
+        str(arguments.get("new_string") or arguments.get("content") or "")
+        for arguments in proposed
+    )
+
+
+def _reference_file(name: str, sub_path: str, pending_links: str = "") -> ReferenceFile:
+    """The write_file target as the reference-link gate sees it."""
+    clean = sub_path.strip().lstrip("/")
+    md = _skill_md_path(name)
+    skill_text = md.read_text(encoding="utf-8") if md.is_file() else ""
+    return ReferenceFile(
+        sub_path=clean,
+        new_file=not (_skill_dir(name) / clean).is_file(),
+        skill_links=skill_text + "\n" + pending_links,
+    )
+
+
+def _proposed_reference_file(conn: sqlite3.Connection, action: str, name: str,
+                             arguments: dict) -> ReferenceFile | None:
+    if action != "write_file":
+        return None
+    sub_path = str(arguments.get("sub_path") or "")
+    return _reference_file(name, sub_path, pending_skill_text(conn, name))
 
 
 def _with_warnings(result: str, warnings: list[str]) -> str:
@@ -1267,13 +1308,14 @@ def _queue_session_proposal(action: str, name: str, arguments: dict,
         return error
     if action in {"create", "edit"} and (err := _validate_skill_md(full, name)):
         return f"ERR validate_failed: {err}"
+    conn = get_db()
     gate_error, warnings = _quality_gate(
         action, name, added, full, request,
         description=arguments.get("description") or "", origin=FOREGROUND_ORIGIN,
+        file=_proposed_reference_file(conn, action, name, arguments),
     )
     if gate_error:
         return gate_error
-    conn = get_db()
     proposer = SESSION_PROPOSAL_PREFIX + (_detect_self_cid() or "session")
     cursor = conn.execute(
         "INSERT INTO memory_proposals "
@@ -1291,12 +1333,14 @@ def _queue_session_proposal(action: str, name: str, arguments: dict,
     )
 
 
-def proposal_quality_refusal(arguments: dict, origin: str) -> str:
+def proposal_quality_refusal(arguments: dict, origin: str,
+                             conn: sqlite3.Connection | None = None) -> str:
     """Store-free gates for a child's skill_manage proposal, run at queue time.
 
     A proposing child cannot read the full memory store, so repetition, use
     and cap gates wait for acceptance; the text gates run here so the child
-    can fix its write at once.
+    can fix its write at once. ``conn`` is the proposal queue connection: a
+    pending SKILL.md patch there may already point to a new reference file.
     """
     action = str(arguments.get("action") or "")
     name = str(arguments.get("name") or "").strip()
@@ -1309,10 +1353,11 @@ def proposal_quality_refusal(arguments: dict, origin: str) -> str:
         project=str(arguments.get("project") or ""),
         new_despite=str(arguments.get("new_despite") or ""),
     )
+    reference = _proposed_reference_file(conn, action, name, arguments) if conn else None
     gate_error, _warnings = _quality_gate(
         action, name, added, full, request,
         description=str(arguments.get("description") or ""),
-        origin=origin, history_checks=False,
+        origin=origin, history_checks=False, file=reference,
     )
     return gate_error
 
@@ -1570,9 +1615,8 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "",
         return f"ERR {reason}"
     if _screened_write(force) and (refusal := host_mutation_refusal(get_db(), updated)):
         return refusal
-    gate_error, warnings = _quality_gate(
-        "patch", name, added_text(old_string, new_string), updated, request,
-    )
+    added = added_text(old_string, new_string)
+    gate_error, warnings = _quality_gate("patch", name, added, updated, request)
     if gate_error:
         return gate_error
     conn = get_db()
@@ -1583,7 +1627,10 @@ def _action_patch(name: str, old_string: str, new_string: str, source: str = "",
     if not _stamp_skill_authority(conn, name, source):
         return "ERR authority_derivation_failed"
     _ensure_session(conn)
-    _emit_skill_event(conn, "skill_patch", name)
+    _emit_skill_event(
+        conn, "skill_patch", name,
+        REFERENCE_LINK if is_reference_link("patch", added) else "",
+    )
     if WRITE_ORIGIN == "curator":
         record_curator_action(
             conn,
@@ -1628,6 +1675,7 @@ def _action_write_file(name: str, sub_path: str, content: str, source: str = "",
     previous = target.read_text(encoding="utf-8") if target.is_file() else ""
     gate_error, warnings = _quality_gate(
         "write_file", name, added_text(previous, content), content, request,
+        file=_reference_file(name, sub_path),
     )
     if gate_error:
         return gate_error
