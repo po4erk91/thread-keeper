@@ -146,7 +146,14 @@ SKILL_WRITING_RULES = (
     "new_despite=<name> only when the task class really differs.\n"
     "  9. SKIP WHAT THE MODEL ALREADY KNOWS. Generic advice (\"write "
     "tests\", \"read the error first\") is not a skill. Keep only system- "
-    "or process-specific know-how a capable model would otherwise get wrong."
+    "or process-specific know-how a capable model would otherwise get wrong.\n"
+    "  10. DO NOT RESTATE A LESSON. Before a new skill or references/ file, "
+    "check lesson_list / lesson_neighbors: a rule that is already a lesson "
+    "stays there (patch the lesson if it is incomplete). Pass "
+    "new_despite=<lesson-slug> only when your text covers a different rule.\n"
+    "  11. LINK EVERY NEW REFERENCE. First patch SKILL.md with a line that "
+    "names references/<topic>.md and says when to read it, then write the "
+    "file. An unlinked reference file is never read."
 )
 
 

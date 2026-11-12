@@ -215,6 +215,32 @@ def recall_where(alias: str, *, current: str | None = None,
     return f"({normal}) AND ({cap})", (*params, *cap_params)
 
 
+def learning_input_where(alias: str) -> tuple[str, tuple[str, ...]]:
+    """SQL predicate for what a learning loop may read as input.
+
+    Ingest can tie only a few transcripts to a repository, so most of the
+    user's own dialog is stored ``unresolved``. The extract, shadow and
+    candidate-review loops run in the owner's trusted server process and read
+    every scope: whatever they derive keeps the source row's scope, or goes
+    into the global skill and lesson catalog, so no project's dialog becomes
+    another project's recallable memory. A spawned child never gets this
+    wider view; it keeps the recall predicate and its namespace cap.
+    """
+    from .memory_access import current_access
+    if current_access().child:
+        return recall_where(alias)
+    return f"{alias}.memory_scope IN ('project','global','shared','unresolved')", ()
+
+
+def same_scope_where(alias: str, memory_scope: str | None,
+                     project_id: str | None) -> tuple[str, tuple]:
+    """SQL predicate for rows stored in exactly the given scope."""
+    return (
+        f"{alias}.memory_scope=? AND {alias}.project_id IS ?",
+        (memory_scope or "unresolved", project_id),
+    )
+
+
 def format_provenance(memory_scope: str | None, project_id: str | None) -> str:
     """A visible, path-free provenance label for retrieval output."""
     if memory_scope == "project":

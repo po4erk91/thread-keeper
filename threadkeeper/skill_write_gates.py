@@ -32,6 +32,19 @@ GATED_ORIGINS = LEARNING_LOOP_ORIGINS | {"foreground"}
 
 
 @dataclass(frozen=True)
+class ReferenceFile:
+    """A write_file target and the SKILL.md text that must point to it.
+
+    ``skill_links`` also holds any pending proposed SKILL.md change, so a
+    proposing child can queue the pointer and the file together.
+    """
+
+    sub_path: str = ""
+    new_file: bool = False
+    skill_links: str = ""
+
+
+@dataclass(frozen=True)
 class SkillWrite:
     """One requested skill write, described for the gates."""
 
@@ -47,6 +60,7 @@ class SkillWrite:
     new_despite: str = ""
     force: bool = False
     origin: str = "foreground"
+    file: ReferenceFile = ReferenceFile()
 
     @property
     def loop(self) -> bool:
@@ -164,6 +178,58 @@ def _check_duplicates(conn: sqlite3.Connection, write: SkillWrite, threshold: fl
     )
 
 
+def _writes_rule_text(write: SkillWrite) -> bool:
+    """A new SKILL.md, or a references/ file, holds rules in prose."""
+    reference = write.action == "write_file" and write.file.sub_path.startswith("references/")
+    return write.action == "create" or reference
+
+
+def _check_lesson_overlap(write: SkillWrite, threshold: float, result: GateResult) -> None:
+    if threshold <= 0 or not _writes_rule_text(write):
+        return
+    from .tools.lessons import closest_lesson
+
+    match = closest_lesson(write.added)
+    if match is None:
+        return
+    slug, score = match
+    if score < threshold or write.new_despite.strip() == slug:
+        return
+    result.error = result.error or (
+        f"ERR skill_repeats_lesson lesson={slug} score={score:.2f}; that rule is "
+        "already a lesson. Leave it there and patch the lesson if it is "
+        f"incomplete, or read it and pass new_despite={slug} when this text "
+        "covers a different rule"
+    )
+
+
+def _check_reference_link(write: SkillWrite, result: GateResult) -> None:
+    target = write.file
+    new_reference = target.new_file and target.sub_path.startswith("references/")
+    if not new_reference or target.sub_path in target.skill_links:
+        return
+    result.refuse_or_warn(write, (
+        f"ERR skill_reference_unlinked sub_path={target.sub_path}; first patch "
+        "SKILL.md with a line that names this file and says when to read it, "
+        "then write the file. When both are proposals, accept the SKILL.md "
+        "change first"
+    ), overridable=True)
+
+
+# Event summary of a SKILL.md patch that only links reference files.
+REFERENCE_LINK = "reference_link"
+
+
+def is_reference_link(action: str, added: str) -> bool:
+    """A SKILL.md patch that adds nothing but pointers to references/ files.
+
+    Linking a new reference is the required first step of writing one, so it
+    needs no failure evidence and does not count against the patch cap.
+    """
+    lines = [line for line in added.splitlines() if line.strip()]
+    return action == "patch" and bool(lines) and all("references/" in line for line in lines)
+
+
 def _sessions_and_days(conn: sqlite3.Connection, refs: list[str]) -> tuple[set[str], set[str]]:
     sessions: set[str] = set()
     days: set[str] = set()
@@ -239,8 +305,9 @@ def patches_since_last_use(conn: sqlite3.Connection, name: str) -> int:
     """Skill writes recorded after the skill's most recent use."""
     row = conn.execute(
         "SELECT COUNT(*) FROM events WHERE target=? AND created_at>? AND kind IN "
-        "('skill_patch','skill_edit','skill_write_file')",
-        (name, _last_use(conn, name)),
+        "('skill_patch','skill_edit','skill_write_file') "
+        "AND coalesce(summary, '') != ?",
+        (name, _last_use(conn, name), REFERENCE_LINK),
     ).fetchone()
     return int(row[0] if row else 0)
 
@@ -294,6 +361,7 @@ class GateSettings:
     patch_cap: int
     active_cap: int
     skills_root: Path
+    lesson_overlap_threshold: float = 0.0
 
 
 def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
@@ -310,6 +378,7 @@ def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
         return result
     _check_history(write, result)
     _check_project(write, settings.project_terms, result)
+    _check_lesson_overlap(write, settings.lesson_overlap_threshold, result)
     if write.action == "create":
         _check_template(write, result)
         _check_duplicates(conn, write, settings.duplicate_threshold, result)
@@ -317,7 +386,8 @@ def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
             _check_repetition(conn, write, settings.min_sessions, result)
             _check_cap(conn, write, settings.active_cap, settings.skills_root, result)
         return result
-    if history_checks:
+    _check_reference_link(write, result)
+    if history_checks and not is_reference_link(write.action, write.added):
         _check_patch_evidence(conn, write, result)
         _check_patch_cap(conn, write, settings.patch_cap, result)
     if write.action in {"edit", "patch"}:

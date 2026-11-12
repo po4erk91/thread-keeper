@@ -7,6 +7,31 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: learning loops now see your dialog.** Most transcripts are stored
+  `unresolved` because ingest can tie only a few of them to a repository, and
+  the extract, shadow and candidate-review loops used the recall filter, so
+  they saw almost nothing. They now read every scope inside the server
+  process; spawned children keep their namespace cap. Whatever the loops
+  derive keeps the scope of the dialog it came from, or becomes a global
+  skill or lesson, so recall isolation between projects is unchanged.
+- **Fixed: the candidate reviewer can resolve its queue.** Its child has
+  `propose` access, and `accept_candidate` / `reject_candidate` used to be
+  denied. Both are proposals now. The loop applies the reviewer's rejections
+  itself at the start of the next pass; acceptances, skills and lessons wait
+  for `memory_proposal_decide`. Candidates with a proposal in flight, or a
+  declined acceptance, are not shown again. Canary checks ignore rejections
+  and count `accept_candidate` on a canary id as a failure.
+- **Fixed: the shadow window has a character budget.** One window carries at
+  most `THREADKEEPER_SHADOW_REVIEW_MAX_CHARS` (300,000) rendered characters,
+  and the cursor stops at the last included turn. A backlog no longer builds
+  a prompt that a CLI rejects.
+- **Added: two skill write gates.** A new skill or `references/` file that
+  restates a stored lesson is refused
+  (`THREADKEEPER_SKILL_LESSON_OVERLAP_THRESHOLD`, override with
+  `new_despite=<lesson-slug>`). A new `references/` file needs a pointer in
+  SKILL.md; a patch that only adds such pointers needs no evidence and does
+  not count toward the patch cap.
+
 ## v0.27.0 — 2026-11-12
 
 - **Added: skill use counted from every CLI.** Codex, Gemini/Antigravity and

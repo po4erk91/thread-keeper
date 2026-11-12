@@ -38,13 +38,15 @@ block written by `_setup.py`.
 from __future__ import annotations
 
 from array import array
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import math
 import re
 import sqlite3
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .._mcp import read_tool, write_tool
 from .. import identity
@@ -500,6 +502,49 @@ def _rank_items_lexically(
         ranked.append((item, len(shared) / len(base)))
     ranked.sort(key=lambda pair: (-pair[1], pair[0]["slug"]))
     return ranked
+
+
+def _rarity_weights(token_sets: list[set[str]]) -> dict[str, float]:
+    """Inverse document frequency of every word across ``token_sets``."""
+    counts = Counter(token for tokens in token_sets for token in tokens)
+    total = len(token_sets)
+    return {token: math.log((total + 1) / (count + 1)) + 1 for token, count in counts.items()}
+
+
+def _weighted_cosine(left: set[str], right: set[str],
+                     weight: Callable[[str], float]) -> float:
+    shared = sum(weight(token) ** 2 for token in left & right)
+    norm = math.sqrt(
+        sum(weight(token) ** 2 for token in left)
+        * sum(weight(token) ** 2 for token in right)
+    )
+    return shared / norm if norm else 0.0
+
+
+def closest_lesson(text: str) -> tuple[str, float] | None:
+    """(slug, score) of the stored lesson whose wording ``text`` repeats most.
+
+    The score is a word cosine weighted by rarity across the lesson store,
+    so shared rare words count most. Sentence embeddings here see only the
+    first sentences of a long text and rate a related lesson as high as a
+    restated one; shared rare words tell them apart.
+    """
+    query = _text_tokens(text)
+    lessons = list(iter_lessons())
+    if not query or not lessons:
+        return None
+    token_sets = [_text_tokens(item.get("body", "")) for item in lessons]
+    rarity = _rarity_weights(token_sets)
+    unseen = math.log(len(lessons) + 1) + 1
+
+    def weight(token: str) -> float:
+        return rarity.get(token, unseen)
+
+    score, slug = max(
+        (_weighted_cosine(query, tokens, weight), item["slug"])
+        for item, tokens in zip(lessons, token_sets)
+    )
+    return slug, score
 
 
 def _lexical_lesson_neighbors(

@@ -34,11 +34,12 @@ from typing import Optional
 from .config import (
     SHADOW_REVIEW_FLUSH_AGE_S,
     SHADOW_REVIEW_INTERVAL_S,
+    SHADOW_REVIEW_MAX_CHARS,
     SHADOW_REVIEW_MIN_CHARS,
     SHADOW_REVIEW_WINDOW_S,
 )
 from .db import get_db
-from .project_scope import recall_where
+from .project_scope import learning_input_where
 from .helpers import (
     alive,
     daemon_sleep,
@@ -301,10 +302,24 @@ def _strip_tool_noise(text: str) -> str:
 
 # Backfill safety: a post-downtime `_ingest_all` or a freshly-installed
 # adapter can land thousands of rows above the cursor in one tick. Cap how
-# many rows one window pulls so the evaluator prompt stays bounded; rows are
-# ordered by rowid ASC and the cursor advances to the last row in the batch,
-# so the next pass drains the remainder (no rows are dropped).
+# many rows one window pulls and how many rendered characters it carries, so
+# the evaluator prompt stays bounded; rows are ordered by rowid ASC and the
+# cursor advances only to the last row the window used, so the next pass
+# drains the remainder (no rows are dropped).
 _COLLECT_ROW_CAP = 4000
+_TURN_CHAR_CAP = 1500
+
+
+def _turn_body(content: str) -> str:
+    """Visible text of one turn, capped so one noisy block stays small."""
+    body = _strip_tool_noise(content or "")
+    return body[:_TURN_CHAR_CAP] + "…" if len(body) > _TURN_CHAR_CAP else body
+
+
+def _render_turn(row: sqlite3.Row, body: str) -> str:
+    sid = (row["session_id"] or "?")[:12]
+    day = time.strftime("%Y-%m-%d", time.gmtime(int(row["created_at"] or 0)))
+    return f"[{row['role']} @session={sid} day={day}]\n{body}\n"
 
 
 def _collect_window(conn: sqlite3.Connection,
@@ -316,7 +331,7 @@ def _collect_window(conn: sqlite3.Connection,
 
     Returns (dump_text, high_water_rowid, char_count, oldest_ts).
       - dump_text: human-readable rendering ready for the shadow prompt
-      - high_water_rowid: largest rowid seen (== floor for next tick)
+      - high_water_rowid: last rowid the window used (== floor for next tick)
       - char_count: total visible char length (input to MIN_CHARS guard)
       - oldest_ts: created_at of the oldest row contributing content (0 when
         none) — input to the accumulate-vs-flush decision for short windows
@@ -326,10 +341,15 @@ def _collect_window(conn: sqlite3.Connection,
     ABOVE the floor and is evaluated exactly once. On the first-ever pass
     (floor_rowid <= 0) the window is seeded to recent ingest via `window_s`
     so we don't replay the whole transcript history into one child.
+    The window stops before the turn that would take the rendered text past
+    SHADOW_REVIEW_MAX_CHARS; that turn and everything after it stay above the
+    returned high-water mark for the next pass.
 
     Mixes all NON-internal active sessions — that's the point. The
     shadow agent's review pool is global across the user's real
-    conversations, not the chatter of internal review children.
+    conversations, not the chatter of internal review children. That
+    includes unresolved transcripts: the child only proposes global skills
+    and lessons (see `learning_input_where`).
     """
     now = int(time.time())
     if floor_rowid <= 0:
@@ -337,7 +357,7 @@ def _collect_window(conn: sqlite3.Connection,
         # the lookback so a long-running install doesn't dump everything.
         floor_rowid = dialog_rowid_at_or_before(conn, now - max(1, window_s))
     exclusion_cte, exclusion_params = harvest_exclusion_cte()
-    dialog_scope, dialog_scope_params = recall_where("dialog_messages")
+    dialog_scope, dialog_scope_params = learning_input_where("dialog_messages")
     rows = conn.execute(
         exclusion_cte +
         "SELECT rowid, role, content, created_at, session_id "
@@ -355,27 +375,24 @@ def _collect_window(conn: sqlite3.Connection,
     if not rows:
         return ("", floor_rowid, 0, 0)
     lines: list[str] = []
-    char_count = 0
+    char_count = rendered = 0
     high_water = floor_rowid
     oldest_ts = 0
     for r in rows:
-        body = _strip_tool_noise(r["content"] or "")
+        body = _turn_body(r["content"])
         if not body:
             # Whole turn was tool noise — skip but still advance the
             # cursor (we don't want to re-evaluate this row next pass).
             high_water = max(high_water, int(r["rowid"]))
             continue
-        # Cap each turn at 1.5KB so a single noisy block doesn't blow
-        # the prompt budget. Most class-level signals are short.
-        if len(body) > 1500:
-            body = body[:1500] + "…"
+        entry = _render_turn(r, body)
+        if lines and rendered + len(entry) > SHADOW_REVIEW_MAX_CHARS:
+            break
+        rendered += len(entry) + 1
         char_count += len(body)
         high_water = max(high_water, int(r["rowid"]))
-        if not oldest_ts:
-            oldest_ts = int(r["created_at"] or 0)
-        sid = (r["session_id"] or "?")[:12]
-        day = time.strftime("%Y-%m-%d", time.gmtime(int(r["created_at"] or 0)))
-        lines.append(f"[{r['role']} @session={sid} day={day}]\n{body}\n")
+        oldest_ts = oldest_ts or int(r["created_at"] or 0)
+        lines.append(entry)
     return ("\n".join(lines), high_water, char_count, oldest_ts)
 
 

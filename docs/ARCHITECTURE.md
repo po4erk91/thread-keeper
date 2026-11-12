@@ -259,9 +259,19 @@ automatically recalled.
 Default retrieval predicates admit only the current `project` plus `global` and
 `shared`. `search(cross_project=True)` and `dialog_search(cross_project=True)`
 are visible overrides: each hit carries scope provenance and each call records
-an audit event. Brief resources and the extraction/dialectic learning inputs
-use the same default predicate, so a background loop cannot synthesize one
-project's private dialogs into another project's memory. The v5 migration
+an audit event. Brief resources and the dialectic learning inputs use the same
+default predicate.
+
+Ingest classifies a transcript only when its adapter label exactly matches the
+ingesting server's repository, so most dialog is stored `unresolved`. The
+extract, shadow and candidate-review loops read their input through
+`project_scope.learning_input_where()`: in the owner's server process it admits
+every scope; in a spawned child it is the recall predicate with the child's
+namespace cap. No loop can synthesize one project's private dialogs into another
+project's memory: extract candidates keep their source row's scope,
+`accept_candidate` materializes into that scope and deduplicates concepts only
+within it, and the shadow and candidate reviewers otherwise write only global
+skills and lessons through proposals. The v5 migration
 records per-table project/global/shared/unresolved counts in
 `project_scope_migration_report`; only task rows with still-resolvable working
 directories are automatically backfilled, while ambiguous legacy rows fail
@@ -677,7 +687,12 @@ moving the high-water forward; `force=True` bypasses this due gate.
   return `shadow_child_running ... (single-flight lock)` without advancing the
   dialog cursor, so the same useful window is retried after the active pass.
 - **candidate_reviewer** — once per `CANDIDATE_REVIEW_INTERVAL_S` (default
-  0 = off) reviews pending `extract_candidates` through one slim child. The
+  0 = off) reviews pending `extract_candidates` through one slim child with
+  `propose` access. `accept_candidate` and `reject_candidate` are proposable;
+  at the start of each pass the trusted loop applies pending rejections from
+  candidate-reviewer children (`apply_reviewer_rejections`), while accepts,
+  skills and lessons wait for `memory_proposal_decide`. The inventory skips
+  candidates with an open disposition or a declined acceptance. The
   queue is machine-wide single-flight through the shared helper's
   `candidate-reviewer.lock` plus running-task detection, preventing multiple
   foreground MCP servers from spawning duplicate reviewers for the same
@@ -1629,8 +1644,11 @@ every SHADOW_REVIEW_INTERVAL_S (default 0=off, typical prod 900s):
 1. _last_shadow_rowid(): ingest-order high-water mark from
    events.kind='shadow_review_pass'.target (a dialog_messages rowid, #69).
 2. _collect_window(): pull dialog_messages WHERE rowid > cursor (first-ever pass
-   seeds the floor from now-WINDOW_S) — ALL sessions, not just our own — then
-   apply the shared harvest lineage exclusion from `threadkeeper.harvest`.
+   seeds the floor from now-WINDOW_S) — ALL sessions and every scope, not just
+   our own — then apply the shared harvest lineage exclusion from
+   `threadkeeper.harvest`. The rendered window stops before the turn that would
+   pass SHADOW_REVIEW_MAX_CHARS (default 300,000); the returned high-water is the
+   last included turn, so a backlog drains over the next passes.
 3. if n_chars < MIN_CHARS (default 500): KEEP the cursor and exit ('too_short',
    edge-triggered event) so sparse dialog ACCUMULATES across ticks instead of
    being dropped one under-sized window at a time; once the window's oldest
@@ -1819,7 +1837,16 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   `SKILL_CREATE_MIN_SESSIONS` sessions or days; a loop patch passes
   `patch_reason` + `evidence`, and loop patches to a skill unused since its
   last patches stop at `SKILL_PATCH_CAP_WITHOUT_USE`; loop creates stop at
-  `SKILL_ACTIVE_CAP` local skills. `SKILL_QUALITY_GATES=0` turns the gates
+  `SKILL_ACTIVE_CAP` local skills. A new skill or `references/` file must not
+  restate a stored lesson: `tools.lessons.closest_lesson()` scores a
+  rarity-weighted word cosine against every lesson, and a score at or above
+  `SKILL_LESSON_OVERLAP_THRESHOLD` is refused unless `new_despite=<slug>`
+  (sentence embeddings could not tell a restated lesson from a related one).
+  A new `references/` file needs a pointer in SKILL.md; at queue time a
+  pending SKILL.md patch or edit proposal for the same skill counts, at
+  acceptance only the file on disk does. A patch that adds only such pointers
+  skips the evidence gate and is recorded as `reference_link`, which the patch
+  cap ignores. `SKILL_QUALITY_GATES=0` turns the gates
   off. A proposing child runs the store-free checks when its proposal is
   queued (`memory_access.propose`); the store checks run on acceptance.
   `_writer_origin()` resolves an accepted proposal to its proposer's origin
@@ -2910,6 +2937,7 @@ unsupported CLI overrides still fall through to the next priority, and
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 | shadow daemon tick; 0 disables |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow |
 | `THREADKEEPER_SHADOW_REVIEW_MIN_CHARS` | 500 | spawn threshold |
+| `THREADKEEPER_SHADOW_REVIEW_MAX_CHARS` | 300000 | rendered dialog characters per shadow window; the cursor stops at the last included turn |
 | `THREADKEEPER_SHADOW_REVIEW_FLUSH_AGE_S` | 21600 | review an under-min-chars window once its oldest message is this old (0 = accumulate until min_chars) |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 | candidate-reviewer daemon tick, restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
 | `THREADKEEPER_CANDIDATE_REVIEW_MIN` | 3 | min pending candidates before reviewer engages |

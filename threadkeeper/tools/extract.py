@@ -16,7 +16,7 @@ from ..helpers import fmt_age, q, gen_concept_id, gen_distill_id
 from .. import identity
 from ..identity import _ensure_session, _detect_self_cid, _emit
 from ..embeddings import _embed, embed_tag, _dialog_embedding_parts
-from ..project_scope import recall_where, resolve_write_scope
+from ..project_scope import learning_input_where, resolve_write_scope, same_scope_where
 from ..memory_compat import memory_provenance
 
 
@@ -159,7 +159,7 @@ def _fetch_extract_rows(
     )
     msg_noise_params = [p + "%" for p in _NOISE_CONTENT_PREFIXES]
     dialog_join, dialog_embedding = _dialog_embedding_parts(conn, "d")
-    dialog_scope, dialog_scope_params = recall_where("d")
+    dialog_scope, dialog_scope_params = learning_input_where("d")
     return conn.execute(
         exclusion_cte +
         "SELECT d.rowid AS rowid, d.uuid, d.role, d.content, d.session_id, "
@@ -394,7 +394,7 @@ def accept_candidate(id: int, target_kind: str = "",
     target_kind overrides candidate's kind. thread_id optional."""
     conn = get_db()
     _ensure_session(conn)
-    candidate_scope, candidate_params = recall_where("extract_candidates")
+    candidate_scope, candidate_params = learning_input_where("extract_candidates")
     r = conn.execute(
         f"SELECT * FROM extract_candidates WHERE id=? AND {candidate_scope}",
         (int(id), *candidate_params),
@@ -442,7 +442,10 @@ def accept_candidate(id: int, target_kind: str = "",
         # existing concept (bumps last_evidence_at) rather than inserting a
         # near-duplicate row — same gate as register_concept.
         from .concepts import _find_duplicate_concept, _bump_concept_evidence
-        dup = _find_duplicate_concept(conn, content)
+        dup = _find_duplicate_concept(
+            conn, content,
+            scope=same_scope_where("concepts", r["memory_scope"], r["project_id"]),
+        )
         if dup:
             _bump_concept_evidence(conn, dup, "low", r["rationale"])
             placed = f"concept id={dup} bumped=1"
@@ -493,25 +496,28 @@ def accept_candidate(id: int, target_kind: str = "",
 @write_tool(idempotent=True)
 def reject_candidate(id: int, reason: str = "") -> str:
     """Mark rejected. Reason appended to rationale for heuristic tuning."""
-    conn = get_db()
+    return reject_pending_candidate(get_db(), int(id), reason)
+
+
+def reject_pending_candidate(conn, candidate_id: int, reason: str = "") -> str:
+    """Reject one pending candidate on ``conn`` and commit."""
     _ensure_session(conn)
     r = conn.execute(
         "SELECT id, rationale, status FROM extract_candidates WHERE id=?",
-        (int(id),),
+        (candidate_id,),
     ).fetchone()
     if not r:
-        return f"ERR candidate_not_found={id}"
+        return f"ERR candidate_not_found={candidate_id}"
     if r["status"] != "pending":
         return f"ERR not_pending status={r['status']}"
-    now = int(time.time())
     new_r = r["rationale"] or ""
     if reason:
         new_r = (new_r + f" | rejected: {reason}").lstrip(" |")[:500]
     conn.execute(
         "UPDATE extract_candidates SET status='rejected', decided_at=?, "
         "rationale=? WHERE id=?",
-        (now, new_r, int(id)),
+        (int(time.time()), new_r, candidate_id),
     )
-    _emit(conn, "reject_candidate", target=str(id), summary=reason)
+    _emit(conn, "reject_candidate", target=str(candidate_id), summary=reason)
     conn.commit()
-    return f"ok rejected #{id}"
+    return f"ok rejected #{candidate_id}"
