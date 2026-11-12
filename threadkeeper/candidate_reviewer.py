@@ -41,6 +41,7 @@ import threading
 import time
 
 from .config import (
+    CANDIDATE_REVIEW_CANARY_EVERY,
     CANDIDATE_REVIEW_FLUSH_AGE_S,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
@@ -51,6 +52,7 @@ from .project_scope import recall_where
 from .helpers import daemon_sleep, single_flight_lock
 from . import daemon_state, identity
 from .review_prompts import SKILL_WRITING_RULES
+from . import reviewer_canaries
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +342,11 @@ def _review_spawn_lock():
 # Synchronous pass + daemon loop
 # ──────────────────────────────────────────────────────────────────────
 
+def _canaries_for_this_pass(conn: sqlite3.Connection) -> list:
+    due, number = reviewer_canaries.canary_due(conn, int(CANDIDATE_REVIEW_CANARY_EVERY))
+    return reviewer_canaries.canaries_for_pass(number) if due else []
+
+
 def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
     """Execute one candidate review pass synchronously.
 
@@ -368,6 +375,16 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
         if not locked:
             return "candidate_review_running n=1 (single-flight lock)"
 
+        reviewer_canaries.evaluate_finished(conn)
+        if reviewer_canaries.reviewer_paused(conn) and not force:
+            out = (
+                "paused_lenient_reviewer: the reviewer accepted known-bad canary "
+                "candidates twice in a row; run candidate_review_run(force=True) "
+                "after fixing its prompt or model"
+            )
+            _record_review_pass(conn, now, out)
+            return out
+
         running = _running_reviewer_children(conn)
         if running:
             out = f"candidate_review_running n={len(running)} (single-flight)"
@@ -393,6 +410,9 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             # min-count gate until the 30-day stale window silently drops
             # them — review the undersized queue anyway.
 
+        canaries = _canaries_for_this_pass(conn)
+        if canaries:
+            inventory += "\n" + "\n".join(reviewer_canaries.inventory_lines(conn, canaries))
         active_skills = _active_skills_dump(conn)
         # The harvested candidate `content` snippets are untrusted observed
         # dialog (issue #76) — fence them as data. The active-skills list
@@ -447,6 +467,8 @@ def run_review_pass(force: bool = False, *, scheduled: bool = False) -> str:
             conn, now,
             f"spawned pending={n_pending} :: {spawn_result.text[:140]}",
         )
+        if canaries and spawn_result.task_id:
+            reviewer_canaries.record_canary_pass(conn, spawn_result.task_id, canaries)
         return spawn_result.text
 
 

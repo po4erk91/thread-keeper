@@ -23,6 +23,7 @@ from .config import (
     CURATOR_CALIPER_CLEANUP_TIMEOUT_S,
     CURATOR_CALIPER_DIR,
     CURATOR_CALIPER_MODEL,
+    SKILL_VALUE_CHECK,
 )
 from .curator_snapshots import VERIFY_BATCH_ENV, current_snapshot_dir, snapshots_root
 from .helpers import single_flight_lock
@@ -102,7 +103,27 @@ def context_revision(conn: sqlite3.Connection, name: str, skill: Path) -> str | 
     return context["revision"] if context else None
 
 
-def scheduled_suites(names: list[str]) -> set[str]:
+VALUE_CHECK_ORIGINS = frozenset({"background_review", "candidate_review", "shadow_review"})
+
+
+def value_check_target(conn: sqlite3.Connection, name: str) -> bool:
+    """A new, unproven learning-loop skill that must show it adds something.
+
+    With SKILL_VALUE_CHECK on, Caliper compares the model with and without
+    such a skill. When the model already passes every case without it, the
+    skill makes no measurable difference and the verifier may remove it.
+    """
+    if not SKILL_VALUE_CHECK:
+        return False
+    row = conn.execute(
+        "SELECT tier, created_by_origin FROM skill_usage WHERE name=?", (name,),
+    ).fetchone()
+    return bool(row) and row["tier"] == "hypothesis" and row["created_by_origin"] in VALUE_CHECK_ORIGINS
+
+
+def scheduled_suites(names: list[str], priority: frozenset[str] = frozenset()) -> set[str]:
+    """Skills to check this pass: value-check targets first, then the ones
+    that waited longest."""
     eligible = dict.fromkeys(names, 0.0)
     if not eligible:
         return set()
@@ -113,7 +134,8 @@ def scheduled_suites(names: list[str]) -> set[str]:
                 eligible[name] = max(eligible[name], marker.stat().st_mtime)
             except OSError:
                 continue
-    return set(sorted(eligible, key=lambda name: (eligible[name], name))[:MAX_RUNS_PER_PASS])
+    ordered = sorted(eligible, key=lambda name: (name not in priority, eligible[name], name))
+    return set(ordered[:MAX_RUNS_PER_PASS])
 
 
 def _scenario_task(case: dict, axis: str) -> dict:
@@ -303,12 +325,15 @@ def _redundancy_proved(evidence: dict) -> bool:
     )
 
 
-def _decision_matches(evidence: dict, action: str, candidate: str) -> bool:
+def _decision_matches(evidence: dict, action: str, candidate: str,
+                      value_check: bool = False) -> bool:
     decision = evidence["decision"]
     if action == "edit":
         return decision == "repair" and evidence["candidate_digest"] == _digest(candidate.encode())
+    no_benefit = decision == "keep" and _redundancy_proved(evidence)
     return decision == "remove" or (
-        action == "retire_rule" and decision == "keep" and _redundancy_proved(evidence)
+        action in {"retire_rule", "delete"} and no_benefit
+        and (action == "retire_rule" or value_check)
     )
 
 
@@ -333,7 +358,10 @@ def mutation_refusal(
                 and evidence["skill_digest"] == current_digest
                 and evidence["context_digest"] == revision
                 and evidence["suite_digest"] == _digest((directory / f"{name}.suite.json").read_bytes())
-                and _decision_matches(evidence, action, candidate)
+                and _decision_matches(
+                    evidence, action, candidate,
+                    value_check=action == "delete" and value_check_target(conn, name),
+                )
             ):
                 return ""
         except (OSError, ValueError, KeyError, TypeError):

@@ -11,6 +11,7 @@ gate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import sqlite3
 import time
 
@@ -181,18 +182,24 @@ def _check_repetition(conn: sqlite3.Connection, write: SkillWrite, minimum: int,
         result.warnings.append(message.replace("ERR ", "warn ", 1))
 
 
-def _active_skill_count(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM skill_usage WHERE state='active' "
+def active_local_skills(conn: sqlite3.Connection, root: Path) -> list[str]:
+    """Active production skills installed in the primary root.
+
+    Plugin skills and names only seen in telemetry do not count: the cap is
+    about the descriptions thread-keeper itself adds to every session.
+    """
+    rows = conn.execute(
+        "SELECT name FROM skill_usage WHERE state='active' "
         "AND classification='production' AND availability='available'"
-    ).fetchone()
-    return int(row[0] if row else 0)
+    ).fetchall()
+    return [row["name"] for row in rows if (root / row["name"] / "SKILL.md").is_file()]
 
 
-def _check_cap(conn: sqlite3.Connection, write: SkillWrite, cap: int, result: GateResult) -> None:
+def _check_cap(conn: sqlite3.Connection, write: SkillWrite, cap: int, root: Path,
+               result: GateResult) -> None:
     if cap <= 0:
         return
-    active = _active_skill_count(conn)
+    active = len(active_local_skills(conn, root))
     if active < cap:
         return
     message = (
@@ -270,6 +277,7 @@ class GateSettings:
     min_sessions: int
     patch_cap: int
     active_cap: int
+    skills_root: Path
 
 
 def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
@@ -289,7 +297,7 @@ def check_skill_write(conn: sqlite3.Connection, write: SkillWrite,
         _check_duplicates(conn, write, settings.duplicate_threshold, result)
         if history_checks:
             _check_repetition(conn, write, settings.min_sessions, result)
-            _check_cap(conn, write, settings.active_cap, result)
+            _check_cap(conn, write, settings.active_cap, settings.skills_root, result)
         return result
     if history_checks:
         _check_patch_evidence(conn, write, result)

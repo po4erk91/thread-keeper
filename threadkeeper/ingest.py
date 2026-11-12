@@ -25,6 +25,7 @@ from .config import (
 )
 from .db import get_db
 from .embeddings import _embed, embed_tag
+from .skill_outcomes import classify_pending_outcomes
 
 _ingest_thread: Optional[threading.Thread] = None
 _initial_ingest_thread: Optional[threading.Thread] = None
@@ -1099,6 +1100,9 @@ def _start_background_ingester() -> None:
                             max_msgs=200,
                             max_age_s=_ingest_recent_window_s,
                         )
+                        # Mark settled skill uses helped or corrected from
+                        # the user turns that followed them.
+                        classify_pending_outcomes(bg_conn)
                         # Embed a bounded slice of NULL rows. On migrated DBs
                         # this runs under applying_guard so derived embedding
                         # UPDATEs never become LWW sync writes; the sync helper
@@ -1141,6 +1145,7 @@ def _start_initial_ingest() -> None:
                 _ingest_all(conn, max_msgs=INGEST_CAP_PER_CALL)
                 _backfill_dialog_fts_if_empty(conn)
                 backfill_cli_skill_signals(conn)
+                classify_pending_outcomes(conn)
             finally:
                 conn.close()
 

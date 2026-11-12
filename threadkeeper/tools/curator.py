@@ -365,17 +365,22 @@ def skill_validate(name: str = "", include_archived: bool = True,
     mirror hashes, local-link findings, exact duplicates, and semantic
     candidates involving that skill. Curator must call this after every skill
     mutation. Without `name`, returns a compact complete numbered inventory.
-    Semantic candidates are leads, never automatic delete decisions.
+    Semantic candidates (shared words) and semantic duplicates (embedding
+    similarity at or above SKILL_DUPLICATE_THRESHOLD) are leads, never
+    automatic delete decisions. Findings also flag quality defects
+    (`quality:history_noise`, `quality:wikilinks`, `quality:split_candidate`,
+    `quality:project_examples`) and drift (`stale:missing_path`,
+    `stale:unknown_tool`, `stale:missing_command`, `stale:version_pin`).
     Pass include_fixtures=True to include hidden validation fixtures.
     """
     conn = get_db()
     _ensure_session(conn)
     manifest = build_skill_audit(conn, include_archived=include_archived,
-                                include_fixtures=include_fixtures)
+                                include_fixtures=include_fixtures, semantic=True)
     reconciled = reconcile_source_availability(conn, manifest["skills"])
     if reconciled:
         manifest = build_skill_audit(conn, include_archived=include_archived,
-                                    include_fixtures=include_fixtures)
+                                    include_fixtures=include_fixtures, semantic=True)
     requested = name.strip()
     if requested:
         record = next(
@@ -392,6 +397,10 @@ def skill_validate(name: str = "", include_archived: bool = True,
             pair for pair in manifest["semantic_candidates"]
             if requested in {pair["left"], pair["right"]}
         ]
+        duplicates = [
+            pair for pair in manifest["semantic_duplicates"] or []
+            if requested in {pair["left"], pair["right"]}
+        ]
         return json.dumps(
             {
                 "schema_version": manifest["schema_version"],
@@ -399,6 +408,7 @@ def skill_validate(name: str = "", include_archived: bool = True,
                 "reconciled": requested in reconciled,
                 "exact_duplicate_groups": exact,
                 "semantic_candidates": candidates,
+                "semantic_duplicates": duplicates,
             },
             ensure_ascii=False,
             indent=2,
@@ -429,6 +439,7 @@ def skill_validate(name: str = "", include_archived: bool = True,
             "skills": rows,
             "exact_duplicate_groups": manifest["exact_duplicate_groups"],
             "semantic_candidates": manifest["semantic_candidates"],
+            "semantic_duplicates": manifest["semantic_duplicates"],
         },
         ensure_ascii=False,
         indent=2,

@@ -21,6 +21,7 @@ from ..candidate_reviewer import (
     run_review_pass,
 )
 from ..config import (
+    CANDIDATE_REVIEW_CANARY_EVERY,
     CANDIDATE_REVIEW_INTERVAL_S,
     CANDIDATE_REVIEW_MIN,
 )
@@ -92,4 +93,18 @@ def candidate_review_status() -> str:
             age = now - int(ts) if ts else 0
             snip = (r["summary"] or "")[:120]
             lines.append(f"  {age}s_ago  {snip}")
+    lines.append(_canary_status(conn))
     return "\n".join(lines)
+
+
+def _canary_status(conn) -> str:
+    """Reviewer self-audit: recent canary verdicts and pause state."""
+    from ..reviewer_canaries import recent_results, reviewer_paused
+
+    try:
+        results = recent_results(conn, limit=5)
+        paused = reviewer_paused(conn)
+    except Exception:
+        return "canaries: unavailable"
+    shown = ",".join(results) or "none_yet"
+    return f"canaries: every={CANDIDATE_REVIEW_CANARY_EVERY} recent={shown} paused={int(paused)}"

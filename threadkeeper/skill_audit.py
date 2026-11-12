@@ -749,21 +749,100 @@ def _record_for(
     return record
 
 
+def _registered_tools() -> set[str] | None:
+    try:
+        from ._mcp import mcp
+
+        return set(mcp._tool_manager._tools)
+    except (ImportError, AttributeError):
+        return None
+
+
+def _skill_project(fields: dict) -> str:
+    metadata = fields.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("threadkeeper-project") or "").strip()
+
+
+def _quality_detail(content: str, known_tools: set[str] | None,
+                    project_terms: tuple[str, ...]) -> dict[str, list[str]]:
+    """Deterministic quality and staleness checks for one SKILL.md."""
+    from . import skill_quality as quality
+
+    fields, body, _error = _frontmatter(content)
+    projects = [] if _skill_project(fields) else quality.project_mentions(body, project_terms)
+    return {
+        "history_noise": quality.history_noise(body),
+        "wikilinks": quality.wikilinks(body),
+        "split_candidate": quality.split_candidate(body),
+        "project_examples": projects,
+        "stale": quality.stale_references(body, known_tools),
+    }
+
+
+def _attach_quality(record: dict, known_tools: set[str] | None,
+                    project_terms: tuple[str, ...]) -> None:
+    source = record.get("source_path")
+    if not source or record.get("source_kind") == "external_plugin":
+        return
+    try:
+        content = Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return
+    detail = _quality_detail(content, known_tools, project_terms)
+    record["quality"] = detail
+    flags = [f"quality:{kind}" for kind in (
+        "history_noise", "wikilinks", "split_candidate", "project_examples",
+    ) if detail[kind]]
+    record["findings"] = sorted(set(record["findings"]) | set(flags) | set(detail["stale"]))
+
+
+def _attach_contribution(conn: sqlite3.Connection, record: dict) -> None:
+    from .skill_outcomes import contribution
+
+    value = contribution(conn, record["name"])
+    record["telemetry"]["helpful"] = value.helpful
+    record["telemetry"]["harmful"] = value.harmful
+
+
+def _semantic_duplicates(records: list[dict], threshold: float) -> list[dict] | None:
+    from .skill_catalog import CatalogEntry, duplicate_pairs
+
+    entries = [
+        CatalogEntry(record["name"], record.get("description") or "", "local", bool(record["protected"]), 0)
+        for record in records
+        if record.get("source_path") and record.get("state") in {"active", "stale", "untracked"}
+    ]
+    return duplicate_pairs(entries, threshold)
+
+
 def build_skill_audit(
     conn: sqlite3.Connection,
     *,
     include_archived: bool = True,
     include_fixtures: bool = False,
+    semantic: bool = False,
 ) -> dict:
-    """Return the complete deterministic audit manifest as JSON data."""
+    """Return the complete deterministic audit manifest as JSON data.
+
+    ``semantic=True`` adds embedding-based duplicate pairs; it needs the
+    embedding model, so the cheap inventory fingerprint leaves it off.
+    """
+    from .config import SKILL_DUPLICATE_THRESHOLD, SKILL_PROJECT_TERMS
+
     telemetry = _telemetry_rows(conn, include_archived)
     roots = _configured_roots()
     external_index = _external_skill_index()
+    known_tools = _registered_tools()
     records = [
         _record_for(name, telemetry.get(name), roots, external_index)
         for name in _managed_names(telemetry)
         if include_fixtures or telemetry.get(name, {}).get("classification") != "fixture"
     ]
+    for record in records:
+        _attach_quality(record, known_tools, tuple(SKILL_PROJECT_TERMS))
+        _attach_contribution(conn, record)
     exact_groups: dict[str, list[str]] = defaultdict(list)
     for record in records:
         digest = record.get("normalized_body_sha256")
@@ -798,6 +877,9 @@ def build_skill_audit(
         "skills": records,
         "exact_duplicate_groups": exact_duplicates,
         "semantic_candidates": _candidate_pairs(records),
+        "semantic_duplicates": (
+            _semantic_duplicates(records, float(SKILL_DUPLICATE_THRESHOLD)) if semantic else None
+        ),
         "semantic_warning": (
             "Candidates are lexical pre-screening only. Curator must read every "
             "complete skill, compare intent/outcomes, and use current web research."
@@ -923,6 +1005,8 @@ def format_skill_checklist(manifest: dict) -> str:
             f"uses={telemetry.get('use_count') or 0} "
             f"views={telemetry.get('view_count') or 0} "
             f"maintenance_patches={telemetry.get('patch_count') or 0} "
+            f"helpful={telemetry.get('helpful') or 0} "
+            f"harmful={telemetry.get('harmful') or 0} "
             f"created={created_age}d_ago "
             f"source_kind={record['source_kind']} "
             f"source={record['source_path'] or '-'} findings={flags}"

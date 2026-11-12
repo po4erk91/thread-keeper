@@ -92,7 +92,7 @@ from .curator_snapshots import (
     create_curator_snapshot,
     write_verify_scope,
 )
-from .curator_skill_eval import context_revision, scheduled_suites
+from .curator_skill_eval import context_revision, scheduled_suites, value_check_target
 from .skill_audit import (
     build_skill_audit,
     format_skill_checklist,
@@ -319,6 +319,9 @@ MERGE/DELETE safety:
     Explain the failing behaviour and propose a concrete repair when possible.
     For a skill marked [CALIPER_CHECK], add a CHECK skill proposal even if
     static review found no defect. Skip pinned or external skills.
+    A skill marked [CALIPER_VALUE_CHECK] is a new learning-loop skill: add a
+    CHECK proposal that removes it if the model already handles its task
+    without it (no measurable difference).
     A structural fix to a skill marked [CALIPER_CONTEXT] or [CALIPER_CHECK]
     also goes to VERIFY so the proposed SKILL.md can be tested before editing.
   • Use RETIRE RULE for a score of 1 or 2 when the skill contains a single
@@ -573,6 +576,11 @@ FOR EACH PROPOSAL, in order:
   When Caliper is enabled, run it before scoring or changing the skill. Accept
   only a remove verdict or no_measured_benefit=true. If Caliper is disabled,
   use the complete skill and lesson as the structural evidence.
+
+  VALUE CHECK: for a skill marked [CALIPER_VALUE_CHECK], a keep verdict with
+  no_measured_benefit=true means the model passes every case without the
+  skill. Remove it with skill_manage(action='delete', name=...) and record
+  "no measurable difference" as the reason. Keep it on any other verdict.
   If the final score is 1 or 2, record the planned reason, then call
   skill_manage(action='delete', name=..., usefulness_score=...,
   deletion_reason=..., rule_lesson_slug=..., rule_excerpt=...). Supply the
@@ -2484,6 +2492,12 @@ def _format_merge_verdict(row: dict[str, str]) -> str:
     )
 
 
+def _caliper_label(name: str, scheduled: set[str], value_targets: frozenset[str]) -> str:
+    if name not in scheduled:
+        return " [CALIPER_CONTEXT]"
+    return " [CALIPER_VALUE_CHECK]" if name in value_targets else " [CALIPER_CHECK]"
+
+
 def _format_skill(row: dict) -> str:
     """One inventory line per recently-touched skill row from
     skill_usage. Foreground/unknown-origin and pinned skills are PROTECTED."""
@@ -2626,10 +2640,10 @@ def _collect_inventory_entry_groups(
             and record["source_path"]
             and context_revision(conn, record["name"], Path(record["source_path"]).parent)
         ]
-        scheduled = scheduled_suites(eligible)
+        value_targets = frozenset(name for name in eligible if value_check_target(conn, name))
+        scheduled = scheduled_suites(eligible, value_targets)
         caliper_labels = {
-            name: " [CALIPER_CHECK]" if name in scheduled else " [CALIPER_CONTEXT]"
-            for name in eligible
+            name: _caliper_label(name, scheduled, value_targets) for name in eligible
         }
         skill_entries = [
             _InventoryEntry(

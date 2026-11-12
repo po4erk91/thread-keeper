@@ -52,6 +52,7 @@ from ..config import (
     SKILL_PATCH_CAP_WITHOUT_USE,
     SKILL_PROJECT_TERMS,
     SKILL_QUALITY_GATES,
+    SKILL_RETIRE_MIN_HARMFUL,
     WRITE_ORIGIN,
 )
 from ..authority import (
@@ -814,6 +815,7 @@ def _gate_settings() -> GateSettings:
         min_sessions=int(SKILL_CREATE_MIN_SESSIONS),
         patch_cap=int(SKILL_PATCH_CAP_WITHOUT_USE),
         active_cap=int(SKILL_ACTIVE_CAP),
+        skills_root=CLAUDE_SKILLS_DIR,
     )
 
 
@@ -1993,8 +1995,11 @@ def skill_list(include_archived: bool = False, include_fixtures: bool = False) -
     on each pass, so counting a listing would make every skill look recently
     consulted and nothing could ever go stale.
     Fixtures are hidden unless include_fixtures=True, independently of
-    include_archived.
+    include_archived. ``helpful`` counts clean foreground uses; ``harmful``
+    counts uses the user corrected right after, plus 'wrong' reports.
     """
+    from ..skill_outcomes import contribution
+
     conn = get_db()
     _ensure_session(conn)
     if include_archived:
@@ -2044,6 +2049,7 @@ def skill_list(include_archived: bool = False, include_fixtures: bool = False) -
             if "wrong_count" in r.keys() and r["wrong_count"] is not None
             else 0
         )
+        value = contribution(conn, r["name"])
         out.append(
             f"{r['name']} tier={tier} origin={r['created_by_origin']} "
             f"state={r['state']} availability={r['availability']} "
@@ -2051,6 +2057,7 @@ def skill_list(include_archived: bool = False, include_fixtures: bool = False) -
             f"uses={r['use_count']} "
             f"fg_uses={fg_uses} views={r['view_count'] or 0} "
             f"patches={r['patch_count']} wrong={wrong_n} "
+            f"helpful={value.helpful} harmful={value.harmful} "
             f"pinned={r['pinned']} last_active={age}_ago "
             f"{review_warning(skill_review_categories(_skill_dir(r['name'])))}".rstrip()
         )
@@ -2127,6 +2134,95 @@ def _recent_active_skills_dump(
 # Curator
 # ──────────────────────────────────────────────────────────────────────────
 
+def _last_activity(row: sqlite3.Row) -> int:
+    return max(row["last_used_at"] or 0, row["last_viewed_at"] or 0, row["created_at"])
+
+
+def _row_tier(row: sqlite3.Row) -> str:
+    return row["tier"] if "tier" in row.keys() and row["tier"] else "hypothesis"
+
+
+def _transition(row: sqlite3.Row, to: str, reason: str) -> dict:
+    return {
+        "name": row["name"], "from": row["state"], "to": to,
+        "last": _last_activity(row), "tier": _row_tier(row), "reason": reason,
+    }
+
+
+def _stale_dwelled(row: sqlite3.Row, now: int, dwell_s: int) -> bool:
+    return bool(row["stale_since"]) and now - int(row["stale_since"]) >= dwell_s
+
+
+def _harmful_transition(row: sqlite3.Row, now: int, dwell_s: int) -> dict | None:
+    """A used skill followed by more corrections than clean uses retires.
+
+    Recent use does not bring it back: use is exactly what keeps failing.
+    """
+    if row["state"] == "active":
+        return _transition(row, "stale", "harmful")
+    if row["state"] == "stale" and _stale_dwelled(row, now, dwell_s):
+        return _transition(row, "archived", "harmful")
+    return None
+
+
+def _aging_transition(conn: sqlite3.Connection, row: sqlite3.Row, now: int,
+                      stale_after_days: int, archive_after_days: int) -> dict | None:
+    """The lifecycle step for one loop-created skill, or None."""
+    from ..skill_outcomes import contribution, is_harmful
+
+    tier = _row_tier(row)
+    # Hypothesis tier ages twice as fast — unproven skills can't linger.
+    scale = 0.5 if tier == "hypothesis" else 1.0
+    dwell_s = int((archive_after_days - stale_after_days) * 86400 * scale)
+    if is_harmful(contribution(conn, row["name"]), int(SKILL_RETIRE_MIN_HARMFUL)):
+        return _harmful_transition(row, now, dwell_s)
+    # Validated skills earned trust through foreground use without 'wrong'
+    # outcomes; inactivity alone never retires them.
+    if tier == "validated":
+        return None
+    last_activity = _last_activity(row)
+    stale_thresh = now - int(stale_after_days * 86400 * scale)
+    archive_thresh = now - int(archive_after_days * 86400 * scale)
+    state = row["state"]
+    if state == "stale" and last_activity >= stale_thresh:
+        return _transition(row, "active", "used_again")
+    if state == "active" and last_activity < stale_thresh:
+        return _transition(row, "stale", "unused")
+    if state == "stale" and last_activity < archive_thresh and _stale_dwelled(row, now, dwell_s):
+        return _transition(row, "archived", "unused")
+    return None
+
+
+CAP_QUIET_S = 7 * 86400
+
+
+def _over_cap_transitions(conn: sqlite3.Connection, rows: list[sqlite3.Row],
+                          plan: list[dict], now: int) -> list[dict]:
+    """Stale the lowest-contribution loop skills above SKILL_ACTIVE_CAP.
+
+    Only skills quiet for a week qualify, so a cap step never fights a skill
+    that people are using right now.
+    """
+    from ..skill_outcomes import contribution
+    from ..skill_write_gates import active_local_skills
+
+    cap = int(SKILL_ACTIVE_CAP)
+    if cap <= 0:
+        return []
+    leaving = {p["name"] for p in plan if p["from"] == "active" and p["to"] != "active"}
+    over = len(set(active_local_skills(conn, CLAUDE_SKILLS_DIR)) - leaving) - cap
+    if over <= 0:
+        return []
+    candidates = [
+        row for row in rows
+        if row["state"] == "active" and row["name"] not in leaving
+        and _row_tier(row) != "validated" and now - _last_activity(row) >= CAP_QUIET_S
+        and (CLAUDE_SKILLS_DIR / row["name"] / "SKILL.md").is_file()
+    ]
+    candidates.sort(key=lambda row: (contribution(conn, row["name"]).score, _last_activity(row)))
+    return [_transition(row, "stale", "over_cap") for row in candidates[:over]]
+
+
 @write_tool(destructive=True)
 def curator_run(stale_after_days: int = 30,
                 archive_after_days: int = 90,
@@ -2145,6 +2241,12 @@ def curator_run(stale_after_days: int = 30,
     the two windows in 'stale' before it is archived, and renewed activity
     moves a stale skill back to 'active'. Every new curator pass runs this
     with dry_run=False.
+
+    Contribution beats activity: a skill whose uses were followed by more
+    user corrections (plus 'wrong' reports) than clean uses — at least
+    SKILL_RETIRE_MIN_HARMFUL of them — goes stale and then archived even when
+    it is used often. Above SKILL_ACTIVE_CAP local skills, the lowest-
+    contribution loop skills that were quiet for a week go stale.
 
     Tier-aware adjustments (the discrete trust signal trumps raw activity):
       • tier='validated' skills are NEVER stale-aged or archived — proven
@@ -2184,38 +2286,10 @@ def curator_run(stale_after_days: int = 30,
 
     plan: list[dict] = []
     for r in rows:
-        last_activity = max(
-            r["last_used_at"] or 0, r["last_viewed_at"] or 0, r["created_at"],
-        )
-        cur_state = r["state"]
-        tier = r["tier"] if "tier" in r.keys() and r["tier"] else "hypothesis"
-
-        # Validated skills are off-limits: they earned trust through
-        # foreground use without 'wrong' outcomes. Curator must not
-        # second-guess that signal regardless of how quiet recent activity
-        # has been.
-        if tier == "validated":
-            continue
-
-        # Hypothesis tier ages twice as fast — unproven skills can't linger.
-        scale = 0.5 if tier == "hypothesis" else 1.0
-        stale_thresh = now - int(stale_after_days * 86400 * scale)
-        archive_thresh = now - int(archive_after_days * 86400 * scale)
-
-        stale_dwell = int((archive_after_days - stale_after_days) * 86400 * scale)
-        dwelled = bool(r["stale_since"]) and now - int(r["stale_since"]) >= stale_dwell
-        transition = ""
-        if cur_state == "stale" and last_activity >= stale_thresh:
-            transition = "active"
-        elif cur_state == "active" and last_activity < stale_thresh:
-            transition = "stale"
-        elif cur_state == "stale" and last_activity < archive_thresh and dwelled:
-            transition = "archived"
+        transition = _aging_transition(conn, r, now, stale_after_days, archive_after_days)
         if transition:
-            plan.append({
-                "name": r["name"], "from": cur_state, "to": transition,
-                "last": last_activity, "tier": tier,
-            })
+            plan.append(transition)
+    plan += _over_cap_transitions(conn, rows, plan, now)
 
     if not plan:
         return "nothing_to_do"
@@ -2225,7 +2299,7 @@ def curator_run(stale_after_days: int = 30,
         age = (now - p["last"]) // 86400
         lines.append(
             f"  {p['name']}: {p['from']} → {p['to']} "
-            f"(tier={p['tier']} last {age}d ago)"
+            f"(tier={p['tier']} last {age}d ago reason={p['reason']})"
         )
 
     if dry_run:
@@ -2249,7 +2323,7 @@ def curator_run(stale_after_days: int = 30,
                 shutil.move(str(src), str(dst))
             _unmirror_skill(p["name"])
         _emit(conn, "curator_transition", target=p["name"],
-              summary=f"{p['from']}→{p['to']} tier={p['tier']}")
+              summary=f"{p['from']}→{p['to']} tier={p['tier']} reason={p['reason']}")
     conn.commit()
     return "\n".join(lines)
 

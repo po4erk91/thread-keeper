@@ -281,3 +281,47 @@ def test_rule_retirement_needs_current_evidence_of_no_benefit(tmp_path, monkeypa
     assert evaluation.mutation_refusal(conn, "delete", "sample", source)
     suite.write_text("updated suite\n")
     assert evaluation.mutation_refusal(conn, "retire_rule", "sample", source)
+
+
+def _no_benefit_evidence():
+    return {
+        "decision": "keep",
+        "cases": [{"name": f"c{i}"} for i in range(5)],
+        "passes_by_case": {"control": [3] * 5, "current": [3] * 5},
+        "activations_by_case": {"current": [3] * 5},
+    }
+
+
+def test_value_check_lets_verifier_remove_a_new_skill_without_benefit(fresh_mp, monkeypatch):
+    from threadkeeper import curator_skill_eval as ev, db
+
+    evidence = _no_benefit_evidence()
+    assert not ev._decision_matches(evidence, "delete", "")
+    assert ev._decision_matches(evidence, "delete", "", value_check=True)
+    assert ev._decision_matches(evidence, "retire_rule", "")
+    evidence["passes_by_case"]["control"][0] = 2
+    assert not ev._decision_matches(evidence, "delete", "", value_check=True)
+
+    conn = db.get_db()
+    conn.execute(
+        "INSERT INTO skill_usage (name, created_at, created_by_origin, tier) VALUES "
+        "('new-loop', 1, 'shadow_review', 'hypothesis'), "
+        "('proven-loop', 1, 'shadow_review', 'validated'), "
+        "('human', 1, 'foreground', 'hypothesis')"
+    )
+    conn.commit()
+    monkeypatch.setattr(ev, "SKILL_VALUE_CHECK", False)
+    assert not ev.value_check_target(conn, "new-loop")
+    monkeypatch.setattr(ev, "SKILL_VALUE_CHECK", True)
+    assert ev.value_check_target(conn, "new-loop")
+    assert not ev.value_check_target(conn, "proven-loop")
+    assert not ev.value_check_target(conn, "human")
+
+
+def test_value_check_targets_are_scheduled_first(fresh_mp, monkeypatch):
+    from threadkeeper import curator_skill_eval as ev
+
+    monkeypatch.setattr(ev, "snapshots_root", lambda: fresh_mp["tmp"] / "no-snapshots")
+    names = ["a-old", "b-old", "z-new"]
+    assert ev.scheduled_suites(names) == {"a-old", "b-old"}
+    assert "z-new" in ev.scheduled_suites(names, frozenset({"z-new"}))
