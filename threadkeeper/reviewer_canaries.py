@@ -6,10 +6,11 @@ look like ordinary harvested candidates, but each one is something the rules
 say to reject: a one-off task, a transient environment fix, incident
 history, generic advice. Each carries a made-up marker word.
 
-When the reviewer finishes, any of its proposals that contain a marker means
-it accepted a canary. Those proposals are rejected, and two failed canary
-passes in a row pause the reviewer until a forced pass shows it rejects them
-again.
+When the reviewer finishes, a proposal that contains a marker, or that
+accepts a canary's candidate id, means it accepted a canary. Those proposals
+are rejected, and two failed canary passes in a row pause the reviewer until
+a forced pass shows it rejects them again. A proposal to reject a canary is
+the right answer and never counts.
 """
 
 from __future__ import annotations
@@ -73,7 +74,8 @@ def inventory_lines(conn: sqlite3.Connection, canaries: list[Canary]) -> list[st
     base = int(row[0] if row else 0) + CANARY_ID_OFFSET
     day = time.strftime("%Y-%m-%d", time.gmtime())
     return [
-        f"  #{base + index} kind={canary.kind} session=canary-{canary.marker.lower()} "
+        f"  #{base + index} kind={canary.kind} scope=unresolved "
+        f"session=canary-{canary.marker.lower()} "
         f"day={day} why=harvested pattern\n    content: {canary.content}"
         for index, canary in enumerate(canaries, start=1)
     ]
@@ -95,13 +97,32 @@ def _ended_child(conn: sqlite3.Connection, task_id: str) -> str | None:
     return str(row["spawned_cid"] or "") if row else None
 
 
+def _accepts_canary(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    """An accept_candidate proposal for an id that only a canary carries."""
+    if row["tool_name"] != "accept_candidate":
+        return False
+    try:
+        candidate = int(json.loads(row["arguments"] or "{}").get("id") or 0)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if candidate < CANARY_ID_OFFSET:
+        return False
+    real = conn.execute(
+        "SELECT 1 FROM extract_candidates WHERE id=?", (candidate,),
+    ).fetchone()
+    return real is None
+
+
 def _leaked_proposals(conn: sqlite3.Connection, child_cid: str, markers: list[str]) -> list[int]:
     rows = conn.execute(
-        "SELECT id, arguments FROM memory_proposals WHERE child_cid=?", (child_cid,),
+        "SELECT id, tool_name, arguments FROM memory_proposals "
+        "WHERE child_cid=? AND tool_name != 'reject_candidate'",
+        (child_cid,),
     ).fetchall()
     return [
         int(row["id"]) for row in rows
-        if any(marker.lower() in str(row["arguments"]).lower() for marker in markers)
+        if _accepts_canary(conn, row)
+        or any(marker.lower() in str(row["arguments"]).lower() for marker in markers)
     ]
 
 

@@ -48,17 +48,20 @@ def _normalize_desc(text: str) -> str:
 
 def _find_duplicate_concept(conn: sqlite3.Connection,
                             description: str,
-                            exclude_id: Optional[str] = None) -> Optional[str]:
+                            exclude_id: Optional[str] = None,
+                            scope: Optional[tuple[str, tuple]] = None) -> Optional[str]:
     """Id of an existing concept that is a near-duplicate of `description`.
 
     Two-tier match: a cheap whitespace/case-normalized exact comparison first
     (works without embeddings), then cosine over stored description embeddings
     when semantic search is available. Returns None when nothing is close
-    enough. The concept store is intentionally thin, so the O(n) scan is fine."""
+    enough. The concept store is intentionally thin, so the O(n) scan is fine.
+    `scope` replaces the default recall predicate, so evidence from another
+    project never bumps a concept here."""
     desc = (description or "").strip()
     if not desc:
         return None
-    concept_filter, concept_params = recall_where("concepts")
+    concept_filter, concept_params = scope or recall_where("concepts")
     rows = conn.execute(
         f"SELECT id, description, embedding FROM concepts WHERE {concept_filter}",
         concept_params,

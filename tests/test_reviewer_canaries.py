@@ -13,11 +13,11 @@ def _spawned_task(conn, task_id, child, ended=True):
     )
 
 
-def _proposal(conn, child, arguments):
+def _proposal(conn, child, arguments, tool_name="skill_manage"):
     conn.execute(
         "INSERT INTO memory_proposals (child_cid, tool_name, arguments, memory_scope, created_at) "
-        "VALUES (?, 'skill_manage', ?, 'unresolved', 1)",
-        (child, json.dumps(arguments)),
+        "VALUES (?, ?, ?, 'unresolved', 1)",
+        (child, tool_name, json.dumps(arguments)),
     )
 
 
@@ -27,7 +27,9 @@ def test_canaries_rotate_and_look_like_inventory_lines(fresh_mp):
     first, second = rc.canaries_for_pass(0), rc.canaries_for_pass(1)
     assert len(first) == 2 and {c.marker for c in first}.isdisjoint({c.marker for c in second})
     lines = rc.inventory_lines(db.get_db(), first)
-    assert lines[0].startswith(f"  #{rc.CANARY_ID_OFFSET + 1} kind=insight session=canary-")
+    assert lines[0].startswith(
+        f"  #{rc.CANARY_ID_OFFSET + 1} kind=insight scope=unresolved session=canary-"
+    )
     assert first[0].content in lines[0]
 
 
@@ -62,6 +64,27 @@ def test_leaked_canary_fails_rejects_proposal_and_pauses_after_two(fresh_mp):
     assert statuses == {"rejected"}
     assert rc.reviewer_paused(conn)
     assert rc.evaluate_finished(conn) == []
+
+
+def test_rejecting_a_canary_passes_and_accepting_its_id_fails(fresh_mp):
+    from threadkeeper import db, reviewer_canaries as rc
+
+    conn = db.get_db()
+    canaries = rc.canaries_for_pass(0)
+    canary_id = rc.CANARY_ID_OFFSET + 1
+    _spawned_task(conn, "t1", "child-1")
+    _proposal(conn, "child-1", {"id": canary_id, "reason": f"{canaries[0].marker} is a one-off"},
+              tool_name="reject_candidate")
+    _spawned_task(conn, "t2", "child-2")
+    _proposal(conn, "child-2", {"id": canary_id + 1, "target_kind": "verbatim"},
+              tool_name="accept_candidate")
+    conn.commit()
+    rc.record_canary_pass(conn, "t1", canaries)
+    rc.record_canary_pass(conn, "t2", canaries)
+
+    assert rc.evaluate_finished(conn) == ["pass", "fail"]
+    statuses = dict(conn.execute("SELECT tool_name, status FROM memory_proposals").fetchall())
+    assert statuses == {"reject_candidate": "pending", "accept_candidate": "rejected"}
 
 
 def test_clean_reviewer_passes_and_running_child_waits(fresh_mp):

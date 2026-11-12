@@ -163,6 +163,31 @@ def test_accept_candidate_concept_dedups(mp):
     assert _count(mp) == 1
 
 
+def test_accept_candidate_from_another_scope_keeps_its_own_concept(mp, monkeypatch):
+    """The learning loop may surface any scope; an accepted candidate never
+    corroborates (or lands in) the current project's memory."""
+    import time
+    from threadkeeper.tools import extract
+
+    monkeypatch.setenv("THREADKEEPER_PROJECT_NAMESPACE", "prj_aaaaaaaaaaaaaaaaaaaa")
+    content = "Scoped invariant observed in a session outside this project."
+    _concepts(mp).register_concept(description=content, confidence="low")
+    conn = mp["db"].get_db()
+    cursor = conn.execute(
+        "INSERT INTO extract_candidates (kind, source_uuid, source_cid, content, "
+        "rationale, status, created_at, project_id, memory_scope) "
+        "VALUES ('concept', '', 'cidY', ?, 'H3', 'pending', ?, NULL, 'unresolved')",
+        (content, int(time.time())),
+    )
+    conn.commit()
+
+    out = extract.accept_candidate(id=cursor.lastrowid, target_kind="concept")
+
+    assert "bumped" not in out
+    scopes = sorted(r[0] for r in conn.execute("SELECT memory_scope FROM concepts"))
+    assert scopes == ["project", "unresolved"]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # concept_manage — remove / consolidate / set_confidence
 # ──────────────────────────────────────────────────────────────────────

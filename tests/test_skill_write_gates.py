@@ -288,3 +288,76 @@ def test_accepted_proposal_from_an_untrusted_child_gets_loop_gates(gated):
     )
     conn.commit()
     assert "ERR skill_needs_repetition" in _decide(gated, 1)
+
+
+def _lessons(pkg, *lessons):
+    from threadkeeper import lessons as store
+    for title, body in lessons:
+        store.append_lesson(title, body)
+
+
+UNRELATED_LESSONS = (
+    ("Rotate leaked tokens before history cleanup",
+     "Revoke and reissue a leaked credential before rewriting git history."),
+    ("Pin toolchains on self-hosted runners",
+     "Install exact Node and Python versions so a runner upgrade cannot break CI."),
+)
+
+
+def test_new_skill_that_restates_a_lesson_is_refused_unless_new_despite(gated, monkeypatch):
+    sessions = _two_sessions(gated)
+    _lessons(gated, *UNRELATED_LESSONS)
+    _as_loop(gated, monkeypatch)
+    assert _create(gated, evidence_sessions=sessions).startswith("ok"), "unrelated lessons pass"
+
+    _lessons(gated, ("Reproduce every review finding before reporting it",
+                     "When reviewing a pull request, run the failing check yourself; "
+                     "a finding that does not reproduce wastes the author's time."))
+    restated = _create(gated, name="pr-findings", evidence_sessions=sessions)
+    slug = "reproduce-every-review-finding-before-reporting-it"
+    assert restated.startswith(f"ERR skill_repeats_lesson lesson={slug}")
+    accepted = _create(gated, name="pr-findings", evidence_sessions=sessions, new_despite=slug)
+    assert accepted.startswith("ok")
+
+
+def test_new_reference_file_must_be_linked_from_skill_md(gated, monkeypatch):
+    from threadkeeper.skill_write_gates import patches_since_last_use
+
+    _as_loop(gated, monkeypatch)
+    assert _create(gated, evidence_sessions=_two_sessions(gated)).startswith("ok")
+    sm = _tool(gated, "skill_manage")
+    reference = {"action": "write_file", "name": "pr-review",
+                 "sub_path": "references/flaky-checks.md",
+                 "content": "# Flaky checks\n\nRerun a flaky check three times before you report it.\n"}
+    assert sm(**reference).startswith("ERR skill_reference_unlinked sub_path=references/flaky-checks.md")
+
+    pointer = sm(action="patch", name="pr-review", old_string="- Each finding reproduces.",
+                 new_string="- Each finding reproduces.\n"
+                            "- When a check is flaky, read references/flaky-checks.md.")
+    assert pointer.startswith("ok"), "a pointer-only patch needs no failure evidence"
+    assert sm(**reference).startswith("ok")
+    conn = gated["db"].get_db()
+    assert patches_since_last_use(conn, "pr-review") == 1, "the pointer does not count"
+
+
+def test_child_reference_proposal_may_rely_on_its_pending_pointer(gated, monkeypatch):
+    import json
+    from threadkeeper.tools.skills import proposal_quality_refusal
+
+    _as_loop(gated, monkeypatch)
+    assert _create(gated, evidence_sessions=_two_sessions(gated)).startswith("ok")
+    conn = gated["db"].get_db()
+    arguments = {"action": "write_file", "name": "pr-review",
+                 "sub_path": "references/flaky-checks.md", "content": "# Flaky checks\n\nRerun first.\n"}
+    refusal = proposal_quality_refusal(arguments, "candidate_review", conn)
+    assert refusal.startswith("ERR skill_reference_unlinked")
+
+    patch = {"action": "patch", "name": "pr-review", "old_string": "- Each finding reproduces.",
+             "new_string": "- Each finding reproduces.\n- Read references/flaky-checks.md for flaky checks."}
+    conn.execute(
+        "INSERT INTO memory_proposals (child_cid, tool_name, arguments, memory_scope, created_at) "
+        "VALUES ('child-3', 'skill_manage', ?, 'unresolved', 1)",
+        (json.dumps(patch),),
+    )
+    conn.commit()
+    assert proposal_quality_refusal(arguments, "candidate_review", conn) == ""

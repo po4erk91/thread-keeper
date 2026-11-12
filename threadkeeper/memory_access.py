@@ -35,7 +35,7 @@ PROPOSABLE_TOOLS = frozenset({
     'open_thread', 'note', 'close_thread', 'verbatim_user', 'core_set',
     'style_set', 'register_concept', 'distill', 'link', 'lesson_append',
     'lesson_patch', 'skill_manage', 'dialectic_claim', 'dialectic_evidence',
-    'claim_pickup', 'release_pickup',
+    'claim_pickup', 'release_pickup', 'accept_candidate', 'reject_candidate',
 })
 _SCOPED_TABLES = frozenset({
     'threads', 'notes', 'verbatim', 'dialog_messages', 'core_memory', 'concepts',
@@ -195,7 +195,7 @@ def _skill_proposal_refusal(conn: sqlite3.Connection, policy: MemoryAccess, argu
                 f'origin={policy.origin} limit={limit} created={proposed}'
             )
     try:
-        return proposal_quality_refusal(arguments, policy.origin)
+        return proposal_quality_refusal(arguments, policy.origin, conn)
     except (sqlite3.DatabaseError, OSError, ValueError):
         # Acceptance runs every gate again with full store access.
         return ''

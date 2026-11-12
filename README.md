@@ -390,6 +390,14 @@ boundary controls *which local memory is recalled*; it is separate from
 `THREADKEEPER_MEMORY_EGRESS`, which controls whether personal memory may be
 sent to another model provider.
 
+Ingest can tie only some transcripts to a repository, so most dialog is stored
+`unresolved`. The extract, shadow and candidate-review loops therefore read
+every scope of your own dialog, but only inside the server process itself;
+spawned children keep the recall predicate and their namespace cap. What the
+loops derive keeps the scope of the dialog it came from (an extract candidate
+from an unresolved session stays unresolved, and so does a note or quote made
+from it), or becomes a global skill or lesson. Recall isolation is unchanged.
+
 ---
 
 ## Core systems
@@ -618,6 +626,15 @@ repetition, the active cap and patches without use, and can pass
   (`used_failed`, `used_corrected` or `contradicted`) and a one-line
   `evidence`. Patches to a skill nobody has used since its last patches are
   capped.
+- **Do not restate a lesson.** A new skill or `references/` file whose wording
+  repeats a stored lesson (rare shared words, score at or above
+  `THREADKEEPER_SKILL_LESSON_OVERLAP_THRESHOLD`) is refused; patch the lesson
+  instead, or pass `new_despite=<lesson-slug>` when the rule really differs.
+- **Link every new reference.** A new `references/<topic>.md` file needs a
+  line in SKILL.md that names it. Patch SKILL.md first; a patch that only adds
+  such pointers needs no evidence and does not count toward the patch cap. A
+  loop child may queue the pointer patch and the file together; accept the
+  SKILL.md change first.
 
 Session-agent writes are queued like background writes
 (`THREADKEEPER_SESSION_SKILL_WRITES=propose`). Show the proposal to the user,
@@ -642,8 +659,10 @@ audit covers the same staleness ground for its own settings.
 
 The candidate reviewer is audited too: every
 `THREADKEEPER_CANDIDATE_REVIEW_CANARY_EVERY`th pass carries known-bad canary
-candidates. If the reviewer proposes one, those proposals are rejected; two
+candidates. If the reviewer proposes to keep one (a skill or lesson with its
+marker, or `accept_candidate` on its id), those proposals are rejected; two
 such passes in a row pause it until `candidate_review_run(force=True)`.
+Rejecting a canary is the right answer and never counts.
 
 With `THREADKEEPER_SKILL_VALUE_CHECK=1` and Caliper configured (see
 [Test skill behaviour during Curator passes](#test-skill-behaviour-during-curator-passes)),
@@ -860,7 +879,10 @@ Every `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` seconds (default off,
 900 = 15 min recommended) scans the diff of `dialog_messages` since
 the last cursor **across all CLIs at once**. The window filters
 autonomous child lineage (no self-pollution) and strips adapter
-`[tool_result]` / `[tool_call]` noise (the "clean context" rule). If
+`[tool_result]` / `[tool_call]` noise (the "clean context" rule). One
+window carries at most `THREADKEEPER_SHADOW_REVIEW_MAX_CHARS` (300,000)
+rendered characters; after a backlog the cursor stops at the last included
+turn and the next pass continues from there. If
 ≥500 chars of meaningful signal remain, spawns a slim observer child
 that decides on class-level learning. It is single-flight across the shared
 DB: a non-blocking `helpers.single_flight_lock("shadow-review")` dispatch
@@ -950,6 +972,14 @@ cluster:
 - **NOTE** — per-incident decision (requires `thread_id`)
 - **VERBATIM** — user quote worth preserving in `brief()`
 - **REJECT** — false positive that slipped past extract's filters
+
+The reviewer child has `propose` access, so each decision becomes a proposal.
+At the start of its next pass the loop applies the child's
+`reject_candidate` proposals itself: a rejection only closes a queue entry.
+`accept_candidate`, skill and lesson proposals wait for
+`memory_proposal_decide`. A candidate whose fate is already proposed, or whose
+acceptance was declined, is not shown to the reviewer again. Each inventory
+line shows the candidate's scope; a note or quote keeps that scope.
 
 Hard limits: max 2 new skills per pass enforced inside
 `skill_manage(action="create")` for candidate-reviewer, shadow-review, and
@@ -1867,6 +1897,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_DAEMON_STALE_INTERVALS` | 3 | number of configured loop intervals without a completed pass before a live daemon is reported as `stale`; this never kills a running child |
 | `THREADKEEPER_SHADOW_REVIEW_INTERVAL_S` | 0 (off) | shadow daemon tick (s) |
 | `THREADKEEPER_SHADOW_REVIEW_WINDOW_S` | 900 | sliding window for shadow scan (s) |
+| `THREADKEEPER_SHADOW_REVIEW_MAX_CHARS` | 300000 | rendered dialog characters one shadow window may carry; a backlog stops there and the next pass continues from the last included turn |
 | `THREADKEEPER_EXTRACT_INTERVAL_S` | 0 (off) | extract daemon tick (s); 600 = 10 min recommended; if this exceeds the base window, the daemon extends from the previous successful `extract_pass` cursor so ticks do not leave gaps |
 | `THREADKEEPER_EXTRACT_WINDOW_MIN` | 30 | base sliding dialog window per manual extract pass (min); the daemon's first-ever pass also seeds its rowid cursor from this lookback |
 | `THREADKEEPER_CANDIDATE_REVIEW_INTERVAL_S` | 0 (off) | candidate-reviewer daemon tick (s), restart-throttled by the last `candidate_review_pass`; 3600 = 1h recommended |
@@ -1879,6 +1910,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_SKILL_QUALITY_GATES` | 1 (on) | write-time skill quality gates (template, history noise, wikilinks, duplicates by meaning, repetition, patch evidence); see [Skill quality gates](#skill-quality-gates). `0` restores the old unchecked writes |
 | `THREADKEEPER_SESSION_SKILL_WRITES` | `propose` | `propose` queues a session agent's skill writes for review, like background writes (accept with `memory_proposal_decide`); `direct` applies them at once after the same gates |
 | `THREADKEEPER_SKILL_DUPLICATE_THRESHOLD` | 0.62 | embedding similarity (name + description) at which a new skill is refused as a duplicate of an installed one; real near-duplicates scored 0.55–0.78 |
+| `THREADKEEPER_SKILL_LESSON_OVERLAP_THRESHOLD` | 0.22 | rarity-weighted word similarity at which a new skill or `references/` file is refused as a restatement of a stored lesson (`0` = off); restated lessons scored 0.24–0.30, unrelated new skills 0.16–0.18 |
 | `THREADKEEPER_SKILL_PROJECT_TERMS` | "" | comma-separated project names; a shared skill may not mention them, a project skill passes `project=<name>` and names it in its description |
 | `THREADKEEPER_SKILL_CREATE_MIN_SESSIONS` | 2 | distinct sessions (or days) a learning-loop create must cite in `evidence_sessions` |
 | `THREADKEEPER_SKILL_PATCH_CAP_WITHOUT_USE` | 2 | learning-loop patches allowed to a skill nobody has used since its last patch (`0` = no cap) |
