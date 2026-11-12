@@ -587,6 +587,27 @@ CREATE TABLE IF NOT EXISTS skill_usage (
                       CHECK(memory_scope IN ('project','global','shared','unresolved'))
 );
 
+-- One row per observed skill use, from every CLI. The UNIQUE key makes a
+-- transcript re-read idempotent, so counters move only on a new row. The
+-- outcome is filled later: 'corrected' when the user corrected the result
+-- soon after the skill ran, 'helped' when the session went on without one.
+CREATE TABLE IF NOT EXISTS skill_use_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_name  TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    session_id  TEXT NOT NULL DEFAULT '',
+    signal      TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    foreground  INTEGER NOT NULL DEFAULT 1,
+    outcome     TEXT CHECK(outcome IN ('helped','corrected')),
+    outcome_at  INTEGER,
+    UNIQUE(skill_name, source, session_id, signal, created_at)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_use_events_skill
+    ON skill_use_events(skill_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_skill_use_events_pending
+    ON skill_use_events(outcome, created_at);
+
 -- Lesson usage telemetry. One row per lessons.md slug so the curator can
 -- distinguish frequently-pulled lessons from never-consulted entries.
 -- pinned=1 and tier='validated' opt out of decay/compost recommendations.

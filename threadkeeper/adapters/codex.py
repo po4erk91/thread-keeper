@@ -682,6 +682,15 @@ class CodexAdapter(CLIAdapter):
         except OSError:
             return
 
+    def iter_skill_signals(self, fp: Path) -> list:
+        from ..skill_signals import codex_rollout_signals
+
+        try:
+            with fp.open("r", encoding="utf-8", errors="replace") as f:
+                return list(codex_rollout_signals(f, _ts, _forced_cid_from_text))
+        except OSError:
+            return []
+
     def project_label(self, fp: Path) -> str:
         # rollout files are in YYYY/MM/DD subdirs — use the parent of
         # parent (year/month) for a coarse but meaningful label.

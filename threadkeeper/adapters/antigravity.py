@@ -384,4 +384,13 @@ class AntigravityAdapter(CLIAdapter):
             )
 
 
+    def iter_skill_signals(self, fp: Path) -> list:
+        from ..skill_signals import text_message_signals
+
+        try:
+            return text_message_signals(self.iter_messages(fp))
+        except OSError:
+            return []
+
+
 ADAPTER = AntigravityAdapter()
