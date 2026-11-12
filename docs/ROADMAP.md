@@ -8,13 +8,22 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-12 roadmap status
+## 2026-11-13 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
 **Remaining issue-backed work**
 
+- **Approve issue implementation explicitly ([#462](https://github.com/po4erk91/thread-keeper/issues/462)).**
+  People need to record ideas without starting an implementation. Today a
+  trusted author's ordinary open issue can enter the automatic queue without
+  a `roadmap` label; the label only changes priority. Require an explicit
+  implementation signal in automatic mode, separate from author trust, while
+  preserving skip labels and deliberate exact-issue selection. A synthetic
+  selector probe confirmed the current behavior and a test-bench control kept
+  approved work eligible while excluding an unlabeled tracking issue. This
+  changes an intentional policy covered by existing tests; it has not shipped.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired
@@ -47,6 +56,23 @@ findings and plans from those dates.
   work.
 - **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
   Existing violation counters do not yet complete this contract.
+
+**Brief freshness follow-up after [#345](https://github.com/po4erk91/thread-keeper/issues/345)**
+
+People who correct a remembered preference can keep seeing the retired claim
+in a subscribed host until another refresh occurs. Superseding an observed
+user-model claim changes `memory://brief`, but the invalidation map routes
+`dialectic_supersede` only to dashboard and agent-status updates. Subscriptions
+already exist; this is a missing mutation category.
+
+A disposable SQLite probe called the real supersession tool: a fresh brief
+excluded the old synthetic claim, while the subscribed client received no
+update. Adding only brief invalidation for that event in a test bench delivered
+one update; a rolled-back event remained silent. Route user-model changes that
+alter visible claims, tier membership, or validity to the brief as well as
+the existing affected resources. Keep observation-buffer maintenance and
+unrelated pass events narrow. Verify real writes, coalescing, rollback,
+content-free notifications, freshness metadata, and provider filtering.
 
 **Shadow input-memory follow-up after [#437](https://github.com/po4erk91/thread-keeper/issues/437)**
 
