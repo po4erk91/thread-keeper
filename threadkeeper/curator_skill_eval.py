@@ -103,7 +103,9 @@ def context_revision(conn: sqlite3.Connection, name: str, skill: Path) -> str | 
     return context["revision"] if context else None
 
 
-VALUE_CHECK_ORIGINS = frozenset({"background_review", "candidate_review", "shadow_review"})
+VALUE_CHECK_ORIGINS = frozenset({
+    "background_review", "candidate_review", "shadow_review", "spawned",
+})
 
 
 def value_check_target(conn: sqlite3.Connection, name: str) -> bool:

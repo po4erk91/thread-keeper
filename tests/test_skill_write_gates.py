@@ -259,7 +259,7 @@ def test_child_proposals_keep_the_per_pass_create_limit(fresh_mp, monkeypatch):
     conn = fresh_mp["db"].get_db()
     conn.execute(
         "INSERT INTO child_memory_grants VALUES (?,?,?,?,?,?,?)",
-        ("child-9", "tk", token_digest("tok"), "propose", "", "candidate_review", 1),
+        ("child-9", "tk", token_digest("tok"), "propose", "", "spawned", 1),
     )
     conn.commit()
     monkeypatch.setenv("THREADKEEPER_FORCE_CID", "child-9")
@@ -270,4 +270,21 @@ def test_child_proposals_keep_the_per_pass_create_limit(fresh_mp, monkeypatch):
     first = sm(action="create", name="one", description=DESCRIPTION, content=BODY)
     assert first.startswith("ok proposal=")
     second = sm(action="create", name="two", description=DESCRIPTION, content=BODY)
-    assert second.startswith("ERR autonomous_skill_create_limit_exceeded origin=candidate_review")
+    assert second.startswith("ERR autonomous_skill_create_limit_exceeded origin=spawned")
+
+
+def test_accepted_proposal_from_an_untrusted_child_gets_loop_gates(gated):
+    import json
+
+    conn = gated["db"].get_db()
+    conn.execute(
+        "INSERT INTO child_memory_grants VALUES ('child-2','tk','x','propose','','spawned',1)"
+    )
+    arguments = {"action": "create", "name": "pr-review", "description": DESCRIPTION, "content": BODY}
+    conn.execute(
+        "INSERT INTO memory_proposals (child_cid, tool_name, arguments, memory_scope, created_at) "
+        "VALUES ('child-2', 'skill_manage', ?, 'unresolved', 1)",
+        (json.dumps(arguments),),
+    )
+    conn.commit()
+    assert "ERR skill_needs_repetition" in _decide(gated, 1)

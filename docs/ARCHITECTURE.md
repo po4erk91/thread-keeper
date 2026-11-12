@@ -1803,7 +1803,8 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
 - **Skill quality gates** (`skill_write_gates.py`, `skill_quality.py`) —
   `create`, `edit`, `patch` and `write_file` run one shared check before any
   disk write. The writer origin decides strictness: the learning loops
-  (`background_review`, `candidate_review`, `shadow_review`) are refused;
+  (`background_review`, `candidate_review`, `shadow_review`) and untrusted
+  proposing children (granted as `spawned`) are refused;
   a foreground session agent is refused for template gaps, project examples,
   wikilinks and duplicates, warned for the rest, and may pass `force=True`
   for template and project exceptions. Checks: fixed template on create

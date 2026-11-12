@@ -307,6 +307,7 @@ def test_value_check_lets_verifier_remove_a_new_skill_without_benefit(fresh_mp, 
         "INSERT INTO skill_usage (name, created_at, created_by_origin, tier) VALUES "
         "('new-loop', 1, 'shadow_review', 'hypothesis'), "
         "('proven-loop', 1, 'shadow_review', 'validated'), "
+        "('accepted-proposal', 1, 'spawned', 'hypothesis'), "
         "('human', 1, 'foreground', 'hypothesis')"
     )
     conn.commit()
@@ -315,6 +316,7 @@ def test_value_check_lets_verifier_remove_a_new_skill_without_benefit(fresh_mp, 
     monkeypatch.setattr(ev, "SKILL_VALUE_CHECK", True)
     assert ev.value_check_target(conn, "new-loop")
     assert not ev.value_check_target(conn, "proven-loop")
+    assert ev.value_check_target(conn, "accepted-proposal")
     assert not ev.value_check_target(conn, "human")
 
 

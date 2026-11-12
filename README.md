@@ -594,8 +594,8 @@ rollback, pin the previous version explicitly, for example
 ### Skill quality gates
 
 Every `skill_manage` write from a learning loop (background, candidate or
-shadow review) or a session agent passes the same checks. Loop writers are
-refused. A session agent gets a warning for history noise, missing
+shadow review), any proposing child, or a session agent passes the same
+checks. Loop writers and children are refused. A session agent gets a warning for history noise, missing
 repetition, the active cap and patches without use, and can pass
 `force=True` to keep a deliberate template or project exception.
 

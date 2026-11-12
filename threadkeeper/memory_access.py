@@ -184,7 +184,10 @@ def _skill_proposal_refusal(conn: sqlite3.Connection, policy: MemoryAccess, argu
 
     limit = max(0, int(LEARNING_LOOP_SKILL_CREATE_LIMIT))
     creating = arguments.get('action') == 'create'
-    if creating and policy.origin in SKILL_CREATE_LIMITED_ORIGINS:
+    # An untrusted proposing child is recorded as 'spawned'; loop children
+    # are launched that way, so the per-pass limit covers it as well.
+    limited = policy.origin in SKILL_CREATE_LIMITED_ORIGINS or policy.origin == 'spawned'
+    if creating and limited:
         proposed = _skill_create_proposals(conn, policy.child_cid)
         if proposed >= limit:
             return (

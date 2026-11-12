@@ -20,7 +20,11 @@ from . import skill_quality as quality
 PATCH_REASONS = frozenset({"used_failed", "used_corrected", "contradicted"})
 PATCH_USE_WINDOW_S = 14 * 86400
 MIN_EVIDENCE_CHARS = 20
-LEARNING_LOOP_ORIGINS = frozenset({"background_review", "candidate_review", "shadow_review"})
+# A proposing child is recorded as 'spawned' (only trusted launches keep
+# their claimed origin), so 'spawned' gets the strict loop rules too.
+LEARNING_LOOP_ORIGINS = frozenset({
+    "background_review", "candidate_review", "shadow_review", "spawned",
+})
 # Writers that author new skill knowledge. Maintenance writers (curator,
 # evolve) repair and merge existing skills under their own verification, so
 # only the wikilink rule applies to them.
