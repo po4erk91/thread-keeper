@@ -20,6 +20,14 @@ checked in skill validation and the Curator manifest.
 
 **Remaining issue-backed work**
 
+- **Repair contradictory lesson summaries ([#469](https://github.com/po4erk91/thread-keeper/issues/469)).**
+  People scanning the lesson list can still see advice that contradicts a
+  corrected body. A synthetic probe confirmed that `lesson_patch` rejects an
+  exact summary replacement while a body patch succeeds and leaves the old
+  summary. Add a summary-only correction with an expected-value or revision
+  check, preserved provenance and protection rules, and an audit/recovery
+  record. Keep body patches unchanged. This extends the completed body-edit
+  work in #161; the legacy suggestion now points to this tracker.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired
