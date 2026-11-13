@@ -15,6 +15,13 @@ findings and plans from those dates.
 
 **Remaining issue-backed work**
 
+- **Avoid false missing-file warnings ([#466](https://github.com/po4erk91/thread-keeper/issues/466)).**
+  Skills that tell an author to create an evaluation file in the target skill
+  currently receive the same warning as a missing bundled input. A synthetic
+  probe confirmed this for `evals/evals.json`; an existing input passed and a
+  missing input still warned. Distinguish explicit generated outputs from
+  required inputs, preserve conservative handling of ambiguous references,
+  and cover mixed uses through skill validation and the Curator manifest.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired
@@ -43,6 +50,20 @@ findings and plans from those dates.
   work.
 - **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
   Existing violation counters do not yet complete this contract.
+
+**Host-setting recognition follow-up after [#390](https://github.com/po4erk91/thread-keeper/issues/390)**
+
+The host-setting screen already reads skill text support files. Its recognition
+rules still miss guidance to add settings to, or edit, a user's CLI configuration.
+In a disposable synthetic skill, both procedures returned no category or
+owner-review warning. Equivalent advice explicitly naming global configuration
+produced `shell-global-config`, while read-only inspection stayed clean.
+
+Extend the existing checks for user-wide CLI configuration paths and ordinary
+add/edit wording. Require a confirmed narrow condition, owner consent, and
+restoration on success and failure. Keep protected sources unchanged and retain
+the clean results for inspection, project-local edits, and guarded procedures.
+The evidence is attached to the existing tracker rather than a duplicate issue.
 
 **Brief freshness follow-up after [#345](https://github.com/po4erk91/thread-keeper/issues/345)**
 
@@ -115,6 +136,14 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Recorded ideas wait for implementation approval ([#462](https://github.com/po4erk91/thread-keeper/issues/462)), released in v0.27.2.**
+  Automatic issue pickup now requires the `roadmap` label and author trust.
+  Selecting one issue explicitly can bypass those two gates; skip labels
+  still apply. Status separates missing approval from untrusted authors.
+- **Task status uses the saved role ([#389](https://github.com/po4erk91/thread-keeper/issues/389)), released in v0.27.1.**
+  Running work, useful completions, and failure notices use the role recorded
+  for each task. Custom roles stay visible; older records without a role keep
+  best-effort detection from their prompt.
 - **Skill generation quality is implemented in v0.27.0.** Skill use is
   counted from Codex, Gemini/Antigravity and Copilot as well as Claude Code.
   Every skill write from a learning loop or a session agent passes the same
