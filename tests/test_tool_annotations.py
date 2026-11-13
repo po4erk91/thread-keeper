@@ -43,12 +43,13 @@ READ_TOOLS = {
     "workflow_retention_preview",
     "lesson_neighbors",
     "lesson_verifications",
+    "lesson_guard_status",
 }
 
 # --- delete/overwrite/kill tools: destructiveHint=True -----------------------
 DELETE_CLASS_TOOLS = {
     "agent_memory_cleanup", "concept_manage", "consolidate", "core_remove",
-    "curator_restore", "curator_run", "forget", "lesson_patch", "lesson_remove",
+    "curator_restore", "curator_run", "forget", "lesson_patch", "lesson_remove", "lesson_guard_manage",
     "evolve_prune_managed_venv", "memory_guard_check", "mp_cleanup",
     "skill_manage", "skill_fixture_migrate", "unlink", "memory_proposal_decide",
 }

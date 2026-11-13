@@ -4,7 +4,7 @@ from __future__ import annotations
 from .._mcp import read_tool, write_tool
 
 
-@write_tool()
+@write_tool(destructive=True)
 def lesson_guard_manage(action: str, slug: str, expected_revision: int = 0,
                         trigger: dict | None = None, adapter: str = "mcp",
                         event: str = "before_tool", allow_payload: dict | None = None,
