@@ -15,15 +15,6 @@ findings and plans from those dates.
 
 **Remaining issue-backed work**
 
-- **Approve issue implementation explicitly ([#462](https://github.com/po4erk91/thread-keeper/issues/462)).**
-  People need to record ideas without starting an implementation. Today a
-  trusted author's ordinary open issue can enter the automatic queue without
-  a `roadmap` label; the label only changes priority. Require an explicit
-  implementation signal in automatic mode, separate from author trust, while
-  preserving skip labels and deliberate exact-issue selection. A synthetic
-  selector probe confirmed the current behavior and a test-bench control kept
-  approved work eligible while excluding an unlabeled tracking issue. This
-  changes an intentional policy covered by existing tests; it has not shipped.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired
@@ -610,8 +601,8 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   remains idempotent through `dialog_messages.uuid` dedup.
 - Issue-backed evolve loop: Evolve reviewer audits thread-keeper for safety,
   leaks, cost, reliability, optimizations, and current agent/MCP ideas, then
-  creates/updates roadmap issues; Evolve applier drains one open issue at a
-  time behind an author-authenticated visible GitHub issue claim comment and
+  creates/updates roadmap issues; Evolve applier drains one trusted, approved
+  `roadmap`-labelled issue at a time behind an author-authenticated visible GitHub issue claim comment and
   PR, advances past
   unstartable issues, and falls back to Curator reports and legacy
   `evolve_format` suggestions when no issue is startable.
@@ -627,9 +618,13 @@ registry suggestions share one repair lifecycle and are consolidated in #373.
   full setup writer, and `skip` disables the setup subprocess.
 - Evolve roadmap issue pagination (#81): reviewer dedup and applier pickup use
   paginated, oldest-first GitHub REST issue reads instead of a newest-first
-  50-item window. The applier still prioritizes `roadmap` labels then FIFO by
+  50-item window. The applier selects approved `roadmap` issues FIFO by
   issue number locally; if its generous candidate window ever truncates, it logs
   exactly how many open issues were not considered.
+- Issue implementation approval (#462): automatic pickup requires the `roadmap`
+  label and author trust. Ordinary issues remain idle without relabeling. Exact
+  selection overrides approval and trust for one issue; skip labels still win.
+  Status separates missing approval from author trust and skip-label reasons.
 - Evolve reviewer issue dedup gate (#103): reviewer-created GitHub issues now
   go through `evolve_issue_create(...)`, which checks open and closed issues via
   `state=all` (including closed `not_planned` issues), records filed

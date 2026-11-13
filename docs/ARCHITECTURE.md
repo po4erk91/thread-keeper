@@ -999,7 +999,7 @@ moving the high-water forward; `force=True` bypasses this due gate.
   list --json` cannot return `author_association`; pull requests in the
   response are filtered out). The fetch is explicit `--include --paginate`,
   `sort=created&direction=asc`, so the subsequent local priority
-  (`roadmap`-labeled issues first, then FIFO by issue number) applies across
+  (approved `roadmap`-labeled issues in FIFO order by issue number) applies across
   the open backlog rather than only the newest page. A generous local candidate
   window is retained as a runaway guard; if exceeded, a warning logs the number
   of open issues outside the window. Each pass reuses that one candidate
@@ -1017,6 +1017,14 @@ moving the high-water forward; `force=True` bypasses this due gate.
   spawned shell `gh` calls fail fast instead of independently retrying the same
   account quota. `agent_status` / `tk-agent-status` and
   `evolve_apply_status()` expose the current remaining count or cooldown window.
+  **Implementation approval (#462):** Automatic issue pickup requires the
+  `roadmap` label as well as author trust. An ordinary open issue remains a
+  tracking item; no migration adds labels. Exact-number selection bypasses
+  approval and trust only for that issue, but skip labels still win. Status
+  reports missing approval separately from untrusted authors and skip labels.
+  The reviewer backlog predicate still counts open, unapplied `roadmap` issues
+  regardless of author trust or skip labels; it measures backlog pressure, not
+  whether the applier may start work.
   **Author-trust gate (#63):** the repo is public, so any account can open an
   issue whose body is injected into the permission-bypassing child. Autonomous
   pickup is therefore limited to issues whose `authorAssociation` is in

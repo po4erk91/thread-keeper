@@ -682,7 +682,7 @@ def test_evolve_apply_status_includes_curator_completion_events(
     assert out.index("curator_report_applied") < out.index("evolve_apply_pass")
 
 
-def test_open_roadmap_issues_prioritizes_roadmap_and_skips_applied(
+def test_open_roadmap_issues_requires_approval_and_skips_applied(
     tmp_path, monkeypatch,
 ):
     pkg = _bootstrap(tmp_path, monkeypatch)
@@ -705,7 +705,7 @@ def test_open_roadmap_issues_prioritizes_roadmap_and_skips_applied(
     issues, err = pkg["ea"]._open_roadmap_issues(conn)
 
     assert err == ""
-    assert [int(i["number"]) for i in issues] == [2, 3]
+    assert [int(i["number"]) for i in issues] == [2]
 
 
 def test_open_roadmap_issues_requeues_closed_unmerged_applied_marker(
@@ -965,7 +965,7 @@ def test_open_roadmap_issues_trust_label_promotes_untrusted_author(
                 _issue(1, "untrusted, no label", labels=("enhancement",),
                        author_association="NONE"),
                 _issue(2, "untrusted, promoted",
-                       labels=("enhancement", "approved"),
+                       labels=("roadmap", "enhancement", "approved"),
                        author_association="NONE"),
             ],
             "",
@@ -976,6 +976,81 @@ def test_open_roadmap_issues_trust_label_promotes_untrusted_author(
 
     assert err == ""
     assert [int(i["number"]) for i in issues] == [2]
+
+
+def test_approval_and_trust_are_independent_in_queue_and_status(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    conn = pkg["db"].get_db()
+    monkeypatch.setattr(ea, "EVOLVE_TRUST_LABELS", ["trusted"])
+    monkeypatch.setattr(ea, "_fetch_open_issues", lambda repo_root=None: ([
+        _issue(1, "ordinary", labels=()),
+        _issue(2, "generic", labels=("bug",), body="Please implement roadmap"),
+        _issue(3, "approved", labels=("roadmap",)),
+        _issue(4, "untrusted", labels=("roadmap",), author_association="NONE"),
+        _issue(5, "promoted", labels=("roadmap", "trusted"), author_association="NONE"),
+        _issue(6, "skip", labels=("roadmap", "needs-design")),
+        _issue(7, "trust alone", labels=("trusted",), author_association="NONE"),
+        _issue(8, "neither", labels=(), author_association="NONE"),
+    ], ""))
+    diagnostics = {}
+    issues, err, skipped = ea._open_roadmap_issue_candidates(conn, diagnostics=diagnostics)
+    assert err == ""
+    assert [issue["number"] for issue in issues] == [3, 5]
+    assert skipped == [(6, "needs-design")]
+    assert diagnostics == {"missing_approval": [1, 2, 7, 8], "untrusted": [4, 8]}
+    status = _tool(pkg, "evolve_apply_status")()
+    assert "roadmap_missing_approval=4" in status
+    assert "roadmap_untrusted=2" in status
+    assert "roadmap_label_skipped=1" in status
+
+
+def test_manual_override_does_not_approve_automatic_queue(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    issue = _issue(1, "manual", labels=(), author_association="NONE")
+    monkeypatch.setattr(ea, "_fetch_open_issues", lambda repo_root=None: ([issue], ""))
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+    assert "missing_approval=1(#1)" in ea.apply_roadmap_issue()
+    assert ea.apply_roadmap_issue(issue_number=1).startswith("spawned roadmap_issue=#1")
+    issues, err = ea._open_roadmap_issues(pkg["db"].get_db())
+    assert err == ""
+    assert issues == []
+
+
+def test_queue_reports_missing_approval_and_other_skip_reasons(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(ea, "_fetch_open_issues", lambda repo_root=None: ([
+        _issue(1, "tracking", labels=()),
+        _issue(2, "untrusted", author_association="NONE"),
+        _issue(3, "blocked", labels=("needs-design",)),
+    ], ""))
+    out = ea.apply_roadmap_issue()
+    assert "missing_approval=1(#1)" in out
+    assert "untrusted=1(#2)" in out
+    assert "#3 label needs-design" in out
+    assert "skipped: label needs-design" in ea.apply_roadmap_issue(issue_number=3)
+    daemon_out = ea.run_evolve_apply_pass(force=True)
+    assert "missing_approval=1(#1)" in daemon_out
+    assert "untrusted=1(#2)" in daemon_out
+    assert "#3 label needs-design" in daemon_out
+
+
+def test_daemon_dispatches_only_approved_issue(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    ea = pkg["ea"]
+    monkeypatch.setattr(ea, "_fetch_open_issues", lambda repo_root=None: ([
+        _issue(1, "tracking", labels=()),
+        _issue(2, "untrusted", author_association="NONE"),
+        _issue(3, "blocked", labels=("roadmap", "needs-design")),
+        _issue(4, "approved"),
+    ], ""))
+    calls = {}
+    _mock_spawn(monkeypatch, calls)
+    assert ea.run_evolve_apply_pass(force=True).startswith("spawned roadmap_issue=#4")
+    assert "ISSUE #4: approved" in calls["prompt"]
 
 
 def test_open_roadmap_issues_exact_mode_bypasses_author_gate(
@@ -1011,7 +1086,7 @@ def test_open_roadmap_issues_skips_denylisted_labels(tmp_path, monkeypatch):
             [
                 _issue(1, "human discussion", labels=("roadmap", "discussion")),
                 _issue(2, "blocked work", labels=("roadmap", "blocked")),
-                _issue(3, "ready work", labels=("enhancement",)),
+                _issue(3, "ready work", labels=("roadmap", "enhancement")),
                 _issue(4, "human reserved", labels=("Help Wanted",)),
             ],
             "",

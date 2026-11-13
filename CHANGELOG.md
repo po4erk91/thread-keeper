@@ -32,6 +32,13 @@ version bumps follow semver per the policy in
   SKILL.md; a patch that only adds such pointers needs no evidence and does
   not count toward the patch cap.
 
+## v0.27.2 — 2026-11-13
+
+- **Fixed: recorded ideas no longer start work automatically.** Evolve now
+  requires the `roadmap` label and author trust before starting an issue.
+  People can still select one issue explicitly, and skip labels remain in force.
+  Status shows issues waiting for approval and untrusted authors separately.
+
 ## v0.27.1 — 2026-11-13
 
 - **Fixed: task status shows the recorded role.** Running work, useful
