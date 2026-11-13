@@ -126,6 +126,7 @@ _LOOP_DEFS: tuple[dict[str, Any], ...] = (
         "name": "Extract",
         "event": "extract_pass",
         "interval": "EXTRACT_INTERVAL_S",
+        "role": "extract",
         "description": _ROLE_DESCRIPTIONS["extract"],
         "work": "Harvests decision-shaped dialog into review candidates",
         "backlog_sql": "SELECT COUNT(*) FROM extract_candidates WHERE status='pending'",
@@ -323,6 +324,19 @@ def _detect_role(prompt: str) -> str:
     return ""
 
 
+def _task_role(role: str | None, prompt: str | None) -> str:
+    """Use stored metadata; infer roles only for legacy rows without one."""
+    return (role or "").strip() or _detect_role(prompt or "")
+
+
+def _task_classification(role: str | None, prompt: str | None) -> tuple[str, str, str]:
+    resolved_role = _task_role(role, prompt)
+    loop = _role_to_loop().get(resolved_role)
+    if loop:
+        return resolved_role, loop["id"], loop["name"]
+    return resolved_role, "", resolved_role or "child"
+
+
 def _compact_work(prompt: str, limit: int = 140) -> str:
     text = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
     text = re.sub(r"\s+", " ", text).strip()
@@ -363,7 +377,7 @@ def _refresh_rss(conn) -> None:
 
 def _running_agents(conn, now: int, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT id, pid, parent_cid, spawned_cid, cwd, prompt, started_at, "
+        "SELECT id, pid, parent_cid, spawned_cid, cwd, prompt, role, started_at, "
         "ended_at, return_code, rss_kb, rss_updated_at "
         "FROM tasks WHERE ended_at IS NULL "
         "ORDER BY started_at DESC LIMIT ?",
@@ -373,7 +387,7 @@ def _running_agents(conn, now: int, limit: int) -> list[dict[str, Any]]:
     agents: list[dict[str, Any]] = []
     for row in rows:
         prompt = row["prompt"] or ""
-        role = _detect_role(prompt)
+        role, loop_id, loop_name = _task_classification(row["role"], prompt)
         cid = row["spawned_cid"] or ""
         name = role or (cid[:8] if cid else row["id"])
         rss_kb = row["rss_kb"] or 0
@@ -382,6 +396,8 @@ def _running_agents(conn, now: int, limit: int) -> list[dict[str, Any]]:
             "task_id": row["id"],
             "name": name,
             "role": role,
+            "loop_id": loop_id,
+            "loop_name": loop_name,
             "description": _description_for_role(role),
             "status": _status_for(row["pid"], row["ended_at"]),
             "work": _compact_work(prompt),
@@ -984,9 +1000,8 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     # Event-backed materializations carry names and per-category toggles.
     # Generic completion reports remain in history without duplicate banners.
     materializations = _recent_materializations(conn, now, limit)
-    role_loop = _role_to_loop()
     rows = conn.execute(
-        "SELECT id, prompt, ended_at, return_code FROM tasks "
+        "SELECT id, prompt, role, ended_at, return_code FROM tasks "
         "WHERE ended_at IS NOT NULL AND return_code=0 AND ended_at>=? "
         "ORDER BY ended_at DESC LIMIT ?",
         (now - _RESULT_WINDOW_S, int(limit) * 3),
@@ -994,22 +1009,20 @@ def _recent_results(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for row in rows:
         prompt = row["prompt"] or ""
-        role = _detect_role(prompt)
-        loop = role_loop.get(role)
-        if not loop:
-            continue
+        role, loop_id, label = _task_classification(row["role"], prompt)
         summary = extract_useful_result(row["id"])
-        if not summary:
+        if not summary and not (row["role"] or "").strip():
             continue
+        summary = summary or "Task completed."
         ended_at = int(row["ended_at"] or now)
         age_s = max(0, now - ended_at)
         results.append({
             "id": f"{row['id']}:{ended_at}",
             "task_id": row["id"],
             "role": role,
-            "loop_id": loop["id"],
-            "loop_name": loop["name"],
-            "title": f"{loop['name']} completed",
+            "loop_id": loop_id,
+            "loop_name": label,
+            "title": f"{label} completed",
             "summary": summary,
             "ended_at": ended_at,
             "age_s": age_s,
@@ -1044,7 +1057,6 @@ def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     # every failure; only flagged ones post a banner.
     enabled = float(getattr(config, "NOTIFY_POLL_S", 0) or 0) > 0
     notify_flag = enabled and bool(getattr(config, "NOTIFY_LOOP_FAILURE", True))
-    role_loop = _role_to_loop()
     floor = now - _RESULT_WINDOW_S
     results: list[dict[str, Any]] = []
 
@@ -1060,18 +1072,17 @@ def _recent_failures(conn, now: int, limit: int = 10) -> list[dict[str, Any]]:
     except Exception:
         rows = []
     for row in rows:
-        role = _detect_role(row["prompt"] or "")
-        loop = role_loop.get(role)
-        label = (
-            loop["name"] if loop
-            else (row["role"] or row["chosen_cli"] or "background agent")
-        )
+        role, loop_id, label = _task_classification(row["role"], row["prompt"])
+        if not role:
+            label = row["chosen_cli"] or "child"
         ended_at = int(row["ended_at"] or now)
         age_s = max(0, now - ended_at)
         results.append({
             "id": f"fail:{row['id']}:{ended_at}",
             "task_id": row["id"],
             "kind": "failure",
+            "role": role,
+            "loop_id": loop_id,
             "loop_name": label,
             "title": f"{label} failed (rc={row['return_code']})",
             "summary": _reason_from_task_log(row["id"]),
