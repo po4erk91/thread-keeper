@@ -55,8 +55,11 @@ checked in skill validation and the Curator manifest.
   have bounded, deterministic search context while results retain their original
   text. Existing stores activate it through the staged generation migration;
   the fixed corpus reports recall, ranking, leakage, bytes, latency and size.
-- **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
-  Existing violation counters do not yet complete this contract.
+- **Verify active guards for repeatedly broken lessons.** Implemented for MCP
+  server operations: owner-reviewed contracts, allow/deny/escape preflight,
+  versioned verification, one-call exceptions, stale-state reporting and
+  rollback. Native CLI hooks remain explicitly unsupported; creating a record
+  does not change host settings or claim native-tool coverage.
 
 **Host-setting recognition follow-up after [#390](https://github.com/po4erk91/thread-keeper/issues/390)**
 

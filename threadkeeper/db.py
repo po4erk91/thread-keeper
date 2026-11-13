@@ -1723,6 +1723,9 @@ def _ensure_additive_runtime_schema(conn: sqlite3.Connection) -> None:
     from .retrieval_text import schema as retrieval_schema
     for statement in _iter_sql_statements(retrieval_schema()):
         conn.execute(statement)
+    from .lesson_guards import SCHEMA as guard_schema
+    for statement in _iter_sql_statements(guard_schema):
+        conn.execute(statement)
 
 
 def _ensure_project_namespaces(conn: sqlite3.Connection) -> None:

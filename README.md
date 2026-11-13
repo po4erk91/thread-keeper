@@ -937,6 +937,42 @@ memory-insufficient: `mp_dashboard` lists it and the Curator inventory marks it
 `[MEMORY-INSUFFICIENT]` and recommends escalating the rule to a PreToolUse-style
 hook or other hard guard.
 
+**Verified lesson guards.** A repeatedly broken rule can have an owner-reviewed
+guard for a specific operation. A proposal changes no client settings and
+blocks nothing. Before activation, a preflight must prove an allowed case, a
+denied case and the documented escape. The owner reviews the exact rule and
+current revision before enabling it.
+
+The supported adapter is `mcp`, event `before_tool`. It checks ThreadKeeper's
+own write operations in synchronous and asynchronous handlers, across clients
+connected to that server. **Native CLI tools and shell commands outside
+ThreadKeeper are unsupported.** Registering a rule never installs a native
+hook or reports those tools as protected.
+
+Use `lesson_guard_manage` with `propose`, `verify`, then `activate`, and inspect
+`lesson_guard_status`. A trigger names an exact `tool`, payload `field`,
+`operator` and `value`. Supported operators are exact equality, a literal
+shell-token prefix, and a normalized relative file glob. No arbitrary regex or
+shell execution is involved. Absolute paths, traversal patterns, control
+characters and known credential shapes are refused. The owner decides whether
+the bounded trigger covers the intended lesson; preflight proves that contract,
+not the meaning of an arbitrary natural-language rule.
+
+Activation, changes to an active rule, retirement and rollback require
+`owner_confirm=true` and the expected revision. An `escape` grants only the
+exact `deny_payload`, for one call within 60 seconds. It is bound to the owner
+session and revision, consumed atomically and unavailable to spawned children.
+Rollback restores the prior contract as a proposal that needs verification
+again. Owner controls remain reachable if a guard blocks an operation.
+
+The registry stores source and code digests, verification time, safe result
+codes and version history; it retains no test payloads or conversation text.
+Changed lessons, changed code or a changed contract make coverage stale and
+refuse the protected call. After an upgrade, restart the server and review the
+rule again. Status reads compute freshness without changing the registry.
+Curator and the dashboard show proposed, active, failed and stale records, and
+Curator stops filing the same escalation once its declared MCP guard is active.
+
 #### 3. Extract daemon
 
 Every `THREADKEEPER_EXTRACT_INTERVAL_S` seconds (default off, 600 =

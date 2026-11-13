@@ -1154,6 +1154,10 @@ def lesson_violation(slug: str, evidence: str) -> str:
         " memory_insufficient=1 recommend=hook_enforcement"
         if count >= threshold else ""
     )
+    if count >= threshold:
+        from ..lesson_guards import states as guard_states
+        if guard_states(conn).get(clean_slug, {}).get("effective_state") == "active":
+            status = " memory_insufficient=1 guard=active recommend=none"
     already = "" if recorded else " already_recorded_today=1"
     return (
         f"ok slug={clean_slug} violations={count}/{threshold}{status}{already}"

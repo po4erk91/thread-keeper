@@ -149,6 +149,8 @@ def protect_connection(conn: sqlite3.Connection) -> None:
         if action == sqlite3.SQLITE_UPDATE and table == 'curator_batches' and column in {'report_written_at', 'provenance_sha256'}:
             return sqlite3.SQLITE_OK
         if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE):
+            if table in {'lesson_guards', 'lesson_guard_history', 'lesson_guard_exemptions'}:
+                return sqlite3.SQLITE_DENY
             if table == 'child_memory_grants':
                 return sqlite3.SQLITE_OK if action == sqlite3.SQLITE_INSERT and _grant_issuance.get() else sqlite3.SQLITE_DENY
             if policy.access != 'write' and table not in _OPERATIONAL_TABLES:
@@ -232,7 +234,7 @@ def reviewing_proposal(child_cid: str):
         _review_origin.reset(token)
 
 
-def guard_tool(fn):
+def guard_tool(fn, *, tool_name: str | None = None):
     """Deny durable writers regardless of discovery profile or direct calls."""
     def preflight(args, kwargs):
         policy = current_access()
@@ -253,13 +255,21 @@ def guard_tool(fn):
         @wraps(fn)
         async def async_guard(*args, **kwargs):
             refusal = preflight(args, kwargs)
-            return refusal if refusal is not None else await fn(*args, **kwargs)
+            if refusal is not None:
+                return refusal
+            from .lesson_guards import check_call
+            denied = check_call(fn, args, kwargs, tool_name)
+            return denied if denied else await fn(*args, **kwargs)
         return async_guard
 
     @wraps(fn)
     def sync_guard(*args, **kwargs):
         refusal = preflight(args, kwargs)
-        return refusal if refusal is not None else fn(*args, **kwargs)
+        if refusal is not None:
+            return refusal
+        from .lesson_guards import check_call
+        denied = check_call(fn, args, kwargs, tool_name)
+        return denied if denied else fn(*args, **kwargs)
     return sync_guard
 
 
