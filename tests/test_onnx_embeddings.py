@@ -81,19 +81,34 @@ def test_new_note_carries_backend_tag(sem_pkg):
                            kind="insight")
     conn = sem_pkg["db"].get_db()
     from threadkeeper import embeddings as emb
-    active = emb.embedding_fingerprint()
+    raw_generation = emb.embedding_fingerprint(contextual=False)
+    contextual_generation = emb.embedding_fingerprint()
     row = conn.execute(
-        "SELECT embedding, embed_backend FROM notes "
+        "SELECT id, embedding, embed_backend FROM notes "
         "WHERE thread_id=? ORDER BY id DESC LIMIT 1",
         (tid,),
     ).fetchone()
     assert row["embedding"] is None  # sqlite-vec is the single canonical copy
-    assert row["embed_backend"] == active
+    assert row["embed_backend"] == raw_generation
     assert conn.execute(
         "SELECT 1 FROM notes_vec WHERE id=("
         "SELECT id FROM notes WHERE thread_id=? ORDER BY id DESC LIMIT 1)",
         (tid,),
     ).fetchone() is not None
+    staged = conn.execute(
+        "SELECT source_hash, embedding FROM embedding_generation_vectors "
+        "WHERE generation=? AND memory_kind='note' AND memory_id=?",
+        (contextual_generation, str(row["id"])),
+    ).fetchone()
+    source = conn.execute(
+        "SELECT embedding_text FROM retrieval_documents "
+        "WHERE memory_kind='note' AND memory_id=?", (str(row["id"]),),
+    ).fetchone()[0]
+    from threadkeeper.memory_compat import source_hash
+    assert staged is not None
+    assert staged["source_hash"] == source_hash("note", source)
+    assert staged["embedding"] is not None
+    conn.close()
 
 
 # ── migration ────────────────────────────────────────────────────────

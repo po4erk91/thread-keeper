@@ -8,9 +8,10 @@ Two cosine paths:
   without sqlite-vec that is the legacy BLOB column; with sqlite-vec it reads
   vectors back from vec0 for exact filtered fallbacks.
 
-Embeddings use one durable local copy: vec0 when available, otherwise the
-legacy BLOB column. New and backfilled rows are written to vec0 first and the
-redundant base-table BLOB is then cleared under the sync applying guard.
+Raw embeddings used for duplicate detection have one durable local copy:
+vec0 when available, otherwise the legacy BLOB column. Contextual retrieval
+vectors live in versioned generation storage. New and backfilled raw rows
+are written to vec0 first, then the redundant base-table BLOB is cleared.
 """
 import logging
 from importlib import metadata as importlib_metadata
