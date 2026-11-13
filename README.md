@@ -765,7 +765,7 @@ shows agents focused on their primary task rarely do).
 | 4 | candidate-reviewer daemon | every 1 h (env knob) | pending candidates queue | SKILL.md (create/patch) / notes / verbatim / reject |
 | 5 | Curator daemon | every 7 days (env knob) | every existing lesson + recently-touched skill | pass-scoped research handoffs and `REPORT-<date>.md`; Evolve applier applies reports after roadmap issues |
 | 6 | evolve_reviewer daemon | configurable (env knob; 0=off) | code/docs/issues; web research in a separate read-only phase (#79) | roadmap updates + GitHub issues |
-| 7 | evolve_applier daemon | configurable (env knob; 0=off) | open GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
+| 7 | evolve_applier daemon | configurable (env knob; 0=off) | approved GitHub issues, Curator reports, legacy promoted evolve suggestions | PRs + applied markers |
 | 8 | dialectic_miner daemon | configurable (env knob; 0=off) | recent `dialog_messages` — user replies + preceding-assistant context | `dialectic_observations` buffer |
 | 9 | dialectic_validator daemon | configurable (env knob; 0=off) | buffered `dialectic_observations` | dialectic claims + evidence (support / contradict / supersede) via spawned opus child |
 | 10 | skill_updater daemon | every 302400 s / twice weekly (env knob) | configured skill roots + tracked GitHub skill sources | mirrored SKILL.md directories + `skill_update_pass` telemetry |
@@ -1424,8 +1424,14 @@ change is needed; otherwise it uses the deterministic daily
 with that name instead of minting overlapping roadmap PRs.
 
 The Evolve applier is the downstream implementer. `evolve_apply_roadmap_issue()`
-picks one open GitHub issue at a time (`roadmap` label first, then FIFO), but
-the automatic pass first sweeps eligible PRs from the account thread-keeper's
+picks one trusted open issue with the `roadmap` label at a time (FIFO).
+An ordinary issue records an idea without approving implementation; add `roadmap`
+to approve automatic pickup. Existing issues are not relabeled. Exact-number
+selection deliberately bypasses approval and author trust for that issue only,
+while skip labels still block it. `evolve_apply_status()` shows missing approval
+and untrusted authors separately. The reviewer backlog counts open, unapplied
+`roadmap` issues even when trust or a skip label prevents pickup. The automatic
+pass first sweeps eligible PRs from the account thread-keeper's
 `gh` acts as. A PR must be in this repository and have a recognized automation
 branch (`roadmap/issue-…`, `evolve/apply-…`, or `docs/roadmap-audit-…`) or a
 standalone ownership marker in its body. Applier PRs use
@@ -1476,7 +1482,7 @@ flow through the normal retry backoff/dead-letter gates again. A manual
 `evolve_apply_roadmap_issue(issue_number=N)` remains exact: it reports why that
 issue cannot start instead of silently switching to another issue.
 The queue fetch uses paginated GitHub REST reads in oldest-created order, then
-applies the documented roadmap/FIFO sort locally. A generous local candidate
+applies the approval gate and FIFO sort locally. A generous local candidate
 window is retained as a runaway guard; if it ever truncates, the applier logs
 how many open issues were outside the window.
 All roadmap-automation GitHub calls share a local `github_rate_budget` ledger:
@@ -1562,9 +1568,10 @@ GitHub association. Only issues whose `authorAssociation` is in
 `OWNER,MEMBER,COLLABORATOR`) are auto-drained; everything else is skipped until
 a human promotes it — by applying a label listed in
 `THREADKEEPER_EVOLVE_TRUST_LABELS` (empty by default; on a public repo only
-collaborators can label, so a trust label is itself a maintainer endorsement),
-or by naming the exact issue number via `evolve_apply_roadmap_issue(issue_number=N)`,
-which bypasses the gate as explicit promotion. This removes the untrusted input
+collaborators can label, so a trust label is itself a maintainer endorsement).
+Automatic pickup also requires the `roadmap` approval label. Naming an exact
+issue via `evolve_apply_roadmap_issue(issue_number=N)` bypasses both gates as
+explicit promotion. This removes the untrusted input
 at the boundary and complements the in-prompt data-fencing of #22/#76. The
 public claim comment also carries only an opaque per-host token (a 6-char hash
 of the hostname), never the raw hostname/PID/git-rev; the full host identity is
@@ -1979,7 +1986,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_DIALECTIC_VALIDATE_BATCH_SIZE` | 50 | max observations sent to one validator child; prevents oversized prompts and drains large queues incrementally |
 | `THREADKEEPER_EVOLVE_REVIEW_INTERVAL_S` | 0 (off) | evolve-reviewer daemon tick (s); audits thread-keeper for safety/leaks/optimization/new ideas, updates roadmap/issues, and includes legacy evolve suggestions as input. Runs as two alternating phases — read-only web research, then a privileged web-free audit that consumes the fenced research digest (#79) — so a full cycle spans two ticks |
 | `THREADKEEPER_EVOLVE_REVIEW_BACKLOG_MAX` | 25 | max open, not-yet-applied `roadmap`-label issues before the issue-creating audit is skipped and records `backlog_saturated`; skip-labelled and untrusted-author roadmap issues still count; `0` disables the cap |
-| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one open GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
+| `THREADKEEPER_EVOLVE_APPLY_INTERVAL_S` | 0 (off) | evolve-applier daemon tick (s); implements one trusted `roadmap`-labelled GitHub issue at a time, then falls back to Curator reports and promoted legacy evolve suggestions. Empty checks are throttled between intervals; actionable work and manual apply tools still dispatch |
 | `THREADKEEPER_EVOLVE_AUTOLAND` | true | land open non-draft PRs authored by the account `gh` acts as: squash-merge one once GitHub reports it up to date with required checks green, and update one that fell behind the base. Applier PRs also get a green draft marked ready, and red checks retried on the newest base before a fix child starts. Other accounts' PRs are never touched. `0`/`false` leaves every merge to a human |
 | `THREADKEEPER_EVOLVE_REPO_ROOT` | (auto) | absolute path to the thread-keeper git checkout the evolve reviewer/applier branch, test, and open PRs against. When empty, the repo is resolved automatically: the package's parent dir for an editable `install.sh`, else a managed checkout under the DB dir that is auto-cloned on first use. Set this to pin an explicit checkout |
 | `THREADKEEPER_EVOLVE_AUTO_CLONE` | true | auto-provision a managed checkout that runs remote `pip install -e` and tests; set `0`/`false` on shared or multi-user hosts unless that remote-code-execution boundary is explicitly accepted |
@@ -1991,7 +1998,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_EVOLVE_APPLY_SKIP_LABELS` | `blocked,needs-design,wontfix,question,discussion,help wanted` | comma-separated labels that exclude GitHub issues from autonomous Evolve applier pickup. Exact-number apply returns `skipped: label X`; set to `off` to clear |
 | `THREADKEEPER_EVOLVE_TRUSTED_AUTHOR_ASSOCIATIONS` | `OWNER,MEMBER,COLLABORATOR` | comma-separated GitHub author associations eligible for **autonomous** issue pickup on this public repo; issues from other authors are skipped unless promoted (trust label or exact-number invocation) |
 | `THREADKEEPER_EVOLVE_CLAIM_AUTOMATION_ACTORS` | (empty) | comma-separated GitHub logins allowed to own visible Evolve claim comments without a trusted repository association; all other marker comments are advisory text only |
-| `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted-author issue into the autonomous queue; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
+| `THREADKEEPER_EVOLVE_TRUST_LABELS` | (empty) | comma-separated labels that promote an untrusted author for the autonomous queue; the issue also needs `roadmap` approval; on a public repo only collaborators can apply labels, so a trust label is a maintainer endorsement |
 | `THREADKEEPER_ROADMAP_ISSUE_MAX_ATTEMPTS` | 3 | poison-issue dead-letter cap: after this many implementer spawns for a roadmap issue with no resulting PR, the issue gets a `blocked` label + one summary comment and is excluded from the auto-drain until a human intervenes. A manual `evolve_apply_roadmap_issue(issue_number=N)` bypasses the cap, but the default skip-label gate still refuses the `blocked` label until it is removed or reconfigured |
 | `THREADKEEPER_ROADMAP_ISSUE_BACKOFF_BASE_S` | 172800 (2d) | base failure-backoff window for a roadmap issue; doubles per attempt (`base * 2^(attempts-1)`, capped at 30d). Defers re-selection of a repeatedly-aborting issue beyond the fixed 24h claim TTL |
 | `THREADKEEPER_DIALECTIC_MAX_NEW_CLAIMS` | 3 | max new dialectic claims the validator may create per pass |

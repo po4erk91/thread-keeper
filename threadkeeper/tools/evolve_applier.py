@@ -11,7 +11,8 @@
     stores directly through MCP tools; no code PR.
 
   evolve_apply_roadmap_issue(issue_number=0)
-    Implement one open GitHub issue, prioritized by roadmap label then FIFO.
+    Implement one approved, trusted GitHub issue in FIFO order; an exact
+    issue number overrides approval and trust, but not skip labels.
     Opens a PR and marks the issue handed off only after the PR exists.
 
   evolve_apply_conflicted_pr(pr_number=0)
@@ -116,8 +117,9 @@ def evolve_apply_curator_report(report_path: str = "") -> str:
 def evolve_apply_roadmap_issue(issue_number: int = 0) -> str:
     """Implement one open GitHub issue through the evolve_applier role.
 
-    With `issue_number=0`, picks the next open issue: `roadmap`-labeled issues
-    first, then FIFO by issue number. The child implements exactly one issue,
+    With `issue_number=0`, picks the next trusted `roadmap`-labeled issue in
+    FIFO order. An exact number overrides approval and author trust for that
+    issue, but skip labels still block it. The child implements exactly one issue,
     runs the suite, opens a PR with `Closes #N`, then calls
     evolve_mark_roadmap_issue_applied(issue_number, pr_url)."""
     conn = get_db()
@@ -225,7 +227,10 @@ def evolve_apply_status() -> str:
         1 for action, _pr in pr_queue if action in ("merge", "update", "ready")
     )
     next_pr = _next_applier_pr(conn, pr_queue)
-    issues, issue_err, label_skipped = _open_roadmap_issue_candidates(conn)
+    diagnostics: dict[str, list[int]] = {}
+    issues, issue_err, label_skipped = _open_roadmap_issue_candidates(
+        conn, diagnostics=diagnostics
+    )
     ledger = roadmap_attempt_ledger(conn)
     backoff = [e for e in ledger if e["state"] == "backoff"]
     dead = [e for e in ledger if e["state"] == "dead_letter"]
@@ -244,6 +249,8 @@ def evolve_apply_status() -> str:
         f"landing_prs={landing} "
         f"roadmap_issues={len(issues)} "
         f"roadmap_label_skipped={len(label_skipped)} "
+        f"roadmap_missing_approval={len(diagnostics.get('missing_approval', []))} "
+        f"roadmap_untrusted={len(diagnostics.get('untrusted', []))} "
         f"roadmap_backoff={len(backoff)} "
         f"roadmap_dead_letter={len(dead)} "
         f"curator_reports={len(reports)} "
@@ -291,6 +298,10 @@ def evolve_apply_status() -> str:
                 used = _pr_repair_attempts(conn, int(pr["number"]))
                 line += f"  repairs={used}/{PR_REPAIR_MAX_ATTEMPTS}"
             lines.append(line)
+    for key in ("missing_approval", "untrusted"):
+        numbers = diagnostics.get(key, [])
+        if numbers:
+            lines.append(f"roadmap_{key}_issues=" + ", ".join(f"#{n}" for n in numbers[:20]))
     if label_skipped:
         lines.append(f"roadmap_issue_label_skips={_format_label_skip(label_skipped)}")
     if issues:

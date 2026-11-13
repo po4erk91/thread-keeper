@@ -3,7 +3,7 @@
 Primary path:
 
   apply_roadmap_issue(issue_number=0) — pick the first startable open GitHub
-  issue (`roadmap` label first, then FIFO; skip/advance past issues that cannot
+  issue (`roadmap` label required, FIFO; skip/advance past issues that cannot
   be claimed), build an implementer prompt, spawn an `evolve_applier` child that
   edits code/docs, runs the full suite, opens a PR with `Closes #N`, then calls
   `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`.
@@ -2029,6 +2029,16 @@ def _format_label_skip(skipped: list[tuple[int, str]], limit: int = 6) -> str:
     return f"roadmap_issue_skipped_label: skipped: {head}"
 
 
+def _format_approval_diagnostics(diagnostics: dict[str, list[int]]) -> str:
+    parts = []
+    for key in ("missing_approval", "untrusted"):
+        numbers = diagnostics.get(key, [])
+        if numbers:
+            shown = ",".join(f"#{number}" for number in numbers[:20])
+            parts.append(f"{key}={len(numbers)}({shown})")
+    return " " + " ".join(parts) if parts else ""
+
+
 def _record_roadmap_issue_skipped(
     conn: sqlite3.Connection,
     skipped: list[tuple[int, str]],
@@ -3639,12 +3649,14 @@ def _open_roadmap_issues(
     repo_root: Optional[Path] = None,
     *,
     enforce_author_trust: bool = True,
+    enforce_approval: bool = True,
     skip_backoff: bool = True,
     flag_dead_letter: bool = False,
 ) -> tuple[list[dict], str]:
     issues, err, _ = _open_roadmap_issue_candidates(
         conn, repo_root,
         enforce_author_trust=enforce_author_trust,
+        enforce_approval=enforce_approval,
         skip_backoff=skip_backoff,
         flag_dead_letter=flag_dead_letter,
     )
@@ -3656,18 +3668,17 @@ def _open_roadmap_issue_candidates(
     repo_root: Optional[Path] = None,
     *,
     enforce_author_trust: bool = True,
+    enforce_approval: bool = True,
     skip_backoff: bool = True,
     flag_dead_letter: bool = False,
+    diagnostics: Optional[dict[str, list[int]]] = None,
 ) -> tuple[list[dict], str, list[tuple[int, str]]]:
     """Open GitHub issues not already handed off by evolve_applier.
 
-    The user treats all open issues as roadmap backlog; issues with the
-    explicit `roadmap` label are prioritized first, then FIFO by number. Claim
-    comments are deliberately not read here: the per-start guard checks each
-    candidate lazily, after sorting, so a pass does not fan out one GitHub
-    comment request across the full backlog. The upstream issue fetch is
-    paginated oldest-first before this sort, so FIFO applies across the whole
-    visible backlog rather than a newest-first GitHub CLI window.
+    Automatic pickup requires the `roadmap` label and is FIFO by number.
+    Claim comments are read lazily at dispatch. The paginated oldest-first
+    fetch keeps FIFO across the visible backlog. Exact selection can bypass
+    approval separately from author trust; skip labels still apply.
 
     When `enforce_author_trust` is set (the autonomous-drain default), issues
     whose author is not trusted (`_issue_author_trusted`) are skipped — this
@@ -3691,6 +3702,7 @@ def _open_roadmap_issue_candidates(
     out: list[dict] = []
     applied_errors: list[str] = []
     untrusted: list[int] = []
+    missing_approval: list[int] = []
     label_skipped: list[tuple[int, str]] = []
     now_t = time.time()
     for issue in issues:
@@ -3709,8 +3721,15 @@ def _open_roadmap_issue_candidates(
         if skip_label:
             label_skipped.append((num, skip_label))
             continue
-        if enforce_author_trust and not _issue_author_trusted(issue):
+        lacks_trust = enforce_author_trust and not _issue_author_trusted(issue)
+        lacks_approval = (
+            enforce_approval and not _is_reviewer_roadmap_backlog_issue(issue)
+        )
+        if lacks_trust:
             untrusted.append(num)
+        if lacks_approval:
+            missing_approval.append(num)
+        if lacks_trust or lacks_approval:
             continue
         if skip_backoff:
             state, attempts, _ = _classify_roadmap_issue(conn, num, now_t)
@@ -3727,6 +3746,14 @@ def _open_roadmap_issue_candidates(
             int(issue.get("number") or 0),
         )
     )
+    if diagnostics is not None:
+        diagnostics.update(untrusted=untrusted, missing_approval=missing_approval)
+    if missing_approval:
+        logger.info(
+            "evolve_applier: skipped %d issue(s) missing roadmap approval: %s",
+            len(missing_approval),
+            ", ".join(f"#{n}" for n in missing_approval[:20]),
+        )
     if untrusted:
         logger.info(
             "evolve_applier: skipped %d untrusted-author issue(s) on autonomous "
@@ -4266,9 +4293,8 @@ def apply_roadmap_issue(
     order and advance past issue-local dispatch failures. With a specific
     issue_number, this is exact mode and returns that issue's failure directly.
 
-    Queue mode enforces the author-trust gate (#63); exact mode bypasses it —
-    naming an issue number is itself the explicit human promotion the gate
-    requires for an untrusted author.
+    Queue mode requires roadmap approval and enforces author trust (#63).
+    Exact mode bypasses both gates as a deliberate human promotion.
     """
     with _apply_spawn_lock() as locked:
         if not locked:
@@ -4288,10 +4314,13 @@ def apply_roadmap_issue(
         # that skip explicitly instead of switching tasks. A daemon pass can
         # provide its single already-fetched snapshot, avoiding a second full
         # GitHub issue sweep before dispatch.
+        diagnostics: dict[str, list[int]] = {}
         if queued_issues is None:
             issues, err, label_skipped = _open_roadmap_issue_candidates(
                 conn, repo_root,
                 enforce_author_trust=not exact,
+                enforce_approval=not exact,
+                diagnostics=diagnostics,
                 skip_backoff=not exact,
                 flag_dead_letter=not exact,
             )
@@ -4324,8 +4353,9 @@ def apply_roadmap_issue(
             if not issues:
                 if label_skipped:
                     _record_roadmap_issue_skipped(conn, label_skipped)
-                    return "no_roadmap_issue " + _format_label_skip(label_skipped)
-                return "no_roadmap_issue"
+                    return ("no_roadmap_issue " + _format_label_skip(label_skipped)
+                            + _format_approval_diagnostics(diagnostics))
+                return "no_roadmap_issue" + _format_approval_diagnostics(diagnostics)
             candidates = issues
 
         guard = _git_worktree_precondition(conn, repo_root, "roadmap_issue")
@@ -4733,8 +4763,9 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     # flag_dead_letter=True so a poison issue is flagged (label + one comment)
     # and dropped even on a pass where it is the only open issue left.
     label_skipped: list[tuple[int, str]] = []
+    diagnostics: dict[str, list[int]] = {}
     issues, issue_err, label_skipped = _open_roadmap_issue_candidates(
-        conn, flag_dead_letter=True
+        conn, flag_dead_letter=True, diagnostics=diagnostics
     )
     if label_skipped and not issues:
         _record_roadmap_issue_skipped(conn, label_skipped)
@@ -4760,7 +4791,8 @@ def run_evolve_apply_pass(force: bool = False) -> str:
     pending = _promoted_unapplied(conn)
     if not pending:
         if label_skipped and not issue_err:
-            out = _format_label_skip(label_skipped)
+            out = (_format_label_skip(label_skipped)
+                   + _format_approval_diagnostics(diagnostics))
             _record_apply_outcome(conn, now_t, out)
             return out
         if issue_err:
@@ -4772,8 +4804,9 @@ def run_evolve_apply_pass(force: bool = False) -> str:
             return out
         if not force and not _pass_due(conn, now_t):
             return "not_due"
-        _record_apply_outcome(conn, now_t, "no_apply_work")
-        return "no_apply_work"
+        out = "no_apply_work" + _format_approval_diagnostics(diagnostics)
+        _record_apply_outcome(conn, now_t, out)
+        return out
 
     top = pending[0]
     out = apply_evolve(top["id"])
