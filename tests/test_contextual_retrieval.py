@@ -37,6 +37,14 @@ def test_long_entries_keep_bounded_original_text(fresh_mp):
     conn.close()
 
 
+def test_bookkeeping_labels_do_not_create_lexical_matches(fresh_mp):
+    from threadkeeper.retrieval import retrieve_notes
+    conn, _, nid = _note(fresh_mp)
+    assert retrieve_notes(conn, "GCP project", mode="fts") == []
+    assert retrieve_notes(conn, "Aurora", mode="fts")[0].id == nid
+    conn.close()
+
+
 def test_topic_edit_updates_lexical_index_and_rejects_stale_vector(fresh_mp, monkeypatch):
     import numpy as np
     from threadkeeper import embeddings, memory_compat
@@ -121,12 +129,13 @@ def test_invalidated_notes_and_expired_dialogs_never_enter_ranking(fresh_mp):
 
 
 def test_provider_policy_blocks_dialog_search_including_like_fallback(fresh_mp, monkeypatch):
-    from threadkeeper import config
+    from threadkeeper import config, egress
     from threadkeeper.retrieval import retrieve_dialogs
     conn = fresh_mp["db"].get_db()
     conn.execute("INSERT INTO dialog_messages(uuid,source,role,content,created_at) VALUES('x','test','user','Aurora secret',1)")
     conn.commit()
     monkeypatch.setattr(config.settings, "memory_egress", "work-only")
+    monkeypatch.setitem(egress.CATEGORY_CLASS, "dialogs", egress.PERSONAL)
     assert retrieve_dialogs(conn, "Aurora", mode="fts") == []
     result = fresh_mp["mcp"]._tool_manager._tools["dialog_search"].fn(query="Aurora", mode="fts")
     assert "Aurora secret" not in str(result)

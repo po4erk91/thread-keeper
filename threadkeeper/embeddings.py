@@ -470,7 +470,7 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
     join, effective_embedding = _note_embedding_parts(conn, "n")
     rows = conn.execute(
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, n.project_id, n.memory_scope, "
-        "       g.embedding AS embedding, g.source_hash, r.content AS retrieval_content "
+        "       g.embedding AS embedding, g.source_hash, r.embedding_text AS retrieval_content "
         "FROM notes n JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='note' AND g.memory_id=CAST(n.id AS TEXT) "
         "LEFT JOIN retrieval_documents r ON r.memory_kind='note' AND r.memory_id=CAST(n.id AS TEXT) "
@@ -578,7 +578,7 @@ def _dialog_cosine_search(conn, query: str, k: int,
     join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        "       d.project_id, d.memory_scope, d.created_at, g.embedding AS embedding, g.source_hash, r.content AS retrieval_content "
+        "       d.project_id, d.memory_scope, d.created_at, g.embedding AS embedding, g.source_hash, r.embedding_text AS retrieval_content "
         "FROM dialog_messages d JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='dialog' "
         "AND g.memory_id=CAST(d.uuid AS TEXT)"

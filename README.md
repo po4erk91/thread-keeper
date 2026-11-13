@@ -2560,6 +2560,9 @@ deterministic `context-v1` search document. It adds a bounded thread or
 conversation subject, kind or role, source, scope and date. Search results and
 evidence links still show the original text. Longer entries get no prefix;
 dialog embedding input keeps its existing 2,000-character bound.
+Lexical search indexes the subject and original body. Bookkeeping fields stay
+out of lexical matches, so a scope label cannot create an unrelated result.
+Similarity checks used to merge duplicate notes keep their body-only vectors.
 
 Existing stores keep their active index until `tk-migrate-embeddings --all`
 builds and validates the contextual generation. The same atomic switch selects
@@ -2568,8 +2571,9 @@ New notes are searchable immediately on a contextual store. Ingest catches up
 other writers in bounded batches. Source edits mark derived documents dirty,
 stale vectors are excluded, and deleting a conversation subject refreshes its
 remaining turns. Project and child access, invalidation and retention filters
-run before ranking. Restricted provider-egress policies also cover raw dialog
-search and its fallback. No model generates the added context.
+run before ranking. Provider egress keeps the existing category policy: work
+dialogs remain searchable, and personal memory stays gated. Context projections
+never read the personal-memory stores. No model generates the added context.
 
 Run `python -m pytest tests/test_contextual_retrieval_eval.py -s` for a fixed
 synthetic comparison of body-only and contextual retrieval. Its JSON report

@@ -185,7 +185,7 @@ def stage_vectors(
             conn.execute(
                 "UPDATE retrieval_documents SET dirty=0 "
                 "WHERE memory_kind=? AND memory_id=? AND "
-                + ("substr(content,1,2000)" if kind == "dialog" else "content") + "=?",
+                + ("substr(embedding_text,1,2000)" if kind == "dialog" else "embedding_text") + "=?",
                 (kind, str(memory_id), content),
             )
     return staged

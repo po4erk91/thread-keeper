@@ -928,7 +928,7 @@ def _backfill_sync_embeddings(
         _vec_upsert_note, _vec_upsert_dialog,
         _note_embedding_parts, _dialog_embedding_parts,
     )
-    active = embedding_fingerprint()
+    active = embedding_fingerprint(contextual=False)
     total = 0
     for table, text_col, pk_col, vec_kind, trunc in _SYNC_EMBED_TABLES:
         while max_rows is None or total < max_rows:
@@ -955,6 +955,7 @@ def _backfill_sync_embeddings(
             if not rows:
                 break
             texts = [(r["t"][:trunc] if trunc else r["t"]) for r in rows]
+            raw_texts = texts
             if vec_kind:
                 from .memory_compat import source_text
                 texts = [
@@ -964,7 +965,7 @@ def _backfill_sync_embeddings(
                     ).fetchone()[0]) for r in rows
                 ]
             try:
-                vectors = encode_many(texts)
+                vectors = encode_many(raw_texts + texts if vec_kind else texts)
             except Exception:
                 break
             if vectors is None:
@@ -984,7 +985,8 @@ def _backfill_sync_embeddings(
                         _vec_upsert_dialog(conn, r["k"], emb)
                     if vec_kind:
                         from .memory_compat import stage_vectors
-                        stage_vectors(conn, active, vec_kind, [(r["k"], texts[i])], [emb])
+                        contextual_blob = vectors[len(rows) + i].astype("float32").tobytes()
+                        stage_vectors(conn, embedding_fingerprint(), vec_kind, [(r["k"], texts[i])], [contextual_blob])
                     n += 1
                 except sqlite3.OperationalError:
                     continue
@@ -1038,7 +1040,7 @@ def _backfill_contextual_embeddings(conn, generation: str, max_rows: int) -> int
     total = 0
     for kind in ("note", "dialog"):
         rows = conn.execute(
-            "SELECT memory_id,content FROM retrieval_documents "
+            "SELECT memory_id,embedding_text FROM retrieval_documents "
             "WHERE dirty=1 AND memory_kind=? ORDER BY rowid LIMIT ?",
             (kind, max_rows - total),
         ).fetchall()

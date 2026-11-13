@@ -262,20 +262,26 @@ def seed_embeddings(tk: dict) -> None:
     """
     with tk["db"].read_db() as conn:
         note_rows = conn.execute(
-            "SELECT id, content FROM notes ORDER BY id"
+            "SELECT n.id,n.content,v.content AS retrieval_text FROM notes n "
+            "JOIN note_retrieval_sources v ON v.memory_id=CAST(n.id AS TEXT) ORDER BY n.id"
         ).fetchall()
         dialog_rows = conn.execute(
-            "SELECT uuid, content FROM dialog_messages ORDER BY rowid"
+            "SELECT d.uuid,d.content,v.content AS retrieval_text FROM dialog_messages d "
+            "JOIN dialog_retrieval_sources v ON v.memory_id=d.uuid ORDER BY d.rowid"
         ).fetchall()
     texts = [row["content"] for row in note_rows]
     texts.extend(row["content"] for row in dialog_rows)
-    vectors = tk["embeddings"].encode_many(texts)
+    contextual_texts = [row["retrieval_text"] for row in note_rows]
+    contextual_texts.extend(row["retrieval_text"][:2000] for row in dialog_rows)
+    vectors = tk["embeddings"].encode_many(texts + contextual_texts)
     if vectors is None:
         return
     blobs = [vector.astype("float32").tobytes() for vector in vectors]
-    note_blobs = blobs[:len(note_rows)]
-    dialog_blobs = blobs[len(note_rows):]
-    tag = tk["embeddings"].embedding_fingerprint()
+    raw_blobs = blobs[:len(texts)]
+    contextual_blobs = blobs[len(texts):]
+    note_blobs = raw_blobs[:len(note_rows)]
+    dialog_blobs = raw_blobs[len(note_rows):]
+    tag = tk["embeddings"].embedding_fingerprint(contextual=False)
 
     def _write(conn) -> None:
         for row, blob in zip(note_rows, note_blobs):
@@ -291,6 +297,10 @@ def seed_embeddings(tk: dict) -> None:
                 (blob, tag, row["uuid"]),
             )
             tk["embeddings"]._vec_upsert_dialog(conn, row["uuid"], blob)
+        from threadkeeper.memory_compat import stage_vectors
+        target = tk["embeddings"].embedding_fingerprint()
+        stage_vectors(conn, target, "note", [(row["id"], text) for row, text in zip(note_rows, contextual_texts)], contextual_blobs[:len(note_rows)])
+        stage_vectors(conn, target, "dialog", [(row["uuid"], text) for row, text in zip(dialog_rows, contextual_texts[len(note_rows):])], contextual_blobs[len(note_rows):])
 
     tk["db"].run_write("memory-eval-seed-embeddings", _write)
 

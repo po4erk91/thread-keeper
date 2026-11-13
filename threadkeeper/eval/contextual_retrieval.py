@@ -36,7 +36,7 @@ def measure(conn, cases: list[tuple[str, str]], *, k: int = 3) -> dict:
                 }
         reports["index"] = {
             "body_text_bytes": conn.execute("SELECT COALESCE(SUM(length(CAST(content AS BLOB))),0) FROM notes").fetchone()[0],
-            "context_text_bytes": conn.execute("SELECT COALESCE(SUM(length(CAST(content AS BLOB))),0) FROM retrieval_documents WHERE memory_kind='note'").fetchone()[0],
+            "context_text_bytes": conn.execute("SELECT COALESCE(SUM(length(CAST(embedding_text AS BLOB))),0) FROM retrieval_documents WHERE memory_kind='note'").fetchone()[0],
             "context_index_bytes": conn.execute("SELECT COALESCE(SUM(pgsize),0) FROM dbstat WHERE name LIKE 'retrieval_%'").fetchone()[0],
             "body_index_bytes": conn.execute("SELECT COALESCE(SUM(pgsize),0) FROM dbstat WHERE name LIKE 'notes_fts%'").fetchone()[0],
         }

@@ -82,13 +82,15 @@ def current_recall_project() -> str | None:
 
 
 def dialogs_allowed() -> bool:
-    from .egress import personal_allowed
+    from .egress import PERSONAL, class_for, personal_allowed
     from . import identity
+    if class_for("dialogs") != PERSONAL:
+        return True
     consumer = os.environ.get("THREADKEEPER_EGRESS_CONSUMER") or identity.active_cli()
     return personal_allowed(consumer)
 
 
-def document_sql(kind: str, alias: str = "s") -> str:
+def document_sql(kind: str, alias: str = "s", *, include_metadata: bool = True) -> str:
     body = f"{alias}.content"
     if kind == "note":
         topic = (
@@ -107,12 +109,15 @@ def document_sql(kind: str, alias: str = "s") -> str:
         )
         metadata = f"' source=' || substr({alias}.source,1,64) || ' role=' || substr({alias}.role,1,16)"
     subject = f"replace(replace(substr(COALESCE(({topic}),''),1,{TOPIC_LIMIT}),char(10),' '),char(13),' ')"
+    contextual_body = f"{subject} || char(10) || {body}"
+    if not include_metadata:
+        return f"CASE WHEN length({alias}.content)>{SHORT_LIMIT} THEN {body} ELSE {contextual_body} END"
     return (
         f"CASE WHEN length({alias}.content)>{SHORT_LIMIT} THEN {body} ELSE "
-        f"'[{VERSION} topic=' || {subject} || {metadata} || "
+        f"'[{VERSION}' || {metadata} || "
         f"' scope=' || {alias}.memory_scope || ' date=' || "
         f"COALESCE(strftime('%Y-%m-%d',{alias}.created_at,'unixepoch'),'') || "
-        f"']' || char(10) || {body} END"
+        f"']' || char(10) || {contextual_body} END"
     )
 
 
@@ -133,6 +138,7 @@ CREATE TABLE IF NOT EXISTS retrieval_documents (
     memory_kind TEXT NOT NULL CHECK(memory_kind IN ('note','dialog')),
     memory_id TEXT NOT NULL,
     content TEXT NOT NULL,
+    embedding_text TEXT NOT NULL,
     dirty INTEGER NOT NULL DEFAULT 1,
     UNIQUE(memory_kind,memory_id)
 );
@@ -148,7 +154,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS retrieval_fts_ad AFTER DELETE ON retrieval_documents BEGIN
     INSERT INTO retrieval_fts(retrieval_fts,rowid,content) VALUES('delete',old.rowid,old.content);
 END;
-CREATE TRIGGER IF NOT EXISTS retrieval_fts_au AFTER UPDATE OF content ON retrieval_documents BEGIN
+CREATE TRIGGER IF NOT EXISTS retrieval_fts_au AFTER UPDATE OF content,embedding_text ON retrieval_documents BEGIN
     INSERT INTO retrieval_fts(retrieval_fts,rowid,content) VALUES('delete',old.rowid,old.content);
     INSERT INTO retrieval_fts(rowid,content) VALUES(new.rowid,new.content);
     UPDATE retrieval_documents SET dirty=1 WHERE rowid=new.rowid;
@@ -156,17 +162,18 @@ END;
 """]
     for kind, table, key in (("note", "notes", "id"), ("dialog", "dialog_messages", "uuid")):
         projection = document_sql(kind)
+        lexical = document_sql(kind, include_metadata=False)
         statements.append(
             f"CREATE VIEW IF NOT EXISTS {kind}_retrieval_sources AS "
-            f"SELECT CAST(s.{key} AS TEXT) AS memory_id,{projection} AS content "
+            f"SELECT CAST(s.{key} AS TEXT) AS memory_id,{projection} AS content,{lexical} AS lexical_content "
             f"FROM {table} s;"
         )
         upsert = (
-            "INSERT INTO retrieval_documents(memory_kind,memory_id,content) "
-            f"SELECT '{kind}',memory_id,content FROM {kind}_retrieval_sources "
+            "INSERT INTO retrieval_documents(memory_kind,memory_id,content,embedding_text) "
+            f"SELECT '{kind}',memory_id,lexical_content,content FROM {kind}_retrieval_sources "
             f"WHERE memory_id=CAST(new.{key} AS TEXT) "
-            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content "
-            "WHERE content<>excluded.content;"
+            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content,embedding_text=excluded.embedding_text "
+            "WHERE embedding_text<>excluded.embedding_text;"
         )
         columns = "content,thread_id,kind,created_at,project_id,memory_scope,deleted" if kind == "note" else "content,session_id,source,role,created_at,project_id,memory_scope,deleted"
         for event, clause in (("ai", "INSERT"), ("au", f"UPDATE OF {columns}")):
@@ -177,7 +184,8 @@ END;
         )
     statements.append("""
 CREATE TRIGGER IF NOT EXISTS retrieval_thread_au AFTER UPDATE OF question,project_id,memory_scope,deleted ON threads BEGIN
-    UPDATE retrieval_documents SET content=(SELECT v.content FROM note_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id)
+    UPDATE retrieval_documents SET content=(SELECT v.lexical_content FROM note_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id),
+        embedding_text=(SELECT v.content FROM note_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id)
     WHERE memory_kind='note' AND memory_id IN (SELECT CAST(id AS TEXT) FROM notes WHERE thread_id=new.id);
 END;
 """)
@@ -188,11 +196,12 @@ END;
         refreshes = []
         for ref in references:
             refreshes.append(
-                "UPDATE retrieval_documents SET content=(SELECT v.content FROM dialog_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id) "
+                "UPDATE retrieval_documents SET content=(SELECT v.lexical_content FROM dialog_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id), "
+                "embedding_text=(SELECT v.content FROM dialog_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id) "
                 "WHERE memory_kind='dialog' AND memory_id IN (SELECT uuid FROM dialog_messages "
                 f"WHERE session_id={ref}.session_id AND source={ref}.source "
                 f"AND project_id IS {ref}.project_id AND memory_scope={ref}.memory_scope) "
-                "AND content<>(SELECT v.content FROM dialog_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id);"
+                "AND embedding_text<>(SELECT v.content FROM dialog_retrieval_sources v WHERE v.memory_id=retrieval_documents.memory_id);"
             )
         statements.append(
             f"CREATE TRIGGER IF NOT EXISTS retrieval_subject_{event} AFTER {clause} ON dialog_messages "
@@ -211,11 +220,11 @@ def index_documents(conn, kind: str, rows) -> None:
     for memory_id, content in rows:
         # Do not replace a newer live projection with an encoding snapshot.
         conn.execute(
-            "INSERT INTO retrieval_documents(memory_kind,memory_id,content) "
-            f"SELECT ?,memory_id,content FROM {kind}_retrieval_sources "
+            "INSERT INTO retrieval_documents(memory_kind,memory_id,content,embedding_text) "
+            f"SELECT ?,memory_id,lexical_content,content FROM {kind}_retrieval_sources "
             f"WHERE memory_id=? AND {'substr(content,1,2000)' if kind == 'dialog' else 'content'}=? "
-            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content "
-            "WHERE content<>excluded.content",
+            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content,embedding_text=excluded.embedding_text "
+            "WHERE embedding_text<>excluded.embedding_text",
             (kind, str(memory_id), content),
         )
 
@@ -250,8 +259,8 @@ def rebuild_documents(conn) -> None:
             f"NOT IN (SELECT memory_id FROM {kind}_retrieval_sources)", (kind,),
         )
         conn.execute(
-            "INSERT INTO retrieval_documents(memory_kind,memory_id,content) "
-            f"SELECT ?,memory_id,content FROM {kind}_retrieval_sources WHERE 1 "
-            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content "
-            "WHERE content<>excluded.content", (kind,),
+            "INSERT INTO retrieval_documents(memory_kind,memory_id,content,embedding_text) "
+            f"SELECT ?,memory_id,lexical_content,content FROM {kind}_retrieval_sources WHERE 1 "
+            "ON CONFLICT(memory_kind,memory_id) DO UPDATE SET content=excluded.content,embedding_text=excluded.embedding_text "
+            "WHERE embedding_text<>excluded.embedding_text", (kind,),
         )
