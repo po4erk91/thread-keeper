@@ -2155,6 +2155,12 @@ def test_skill_audit_reports_only_safe_inline_resources_and_substantial_repeats(
         "# Heading `references/heading-missing.md`\n\n"
         "Read [missing Markdown reference](references/missing-link.md).\n\n"
         "Read `references/missing-inline.md` and `references/present.md`.\n\n"
+        "Create an evaluation file `evals/evals.json` in the skill being authored.\n\n"
+        "Create `evals/mixed.json` in the target skill.\n\n"
+        "Read `evals/mixed.json` before starting.\n\n"
+        "Create a new skill. Read `references/unrelated.md`.\n\n"
+        "Create `evals/linked.json` in the target skill.\n\n"
+        "Read [the required input](evals/linked.json).\n\n"
         "[URL](https://example.test/missing.md) [absolute](/private/missing.md) "
         "`https://example.test/missing.md` `/private/missing.md` "
         "[outside](../outside.md) `../outside.md` `python scripts/check.py`, "
@@ -2185,6 +2191,11 @@ def test_skill_audit_reports_only_safe_inline_resources_and_substantial_repeats(
 
     assert "dangling_relative_link:references/missing-link.md" in record["findings"]
     assert "dangling_inline_resource:references/missing-inline.md" in record["findings"]
+    assert "dangling_inline_resource:evals/mixed.json" in record["findings"]
+    assert "dangling_inline_resource:references/unrelated.md" in record["findings"]
+    assert "dangling_relative_link:evals/linked.json" in record["findings"]
+    assert not any("evals/evals.json" in finding for finding in record["findings"])
+    assert not any(str(tmp_path) in finding for finding in record["findings"])
     assert any(
         finding.startswith("repeated_normalized_paragraph:occurrences=3:")
         for finding in record["findings"]
@@ -2203,6 +2214,29 @@ def test_skill_audit_reports_only_safe_inline_resources_and_substantial_repeats(
 
     payload = json.loads(skill_validate(name="resource-audit"))
     assert payload["skill"]["findings"] == record["findings"]
+
+
+def test_generated_output_detection_requires_a_local_explicit_instruction(tmp_path):
+    from threadkeeper.skill_audit import _relative_resource_findings
+
+    body = "\n".join((
+        "1. Generate `evals/generated.json` inside the new skill.",
+        "Write the file `evals/written.json` under your target skill!",
+        "Create `evals/no-destination.json`.",
+        "Do not create `evals/negative.json` in the target skill.",
+        "Create a report in the target skill and read `evals/input.json`.",
+        "Create `evals/conditional.json` in the target skill if it already exists.",
+        "Create `../outside.json` in the target skill.",
+        "```",
+        "Create `evals/fenced.json` in the target skill.",
+        "```",
+    ))
+    assert _relative_resource_findings(tmp_path, body) == [
+        "dangling_inline_resource:evals/conditional.json",
+        "dangling_inline_resource:evals/input.json",
+        "dangling_inline_resource:evals/negative.json",
+        "dangling_inline_resource:evals/no-destination.json",
+    ]
 
 
 def test_curator_prune_rubric_keeps_patched_unconsulted_skill_eligible(

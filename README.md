@@ -1037,8 +1037,13 @@ archive or remove a confirmed registry-only orphan only after rechecking every
 configured root, the primary archive, and external cache and saving its usage row plus
 audit evidence to recovery trash. The same inventory also
 checks Markdown links and unambiguous slash-containing inline-code resource
-paths for missing local files. It ignores URLs, absolute or escaping paths,
-shell fragments, frontmatter, headings, and fenced examples. It also reports
+paths for missing local files. A standalone instruction such as “Create
+`evals/evals.json` in the target skill.” identifies an output, so that occurrence is not treated as a bundled input. The instruction must name the
+file and the target, new, or skill being authored; ambiguous mentions are
+checked. If the same path is also referenced as an input, that reference is
+still checked. Markdown links remain input references. The audit ignores URLs,
+absolute or escaping paths, shell fragments, frontmatter, headings, and fenced
+examples. It also reports
 only substantial repeated prose: normalized paragraphs of at least 160
 characters that occur at least three times in the same skill. The same findings
 are returned by `skill_validate`, before a Curator repair is mirrored. The
