@@ -24,6 +24,7 @@ visible at a glance.
 from __future__ import annotations
 
 from pathlib import Path
+from collections import Counter
 import sqlite3
 import time
 
@@ -607,17 +608,23 @@ def mp_dashboard(window_days: int = 7) -> str:
 
     # Lessons whose rule keeps being broken despite existing as memory (#228).
     from ..lesson_violations import memory_insufficient
+    from ..lesson_guards import states as guard_states
+    guards = guard_states(conn)
+    if guards:
+        counts = Counter(row["effective_state"] for row in guards.values())
+        out.append("lesson_guards " + " ".join(f"{state}={count}" for state, count in sorted(counts.items())))
     insufficient = memory_insufficient(conn, now)
     if insufficient:
         out.append("")
         out.append(
             f"memory_insufficient_lessons={len(insufficient)} "
-            "(repeatedly violated; escalate to a hook or hard guard)"
+            "(repeatedly violated; check guard coverage before escalating)"
         )
         for slug, count in sorted(
             insufficient.items(), key=lambda kv: (-kv[1], kv[0]),
         )[:5]:
-            out.append(f"  {slug}  violations={count}")
+            guard_state = guards.get(slug, {}).get("effective_state", "none")
+            out.append(f"  {slug}  violations={count} guard={guard_state}")
 
     # Loop-authored skills whose current body carries injection markers
     # (skill_watcher re-screen, #268). Flag only; nothing was auto-edited.

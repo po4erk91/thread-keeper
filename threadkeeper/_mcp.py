@@ -204,9 +204,10 @@ def write_tool(*, destructive: bool = False, idempotent: bool = False, **kwargs)
     )
 
     def decorate(fn):
-        WRITE_TOOL_NAMES.add(kwargs.get("name") or fn.__name__)
+        tool_name = kwargs.get("name") or fn.__name__
+        WRITE_TOOL_NAMES.add(tool_name)
         from .memory_access import guard_tool
-        return register(_traced_tool(guard_tool(fn)))
+        return register(_traced_tool(guard_tool(fn, tool_name=tool_name)))
 
     return decorate
 

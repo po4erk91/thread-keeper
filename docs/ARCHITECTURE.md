@@ -526,6 +526,29 @@ bounded by `consolidate()`: it retains rows protected by either
 `ended_at IS NULL` rows, and garbage-collects task spool files whose task row is
 no longer retained.
 
+## Verified lesson guards
+
+`guard_rules` normalizes bounded tool/payload, command-prefix and file-glob
+contracts. `lesson_guards` owns eligibility, revision checks, transient
+preflight cases, source/runtime digests, lifecycle history and one-call escapes.
+The additive registry tables are node-local policy state, not replicated memory.
+Child connections cannot modify them even with durable-memory write access.
+
+`memory_access.guard_tool` applies child capabilities first and then checks
+active guards before entering a synchronous or asynchronous write handler.
+Proposing children still queue data only; proposal review cannot use an owner
+escape. A guard proposal is inert. Activation requires owner confirmation of
+the verified revision. Escapes bind the normalized complete payload, session,
+revision and expiry; all matching exemptions are consumed in one transaction.
+
+Only the server's `mcp/before_tool` binding is supported. Native CLI hook
+schemas are explicit unsupported cases. No guard action changes host settings
+or executes a shell command. Digests bind proof to the exact lesson, normalized
+contract and loaded guard implementation. A source/code change or corrupt
+contract reports stale coverage; an unavailable registry refuses visibly.
+Status is read-only, verification retains booleans and safe error codes rather
+than payloads, and rollback preserves history and requires new proof.
+
 ## Identity and self-cid
 
 The conversation identifier is `conversation_id` (stem from jsonl). Resolvers:
@@ -2534,7 +2557,7 @@ below).
 | concepts | register_concept, list_concepts, expand_concept, concept_manage |
 | graph | link, unlink, neighbors |
 | pickup | pickup_candidates, claim_pickup, release_pickup |
-| lessons | lesson_append, lesson_list, lesson_get, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation, lesson_verifications |
+| lessons | lesson_append, lesson_list, lesson_get, lesson_guard_manage, lesson_guard_status, lesson_neighbors, lesson_patch, lesson_remove, lesson_restore, lesson_violation, lesson_verifications |
 | shadow_review | shadow_review_run, shadow_review_status, shadow_review_snapshot |
 | candidate_reviewer | candidate_review_run, candidate_review_status |
 | curator | curator_merge_verdict, curator_review, curator_review_status, skill_validate, wikilink_health, curator_research_write, curator_report_write, curator_restore, curator_verify_lesson, curator_evaluate_skill, skill_deletion_log |

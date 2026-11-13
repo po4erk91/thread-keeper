@@ -74,6 +74,8 @@ MEMORY_ADMIN_TOOLS = CORE_TOOLS | {
     "ingest",
     "lesson_append",
     "lesson_get",
+    "lesson_guard_manage",
+    "lesson_guard_status",
     "lesson_list",
     "lesson_neighbors",
     "lesson_patch",

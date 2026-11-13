@@ -32,6 +32,14 @@ version bumps follow semver per the policy in
   SKILL.md; a patch that only adds such pointers needs no evidence and does
   not count toward the patch cap.
 
+## v0.29.0 — 2026-11-13
+
+- **Added: verified guards for repeatedly broken rules.** Owners can review
+  a precise rule, prove allowed and denied cases, and enable it for this
+  server’s operations. One-call exceptions, clear stale-state reporting and
+  versioned rollback help owners keep control. Proposals do not change client
+  settings, and native CLI tools are explicitly outside this protection.
+
 ## v0.28.0 — 2026-11-13
 
 - **Added: find short memories by their subject.** Notes and dialog turns can

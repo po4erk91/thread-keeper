@@ -282,6 +282,13 @@ hook or equivalent hard check. File exactly that guard as one evolve_format
 candidate so the Evolve pipeline builds it, and keep the lesson until the
 guard exists.
 
+[GUARD-ACTIVE:MCP] means an owner-reviewed server guard already covers its
+declared trigger. Do not file another escalation candidate for that same
+contract. MCP guards cover server operations only: native CLI shell tools are
+not protected. Proposed, failed and stale guards need review of the existing
+record rather than a duplicate proposal. Never activate or install a guard
+from an audit; activation requires the owner's explicit review.
+
 MERGE MEMORY — the inventory's `links=[...]` field is the current undirected
 wikilink adjacency for each lesson. Its `## PRIOR MERGE VERDICTS` section lists
 previously examined lesson pairs that must remain separate. Treat a prior
@@ -2365,6 +2372,7 @@ def _format_lesson(
     usage: dict | None = None,
     adjacent_slugs: tuple[str, ...] = (),
     violations: int = 0,
+    guard_state: str = "",
 ) -> str:
     """One inventory line per lesson.
 
@@ -2390,10 +2398,11 @@ def _format_lesson(
     from .config import LESSON_VIOLATION_THRESHOLD
     insufficient = (
         " [MEMORY-INSUFFICIENT]"
-        if violations >= max(1, int(LESSON_VIOLATION_THRESHOLD)) else ""
+        if violations >= max(1, int(LESSON_VIOLATION_THRESHOLD)) and guard_state != "active" else ""
     )
+    guard_marker = f" [GUARD-{guard_state.upper()}:MCP]" if guard_state else ""
     return (
-        f"- LESSON {item['slug']}{protected}{insufficient} {owner_review_warning(item.get('body', ''))} "
+        f"- LESSON {item['slug']}{protected}{insufficient}{guard_marker} {owner_review_warning(item.get('body', ''))} "
         f"(source={src or '?'}, tier={usage.get('tier') or 'hypothesis'}, "
         f"uses={usage.get('use_count', 0)}, views={usage.get('view_count', 0)}, "
         f"pinned={usage.get('pinned', 0)}, age={age_d}d, "
@@ -2594,7 +2603,9 @@ def _collect_inventory_entry_groups(
         adjacency = _lesson_adjacency(items)
         from .lesson_violations import violation_counts
         from .lesson_freshness import verification_warnings
+        from .lesson_guards import states as guard_states
         violations = violation_counts(conn)
+        guards = guard_states(conn)
         for item in items:
             lesson_items.append(item)
             slug = item.get("slug") or ""
@@ -2605,6 +2616,7 @@ def _collect_inventory_entry_groups(
                     _format_lesson(
                         item, usage.get(slug), adjacency.get(slug, ()),
                         violations.get(slug, 0),
+                        guards.get(slug, {}).get("effective_state", ""),
                     ) + "".join(f"\n    {warning}" for warning in verification_warnings(conn, item)),
                     review_bytes=len((item.get("body") or "").encode("utf-8")),
                 )
