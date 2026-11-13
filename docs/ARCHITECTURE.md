@@ -126,6 +126,10 @@ sorted by active state (`running` → `ready` → `idle` → `off`), shows Probe
 backlog as due objective probes only, updates the idle chip / running gears
 directly on the status button, keeps loop counts in the popover/tooltip, and
 posts macOS notifications for named materialization events in `recent_results`.
+Running agents, completed-task history, and failure notifications use the
+persisted task role and the shared role-to-loop mapping. Custom roles remain
+visible as children; prompt matching is a best-effort fallback only for legacy
+rows without a role.
 The shared notifier formatters resolve a skill heading or readable artifact
 name; completed-task log summaries remain history-only. Child-log excerpts and
 spawn error reasons in `recent_results` and `recent_failures` are sanitized

@@ -23,13 +23,13 @@ def _txt(res):
     )
 
 
-def _insert_task(pkg, task_id: str, prompt: str, rss_mb: int = 0):
+def _insert_task(pkg, task_id: str, prompt: str, rss_mb: int = 0, role: str = ""):
     conn = pkg["db"].get_db()
     now = int(time.time())
     conn.execute(
         "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
-        "started_at, ended_at, rss_kb, rss_updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "started_at, ended_at, rss_kb, rss_updated_at, role) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (
             task_id,
             os.getpid(),
@@ -41,18 +41,19 @@ def _insert_task(pkg, task_id: str, prompt: str, rss_mb: int = 0):
             None,
             rss_mb * 1024,
             now,
+            role,
         ),
     )
     conn.commit()
 
 
-def _insert_completed_task(pkg, task_id: str, prompt: str, log_text: str):
+def _insert_completed_task(pkg, task_id: str, prompt: str, log_text: str, role: str = ""):
     conn = pkg["db"].get_db()
     now = int(time.time())
     conn.execute(
         "INSERT INTO tasks (id, pid, parent_cid, spawned_cid, cwd, prompt, "
-        "started_at, ended_at, return_code, rss_kb, rss_updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "started_at, ended_at, return_code, rss_kb, rss_updated_at, role) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             task_id,
             os.getpid(),
@@ -65,6 +66,7 @@ def _insert_completed_task(pkg, task_id: str, prompt: str, log_text: str):
             0,
             0,
             now,
+            role,
         ),
     )
     pkg["config"].TASK_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -900,3 +902,57 @@ def test_agent_status_tool_default_read_does_not_enforce_lifecycle(
     count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     assert count == 1
     assert "tk_overdue" in result or "agents=1" in result
+
+
+@pytest.mark.parametrize("role,prompt,expected_role,loop_id,label", [
+    ("evolve_applier", "Reworded work for a CURATOR", "evolve_applier", "evolve_apply", "Evolve applier"),
+    ("extract", "An ordinary instruction", "extract", "extract", "Extract"),
+    ("custom_role", "Work for a CURATOR", "custom_role", "", "custom_role"),
+    ("", "You are a CANDIDATE REVIEWER", "candidate_reviewer", "candidate_reviewer", "Candidate reviewer"),
+    ("", "ordinary task", "", "", "child"),
+])
+def test_task_role_is_consistent_across_status_and_notifications(
+    mp_with_cid, monkeypatch, role, prompt, expected_role, loop_id, label
+):
+    monkeypatch.setenv("THREADKEEPER_NOTIFY_POLL_S", "30")
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_task(pkg, "running", prompt, role=role)
+    _insert_completed_task(pkg, "success", prompt, "Processed 2 candidates into durable notes.\n", role=role)
+    _insert_failed_task(pkg, "failure", prompt, "A concrete failure occurred.\n", role=role)
+    from threadkeeper.agent_status import agent_status_snapshot, format_agent_status
+    from threadkeeper.notify import _scan_dead_children
+
+    snapshot = agent_status_snapshot(refresh=False)
+    running = next(a for a in snapshot["agents"] if a["task_id"] == "running")
+    success = next(r for r in snapshot["recent_results"] if r["task_id"] == "success")
+    failure = next(r for r in snapshot["recent_failures"] if r["task_id"] == "failure")
+    for item in (running, success, failure):
+        assert (item["role"], item["loop_id"]) == (expected_role, loop_id)
+    assert success["loop_name"] == label
+    # The CLI remains the fallback label for failures without any role.
+    failure_label = label if expected_role else "claude"
+    assert failure["loop_name"] == failure_label
+    assert running["name"] in format_agent_status(snapshot)
+    if loop_id:
+        loop = next(loop for loop in snapshot["loops"] if loop["id"] == loop_id)
+        assert loop["status"] == "running"
+        assert loop["running_agents"][0]["task_id"] == "running"
+    conn = pkg["db"].get_db()
+    notices = _scan_dead_children(conn, int(time.time()) - 60, int(time.time()))
+    notice = next(item for item in notices if item["source"] == "task:failure")
+    assert (notice["role"], notice["loop_id"], notice["label"]) == (
+        expected_role, loop_id, failure_label
+    )
+
+
+def test_completed_custom_role_is_visible_without_a_useful_log(mp_with_cid):
+    pkg = mp_with_cid(_FAKE_CID)
+    _insert_completed_task(pkg, "quiet", "Reworded prompt", "", role="custom_role")
+    from threadkeeper.agent_status import agent_status_snapshot
+
+    result = next(item for item in agent_status_snapshot(refresh=False)["recent_results"]
+                  if item["task_id"] == "quiet")
+    assert result["role"] == "custom_role"
+    assert result["loop_id"] == ""
+    assert result["summary"] == "Task completed."
+    assert result["notify"] is False

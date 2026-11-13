@@ -204,7 +204,7 @@ def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, ca
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
-    assert "curator child died (rc=1)" in caplog.text
+    assert "Curator child died (rc=1)" in caplog.text
     assert "credit balance too low" in caplog.text
     assert "[REDACTED_SECRET]" in caplog.text
     assert "[REDACTED_HOME_PATH]" in caplog.text
@@ -242,7 +242,7 @@ def test_dead_child_returncode_null_with_fatal_log_fires(tmp_path, monkeypatch, 
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
-    assert "candidate_reviewer child died (rc=unknown)" in caplog.text
+    assert "Candidate reviewer child died (rc=unknown)" in caplog.text
     assert "exceeded your monthly quota" in caplog.text
 
 

@@ -300,7 +300,7 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
     out: list[dict] = []
     try:
         rows = conn.execute(
-            "SELECT id, role, chosen_cli, return_code FROM tasks "
+            "SELECT id, role, prompt, chosen_cli, return_code FROM tasks "
             "WHERE ended_at IS NOT NULL AND ended_at > ? AND ended_at <= ? "
             "AND (return_code IS NULL "
             "     OR (return_code != 0 AND return_code != ?)) "
@@ -309,8 +309,12 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
         ).fetchall()
     except sqlite3.OperationalError:
         return out
+    from .agent_status import _task_classification
+
     for r in rows:
-        label = r["role"] or r["chosen_cli"] or "child"
+        role, loop_id, label = _task_classification(r["role"], r["prompt"])
+        if not role:
+            label = r["chosen_cli"] or "child"
         rc = r["return_code"]
         tail = _child_log_tail(r["id"])
         if rc is None:
@@ -324,6 +328,8 @@ def _scan_dead_children(conn: sqlite3.Connection, tk_floor: int,
             "kind": f"child:{label}",
             "source": f"task:{r['id']}",
             "label": label,
+            "role": role,
+            "loop_id": loop_id,
             "rc": rc_disp,
             "reason": _reason_from_task_log(r["id"], tail=tail),
         })

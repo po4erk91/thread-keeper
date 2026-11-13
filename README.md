@@ -506,7 +506,10 @@ child; timeout enforcement and the continuation retry live solely in the
 spawn-budget daemon.
 
 `tk-agent-status` exposes autonomous learning loop status as structured JSON
-or compact text for external monitors:
+or compact text for external monitors. It uses each task's recorded role to
+label running work, recent completions, and failures. Known roles map to their
+loops; custom roles remain visible as children. Only older tasks with no
+recorded role use best-effort prompt matching:
 
 ```sh
 tk-agent-status

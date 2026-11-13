@@ -47,10 +47,6 @@ findings and plans from those dates.
   `needs-design`, check the staged-generation path from #337, and reconcile
   the Pillow audit exceptions, which still describe a 0.8-only pin and next
   require review on 2026-11-21.
-- **Show the task's recorded role ([#389](https://github.com/po4erk91/thread-keeper/issues/389)).**
-  Status still infers roles from prompt wording on main. The proposed change
-  is in [PR #391](https://github.com/po4erk91/thread-keeper/pull/391), which
-  remains open; this behavior has not shipped.
 - **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
   This remains separate from the completed audit-manifest and search evidence
   work.
@@ -407,7 +403,7 @@ provider/CLI spawn adapters remain the deliberate execution boundary.
 
 The post-2026-10-14 open backlog is also now represented explicitly: spawned
 child memory authority (#385), contextual index text for short memories (#387),
-verified skill-mirror convergence (#388), persisted task-role status (#389),
+verified skill-mirror convergence (#388),
 consent and rollback for learned host-wide mutations (#390), semantic
 export/import (#395), lesson audit integrity (#396), installed task-gate
 contract coverage (#399), and automation-owned Evolve autoland (#400).
@@ -1888,6 +1884,8 @@ and Curator child-capability isolation:
   before a child launches. Preserve the cursor, collapse repeated blocker
   telemetry, and retry on a bounded short cadence while keeping real issue
   attempts and empty-queue throttling unchanged.
+- ✅ DONE (#389). **Show the task's recorded role.** Status and failure
+  notifications use persisted roles, with prompt matching only for legacy rows.
 - ✅ DONE (#366). **Curator per-child capability isolation.** Pass/snapshot
   authority is private launch data for the intended child. Ordinary spawns strip
   stale values, and report/research writers verify the owning task, child, pass,

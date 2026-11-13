@@ -32,6 +32,13 @@ version bumps follow semver per the policy in
   SKILL.md; a patch that only adds such pointers needs no evidence and does
   not count toward the patch cap.
 
+## v0.27.1 — 2026-11-13
+
+- **Fixed: task status shows the recorded role.** Running work, useful
+  completions, and failure notifications now use the task's saved role.
+  Custom roles stay visible, and older tasks without a role still use
+  best-effort prompt matching.
+
 ## v0.27.0 — 2026-11-12
 
 - **Added: skill use counted from every CLI.** Codex, Gemini/Antigravity and
