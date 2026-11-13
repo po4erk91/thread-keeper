@@ -14,6 +14,7 @@ from . import config
 from .embeddings import _cosine_search, _dialog_cosine_search, _fts_search
 from .helpers import _fts_query
 from .project_scope import current_project_id, recall_allowed
+from .retrieval_text import scoped_recall, dialogs_allowed, current_recall_project
 
 # Normalized MiniLM cosine below this level is generally nearest-neighbour
 # noise. Apply the threshold to raw dense evidence (never to RRF scores), so a
@@ -50,18 +51,25 @@ def _notes_fts_search(conn: sqlite3.Connection, query: str,
     fq = _fts_query(query)
     if not fq:
         return []
-    from .memory_access import candidate_scope
-    where, params = candidate_scope(conn, "n")
+    from .retrieval_text import candidate_where, use_context_index
+    where, params = candidate_where(conn, "note", "n")
+    contextual = use_context_index(conn)
+    index = "retrieval_fts" if contextual else "notes_fts"
+    index_join = (
+        "JOIN retrieval_documents rd ON rd.rowid=f.rowid "
+        "JOIN notes n ON rd.memory_kind='note' AND CAST(n.id AS TEXT)=rd.memory_id "
+        if contextual else "JOIN notes n ON n.rowid=f.rowid "
+    )
     def _run(match_query: str):
         return conn.execute(
             "SELECT n.id, n.thread_id, n.kind, n.content, n.created_at, "
             "       n.project_id, n.memory_scope, "
-            "       bm25(notes_fts) AS lexical_score "
+            f"       bm25({index}) AS lexical_score "
             # notes_fts is external-content keyed on notes.rowid (content_rowid);
             # join on rowid, NOT n.id — post-migration n.id is a TEXT ULID while
             # the FTS rowid stays the integer notes.rowid.
-            "FROM notes_fts f JOIN notes n ON n.rowid=f.rowid "
-            f"WHERE notes_fts MATCH ? AND ({where}) "
+            f"FROM {index} f {index_join} "
+            f"WHERE {index} MATCH ? AND ({where}) "
             "ORDER BY lexical_score, n.id DESC LIMIT ?",
             (match_query, *params, max(1, int(k))),
         ).fetchall()
@@ -193,6 +201,7 @@ def _visible(candidates: list[Candidate], *, current: str | None,
     ]
 
 
+@scoped_recall
 def retrieve_notes(conn: sqlite3.Connection, query: str, k: int = 5,
                    mode: str = "hybrid", cross_project: bool = False) -> list[Candidate]:
     mode = mode.strip().lower()
@@ -207,7 +216,7 @@ def retrieve_notes(conn: sqlite3.Connection, query: str, k: int = 5,
         _notes_fts_search(conn, query, over_fetch)
         if mode in {"hybrid", "fts"} else []
     )
-    current = current_project_id()
+    current = current_recall_project()
     if mode == "semantic":
         return _visible(dense, current=current, cross_project=cross_project)[:k]
     if mode == "fts":
@@ -216,10 +225,13 @@ def retrieve_notes(conn: sqlite3.Connection, query: str, k: int = 5,
                     current=current, cross_project=cross_project)[:k]
 
 
+@scoped_recall
 def retrieve_dialogs(conn: sqlite3.Connection, query: str, k: int = 5,
                      role: str = "", mode: str = "hybrid",
                      cross_project: bool = False) -> list[Candidate]:
     mode = mode.strip().lower()
+    if not dialogs_allowed():
+        return []
     if mode not in {"hybrid", "semantic", "fts"}:
         raise ValueError(f"unsupported retrieval mode: {mode}")
     role = role.strip().lower()
@@ -232,7 +244,7 @@ def retrieve_dialogs(conn: sqlite3.Connection, query: str, k: int = 5,
         _dialogs_fts_search(conn, query, over_fetch, role=role)
         if mode in {"hybrid", "fts"} else []
     )
-    current = current_project_id()
+    current = current_recall_project()
     if mode == "semantic":
         return _visible(dense, current=current, cross_project=cross_project)[:k]
     if mode == "fts":

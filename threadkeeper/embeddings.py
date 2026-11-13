@@ -301,7 +301,7 @@ def _encode_for_generation(texts: list[str], generation: str):
     a thin server's current-generation host socket is therefore never used for
     this path. Missing legacy runtime support degrades to lexical search.
     """
-    if generation == embedding_fingerprint():
+    if generation in {embedding_fingerprint(), embedding_fingerprint(contextual=False)}:
         return _encode(texts)
     if not SEMANTIC_AVAILABLE:
         return None
@@ -346,7 +346,7 @@ def _runtime_major_minor(package: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else raw
 
 
-def embedding_fingerprint() -> str:
+def embedding_fingerprint(*, contextual: bool = True) -> str:
     """Identity of the vector space used for both documents and queries.
 
     ``embed_backend='onnx'`` alone is insufficient: model, dimension, pooling
@@ -362,15 +362,18 @@ def embedding_fingerprint() -> str:
         runtime = _runtime_major_minor("fastembed")
         model = FASTEMBED_MODEL_ID
         pooling = "mean"
-    return (
+    fingerprint = (
         f"{EMBED_BACKEND}:{model}:revision={EMBED_REVISION}:dim={EMBED_DIM}:"
         f"pool={pooling}:runtime={runtime}"
     )
+    return fingerprint + (":text=context-v1" if contextual else "")
 
 
 def embed_tag(blob: Optional[bytes]) -> Optional[str]:
     """Vector-generation tag stored alongside a freshly written embedding."""
-    return embedding_fingerprint() if blob is not None else None
+    # Immediate writers still embed the raw body. The bounded ingest backfill
+    # stages contextual vectors after the source and its metadata are durable.
+    return embedding_fingerprint(contextual=False) if blob is not None else None
 
 
 def embedding_index_health(conn: sqlite3.Connection) -> dict[str, int | str]:
@@ -462,18 +465,19 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
         except sqlite3.OperationalError:
             pass  # fall through to legacy
     # Legacy Python-side path
-    from .memory_access import candidate_scope
-    where, scope_params = candidate_scope(conn, "n")
+    from .retrieval_text import candidate_where
+    where, scope_params = candidate_where(conn, "note", "n")
     join, effective_embedding = _note_embedding_parts(conn, "n")
     rows = conn.execute(
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, n.project_id, n.memory_scope, "
-        "       g.embedding AS embedding "
+        "       g.embedding AS embedding, g.source_hash, r.content AS retrieval_content "
         "FROM notes n JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='note' AND g.memory_id=CAST(n.id AS TEXT) "
+        "LEFT JOIN retrieval_documents r ON r.memory_kind='note' AND r.memory_id=CAST(n.id AS TEXT) "
         f"WHERE {where} "
         "UNION ALL "
         "SELECT n.id, n.content, n.kind, n.thread_id, n.created_at, n.project_id, n.memory_scope, "
-        f"       {effective_embedding} AS embedding FROM notes n {join} "
+        f"       {effective_embedding} AS embedding, NULL AS source_hash, NULL AS retrieval_content FROM notes n {join} "
         f"WHERE {where} AND {effective_embedding} IS NOT NULL AND n.embed_backend=? "
         "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
         "WHERE g.generation=? AND g.memory_kind='note' "
@@ -484,6 +488,8 @@ def _cosine_search(conn: sqlite3.Connection, query: str, k: int) -> list[dict]:
         return []
     scored = []
     for r in rows:
+        if not _current_vector_source(r, active, "note"):
+            continue
         v = np.frombuffer(r["embedding"], dtype="float32")
         scored.append((float(np.dot(qv, v)), r))
     scored.sort(key=lambda x: -x[0])
@@ -526,8 +532,8 @@ def _vec0_notes_search(conn: sqlite3.Connection, qv_blob: bytes,
             "JOIN notes n ON n.id = v.id "
             "WHERE v.embedding MATCH ? AND k = ?"
         )
-    from .memory_access import candidate_scope
-    where, scope_params = candidate_scope(conn, "n")
+    from .retrieval_text import candidate_where
+    where, scope_params = candidate_where(conn, "note", "n")
     params: list = [qv_blob, fetch_k]
     sql += f" AND ({where})"
     params.extend(scope_params)
@@ -567,15 +573,16 @@ def _dialog_cosine_search(conn, query: str, k: int,
                 return hits
         except sqlite3.OperationalError:
             pass
-    from .memory_access import candidate_scope
-    where, scope_params = candidate_scope(conn, "d")
+    from .retrieval_text import candidate_where
+    where, scope_params = candidate_where(conn, "dialog", "d")
     join, effective_embedding = _dialog_embedding_parts(conn, "d")
     sql = (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        "       d.project_id, d.memory_scope, d.created_at, g.embedding AS embedding "
+        "       d.project_id, d.memory_scope, d.created_at, g.embedding AS embedding, g.source_hash, r.content AS retrieval_content "
         "FROM dialog_messages d JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind='dialog' "
         "AND g.memory_id=CAST(d.uuid AS TEXT)"
+        " LEFT JOIN retrieval_documents r ON r.memory_kind='dialog' AND r.memory_id=d.uuid"
     )
     sql += f" WHERE {where}"
     params: list = [active, *scope_params]
@@ -585,7 +592,7 @@ def _dialog_cosine_search(conn, query: str, k: int,
     sql += " UNION ALL "
     sql += (
         "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
-        f"       d.project_id, d.memory_scope, d.created_at, {effective_embedding} AS embedding "
+        f"       d.project_id, d.memory_scope, d.created_at, {effective_embedding} AS embedding, NULL AS source_hash, NULL AS retrieval_content "
         f"FROM dialog_messages d {join} "
         f"WHERE {where} AND {effective_embedding} IS NOT NULL AND d.embed_backend=? "
         "AND NOT EXISTS (SELECT 1 FROM embedding_generation_vectors g "
@@ -601,10 +608,22 @@ def _dialog_cosine_search(conn, query: str, k: int,
         return []
     scored = []
     for r in rows:
+        if not _current_vector_source(r, active, "dialog"):
+            continue
         v = np.frombuffer(r["embedding"], dtype="float32")
         scored.append((float(np.dot(qv, v)), r))
     scored.sort(key=lambda x: -x[0])
     return [{"score": s, **dict(r)} for s, r in scored[:k]]
+
+
+def _current_vector_source(row, generation: str, kind: str) -> bool:
+    from .memory_compat import source_hash
+    from .retrieval_text import contextual
+    if not contextual(generation):
+        return True
+    if row["source_hash"] is None:
+        return True
+    return row["retrieval_content"] is not None and row["source_hash"] == source_hash(kind, row["retrieval_content"])
 
 
 def _notes_mapped(conn: sqlite3.Connection) -> bool:
@@ -792,8 +811,8 @@ def _vec0_dialog_search(conn: sqlite3.Connection, qv_blob: bytes,
         "JOIN dialog_messages d ON d.uuid = m.uuid "
         "WHERE v.embedding MATCH ? AND k = ?"
     )
-    from .memory_access import candidate_scope
-    where, scope_params = candidate_scope(conn, "d")
+    from .retrieval_text import candidate_where
+    where, scope_params = candidate_where(conn, "dialog", "d")
     params: list = [qv_blob, max(1, int(k))]
     sql += f" AND ({where})"
     params.extend(scope_params)
@@ -825,16 +844,22 @@ def _fts_search(conn: sqlite3.Connection, query: str,
     fq = _fts_query(query)
     if not fq:
         return []
-    from .memory_access import candidate_scope
-    where, scope_params = candidate_scope(conn, "d")
+    from .retrieval_text import candidate_where, use_context_index
+    where, scope_params = candidate_where(conn, "dialog", "d")
+    contextual = use_context_index(conn)
+    index = "retrieval_fts" if contextual else "dialog_fts"
+    index_join = (
+        "JOIN retrieval_documents rd ON rd.rowid=f.rowid "
+        "JOIN dialog_messages d ON rd.memory_kind='dialog' AND d.uuid=rd.memory_id "
+        if contextual else "JOIN dialog_messages d ON d.rowid=f.rowid "
+    )
     def _run(match_query: str):
         sql = (
             "SELECT d.uuid, d.role, d.project, d.session_id, d.content, "
             "       d.project_id, d.memory_scope, "
-            "       d.created_at, bm25(dialog_fts) AS lexical_score "
-            "FROM dialog_fts f "
-            "JOIN dialog_messages d ON d.rowid = f.rowid "
-            f"WHERE dialog_fts MATCH ? AND ({where})"
+            f"       d.created_at, bm25({index}) AS lexical_score "
+            f"FROM {index} f {index_join} "
+            f"WHERE {index} MATCH ? AND ({where})"
         )
         params: list = [match_query, *scope_params]
         if role:

@@ -955,6 +955,14 @@ def _backfill_sync_embeddings(
             if not rows:
                 break
             texts = [(r["t"][:trunc] if trunc else r["t"]) for r in rows]
+            if vec_kind:
+                from .memory_compat import source_text
+                texts = [
+                    source_text(vec_kind, conn.execute(
+                        f"SELECT content FROM {vec_kind}_retrieval_sources WHERE memory_id=?",
+                        (str(r["k"]),),
+                    ).fetchone()[0]) for r in rows
+                ]
             try:
                 vectors = encode_many(texts)
             except Exception:
@@ -974,6 +982,9 @@ def _backfill_sync_embeddings(
                         _vec_upsert_note(conn, r["k"], emb)
                     elif vec_kind == "dialog":
                         _vec_upsert_dialog(conn, r["k"], emb)
+                    if vec_kind:
+                        from .memory_compat import stage_vectors
+                        stage_vectors(conn, active, vec_kind, [(r["k"], texts[i])], [emb])
                     n += 1
                 except sqlite3.OperationalError:
                     continue
@@ -1004,11 +1015,45 @@ def _backfill_background_embeddings(
     unchanged.  Before migration, keep the legacy light-child note backfill.
     """
     from .sync.capture import applying_guard, is_migrated
+    from .retrieval_text import contextual
+    from .embeddings import embedding_fingerprint
+    from .memory_compat import active_generation
+
+    active = active_generation(conn, embedding_fingerprint(), ensure=False)
+    if contextual(active):
+        return _backfill_contextual_embeddings(conn, active, max_rows)
 
     if is_migrated(conn):
         with applying_guard(conn):
             return _backfill_sync_embeddings(conn, max_rows=max_rows)
     return _backfill_note_embeddings(conn, max_n=min(20, max(0, max_rows)))
+
+
+def _backfill_contextual_embeddings(conn, generation: str, max_rows: int) -> int:
+    from .embeddings import encode_many
+    from .memory_compat import source_text, stage_vectors
+    from .config import SEMANTIC_AVAILABLE
+    if not SEMANTIC_AVAILABLE or max_rows <= 0:
+        return 0
+    total = 0
+    for kind in ("note", "dialog"):
+        rows = conn.execute(
+            "SELECT memory_id,content FROM retrieval_documents "
+            "WHERE dirty=1 AND memory_kind=? ORDER BY rowid LIMIT ?",
+            (kind, max_rows - total),
+        ).fetchall()
+        if not rows:
+            continue
+        batch = [(r[0], source_text(kind, r[1])) for r in rows]
+        vectors = encode_many([text for _, text in batch])
+        if vectors is None:
+            return total
+        blobs = [vector.astype("float32").tobytes() for vector in vectors]
+        total += stage_vectors(conn, generation, kind, batch, blobs)
+        conn.commit()
+        if total >= max_rows:
+            return total
+    return total
 
 
 def _backfill_vec_tables(conn: sqlite3.Connection, batch: int = 500) -> tuple[int, int]:

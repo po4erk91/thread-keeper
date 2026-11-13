@@ -65,7 +65,7 @@ def test_encode_is_cross_lingual(sem_pkg):
 
 def test_embed_tag(sem_pkg):
     from threadkeeper import embeddings as emb
-    active = emb.embedding_fingerprint()
+    active = emb.embedding_fingerprint(contextual=False)
     assert emb.embed_tag(b"\x00\x01") == active
     assert emb.embed_tag(None) is None
     assert sem_pkg["config"].EMBED_MODEL_NAME in active

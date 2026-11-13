@@ -281,8 +281,23 @@ records per-table project/global/shared/unresolved counts in
 directories are automatically backfilled, while ambiguous legacy rows fail
 closed. `memory_scope_status()` exposes that report.
 
-This is local recall isolation, not the provider-egress policy: the latter
-decides whether personal data may enter a vendor prompt after retrieval.
+Provider egress is a separate restriction. Raw dialog retrieval applies it
+before candidate generation, including its LIKE fallback.
+
+`retrieval_text` owns the deterministic SQL projection used by live index
+triggers and staged document embeddings. `retrieval_documents` and its
+external-content `retrieval_fts` index are local derived state. Notes use only
+a thread in the same scope; dialog subjects use the first user turn in the
+same source, session, project and scope. Subject edits, moves and erasure
+refresh sibling projections. Evidence always reads the original source row.
+Document hashes reject vectors that predate a content or subject edit.
+
+The `text=context-v1` generation suffix versions this representation. Existing
+stores keep their legacy FTS and vector generation during a resumable rebuild;
+the existing validated activation and rollback pointer selects both readers.
+Ingest drains an indexed dirty-document queue for new contextual writes.
+Sync's ID migration removes dependent views before replacing source tables,
+remaps vector IDs and rebuilds local document projections afterwards.
 
 The database is `~/.threadkeeper/db.sqlite`. On POSIX systems, config startup
 and `bootstrap_db()` best-effort harden the default store:

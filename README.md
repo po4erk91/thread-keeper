@@ -2555,6 +2555,28 @@ manually with Git; directory names alone never establish ownership.
 
 ## Embeddings
 
+Short notes and dialog turns (up to 280 characters) have a separate,
+deterministic `context-v1` search document. It adds a bounded thread or
+conversation subject, kind or role, source, scope and date. Search results and
+evidence links still show the original text. Longer entries get no prefix;
+dialog embedding input keeps its existing 2,000-character bound.
+
+Existing stores keep their active index until `tk-migrate-embeddings --all`
+builds and validates the contextual generation. The same atomic switch selects
+both contextual FTS and vectors; `--rollback` restores the prior search contract.
+New notes are searchable immediately on a contextual store. Ingest catches up
+other writers in bounded batches. Source edits mark derived documents dirty,
+stale vectors are excluded, and deleting a conversation subject refreshes its
+remaining turns. Project and child access, invalidation and retention filters
+run before ranking. Restricted provider-egress policies also cover raw dialog
+search and its fallback. No model generates the added context.
+
+Run `python -m pytest tests/test_contextual_retrieval_eval.py -s` for a fixed
+synthetic comparison of body-only and contextual retrieval. Its JSON report
+includes Recall@3, MRR, wrong-project hits, returned bytes, query latency and
+index size. These small-corpus results describe the regression fixture, not
+accuracy across a user's full memory store.
+
 Semantic search runs `paraphrase-multilingual-MiniLM-L12-v2` (384-dim,
 RU+EN+50 langs). The default backend is **fastembed / ONNX Runtime** — no
 PyTorch. A model-loaded process sits at ~700 MB physical footprint

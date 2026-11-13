@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 import time
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _project(monkeypatch):
+    monkeypatch.setenv("THREADKEEPER_PROJECT_NAMESPACE", "prj_aaaaaaaaaaaaaaaaaaaa")
 
 
 def _tool(pkg, name):

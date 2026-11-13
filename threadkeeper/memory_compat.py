@@ -164,6 +164,10 @@ def stage_vectors(
     blobs: Iterable[bytes],
 ) -> int:
     """Persist one encoded batch. Each batch is independently resumable."""
+    from .retrieval_text import contextual, index_documents
+    rows = list(rows)
+    if contextual(generation):
+        index_documents(conn, kind, rows)
     now = int(time.time())
     staged = 0
     for (memory_id, content), blob in zip(rows, blobs):
@@ -177,6 +181,13 @@ def stage_vectors(
             (generation, kind, str(memory_id), source_hash(kind, content), blob, now),
         )
         staged += 1
+        if contextual(generation) and generation == active_generation(conn, generation, ensure=False):
+            conn.execute(
+                "UPDATE retrieval_documents SET dirty=0 "
+                "WHERE memory_kind=? AND memory_id=? AND "
+                + ("substr(content,1,2000)" if kind == "dialog" else "content") + "=?",
+                (kind, str(memory_id), content),
+            )
     return staged
 
 
@@ -192,11 +203,14 @@ def pending_sources(
     if spec is None:
         raise ValueError(f"unknown embedding memory kind: {kind}")
     _, table, id_col, _ = spec
+    from .retrieval_text import contextual
+    projection = f"{kind}_retrieval_sources" if contextual(generation) else table
+    source_id = "memory_id" if contextual(generation) else id_col
     cursor = conn.execute(
-        f"SELECT s.{id_col}, s.content, g.source_hash FROM {table} s "
+        f"SELECT s.{source_id}, s.content, g.source_hash FROM {projection} s "
         "LEFT JOIN embedding_generation_vectors g ON "
         "g.generation=? AND g.memory_kind=? AND g.memory_id=CAST(s."
-        f"{id_col} AS TEXT) ORDER BY s.rowid",
+        f"{source_id} AS TEXT)",
         (generation, kind),
     )
     while True:
@@ -215,7 +229,10 @@ def coverage(conn: sqlite3.Connection, generation: str) -> dict[str, int | bool]
     """Count exact source/vector matches for an operator-visible report."""
     out: dict[str, int | bool] = {}
     complete = True
+    from .retrieval_text import contextual
     for kind, table, id_col, _limit in _KINDS:
+        if contextual(generation):
+            table, id_col = f"{kind}_retrieval_sources", "memory_id"
         total = staged = valid = 0
         cursor = conn.execute(
             f"SELECT s.{id_col}, s.content, g.source_hash, g.embedding "
