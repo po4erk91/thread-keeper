@@ -32,6 +32,12 @@ version bumps follow semver per the policy in
   SKILL.md; a patch that only adds such pointers needs no evidence and does
   not count toward the patch cap.
 
+## v0.27.3 — 2026-11-13
+
+- **Fixed: skill authors no longer see false missing-file warnings.** An
+  explicit instruction to create a file in the skill being authored is treated
+  as an output. Missing inputs and unclear references are still reported.
+
 ## v0.27.2 — 2026-11-13
 
 - **Fixed: recorded ideas no longer start work automatically.** Evolve now

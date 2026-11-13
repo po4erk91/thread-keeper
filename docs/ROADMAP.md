@@ -13,15 +13,13 @@ question. Below is the current work and the history behind it.
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
+**Completed:** [#466](https://github.com/po4erk91/thread-keeper/issues/466)
+recognizes explicit instructions to create a file in the target skill as
+outputs. Missing bundled inputs and ambiguous or mixed references remain
+checked in skill validation and the Curator manifest.
+
 **Remaining issue-backed work**
 
-- **Avoid false missing-file warnings ([#466](https://github.com/po4erk91/thread-keeper/issues/466)).**
-  Skills that tell an author to create an evaluation file in the target skill
-  currently receive the same warning as a missing bundled input. A synthetic
-  probe confirmed this for `evals/evals.json`; an existing input passed and a
-  missing input still warned. Distinguish explicit generated outputs from
-  required inputs, preserve conservative handling of ambiguous references,
-  and cover mixed uses through skill validation and the Curator manifest.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired

@@ -1825,8 +1825,12 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   import newer copies that were installed into a non-primary CLI root.
   Curator validation reports a missing local resource before a repair is
   mirrored when it appears as a Markdown link or as an inline-code path with a
-  slash. Inline URLs, absolute or escaping paths, shell fragments, and other
-  non-path code are ignored. It also flags a normalized prose paragraph only
+  slash. A standalone creation instruction naming an inline file and the
+  target skill marks that occurrence as an output. Ambiguous references and
+  Markdown links are checked as inputs; if a path is both an output and an
+  input, the input occurrence is still checked. Inline URLs, absolute or
+  escaping paths, shell fragments, and other non-path code are ignored. It
+  also flags a normalized prose paragraph only
   when it is at least 160 characters and appears at least three times; headings,
   frontmatter, fenced examples, and short boilerplate are excluded.
 

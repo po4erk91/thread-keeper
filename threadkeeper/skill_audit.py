@@ -39,6 +39,15 @@ _CODEX_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _INLINE_CODE_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_OUTPUT_INSTRUCTION_RE = re.compile(
+    r"^\s*(?:[-+*]\s+|\d+[.)]\s+)?"
+    r"(?:create|write|generate)\s+"
+    r"(?:(?:(?:a|an|the)\s+)?(?:evaluation\s+)?file\s+)?"
+    r"`(?P<path>[^`\n]+)`\s+"
+    r"(?:in|inside|under)\s+(?:the|your)\s+"
+    r"(?:target skill|new skill|skill being authored)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 _ATX_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 _SETEXT_HEADING_RE = re.compile(r"^\s*(?:=+|-+)\s*$")
@@ -319,16 +328,21 @@ def _relative_resource_findings(skill_dir: Path, body: str) -> list[str]:
         exists = _resource_exists_within_skill(skill_dir, decoded)
         if exists is False:
             findings.append(f"dangling_relative_link:{display}")
-    for raw_target in _INLINE_CODE_RE.findall(scanable):
-        if not _is_path_like_inline_code(raw_target):
-            continue
-        resource = _safe_relative_resource(raw_target)
-        if resource is None:
-            continue
-        display, decoded = resource
-        exists = _resource_exists_within_skill(skill_dir, decoded)
-        if exists is False:
-            findings.append(f"dangling_inline_resource:{display}")
+    for line in scanable.splitlines():
+        output = _OUTPUT_INSTRUCTION_RE.fullmatch(line)
+        for match in _INLINE_CODE_RE.finditer(line):
+            raw_target = match.group(1)
+            if output and match.span(1) == output.span("path"):
+                continue
+            if not _is_path_like_inline_code(raw_target):
+                continue
+            resource = _safe_relative_resource(raw_target)
+            if resource is None:
+                continue
+            display, decoded = resource
+            exists = _resource_exists_within_skill(skill_dir, decoded)
+            if exists is False:
+                findings.append(f"dangling_inline_resource:{display}")
     return sorted(set(findings))
 
 
