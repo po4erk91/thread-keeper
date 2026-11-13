@@ -323,7 +323,11 @@ def test_background_embedding_backfill_is_not_an_lww_write(
         after = b.execute(
             "SELECT origin_node,hlc,embedding FROM notes WHERE id=?", (nid,)
         ).fetchone()
-        assert after["embedding"] is not None
+        assert b.execute(
+            "SELECT embedding FROM embedding_generation_vectors "
+            "WHERE memory_kind='note' AND memory_id=? AND generation=?",
+            (nid, embeddings.embedding_fingerprint()),
+        ).fetchone()[0] is not None
         assert (after["origin_node"], after["hlc"]) == (
             before["origin_node"], before["hlc"]
         )

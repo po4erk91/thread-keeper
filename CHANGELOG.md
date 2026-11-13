@@ -32,6 +32,16 @@ version bumps follow semver per the policy in
   SKILL.md; a patch that only adds such pointers needs no evidence and does
   not count toward the patch cap.
 
+## v0.28.0 — 2026-11-13
+
+- **Added: find short memories by their subject.** Notes and dialog turns can
+  use bounded context in both lexical and semantic search, while results keep
+  their original wording. Existing stores use the resumable index migration,
+  with validation before activation and an atomic rollback.
+- **Fixed: apply recall restrictions before ranking.** Project access, erased
+  or invalidated records, dialog expiry and provider restrictions cannot be
+  bypassed by a contextual search or its dialog fallback.
+
 ## v0.27.3 — 2026-11-13
 
 - **Fixed: skill authors no longer see false missing-file warnings.** An

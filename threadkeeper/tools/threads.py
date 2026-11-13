@@ -127,7 +127,14 @@ def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> 
     identity.ensure_session_started()
     # Model inference must finish before BEGIN IMMEDIATE so it never extends
     # the single-writer critical section.
+    now = int(time.time())
+    from ..retrieval_text import note_text
+    from ..memory_compat import stage_vectors
+    from ..embeddings import embedding_fingerprint
+    with read_db() as source_conn:
+        indexed_text = note_text(source_conn, thread_id, content, kind, now)
     emb = _embed(content)
+    contextual_embedding = emb if indexed_text == content else _embed(indexed_text)
 
     def _write(conn: sqlite3.Connection) -> str:
         thread = conn.execute(
@@ -135,7 +142,6 @@ def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> 
         ).fetchone()
         if not thread:
             return f"ERR thread_not_found={thread_id}"
-        now = int(time.time())
         cur = conn.execute(
             "INSERT INTO notes (thread_id, content, kind, created_at, session_id, "
             "embedding, embed_backend, project_id, memory_scope) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -152,6 +158,8 @@ def note(thread_id: str, content: str, kind: str = "move", source: str = "") -> 
         ):
             raise ValueError("authority_stamp_failed")
         _vec_upsert_note(conn, note_id, emb)
+        if contextual_embedding is not None:
+            stage_vectors(conn, embedding_fingerprint(), "note", [(note_id, indexed_text)], [contextual_embedding])
         memory_provenance(
             conn, "note", note_id, source_event_kind=f"note:{kind}",
             source_event_id=thread_id, source_thread_id=thread_id,

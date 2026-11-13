@@ -56,6 +56,7 @@ CATEGORY_CLASS: dict[str, str] = {
     "currently_testing": PERSONAL,
     "threads": WORK,
     "notes": WORK,
+    "dialogs": WORK,
     "tasks": WORK,
     "skills": SHARED,
     "lessons": SHARED,

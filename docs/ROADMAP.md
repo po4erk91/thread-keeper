@@ -51,9 +51,10 @@ checked in skill validation and the Curator manifest.
   `needs-design`, check the staged-generation path from #337, and reconcile
   the Pillow audit exceptions, which still describe a 0.8-only pin and next
   require review on 2026-11-21.
-- **Improve short-memory retrieval ([#387](https://github.com/po4erk91/thread-keeper/issues/387)).**
-  This remains separate from the completed audit-manifest and search evidence
-  work.
+- **Improve short-memory retrieval.** Implemented: short notes and dialog turns
+  have bounded, deterministic search context while results retain their original
+  text. Existing stores activate it through the staged generation migration;
+  the fixed corpus reports recall, ranking, leakage, bytes, latency and size.
 - **Verify active guards for repeatedly broken lessons ([#414](https://github.com/po4erk91/thread-keeper/issues/414)).**
   Existing violation counters do not yet complete this contract.
 

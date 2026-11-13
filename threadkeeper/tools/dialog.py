@@ -26,6 +26,7 @@ from ..task_spool import (
     write_spool_text,
 )
 from ..retrieval import Candidate, retrieve_dialogs
+from ..retrieval_text import dialogs_allowed, candidate_where, recall_scope
 from ..evidence import search_result
 from ..tool_schemas import SearchResults
 from ..ingest import _ingest_all
@@ -98,6 +99,8 @@ def _dialog_search_conn(conn: sqlite3.Connection, *, query: str, k: int,
     """Connection-scoped implementation used by the read-only MCP wrapper."""
     role = role.strip().lower()
     mode = mode.strip().lower()
+    if not dialogs_allowed():
+        return search_result(conn, "no_matches (provider_egress)")
     if mode not in ("hybrid", "semantic", "fts"):
         return search_result(conn, f"ERR bad_mode={mode} (use hybrid|semantic|fts)")
     hits = retrieve_dialogs(conn, query, k=k, role=role, mode=mode,
@@ -130,7 +133,8 @@ def _legacy_like_fallback(conn: sqlite3.Connection, query: str,
     if role:
         where += " AND role = ?"
         params.append(role)
-    scope_where, scope_params = recall_where("dialog_messages", cross_project=cross_project)
+    with recall_scope(cross_project):
+        scope_where, scope_params = candidate_where(conn, "dialog", "dialog_messages")
     where += f" AND {scope_where}"
     params.extend(scope_params)
     params.append(k)

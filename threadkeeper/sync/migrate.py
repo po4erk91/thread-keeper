@@ -309,11 +309,18 @@ def apply(db_path: Path, do_apply: bool) -> int:
         maps = _build_maps(conn)
         children = _declared_fk_children(conn)
         conn.execute("BEGIN IMMEDIATE")
+        from ..retrieval_text import drop_source_schema
+        drop_source_schema(conn)
         for table in INT_PK_TABLES:
             _rebuild_int_table(conn, table)
         for table in REID_PREFIX:
             _remap_ids(conn, table, maps[table])
         _fix_refs(conn, maps, children)
+        for old_id, new_id in maps["notes"].items():
+            conn.execute(
+                "UPDATE embedding_generation_vectors SET memory_id=? "
+                "WHERE memory_kind='note' AND memory_id=?", (new_id, str(old_id)),
+            )
         _rebuild_notes_fts(conn)
         conn.execute("COMMIT")
         # Enable the feature BEFORE reopening via get_db so that connection
@@ -345,6 +352,8 @@ def apply(db_path: Path, do_apply: bool) -> int:
     bootstrap_db(force=True)
     conn = get_db()
     try:
+        from ..retrieval_text import rebuild_documents
+        rebuild_documents(conn)
         with capture.applying_guard(conn):
             _rebuild_derived(conn)
             _stamp_baseline_hlc(conn)
