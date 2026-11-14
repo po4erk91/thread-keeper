@@ -8,7 +8,7 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-13 roadmap status
+## 2026-11-14 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
@@ -20,6 +20,17 @@ checked in skill validation and the Curator manifest.
 
 **Remaining issue-backed work**
 
+- **Keep approval-only queues on the normal schedule ([#365 follow-up](https://github.com/po4erk91/thread-keeper/issues/365#issuecomment-6876984665)).**
+  People who record work without approving implementation can make Evolve
+  check GitHub every hour instead of waiting for the configured daily or weekly
+  interval. A completed no-work check becomes a transient failure when its
+  result includes missing-approval or untrusted-author diagnostics. A paired
+  disposable SQLite probe confirmed the extra retry; changing only the
+  classifier in a test bench restored the normal interval while preserving
+  retries for actual failures. Classify the outcome independently of its
+  display details, keep both approval gates and diagnostics, and verify the
+  saved cursor, next retry, and next scheduler wake. The existing tracker
+  holds this follow-up to its completed retry-cadence work.
 - **Repair contradictory lesson summaries ([#469](https://github.com/po4erk91/thread-keeper/issues/469)).**
   People scanning the lesson list can still see advice that contradicts a
   corrected body. A synthetic probe confirmed that `lesson_patch` rejects an
