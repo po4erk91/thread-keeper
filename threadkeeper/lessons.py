@@ -34,7 +34,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from .config import WRITE_ORIGIN
 
@@ -350,6 +350,54 @@ def patch_lesson(
             )
             return "ok"
     return "not_found"
+
+
+def valid_lesson_summary(summary: str) -> bool:
+    """A summary occupies one nonempty line and cannot contain sentinels."""
+    line_breaks = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+    upper = summary.upper()
+    return bool(
+        summary and summary == summary.strip()
+        and not any(c in summary for c in line_breaks)
+        and "<!--" not in summary and "-->" not in summary
+        and "LESSON:BEGIN" not in upper and "LESSON:END" not in upper
+    )
+
+
+def patch_lesson_summary(
+    slug: str,
+    expected_summary: str,
+    new_summary: str,
+    expected_section: str,
+    save_preimage: Callable[[dict], None],
+    path: Optional[Path] = None,
+) -> str:
+    """Replace the exact summary after checking the reviewed section under lock."""
+    from .memory_access import require_write
+    require_write()
+    if not valid_lesson_summary(new_summary):
+        return "invalid_summary"
+    fp = path or _LESSONS_PATH
+    with _lessons_file_lock(fp):
+        snapshot = lesson_section(slug, path=fp)
+        if not snapshot:
+            return "not_found"
+        if snapshot["section"] != expected_section:
+            return "stale_lesson"
+        match = re.match(
+            r"(<!-- LESSON:BEGIN [^\n]*-->\n## [^\n]*\n> )([^\n]*)(\n)",
+            snapshot["section"],
+        )
+        if not match or match.group(2) != expected_summary:
+            return "stale_summary"
+        save_preimage(snapshot)
+        section = snapshot["section"]
+        updated = section[:match.start(2)] + new_summary + section[match.end(2):]
+        file_body = snapshot["file_body"]
+        fp.write_text(
+            file_body[:snapshot["start"]] + updated + file_body[snapshot["end"]:]
+        )
+        return "ok"
 
 
 def remove_lesson(slug: str, path: Optional[Path] = None) -> bool:

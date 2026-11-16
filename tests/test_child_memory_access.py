@@ -250,3 +250,12 @@ def test_vec0_candidate_payloads_are_namespace_filtered(fresh_mp, monkeypatch):
     assert notes[0]['project_id'] == dialogs[0]['project_id'] == PROJECT
     observer.close()
     conn.close()
+
+
+def test_read_only_child_cannot_patch_a_lesson_summary(fresh_mp, monkeypatch):
+    from threadkeeper.lessons import append_lesson, get_path
+    append_lesson("rule", "body", "old")
+    before = get_path().read_bytes()
+    _grant(fresh_mp, monkeypatch)
+    assert _call(_tool(fresh_mp, "lesson_patch"), "rule", "old", "new", target="summary") == "ERR memory_access_denied"
+    assert get_path().read_bytes() == before

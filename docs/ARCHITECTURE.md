@@ -2098,12 +2098,16 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   that pass, they emit `events.kind='curator_destructive_action'` rows such as
   `lesson_pruned`, `lesson_patched`, `lesson_consolidated`, and
   `skill_deleted`, with a tombstone path when a deleted body is captured.
+  Summary-targeted `lesson_patch` checks the entire reviewed section under the
+  lesson lock and saves its exact pre-image as a separate `lesson_summary`
+  trash artifact before writing. Its audit event points to that artifact; an
+  authorized reviewer can recover the old summary with a reverse summary patch.
   Separately, delete-class tools persist a full pre-image before mutating:
   `lesson_remove` writes the exact `LESSON:BEGIN/END` section plus its
   `lesson_usage` row under `<db dir>/curator/trash/`, and
   `skill_manage(action='delete')` writes the whole skill directory plus its
   `skill_usage` row there. Restore snapshots with `curator_restore(...)`, and
-  restore trash artifacts with `lesson_restore(slug=...)` or
+  restore deleted lessons and skills with `lesson_restore(slug=...)` or
   `skill_manage(action='restore', name=...)`. Trash is bounded by
   `THREADKEEPER_CURATOR_TRASH_TTL_DAYS` (default 30); expired artifacts are
   swept on new trash writes. Protected refusal is server-side: lesson sections
@@ -2114,7 +2118,7 @@ belongs to the `memory-admin` profile; autonomous aging never touches fixtures.
   while pinned skills always refuse deletion. `mp_dashboard()` renders
   destructive action counts by window.
   The lesson file itself is a separate serialization boundary:
-  `append_lesson`, `lesson_remove`, and `lesson_restore` hold a blocking
+  `append_lesson`, `lesson_patch`, `lesson_remove`, and `lesson_restore` hold a blocking
   `fcntl.flock` on `lessons.md.lock` across file creation/read/mutate/write, so
   foreground writes and every learning-loop child serialize on the shared
   store instead of relying on per-daemon dispatch locks.

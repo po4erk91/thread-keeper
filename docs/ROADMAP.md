@@ -18,6 +18,10 @@ recognizes explicit instructions to create a file in the target skill as
 outputs. Missing bundled inputs and ambiguous or mixed references remain
 checked in skill validation and the Curator manifest.
 
+**Completed:** [#469](https://github.com/po4erk91/thread-keeper/issues/469)
+lets reviewers repair a lesson summary with an exact expected value. The body
+and provenance are preserved, and a recovery pre-image is saved.
+
 **Remaining issue-backed work**
 
 - **Keep approval-only queues on the normal schedule ([#365 follow-up](https://github.com/po4erk91/thread-keeper/issues/365#issuecomment-6876984665)).**
@@ -31,14 +35,6 @@ checked in skill validation and the Curator manifest.
   display details, keep both approval gates and diagnostics, and verify the
   saved cursor, next retry, and next scheduler wake. The existing tracker
   holds this follow-up to its completed retry-cadence work.
-- **Repair contradictory lesson summaries ([#469](https://github.com/po4erk91/thread-keeper/issues/469)).**
-  People scanning the lesson list can still see advice that contradicts a
-  corrected body. A synthetic probe confirmed that `lesson_patch` rejects an
-  exact summary replacement while a body patch succeeds and leaves the old
-  summary. Add a summary-only correction with an expected-value or revision
-  check, preserved provenance and protection rules, and an audit/recovery
-  record. Keep body patches unchanged. This extends the completed body-edit
-  work in #161; the legacy suggestion now points to this tracker.
 - **Expire copied behavioral observations ([#455](https://github.com/po4erk91/thread-keeper/issues/455)).**
   People who enable conversation expiry can still have the same raw text kept
   in the behavioral-inference buffer. A synthetic probe deleted two expired

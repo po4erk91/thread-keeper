@@ -100,18 +100,21 @@ def capture_removed_lesson(
     post_remove_sha256: str,
     usage_row: Optional[dict[str, Any]] = None,
     now: Optional[int] = None,
+    kind: str = "lesson",
 ) -> Path:
-    """Persist the exact lesson section that is about to be removed."""
+    """Persist an exact lesson section before removal or summary repair."""
     now_t = int(now or time.time())
     sweep_expired_trash(now=now_t)
-    artifact = _new_artifact_dir("lesson", slug, now=now_t)
+    if kind not in {"lesson", "lesson_summary"}:
+        raise ValueError("invalid lesson artifact kind")
+    artifact = _new_artifact_dir(kind, slug, now=now_t)
     data = section.encode("utf-8")
     (artifact / "section.md").write_bytes(data)
     _write_meta(
         artifact / "meta.json",
         {
             "version": 1,
-            "kind": "lesson",
+            "kind": kind,
             "slug": slug,
             "source": source,
             "created_at": now_t,
@@ -219,7 +222,7 @@ def latest_skill_artifact(name: str) -> Optional[Path]:
 
 def read_lesson_artifact(artifact: Path) -> tuple[str, dict[str, Any]]:
     meta = _read_meta(artifact)
-    if meta.get("kind") != "lesson":
+    if meta.get("kind") not in {"lesson", "lesson_summary"}:
         raise ValueError("trash artifact is not a lesson")
     data = (artifact / "section.md").read_bytes()
     if meta.get("sha256") != _sha256_bytes(data):

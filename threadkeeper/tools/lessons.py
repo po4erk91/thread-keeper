@@ -16,9 +16,9 @@
   lesson_neighbors(title, body, summary, k)
     Preview the nearest existing lessons before a new lesson is written.
 
-  lesson_patch(slug, old_string, new_string)
-    Replace one unique substring in a lesson without reserializing its
-    section or changing its metadata.
+  lesson_patch(slug, old_string, new_string, target="body")
+    Replace one unique body substring, or an exact summary with
+    target="summary", without reserializing the section or changing metadata.
 
   lesson_remove(slug, force=False, replacement_slug="")
     Remove one lesson section by slug. Refuses protected lessons unless
@@ -82,6 +82,8 @@ from ..lessons import (
     get_path,
     lesson_protection,
     patch_lesson,
+    patch_lesson_summary,
+    valid_lesson_summary,
     record_lesson_access,
     remove_lesson,
     restore_lesson_section,
@@ -1008,12 +1010,16 @@ def lesson_patch(
     slug: str,
     old_string: str,
     new_string: str = "",
+    target: str = "body",
 ) -> str:
     """Replace one unique substring in a materialized lesson.
 
     ``old_string`` must occur exactly once within the lesson's markdown
     body. The operation preserves the lesson's heading, summary, provenance,
     and timestamps, unlike a wholesale ``lesson_append`` replacement.
+    For ``target="summary"``, old_string must equal the entire current
+    summary and new_string must be a nonempty single line without markers.
+    A recovery pre-image is saved before the change.
     """
     conn = get_db()
     _ensure_session(conn)
@@ -1023,6 +1029,10 @@ def lesson_patch(
     slug = _slugify(raw_slug)
     if not old_string:
         return "ERR old_string_required"
+    if target not in {"body", "summary"}:
+        return "ERR invalid_target"
+    if target == "summary" and not valid_lesson_summary(new_string):
+        return "ERR invalid_summary"
     # Screen only text newly introduced by loop-authored patches. Existing
     # lessons may legitimately document a marker for defensive purposes.
     if WRITE_ORIGIN != "foreground" and (
@@ -1042,10 +1052,48 @@ def lesson_patch(
     if error := _curator_lesson_refusal(conn, existing_item, "lesson_patch"):
         return error
     current = existing_item.get("body", "")
-    if WRITE_ORIGIN != "foreground" and current.count(old_string) == 1:
-        if refusal := host_mutation_refusal(conn, current.replace(old_string, new_string, 1)):
-            return refusal
-    result = patch_lesson(slug, old_string, new_string)
+    if WRITE_ORIGIN != "foreground":
+        if target == "summary":
+            proposed = current.replace(
+                "\n> " + old_string + "\n", "\n> " + new_string + "\n", 1,
+            )
+            if refusal := host_mutation_refusal(conn, proposed):
+                return refusal
+        elif current.count(old_string) == 1:
+            if refusal := host_mutation_refusal(conn, current.replace(old_string, new_string, 1)):
+                return refusal
+    artifact = None
+    if target == "summary":
+        snapshot = lesson_section(slug)
+        if not snapshot:
+            return f"ERR not_found slug={slug}"
+        # Ensure the checks above were made against the exact current section.
+        current_item = next(
+            (item for item in iter_lessons() if item["slug"] == slug), None,
+        )
+        if current_item != existing_item or lesson_section(slug) != snapshot:
+            return "ERR stale_lesson"
+
+        def save_preimage(locked_snapshot: dict) -> None:
+            nonlocal artifact
+            artifact = capture_removed_lesson(
+                slug=slug, section=locked_snapshot["section"],
+                source=locked_snapshot["source"], lessons_path=get_path(),
+                char_start=locked_snapshot["start"], char_end=locked_snapshot["end"],
+                post_remove_sha256="", usage_row=_lesson_usage_row(conn, slug),
+                kind="lesson_summary",
+            )
+
+        try:
+            result = patch_lesson_summary(
+                slug, old_string, new_string, snapshot["section"], save_preimage,
+            )
+        except Exception as e:
+            return f"ERR summary_recovery_failed slug={slug}: {e}"
+    else:
+        result = patch_lesson(slug, old_string, new_string)
+    if result in {"stale_lesson", "stale_summary"}:
+        return f"ERR {result}"
     if result == "old_string_not_found":
         return "ERR old_string_not_found"
     if result == "old_string_ambiguous":
@@ -1060,7 +1108,7 @@ def lesson_patch(
         if item["slug"] == slug:
             ensure_lesson_usage(conn, item)
             break
-    extra = ""
+    extra = f"target=summary trash={artifact.name}" if artifact else ""
     if WRITE_ORIGIN == "curator":
         tombstone = record_curator_action(
             conn,
@@ -1070,7 +1118,7 @@ def lesson_patch(
             body=existing_item.get("body", ""),
         )
         if tombstone:
-            extra = f"tombstone={tombstone}"
+            extra = " ".join(filter(None, (extra, f"tombstone={tombstone}")))
     try:
         _record_lesson_append_event(
             conn, slug, op="patch", source=existing_item.get("source", ""),
