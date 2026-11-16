@@ -900,7 +900,13 @@ daemon even if a CLI drops the no-embeddings env. Idempotent through
 
 Before writing memory, the observer now checks existing lessons/skills and
 prefers patching broad skills. `lesson_patch(slug, old_string, new_string)`
-can correct one unique substring without reserializing a lesson. Shadow-origin
+can correct one unique substring in the body without reserializing a lesson.
+To repair a contradictory one-line summary, call `lesson_patch` with
+`target="summary"`, the entire current summary as `old_string`, and the new
+summary as `new_string`. A stale summary or changed lesson is refused. The
+previous section is saved in the recovery trash before the edit; to undo it,
+read that pre-image and patch the current summary back to its old value.
+Existing access, protection and content checks still apply. Shadow-origin
 `lesson_append` is a compact fallback only: oversized new bodies are rejected,
 though an existing same-slug long lesson may be corrected without increasing
 its body size; near-duplicate slugs are blocked, and semantic body matches are

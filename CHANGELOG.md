@@ -5,6 +5,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.30.0 — 2026-11-16
+
+- **Added: repair a lesson summary safely (#469).** A reviewer can correct
+  outdated list advice while keeping the lesson body and history. The edit
+  checks the current lesson and saves a recovery copy before writing.
+
 ## [Unreleased]
 
 - **Fixed: learning loops now see your dialog.** Most transcripts are stored

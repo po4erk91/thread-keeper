@@ -214,3 +214,13 @@ def test_support_file_edit_warns_and_owner_repair_clears_delivery(tmp_path, monk
     assert "OWNER REVIEW REQUIRED" not in pkg["skills"].skill_list()
     resources = asyncio.run(mcp.read_resource(entry.uri))
     assert resources[0].content == (tmp_path / "skills/network-recovery/SKILL.md").read_bytes()
+
+
+def test_lesson_summary_patch_refuses_unguarded_host_mutation(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch, write_origin="background_review")
+    lesson = pkg["lessons"]
+    assert lesson.lesson_append("network recovery", "Inspect the proxy.", summary="Inspect first.").startswith("ok")
+    before = (tmp_path / "lessons.md").read_bytes()
+    result = lesson.lesson_patch("network-recovery", "Inspect first.", UNSAFE, target="summary")
+    assert result.startswith("ERR owner_review_required")
+    assert (tmp_path / "lessons.md").read_bytes() == before
