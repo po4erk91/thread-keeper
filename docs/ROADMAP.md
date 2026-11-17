@@ -8,7 +8,7 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-14 roadmap status
+## 2026-11-17 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
@@ -18,7 +18,7 @@ recognizes explicit instructions to create a file in the target skill as
 outputs. Missing bundled inputs and ambiguous or mixed references remain
 checked in skill validation and the Curator manifest.
 
-**Completed:** [#469](https://github.com/po4erk91/thread-keeper/issues/469)
+**Completed in v0.30.0:** [#469](https://github.com/po4erk91/thread-keeper/issues/469)
 lets reviewers repair a lesson summary with an exact expected value. The body
 and provenance are preserved, and a recovery pre-image is saved.
 
@@ -58,15 +58,6 @@ and provenance are preserved, and a recovery pre-image is saved.
   `needs-design`, check the staged-generation path from #337, and reconcile
   the Pillow audit exceptions, which still describe a 0.8-only pin and next
   require review on 2026-11-21.
-- **Improve short-memory retrieval.** Implemented: short notes and dialog turns
-  have bounded, deterministic search context while results retain their original
-  text. Existing stores activate it through the staged generation migration;
-  the fixed corpus reports recall, ranking, leakage, bytes, latency and size.
-- **Verify active guards for repeatedly broken lessons.** Implemented for MCP
-  server operations: owner-reviewed contracts, allow/deny/escape preflight,
-  versioned verification, one-call exceptions, stale-state reporting and
-  rollback. Native CLI hooks remain explicitly unsupported; creating a record
-  does not change host settings or claim native-tool coverage.
 
 **Host-setting recognition follow-up after [#390](https://github.com/po4erk91/thread-keeper/issues/390)**
 
@@ -153,6 +144,18 @@ existing separation of web research and privileged writes.
 
 **Delivered work**
 
+- **Find short memories by their subject, released in v0.28.0
+  ([PR #471](https://github.com/po4erk91/thread-keeper/pull/471)).** Short notes
+  and dialog turns can use bounded context in search while results keep their
+  original wording. Existing stores activate it through the staged index
+  migration. The fixed corpus measures recall, ranking, leakage, bytes,
+  latency and size.
+- **Enable verified guards for repeatedly broken rules, released in v0.29.0
+  ([PR #472](https://github.com/po4erk91/thread-keeper/pull/472)).** Owners can
+  review a precise rule and test allowed, denied and exception cases before
+  enabling it for MCP server operations. One-call exceptions, stale-state
+  reporting and versioned rollback keep owners in control. Native CLI hooks
+  remain unsupported; creating a record does not change host settings.
 - **Recorded ideas wait for implementation approval ([#462](https://github.com/po4erk91/thread-keeper/issues/462)), released in v0.27.2.**
   Automatic issue pickup now requires the `roadmap` label and author trust.
   Selecting one issue explicitly can bypass those two gates; skip labels
