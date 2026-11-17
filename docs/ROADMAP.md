@@ -18,6 +18,20 @@ recognizes explicit instructions to create a file in the target skill as
 outputs. Missing bundled inputs and ambiguous or mixed references remain
 checked in skill validation and the Curator manifest.
 
+**Resource-reference follow-up after [#382](https://github.com/po4erk91/thread-keeper/issues/382#issuecomment-6956231571)**
+
+People reviewing skills still see missing-file warnings for an explicitly
+illustrative asset and a path anchored to the target application repository.
+A disposable synthetic probe reported both as missing skill dependencies.
+Generated target-skill outputs and existing bundled inputs passed, while a
+genuinely missing bundled input was reported correctly.
+
+Extend the existing reference classification to recognize these two contexts
+without hiding ambiguous or mixed input uses. Keep skill validation and Curator
+manifests consistent, preserve protected sources, and cover the examples and
+real bundled inputs with paired regression cases. The existing tracker holds
+this remaining gap; #466's generated-output fix remains complete.
+
 **Completed in v0.30.0:** [#469](https://github.com/po4erk91/thread-keeper/issues/469)
 lets reviewers repair a lesson summary with an exact expected value. The body
 and provenance are preserved, and a recovery pre-image is saved.
