@@ -8,10 +8,34 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-17 roadmap status
+## 2026-11-18 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
+
+**Task and log access follow-ups**
+
+- **Confine task-log reads ([#478](https://github.com/po4erk91/thread-keeper/issues/478)).**
+  An agent can supply a task ID that selects an unrelated local log outside
+  the task spool. A disposable synthetic probe confirmed this through the
+  real tool from a read-only child. Resolve logs through registered task
+  records, validate IDs before file access, and keep reads inside the spool
+  even if a parent directory is replaced. Preserve the existing owner and
+  symlink checks, and test allowed reads alongside refused traversal.
+- **Keep task content within its project ([#359 follow-up](https://github.com/po4erk91/thread-keeper/issues/359#issuecomment-6974219317)).**
+  A project session can still receive another project's task prompts through
+  status tools and the status resource. A child with a saved read-only project
+  grant can list other-project and unresolved prompts and read another
+  project's task log. The paired synthetic probe's normal scope predicate
+  returned only the allowed task. Apply the existing restrictions before
+  returning task content or opening logs, including completion and failure
+  details. Keep whole-system capacity counts free of private content.
+- **Let read-only workers read cached status ([#348 follow-up](https://github.com/po4erk91/thread-keeper/issues/348#issuecomment-6974248923)).**
+  The real status tool and resource fail under a valid read-only child grant
+  because their GitHub budget view attempts schema setup. A paired disposable
+  probe succeeded after changing only that view to read the existing schema
+  in a test bench. Keep setup with bootstrap or explicit writers, preserve the
+  child authorizer, and cover both successful reads and unavailable schemas.
 
 **Completed:** [#466](https://github.com/po4erk91/thread-keeper/issues/466)
 recognizes explicit instructions to create a file in the target skill as
