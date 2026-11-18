@@ -13,6 +13,28 @@ question. Below is the current work and the history behind it.
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
+**Research-worker adapter follow-up after [#263](https://github.com/po4erk91/thread-keeper/issues/263#issuecomment-6987695579)**
+
+People who select Codex or Copilot for web research can give the researcher
+broader file and tool access than requested. The authenticated digest handoff
+is implemented, but the native worker launch does not enforce the same file
+restriction on these routes.
+
+A disposable probe captured commands from the real Evolve research launcher
+and spawn path without starting a model or worker. Both requests excluded
+`Bash`, `Edit`, and `Write`, and kept durable memory read-only. Codex enabled
+web search with a `workspace-write` sandbox. Copilot approved all tools with
+`--allow-all-tools` and did not apply the supplied tool list or build isolated
+MCP configuration. This verifies command construction, not a successful attack.
+
+Enforce the research restrictions after adapter selection, or refuse an
+unsupported route before reserving or launching a worker. Keep the existing
+handoff checks and approved implementation workers' write access. Cover the
+shared Curator research path, test adapter translation, and use disposable
+native checks for allowed handoffs, denied unrelated file writes, and excluded
+unrelated MCP servers. The existing issue holds this follow-up to its completed
+handoff work.
+
 **Task and log access follow-ups**
 
 - **Confine task-log reads ([#478](https://github.com/po4erk91/thread-keeper/issues/478)).**
