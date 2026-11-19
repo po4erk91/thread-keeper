@@ -8,7 +8,7 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-18 roadmap status
+## 2026-11-19 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
@@ -35,8 +35,17 @@ native checks for allowed handoffs, denied unrelated file writes, and excluded
 unrelated MCP servers. The existing issue holds this follow-up to its completed
 handoff work.
 
-**Task and log access follow-ups**
+**Task output and access follow-ups**
 
+- **Bound memory while returning worker output ([#437 follow-up](https://github.com/po4erk91/thread-keeper/issues/437#issuecomment-7001063634)).**
+  A routine completion or log-tail read loads the entire captured log before
+  selecting a small reply. In a synthetic probe of the MCP Tasks result
+  helper, increasing the log from about 64 KiB to 16 MiB increased peak Python
+  allocations from about 0.13 MiB to 32 MiB, while both replies stayed at
+  16,022 characters. This measures allocations, not process RSS or an outage.
+  Read a bounded byte suffix before decoding and formatting, including for
+  long lines and requests for all lines. Keep existing safe file access and
+  completion caching, show truncation, and test memory bounds as logs grow.
 - **Confine task-log reads ([#478](https://github.com/po4erk91/thread-keeper/issues/478)).**
   An agent can supply a task ID that selects an unrelated local log outside
   the task spool. A disposable synthetic probe confirmed this through the
