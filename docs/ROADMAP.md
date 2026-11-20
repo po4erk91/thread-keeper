@@ -13,6 +13,26 @@ question. Below is the current work and the history behind it.
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
+**Safety-daemon supervision follow-up after [#114](https://github.com/po4erk91/thread-keeper/issues/114#issuecomment-7020468533)**
+
+People relying on memory limits and hung-worker recovery can lose those checks
+if a safety daemon thread exits while the host stays alive. The existing
+supervisor covers the registered learning loops, but its registry omits the
+spawn-budget watchdog and memory guard, along with several other host starters.
+Both safety starters still return on a stale `_started` flag without checking
+whether their thread is alive.
+
+A disposable probe confirmed that neither safety daemon was observed or asked
+to restart. With the same stale flag and dead-thread condition, a registered
+extract-daemon control requested a replacement. Thread creation was intercepted;
+the probe launched no real daemon or worker and does not show a production outage.
+
+Complete the existing supervision work by covering the safety daemons and
+documenting any intentional exclusions from the host starter list. Preserve
+each daemon's full enable conditions, keep disabled loops disabled, prevent
+duplicate live threads, and keep status reads free of restart side effects.
+Add registry-coverage and paired dead-thread restart checks.
+
 **Research-worker adapter follow-up after [#263](https://github.com/po4erk91/thread-keeper/issues/263#issuecomment-6987695579)**
 
 People who select Codex or Copilot for web research can give the researcher
