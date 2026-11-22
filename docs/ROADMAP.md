@@ -111,17 +111,15 @@ this remaining gap; #466's generated-output fix remains complete.
 lets reviewers repair a lesson summary with an exact expected value. The body
 and provenance are preserved, and a recovery pre-image is saved.
 
+**Completed in v0.30.1:** [#483](https://github.com/po4erk91/thread-keeper/issues/483)
+documents an [offline child MCP forwarding check](CHILD_MCP_DIAGNOSTICS.md).
+People can compare a synthetic marker with an omitted-marker control without
+recording private values or making a model request. Tests cover presence-only
+output, unrelated synthetic secrets, and disposable probe cleanup. This closes
+the project-owned diagnostic-guidance gap; no runtime environment dump was found.
+
 **Remaining issue-backed work**
 
-- **Check child setup without recording credentials ([#483](https://github.com/po4erk91/thread-keeper/issues/483)).**
-  People troubleshooting a child MCP connection need to know whether a
-  variable arrived. Full environment captures can also record private access
-  tokens and unrelated credentials. Publish a supported recipe that forwards
-  a nonsecret marker and reports only its presence, with an omitted-marker
-  control and no model request. Cover the forwarding path with synthetic
-  tests, keep values out of output and files, and limit guidance changes to
-  sources the project owns. Repository inspection found no runtime
-  environment dump; this is a diagnostic-guidance gap.
 - **Keep approval-only queues on the normal schedule ([#365 follow-up](https://github.com/po4erk91/thread-keeper/issues/365#issuecomment-6876984665)).**
   People who record work without approving implementation can make Evolve
   check GitHub every hour instead of waiting for the configured daily or weekly

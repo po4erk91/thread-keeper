@@ -469,6 +469,8 @@ def test_codex_spawn_argv_forwards_child_identity_to_its_mcp_server(
     ]
     assert len(forwarded) == 1
     names = json.loads(forwarded[0].split("=", 1)[1])
+    from threadkeeper.adapters.base import CHILD_MCP_ENV_KEYS
+    assert names == list(CHILD_MCP_ENV_KEYS)
     for key in (
         "THREADKEEPER_FORCE_CID", "THREADKEEPER_SPAWNED_CHILD",
         "THREADKEEPER_WRITE_ORIGIN", "THREADKEEPER_CURATOR_PASS_ID",

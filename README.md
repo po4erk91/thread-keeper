@@ -1869,6 +1869,11 @@ Adding a new language is a two-file PR — see [CONTRIBUTING.md](CONTRIBUTING.md
 
 The most-used env knobs (full list in `threadkeeper/config.py`):
 
+If a child cannot see its MCP identity, use the
+[safe child MCP forwarding check](docs/CHILD_MCP_DIAGNOSTICS.md). It compares a
+synthetic marker with an absent control and reports only presence and a result
+code, without a model request or a complete environment capture.
+
 ### MCP tool profiles
 
 The server can advertise a role-sized MCP tool surface instead of its full
