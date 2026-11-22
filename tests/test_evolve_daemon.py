@@ -1184,6 +1184,27 @@ def test_run_evolve_pass_blocks_when_repo_unavailable(tmp_path, monkeypatch):
     assert summary.startswith("ERR evolve_repo_unavailable=")
 
 
+def test_reviewer_defers_quietly_while_an_applier_uses_the_checkout(
+    tmp_path, monkeypatch,
+):
+    """A running applier owns the shared checkout. That is a deferral, so it
+    must not reach the loop-failure notifications."""
+    pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
+    conn = pkg["db"].get_db()
+    _add_evolve(conn, "s1")
+    monkeypatch.setattr(
+        pkg["ed"], "_ensure_repo_ready",
+        lambda: (Path("/x"), "ERR evolve_repo_refresh_in_use n=1"),
+    )
+
+    out = pkg["ed"].run_evolve_pass(force=True)
+
+    assert out == "repo_busy n=1"
+    assert pkg["ed"]._last_evolve_ts(conn) == 0
+    from threadkeeper.notify import classify_summary
+    assert classify_summary(out) == "neutral"
+
+
 def test_run_evolve_pass_single_flight(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch, review_min="1")
     conn = pkg["db"].get_db()

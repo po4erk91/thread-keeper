@@ -1529,6 +1529,17 @@ def _finish_evolve_spawn(
     return outcome
 
 
+_REPO_IN_USE_ERR = "ERR evolve_repo_refresh_in_use"
+
+
+def _reviewer_repo_outcome(repo_err: str) -> str:
+    """A checkout held by a running applier defers the review; it is not a
+    loop failure. Every other readiness error stays an `ERR`."""
+    if repo_err.startswith(_REPO_IN_USE_ERR):
+        return "repo_busy" + repo_err[len(_REPO_IN_USE_ERR):]
+    return repo_err
+
+
 def run_evolve_pass(force: bool = False) -> str:
     """One evolve-review pass — alternates between the read-only research phase
     and the privileged audit phase so the web-research capability and the
@@ -1566,8 +1577,9 @@ def run_evolve_pass(force: bool = False) -> str:
 
         repo_root, repo_err = _ensure_repo_ready()
         if repo_err:
-            _record_transient_evolve_pass(conn, repo_err)
-            return repo_err
+            out = _reviewer_repo_outcome(repo_err)
+            _record_transient_evolve_pass(conn, out)
+            return out
 
         # Alternate: audit follows a research pass; otherwise (re)research.
         # The audit runs even when the digest is empty — auditing the repo is

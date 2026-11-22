@@ -20,6 +20,10 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: no "evolve_review loop failed" alert while an applier works.**
+  The reviewer cannot refresh the shared checkout while an applier is using
+  it. That is a normal wait, so the pass now records `repo_busy` and retries
+  on the short cadence instead of raising a failure notification.
 - **Fixed: a dead-lettered issue gets its `blocked` label.** The repository
   had no `blocked` label, so adding it failed every time while the comment
   still said it was applied. The applier now creates the label when it is
