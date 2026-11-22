@@ -262,6 +262,10 @@ ROADMAP_ISSUE_SKIPPED_KIND = "roadmap_issue_skipped"
 # Label applied to a dead-lettered issue so it is visibly excluded from the
 # auto-drain and surfaced for a human (composes with the #50 skip-label gate).
 ROADMAP_ISSUE_BLOCKED_LABEL = "blocked"
+ROADMAP_ISSUE_BLOCKED_LABEL_COLOR = "B60205"
+ROADMAP_ISSUE_BLOCKED_LABEL_DESCRIPTION = (
+    "The evolve applier stopped auto-attempting this issue"
+)
 # Upper bound on the escalating backoff window regardless of attempt count.
 ROADMAP_ISSUE_BACKOFF_CAP_S = 30 * 24 * 60 * 60
 ROADMAP_ISSUE_FETCH_LIMIT = 1000
@@ -3491,12 +3495,27 @@ def _record_roadmap_issue_attempt(
         logger.debug("evolve_applier: failed to record attempt", exc_info=True)
 
 
+# gh itself is unusable: creating the label would fail the same way.
+_GH_ENVIRONMENT_ERRORS = frozenset({"gh_not_found", "gh_issue_edit_timeout"})
+
+
 def _apply_blocked_label(
     issue_number: int, repo_root: Optional[Path] = None
 ) -> str:
     """Add the `blocked` label to a dead-lettered issue. Empty string =
-    success; best-effort (a label failure never blocks the marker write)."""
+    success; best-effort (a label failure never blocks the marker write).
+
+    gh cannot add a label the repository does not have, so a first failure
+    creates the label once and retries."""
     repo = str(repo_root or _repo_root())
+    err = _add_blocked_label(issue_number, repo)
+    if not err or err in _GH_ENVIRONMENT_ERRORS:
+        return err
+    _create_blocked_label(repo)
+    return _add_blocked_label(issue_number, repo)
+
+
+def _add_blocked_label(issue_number: int, repo: str) -> str:
     cmd = [
         "gh", "issue", "edit", str(int(issue_number)),
         "--add-label", ROADMAP_ISSUE_BLOCKED_LABEL,
@@ -3516,19 +3535,42 @@ def _apply_blocked_label(
     return ""
 
 
-def _roadmap_issue_dead_letter_body(issue: dict, attempts: int) -> str:
+def _create_blocked_label(repo: str) -> None:
+    """Create the `blocked` label; an existing label just fails harmlessly."""
+    cmd = [
+        "gh", "label", "create", ROADMAP_ISSUE_BLOCKED_LABEL,
+        "--color", ROADMAP_ISSUE_BLOCKED_LABEL_COLOR,
+        "--description", ROADMAP_ISSUE_BLOCKED_LABEL_DESCRIPTION,
+    ]
+    try:
+        _run_gh(cmd, cwd=repo, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("evolve_applier: blocked label create failed", exc_info=True)
+
+
+def _roadmap_issue_dead_letter_body(
+    issue: dict, attempts: int, *, label_applied: bool = True,
+) -> str:
     num = int(issue["number"])
     title = str(issue.get("title") or f"issue {num}")
+    label = f"`{ROADMAP_ISSUE_BLOCKED_LABEL}`"
+    if label_applied:
+        action = f"applied the {label} label and stopped auto-attempting this issue."
+        unblock = f"remove the {label} label, then split/clarify the issue"
+    else:
+        action = (
+            "stopped auto-attempting this issue. It could not apply the "
+            f"{label} label, so this comment is the only signal."
+        )
+        unblock = "split/clarify the issue"
     return (
         "Evolve applier: dead-lettered after repeated failed attempts.\n\n"
         f"- Issue: #{num} {title}\n"
         f"- Attempts: {attempts} implementer child(ren) spawned, no PR opened\n"
-        f"- Action: applied the `{ROADMAP_ISSUE_BLOCKED_LABEL}` label and "
-        "stopped auto-attempting this issue.\n\n"
+        f"- Action: {action}\n\n"
         "This issue is excluded from the automatic drain to stop burning a "
         "bypassPermissions implementer child every cycle with no progress. A "
-        f"human should unblock it (remove the `{ROADMAP_ISSUE_BLOCKED_LABEL}` "
-        "label, then split/clarify the issue) before it is retried. A manual "
+        f"human should unblock it ({unblock}) before it is retried. A manual "
         f"`evolve_apply_roadmap_issue(issue_number={num})` bypasses the "
         "dead-letter attempt cap, but label-denylisted issues remain skipped "
         "until the label gate is cleared or reconfigured."
@@ -3536,14 +3578,17 @@ def _roadmap_issue_dead_letter_body(issue: dict, attempts: int) -> str:
 
 
 def _comment_dead_letter(
-    issue: dict, attempts: int, repo_root: Optional[Path] = None
+    issue: dict, attempts: int, repo_root: Optional[Path] = None,
+    *, label_applied: bool = True,
 ) -> tuple[str, str]:
     """Post the one-time dead-letter summary comment. Returns (url, error)."""
     repo = str(repo_root or _repo_root())
     num = int(issue["number"])
     try:
         body = sanitize_public_github_body(
-            _roadmap_issue_dead_letter_body(issue, attempts)
+            _roadmap_issue_dead_letter_body(
+                issue, attempts, label_applied=label_applied,
+            )
         )
     except GithubBodySafetyError as e:
         return "", f"gh_issue_comment_body_refused: {e}"
@@ -3582,7 +3627,9 @@ def _dead_letter_issue(
     if _roadmap_issue_dead_lettered(conn, num):
         return f"already_dead_letter=#{num}"
     label_err = _apply_blocked_label(num, repo_root)
-    _, comment_err = _comment_dead_letter(issue, attempts, repo_root)
+    _, comment_err = _comment_dead_letter(
+        issue, attempts, repo_root, label_applied=not label_err,
+    )
     note = f"attempts={attempts}"
     if label_err:
         note += f" label_err={label_err[:80]}"

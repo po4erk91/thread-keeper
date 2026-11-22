@@ -1116,7 +1116,8 @@ moving the high-water forward; `force=True` bypasses this due gate.
   applied (composes with the #50 skip-label gate) and it drops out of the
   auto-drain until a human intervenes. A `roadmap_issue_dead_letter` event is
   the authoritative idempotent marker; the label/comment are best-effort
-  signals. A successful child writes `roadmap_issue_applied` (checked first
+  signals. When the repository has no `blocked` label yet, the applier creates
+  it once and retries; the comment says whether the label was applied. A successful child writes `roadmap_issue_applied` (checked first
   everywhere), so only genuinely-failing issues accrue attempts. An exact
   `evolve_apply_roadmap_issue(issue_number=N)` override bypasses the cooldown
   and the cap, but the default skip-label gate still refuses the `blocked`

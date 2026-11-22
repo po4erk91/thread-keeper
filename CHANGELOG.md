@@ -20,6 +20,10 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a dead-lettered issue gets its `blocked` label.** The repository
+  had no `blocked` label, so adding it failed every time while the comment
+  still said it was applied. The applier now creates the label when it is
+  missing, and the comment states what really happened.
 - **Fixed: background loops come back right after an auto-update.** The
   daemon host used to exit after an update, but it is also the process that
   respawns a missing host, so the loops stopped until some new session

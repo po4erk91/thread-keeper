@@ -124,7 +124,7 @@ def _bootstrap(
     )
     monkeypatch.setattr(
         evolve_applier, "_comment_dead_letter",
-        lambda issue, attempts, repo_root=None: (
+        lambda issue, attempts, repo_root=None, **_: (
             "https://x/issues/0#issuecomment-dl", ""
         ),
     )
@@ -4370,7 +4370,7 @@ def test_open_roadmap_issues_dead_letters_after_max_attempts(
     )
     monkeypatch.setattr(
         pkg["ea"], "_comment_dead_letter",
-        lambda issue, attempts, repo_root=None: (
+        lambda issue, attempts, repo_root=None, **_: (
             commented.append((int(issue["number"]), attempts))
             or ("https://x/issues/6#issuecomment-dl", "")
         ),
