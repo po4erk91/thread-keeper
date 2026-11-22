@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -373,36 +374,62 @@ def _over_runtime_cap(row, now: int) -> bool:
     return bool(started) and (now - started) >= SPAWN_MAX_RUNTIME_S
 
 
+def _record_timeout_verdict(conn, row, now: int) -> bool:
+    """Close a running row with the timeout code and commit it.
+
+    Runs before any signal: the `_spawn_wrap` recorder writes the child's
+    signal exit before the wrapper exits, and `_terminate_tree` waits for that
+    exit, so a verdict written afterwards would always find the row closed.
+    Returns True when this call closed the row."""
+    cur = conn.execute(
+        "UPDATE tasks SET ended_at=?, return_code=?, "
+        "duration_s=CASE WHEN started_at IS NULL THEN duration_s "
+        "  ELSE MAX(0, ? - started_at) END "
+        "WHERE id=? AND ended_at IS NULL",
+        (now, SPAWN_TIMEOUT_RETURN_CODE, now, row["id"]),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _report_timeout(conn, row, now: int) -> None:
+    age = now - (row["started_at"] or now)
+    logger.warning(
+        "spawn watchdog: killed task %s after %ss (cap=%ss)",
+        row["id"], age, SPAWN_MAX_RUNTIME_S,
+    )
+    try:
+        from .identity import _emit, _ensure_session
+        _ensure_session(conn)
+        _emit(conn, "spawn_timeout", target=row["id"],
+              summary=f"runtime {age}s exceeded cap {SPAWN_MAX_RUNTIME_S}s")
+    except Exception:
+        pass
+
+
 def _reap_timed_out(conn, row, now: int) -> bool:
     """Kill a child that has run past the wall-clock cap and close its row so
     the spawning loop's single-flight slot releases (#80).
 
-    SIGTERM→grace→SIGKILL the process tree, then stamp ended_at + the timeout
-    return_code. The ended_at guard keeps it idempotent: a second sweep over an
-    already-reaped row is a no-op. Returns True when this call closed the row."""
+    The timeout verdict is recorded first, then the process tree gets
+    SIGTERM→grace→SIGKILL. A child is never killed without a recorded verdict:
+    when the write fails (database locked) the next sweep tries again. The
+    ended_at guard keeps it idempotent. Returns True when this call closed
+    the row."""
+    try:
+        if not _record_timeout_verdict(conn, row, now):
+            return False
+    except sqlite3.OperationalError as e:
+        logger.warning(
+            "spawn watchdog: could not record timeout of task %s (%s); "
+            "retrying next sweep", row["id"], e,
+        )
+        return False
     pid = int(row["pid"] or 0)
     if pid > 0:
         _terminate_tree(pid, SPAWN_KILL_GRACE_S)
-    cur = conn.execute(
-        "UPDATE tasks SET ended_at=?, return_code=? "
-        "WHERE id=? AND ended_at IS NULL",
-        (now, SPAWN_TIMEOUT_RETURN_CODE, row["id"]),
-    )
-    closed = cur.rowcount > 0
-    if closed:
-        age = now - (row["started_at"] or now)
-        logger.warning(
-            "spawn watchdog: killed task %s after %ss (cap=%ss)",
-            row["id"], age, SPAWN_MAX_RUNTIME_S,
-        )
-        try:
-            from .identity import _emit, _ensure_session
-            _ensure_session(conn)
-            _emit(conn, "spawn_timeout", target=row["id"],
-                  summary=f"runtime {age}s exceeded cap {SPAWN_MAX_RUNTIME_S}s")
-        except Exception:
-            pass
-    return closed
+    _report_timeout(conn, row, now)
+    return True
 
 
 def _retry_chain_root(conn, row) -> str:

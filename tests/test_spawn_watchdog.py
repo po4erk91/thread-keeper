@@ -2,9 +2,10 @@
 
 A child that hangs while still alive stalls its loop's single-flight slot and
 burns tokens forever. The budget daemon's sweep (`_refresh_all_running`) reaps
-any pid>0 row that has outlived `SPAWN_MAX_RUNTIME_S`: SIGTERM → grace →
-SIGKILL, then `ended_at` + the timeout sentinel `return_code` so the loop's
-single-flight releases.
+any pid>0 row that has outlived `SPAWN_MAX_RUNTIME_S`: it records `ended_at` +
+the timeout sentinel `return_code` first (so the loop's single-flight releases
+and the wrapper's own exit record cannot replace it), then SIGTERM → grace →
+SIGKILL.
 
 The real-kill test launches a genuinely detached sleeper (double-fork +
 setsid, re-parented to init) so the watchdog's `os.waitpid`-based `alive()`
@@ -167,6 +168,80 @@ def test_watchdog_releases_applier_single_flight(mp_with_cid, monkeypatch):
     assert row["ended_at"] is not None
     assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
     assert "tk_appl" not in _running_applier_children(conn)
+
+
+def test_timeout_verdict_survives_wrapper_recording_first(mp_with_cid, monkeypatch):
+    """The wrapper records the signal exit before it exits, and the watchdog
+    waits for that exit. The timeout verdict must still win and start the
+    continuation."""
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_TIMEOUT_RETRY_LIMIT", "1")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import threadkeeper._spawn_wrap as wrap
+    import threadkeeper.spawn_budget as sb
+    import threadkeeper.tools.spawn as spawn_mod
+
+    db_path = str(pkg["config"].DB_PATH)
+
+    def wrapper_records_signal_exit(pid, grace):
+        wrap._record(db_path, "tk_wrapped", -signal.SIGTERM)
+
+    monkeypatch.setattr(sb, "_terminate_tree", wrapper_records_signal_exit)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        spawn_mod, "_spawn_impl",
+        lambda **kw: calls.append(kw) or "ok task=tk_continued pid=1",
+    )
+    conn = _insert_running(pkg, "tk_wrapped", os.getpid(),
+                           int(time.time()) - 200)
+    pkg["identity"]._ensure_session(conn)
+    conn.commit()
+
+    sb._refresh_all_running(conn)
+
+    row = conn.execute(
+        "SELECT return_code, ended_at, timeout_respawned_as FROM tasks "
+        "WHERE id='tk_wrapped'"
+    ).fetchone()
+    assert row["return_code"] == sb.SPAWN_TIMEOUT_RETURN_CODE
+    assert row["ended_at"] is not None
+    assert conn.execute(
+        "SELECT 1 FROM events WHERE kind='spawn_timeout' AND target='tk_wrapped'"
+    ).fetchone() is not None
+    assert len(calls) == 1
+    assert row["timeout_respawned_as"] == "tk_continued"
+
+
+def test_watchdog_does_not_kill_when_verdict_cannot_be_recorded(
+    mp_with_cid, monkeypatch
+):
+    monkeypatch.setenv("THREADKEEPER_SPAWN_BUDGET_MB", "3072")
+    monkeypatch.setenv("THREADKEEPER_SPAWN_MAX_RUNTIME_S", "60")
+    pkg = mp_with_cid(_FAKE_CID)
+
+    import sqlite3
+    import threadkeeper.spawn_budget as sb
+
+    killed: list[int] = []
+    monkeypatch.setattr(sb, "_terminate_tree",
+                        lambda pid, grace: killed.append(pid))
+
+    def locked(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sb, "_record_timeout_verdict", locked)
+    conn = _insert_running(pkg, "tk_locked", os.getpid(),
+                           int(time.time()) - 200)
+
+    sb._refresh_all_running(conn)
+
+    assert killed == []
+    row = conn.execute(
+        "SELECT ended_at, return_code FROM tasks WHERE id='tk_locked'"
+    ).fetchone()
+    assert row["ended_at"] is None and row["return_code"] is None
 
 
 def test_watchdog_immediately_respawns_with_continuation_prompt(

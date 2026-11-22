@@ -321,10 +321,10 @@ class Settings(BaseSettings):
     # Wall-clock lifetime cap for any spawned child (#80). A child that hangs
     # while still alive — a wedged WebFetch/gh/git, an agent loop that never
     # converges, a prompt that never arrives — would otherwise stall its loop's
-    # single-flight slot and burn tokens forever. The budget daemon SIGTERMs a
-    # pid>0 child whose row has outlived this, then SIGKILLs it after
-    # SPAWN_KILL_GRACE_S, and marks the row ended with return_code 124 (the
-    # timeout(1) convention) so the loop's single-flight releases. Generous
+    # single-flight slot and burn tokens forever. The budget daemon first marks
+    # the row of a pid>0 child that has outlived this as ended with
+    # return_code 124 (the timeout(1) convention) so the loop's single-flight
+    # releases, then SIGTERMs it and SIGKILLs it after SPAWN_KILL_GRACE_S. Generous
     # default so legitimate long runs aren't cut; 0 disables (no surprise kills
     # on upgrade).
     spawn_max_runtime_s: float = 3600.0

@@ -44,6 +44,14 @@ from dataclasses import dataclass
 
 _TAIL_LIMIT = 256 * 1024
 
+# spawn_budget.SPAWN_TIMEOUT_RETURN_CODE. The watchdog records it before it
+# signals the child, so the signal exit this wrapper sees must not replace it.
+_WATCHDOG_TIMEOUT_RETURN_CODE = 124
+_RETURN_CODE_SQL = (
+    f"return_code=CASE WHEN return_code={_WATCHDOG_TIMEOUT_RETURN_CODE} "
+    "THEN return_code ELSE ? END"
+)
+
 # Usage trailers print at the very END of a run, but the captured tail also
 # contains the child's own narrative output. Scanning all of it invites false
 # positives — a child that merely DISCUSSED ad spend once recorded "$4,445"
@@ -230,9 +238,9 @@ def parse_usage(text: str) -> Usage:
 def _record(db_path: str, task_id: str, rc: int, usage_text: str = "") -> None:
     """Best-effort persist of the child's exit code. Never raises.
 
-    ``return_code`` is set unconditionally (this is the authoritative
-    writer); ``ended_at`` is filled only if no one set it first, so a value
-    already written by the parent reaper's liveness path is preserved.
+    ``return_code`` is written unless the watchdog already recorded its
+    timeout code; ``ended_at`` is filled only if no one set it first, so a
+    value already written by the parent reaper's liveness path is preserved.
     """
     if not db_path or not task_id:
         return
@@ -255,7 +263,7 @@ def _record(db_path: str, task_id: str, rc: int, usage_text: str = "") -> None:
             conn.execute("PRAGMA busy_timeout=30000")
             try:
                 conn.execute(
-                    "UPDATE tasks SET return_code=?, "
+                    f"UPDATE tasks SET {_RETURN_CODE_SQL}, "
                     "ended_at=COALESCE(ended_at, ?), "
                     "duration_s=CASE "
                     "  WHEN started_at IS NULL THEN duration_s "
@@ -279,7 +287,7 @@ def _record(db_path: str, task_id: str, rc: int, usage_text: str = "") -> None:
                 )
             except sqlite3.OperationalError:
                 conn.execute(
-                    "UPDATE tasks SET return_code=?, "
+                    f"UPDATE tasks SET {_RETURN_CODE_SQL}, "
                     "ended_at=COALESCE(ended_at, ?) WHERE id=?",
                     (rc, ended_at, task_id),
                 )

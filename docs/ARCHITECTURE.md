@@ -610,9 +610,9 @@ observability only: the supervisor restarts dead threads, never a live child.
   do not start their own budget polling daemon. The same sweep is the
   **wall-clock watchdog** (#80): a
   pid>0 child whose row outlives `SPAWN_MAX_RUNTIME_S` (1 h default; 0
-  disables) is `SIGTERM`'d, then `SIGKILL`'d after `SPAWN_KILL_GRACE_S`, and
-  its row is closed with `return_code` 124 so the spawning loop's single-flight
-  (`_running_*_children`) releases. It then immediately starts a capped
+  disables) first has its row closed with `return_code` 124, so the spawning
+  loop's single-flight (`_running_*_children`) releases, and is then
+  `SIGTERM`'d and `SIGKILL`'d after `SPAWN_KILL_GRACE_S`. It then immediately starts a capped
   continuation retry with the original assignment plus the previous
   task/cid/log pointers so the new child can inspect workspace state and resume
   instead of restarting blindly. (When the RSS budget is disabled but the
@@ -1647,12 +1647,17 @@ optional 24h spawned-child token and dollar ceilings when
   visible row whose cid never resolves to a live process is reaped past
   `SPAWN_VISIBLE_TTL_S` (1 h default) so it can't pin budget capacity forever.
 - Wall-clock watchdog (#80): a pid>0 child whose row outlives
-  `SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is killed
-  (`SIGTERM`→`SPAWN_KILL_GRACE_S`→`SIGKILL` on its process group) and its row is
-  closed with `return_code` `SPAWN_TIMEOUT_RETURN_CODE` (124, the `timeout(1)`
-  convention). This frees the spawning loop's single-flight slot and the pinned
-  budget share that a hung-but-alive child would otherwise hold forever. The
-  kill is idempotent (the `ended_at IS NULL` guard). After the row is closed,
+  `SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) first has its row closed with
+  `return_code` `SPAWN_TIMEOUT_RETURN_CODE` (124, the `timeout(1)` convention)
+  and committed, then is killed (`SIGTERM`→`SPAWN_KILL_GRACE_S`→`SIGKILL` on
+  its process group). The order matters: `_spawn_wrap` records the child's
+  signal exit before the wrapper exits, and the kill waits for that exit, so a
+  verdict written after the kill would find the row already closed with `-15`
+  and the retry below would never start. `_spawn_wrap` keeps an existing 124.
+  A child is never killed without a recorded verdict; a locked database delays
+  the kill to the next sweep. This frees the spawning loop's single-flight
+  slot and the pinned budget share that a hung-but-alive child would otherwise
+  hold forever. The kill is idempotent (the `ended_at IS NULL` guard). After the row is closed,
   the watchdog immediately launches a continuation retry unless
   `SPAWN_TIMEOUT_RETRY_LIMIT` is exhausted or disabled; retry rows keep
   `retry_of`, `retry_root`, and `retry_attempt`, while the killed row records

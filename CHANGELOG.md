@@ -20,6 +20,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a timed-out child is reported as a timeout and continued.** The
+  spawn watchdog now records the timeout before it stops the child. Before,
+  the child's own exit recorder wrote first, so a one-hour kill looked like an
+  ordinary crash with code -15, no timeout event was written and the
+  configured continuation never started. The recorder now keeps the timeout
+  code, and a child is not killed until the verdict is saved.
 - **Fixed: learning loops now see your dialog.** Most transcripts are stored
   `unresolved` because ingest can tie only a few of them to a repository, and
   the extract, shadow and candidate-review loops used the recall filter, so

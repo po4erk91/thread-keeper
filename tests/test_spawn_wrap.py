@@ -96,6 +96,22 @@ def test_record_coalesces_existing_ended_at(db_mod):
     assert row["ended_at"] == 111  # original preserved, not overwritten
 
 
+def test_record_keeps_watchdog_timeout_verdict(db_mod):
+    db, db_path = db_mod
+    _mk_task(db, "tk_r_timeout")
+    conn = db.get_db()
+    conn.execute(
+        "UPDATE tasks SET ended_at=started_at+60, return_code=124 WHERE id=?",
+        ("tk_r_timeout",),
+    )
+    conn.commit()
+    import threadkeeper._spawn_wrap as w
+    w._record(db_path, "tk_r_timeout", -signal.SIGTERM)
+    row = _read(db, "tk_r_timeout")
+    assert row["return_code"] == 124
+    assert row["duration_s"] == 60
+
+
 def test_record_bad_db_never_raises(db_mod):
     import threadkeeper._spawn_wrap as w
     # Must not raise — the recorder may never hold the child's status hostage.

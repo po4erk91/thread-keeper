@@ -490,10 +490,12 @@ The same daemon is also a **wall-clock watchdog**: a child that hangs while
 still alive — a wedged `WebFetch`/`gh`/`git`, an agent loop that never
 converges, a prompt that never arrives — would otherwise stall its loop's
 single-flight slot and burn tokens forever. Any child whose row outlives
-`THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) is `SIGTERM`'d,
-then `SIGKILL`'d after `THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s), and its row
-is closed with the timeout `return_code` 124 so the loop's single-flight
-releases. The watchdog then immediately starts a capped continuation retry:
+`THREADKEEPER_SPAWN_MAX_RUNTIME_S` (1 h default; 0 disables) first has its row
+closed with the timeout `return_code` 124, so the loop's single-flight
+releases and the child's own exit recorder cannot replace the verdict with
+the signal code. Then the child is `SIGTERM`'d, and `SIGKILL`'d after
+`THREADKEEPER_SPAWN_KILL_GRACE_S` (10 s). If the database is locked and the
+verdict cannot be written, the kill waits for the next sweep. The watchdog then immediately starts a capped continuation retry:
 the new child receives the original assignment plus the previous task/cid/log
 and is instructed to inspect current workspace state, preserve completed work,
 repair partial work, and continue rather than restart blindly.
