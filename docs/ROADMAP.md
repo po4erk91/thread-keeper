@@ -13,6 +13,27 @@ question. Below is the current work and the history behind it.
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
 
+**Stop duplicate memory updates and honor unsubscribe ([#486](https://github.com/po4erk91/thread-keeper/issues/486))**
+
+People using live memory updates can receive repeated notifications and keep
+receiving them after unsubscribing. The supported MCP 2.3 SDK creates a new
+session proxy for each request, while the subscription registry uses that
+proxy's object identity to recognize the client.
+
+A disposable probe called the real subscription handlers and poller with
+separate SDK proxies over one synthetic connection. Repeating a subscription
+retained two records and sent two updates for one commit. A later unsubscribe
+removed neither record, and another commit still sent two updates. Reusing
+one proxy as a control retained one subscription and stopped updates after
+unsubscribe. This verifies request identity handling, not a live-client outage.
+
+Use a stable connection identity, make repeated subscriptions idempotent, and
+release their records when the connection ends. Test separate requests and
+connections through real SDK contexts or a transport harness, alongside
+rollback, content-free notifications, and pull-only fallback. This lifecycle
+gap follows the subscription work in #345; its brief invalidation-map follow-up
+below remains separate.
+
 **Safety-daemon supervision follow-up after [#114](https://github.com/po4erk91/thread-keeper/issues/114#issuecomment-7020468533)**
 
 People relying on memory limits and hung-worker recovery can lose those checks
