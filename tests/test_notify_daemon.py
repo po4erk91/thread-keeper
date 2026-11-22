@@ -214,6 +214,27 @@ def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, ca
     assert private_path not in caplog.text
 
 
+def test_dead_child_reason_reads_the_cli_result_message(tmp_path, monkeypatch, caplog):
+    # A Claude CLI stream ends with a JSON result object. The notification
+    # must show its human message (here the subscription limit), not raw JSON.
+    m = _bootstrap(tmp_path, monkeypatch)
+    notify, db = m["notify"], m["db"]
+    conn = db.get_db()
+    assert notify.run_notify_pass(force=True) == "seed"
+    final = {
+        "type": "result", "is_error": True, "terminal_reason": "api_error",
+        "result": "You've hit your 5-hour limit · resets 8:10pm (Europe/Warsaw)",
+        "usage": {"input_tokens": 0},
+    }
+    (tmp_path / "tasks" / "child-rl.log").write_text(
+        '{"type":"system","subtype":"init"}\n' + json.dumps(final) + "\n")
+    _task(conn, "child-rl", rc=1, role="curator", ended_at=int(time.time()))
+    with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
+        assert notify.run_notify_pass(force=True) == "ok fired=1"
+    assert "hit your 5-hour limit" in caplog.text
+    assert "input_tokens" not in caplog.text
+
+
 def test_timeout_and_zero_exit_children_ignored(tmp_path, monkeypatch):
     m = _bootstrap(tmp_path, monkeypatch)
     notify, db = m["notify"], m["db"]

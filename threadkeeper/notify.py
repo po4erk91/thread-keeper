@@ -170,7 +170,25 @@ def _reason_from_task_log(task_id: str, tail: str | None = None) -> str:
     """Sanitized last meaningful line of a dead child's captured log."""
     txt = _child_log_tail(task_id) if tail is None else tail
     lines = [ln for ln in txt.splitlines() if ln.strip()]
-    return (sanitize_presentation_text(lines[-1])[:180] if lines else "no_log")
+    if not lines:
+        return "no_log"
+    return sanitize_presentation_text(_readable_log_line(lines[-1]))[:180]
+
+
+def _readable_log_line(line: str) -> str:
+    """A Claude CLI stream ends with a JSON result object whose `result` field
+    is the human message, for example a subscription limit notice."""
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return line
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return line
+    result = data.get("result") if isinstance(data, dict) else None
+    if isinstance(result, str) and result.strip():
+        return result
+    return line
 
 
 # ── watermark (dual cursor in one notify_pass row) ──────────────────────────

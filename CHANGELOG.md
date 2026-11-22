@@ -20,6 +20,10 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a child-death alert shows the CLI's message, not raw JSON.** A
+  Claude CLI run ends with a JSON result line, and the alert body was that
+  line as is. It now shows the message inside it, for example "You've hit
+  your 5-hour limit · resets 8:10pm".
 - **Fixed: no "evolve_review loop failed" alert while an applier works.**
   The reviewer cannot refresh the shared checkout while an applier is using
   it. That is a normal wait, so the pass now records `repo_busy` and retries
