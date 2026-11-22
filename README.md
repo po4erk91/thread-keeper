@@ -1524,8 +1524,10 @@ to a human.
 The roadmap issue child skips issues carrying denylisted human-gate labels,
 skips issues with an active Evolve claim comment, posts its own claim comment
 before spawning, and advances to the next issue when an issue-local dispatch
-failure prevents startup. It implements exactly that issue, runs the full suite,
-opens a PR whose body includes `Closes #N`, and only then calls
+failure prevents startup. It implements exactly that issue, runs focused tests
+while it works and the full suite once at the end (re-running only failed tests
+after that, since a local full run takes about half of its one-hour budget and
+CI runs the whole suite on the PR), opens a PR whose body includes `Closes #N`, and only then calls
 `evolve_mark_roadmap_issue_applied(issue_number, pr_url)`. It never commits or
 pushes to `main`, and it never marks an issue applied without a real PR URL. If
 that PR is later closed without merging, the parent reconciles the marker

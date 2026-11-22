@@ -20,6 +20,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Changed: a roadmap applier runs the full suite once.** A local full run
+  takes about 30 minutes, and the instruction to re-run it until green used
+  up the child's one-hour budget before it could open a PR. The applier now
+  runs focused tests while it works, the full suite once at the end, and only
+  the failed tests after that. CI still runs the whole suite before merge.
 - **Fixed: the lock diagnostics name the real holder.** The host log called
   every connection inside a transaction a write holder, including the ones
   that were only waiting for the lock or had failed to write, so the victims

@@ -487,9 +487,19 @@ the blocker/status so a later agent has enough context.
    `## vX.Y.Z — YYYY-MM-DD` heading to CHANGELOG.md in this same PR. Never leave
    implementation notes only under `[Unreleased]`.
 
-5. Run the full suite from the repo root and read the FINAL summary line:
-     env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
-   It MUST report 0 failed. Fix related failures and re-run until green.
+5. Test in this order. A full local run takes about 30 minutes and you have
+   one hour of wall-clock time, so never run the full suite twice:
+   a. While you work, run only the test files that cover what you changed:
+        env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q tests/<file>.py
+   b. When the change is complete, run the full suite ONCE from the repo root
+      and read the FINAL summary line:
+        env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q
+   c. If it reports failures, fix the related ones and re-run ONLY the failed
+      tests until they pass:
+        env -u THREADKEEPER_NO_EMBEDDINGS .venv/bin/python -m pytest -q --lf
+      A failure unrelated to your change that still fails on its own goes
+      into the PR body. The PR's CI runs the whole suite, and the landing
+      sweep merges only when it is green.
 
 6. Open a PR from the prepared issue branch; never commit on main:
      git branch --show-current  # must print {branch}

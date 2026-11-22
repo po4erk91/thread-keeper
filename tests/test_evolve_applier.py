@@ -394,6 +394,18 @@ def test_apply_evolve_builds_spawn_call(tmp_path, monkeypatch):
     ).fetchone()["applied"] == 0
 
 
+def test_roadmap_prompt_runs_the_full_suite_once(tmp_path, monkeypatch):
+    """A local full run takes about half an hour and the child has one hour,
+    so "re-run the full suite until green" timed appliers out before they
+    opened a PR. Failures are re-run on their own; CI runs the whole suite."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    p = pkg["ea"].build_roadmap_issue_apply_prompt(_issue(9, "Thing"), tmp_path)
+    assert "full suite ONCE" in p
+    assert "-m pytest -q --lf" in p
+    assert "THREADKEEPER_NO_EMBEDDINGS" in p
+    assert "Fix related failures and re-run until green" not in p
+
+
 def test_apply_evolve_reports_returned_spawn_error(tmp_path, monkeypatch):
     pkg = _bootstrap(tmp_path, monkeypatch)
     conn = pkg["db"].get_db()
