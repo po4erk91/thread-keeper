@@ -85,8 +85,14 @@ from .tools import sync  # noqa: F401
 configure_tool_profile()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    from .memory_guard import supervise_host_in_background
     from .menubar_app import ensure_menubar_app
 
     ensure_menubar_app()
+    supervise_host_in_background()
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

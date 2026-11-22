@@ -525,6 +525,18 @@ def supervise_host() -> None:
         pass
 
 
+def supervise_host_in_background() -> None:
+    """Run one `supervise_host()` pass without delaying the caller.
+
+    A session's server calls this when it starts. Otherwise a dead host comes
+    back only when some server opens its session on its first write. Recovery
+    of a wedged host can wait on its exit, so it must not hold up the MCP
+    handshake."""
+    threading.Thread(
+        target=supervise_host, name="host-startup-check", daemon=True,
+    ).start()
+
+
 def scan_over_limit() -> dict:
     """Return classified process rows split by warn/kill threshold."""
     procs = []

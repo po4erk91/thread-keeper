@@ -20,6 +20,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: a new session brings a dead daemon host back.** A session's server
+  started a host only when it opened its session, on its first write.
+  Sessions that only read never did, so after the host stopped one machine
+  ran without background loops for seven hours. Each server now checks for a
+  live host when it starts, in a background thread so the MCP handshake is
+  not delayed.
 - **Changed: a roadmap applier runs the full suite once.** A local full run
   takes about 30 minutes, and the instruction to re-run it until green used
   up the child's one-hour budget before it could open a PR. The applier now

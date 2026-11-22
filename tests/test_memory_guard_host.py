@@ -38,3 +38,25 @@ def test_stale_host_triggers_respawn(monkeypatch, tmp_path):
     monkeypatch.setattr(mg, "_host_alive", lambda: False)
     mg.supervise_host()
     assert respawned["n"] == 1
+
+
+def test_server_start_checks_host_off_the_main_thread(monkeypatch, tmp_path):
+    import threading
+
+    mg = _reimport(monkeypatch, tmp_path, flag="1")
+    from threadkeeper import menubar_app, server
+    checked_on: list[threading.Thread] = []
+    checked = threading.Event()
+
+    def fake_supervise_host():
+        checked_on.append(threading.current_thread())
+        checked.set()
+
+    monkeypatch.setattr(mg, "supervise_host", fake_supervise_host)
+    monkeypatch.setattr(menubar_app, "ensure_menubar_app", lambda: None)
+    monkeypatch.setattr(server.mcp, "run", lambda: None)
+
+    server.main()
+
+    assert checked.wait(5)
+    assert checked_on[0] is not threading.main_thread()

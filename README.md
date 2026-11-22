@@ -2720,8 +2720,9 @@ host's own background ingest daemon does the ongoing content-embedding work.
 If the host is unreachable a query embedding returns nothing and the caller
 falls back per `THREADKEEPER_THIN_EMBED_FALLBACK`: `fts` (default) runs
 FTS-only search, `local` lazily loads the model in-process instead. The
-host is elected via a flock and spawned detached by the first thin server that
-needs one; `memory_guard` supervises it — respawning it if its heartbeat goes
+host is elected via a flock and spawned detached by a thin server that finds
+none, which it checks when it starts and again on its first write;
+`memory_guard` supervises it — respawning it if its heartbeat goes
 stale past `THREADKEEPER_HOST_HEARTBEAT_TTL_S` — instead of idle-retiring it
 the way a thin server would be. A host that wedges while still alive (stale
 heartbeat, lock still held) is recovered too: after

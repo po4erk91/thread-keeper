@@ -1382,10 +1382,16 @@ loop against throwaway state long after the run ended:
   the `daemon-host` label before it starts any loop, because the first loop
   that writes opens the process session. Both actions emit
   `host_wedged_sigterm` / `host_wedged_sigkill` events. `0` disables the kill path (legacy
-  spawn-only). A thin session's `ensure_host_running()` call at session
-  start (below) is the primary recovery path.
-- **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`
-  calls `host.ensure_host_running()` on every session start: a no-op if a
+  spawn-only). `supervise_host()` runs inside the host, so it cannot bring
+  back a host that has exited; a thin server's own checks (below) are the
+  primary recovery path.
+- **Always-on host, lazy spawn** — a thin server calls
+  `host.ensure_host_running()` twice: once when it starts (`server.main()`
+  runs one `supervise_host()` pass in a background thread, so a wedged-host
+  kill never delays the MCP handshake) and once when `identity._ensure_session`
+  opens its session on its first write. Read-only tools never open a session,
+  so without the startup check a dead host stayed dead until some server
+  wrote. Each call is a no-op if a
   live heartbeat already exists, otherwise a **detached** spawn
   (`subprocess.Popen(..., start_new_session=True)`, redirected stdio) so the
   host outlives the session that spawned it and a closing CLI can never HUP
