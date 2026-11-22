@@ -392,8 +392,13 @@ Steady-state access is split by intent:
   retrieval code does not use it. Its connections are non-autocommit, so an
   uncommitted INSERT holds the single writer lock for every process. Each one
   is registered in a weak, observe-only registry with the call site that
-  opened it; `legacy_connection_stats()` reports open connections and write
-  holders. The daemon host samples it every heartbeat and logs any holder seen
+  opened it; `legacy_connection_stats()` reports open connections, write
+  holders and waiting connections. A holder has changed rows in its current
+  transaction; a connection in a transaction without changes is waiting for
+  the lock or failed to write, so it is a victim and is listed apart (the
+  change count rebases on every commit and rollback). Failed writes on these
+  connections roll back (`rollback_quietly`) instead of leaving the
+  transaction open. The daemon host samples it every heartbeat and logs any holder seen
   in one write transaction for 60s or more, `run_write` names in-process
   holders when its deadline runs out, and `mp_health` shows the answering
   process's counts (#293).

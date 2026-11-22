@@ -58,6 +58,33 @@ def test_write_holder_is_named_with_its_call_site_and_age(fresh_mp):
         conn.close()
 
 
+def test_open_transaction_without_a_write_is_waiting_not_holding(fresh_mp):
+    """A connection whose write failed, or is still waiting for the lock,
+    sits in a transaction but holds no writer lock. Counting it as a holder
+    hid the real one among its victims."""
+    db = fresh_mp["db"]
+    conn = db.get_db()
+    try:
+        conn.execute("BEGIN")
+        assert conn.in_transaction
+        stats = db.legacy_connection_stats(now=2_000.0)
+        assert _mine(stats) == []
+        assert [w for w in stats["waiting"] if HERE in w["site"]]
+    finally:
+        conn.close()
+
+
+def test_holder_detection_resets_after_commit(fresh_mp):
+    db = fresh_mp["db"]
+    conn = _pending_write(db)
+    try:
+        conn.commit()
+        conn.execute("BEGIN")
+        assert _mine(db.legacy_connection_stats(now=3_000.0)) == []
+    finally:
+        conn.close()
+
+
 def test_host_logs_a_write_held_across_heartbeats(fresh_mp, caplog):
     from threadkeeper import host
 

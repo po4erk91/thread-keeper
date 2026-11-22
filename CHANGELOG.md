@@ -20,6 +20,12 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: the lock diagnostics name the real holder.** The host log called
+  every connection inside a transaction a write holder, including the ones
+  that were only waiting for the lock or had failed to write, so the victims
+  hid the cause (eight "holders" at once). A holder now has to have changed
+  rows; the others are counted as waiting. Failed writes in the claim, notify
+  and ingest bookkeeping now roll back instead of leaving the transaction open.
 - **Fixed: memory cleanup no longer kills running agents.** Orphan cleanup
   matched any process whose command line contained `threadkeeper.server`. A
   spawn wrapper carries that text in its agent's MCP config, so once its host

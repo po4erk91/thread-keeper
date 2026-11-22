@@ -74,6 +74,10 @@ def claim_pass(
         conn.commit()
         return bool(cur.rowcount)
     except sqlite3.Error:
+        if conn is not None:
+            from .db import rollback_quietly
+
+            rollback_quietly(conn)
         logger.debug("daemon_state claim failed for %r", name, exc_info=True)
         return True
 

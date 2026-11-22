@@ -44,7 +44,7 @@ from .config import (
     NOTIFY_CHANNEL,
     NOTIFY_FAILURE_COOLDOWN_S,
 )
-from .db import get_db
+from .db import get_db, rollback_quietly
 from .github_safety import sanitize_presentation_text
 from . import daemon_state, identity
 from .helpers import daemon_sleep, single_flight_lock
@@ -254,6 +254,7 @@ def _record_notify_pass(conn: sqlite3.Connection, ev_id: int, tk_ended: int,
         )
         conn.commit()
     except sqlite3.OperationalError:
+        rollback_quietly(conn)
         logger.debug("notify: failed to record pass", exc_info=True)
 
 
@@ -270,6 +271,7 @@ def _dispatch_recorded(conn: sqlite3.Connection, source: str,
         )
         conn.commit()
     except sqlite3.OperationalError:
+        rollback_quietly(conn)
         logger.warning("notify: failed to save notification details", exc_info=True)
     _dispatch(title, body)
 

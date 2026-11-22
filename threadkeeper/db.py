@@ -82,6 +82,23 @@ class _LegacyConnection(sqlite3.Connection):
             _LEGACY_CONNS.pop(self, None)
         super().close()
 
+    def commit(self) -> None:
+        super().commit()
+        self._mark_transaction_end()
+
+    def rollback(self) -> None:
+        super().rollback()
+        self._mark_transaction_end()
+
+    def _mark_transaction_end(self) -> None:
+        """Rebase the change count, so only rows changed by the next
+        transaction mark this connection as a writer-lock holder."""
+        with _LEGACY_LOCK:
+            info = _LEGACY_CONNS.get(self)
+            if info is not None:
+                info[2] = None
+                info[3] = self.total_changes
+
 
 # get_db() hands out non-autocommit connections: any INSERT/UPDATE opens a
 # write transaction that holds SQLite's single writer lock for every process
@@ -106,8 +123,9 @@ def _caller_site(depth: int) -> str:
 
 def _track_legacy_connection(conn: _LegacyConnection, site: str) -> None:
     with _LEGACY_LOCK:
-        # [opened_at, call site, first sampled inside a write transaction]
-        _LEGACY_CONNS[conn] = [time.monotonic(), site, None]
+        # [opened_at, call site, first sampled inside a transaction,
+        #  total_changes when last seen outside a transaction]
+        _LEGACY_CONNS[conn] = [time.monotonic(), site, None, conn.total_changes]
         live = len(_LEGACY_CONNS)
         warn = live >= _LEGACY_WARN_AT[0]
         if warn:
@@ -125,47 +143,57 @@ def _track_legacy_connection(conn: _LegacyConnection, site: str) -> None:
 def legacy_connection_stats(now: float | None = None) -> dict:
     """Sample this process's legacy connections (#293).
 
-    Returns ``open`` (live get_db() connections) and ``write_holders``: those
-    inside a write transaction, each with its call site and how long it has
-    been seen holding one. A holder's age starts at the first sample that
-    finds it in a transaction, so callers sample periodically (the daemon host
-    does, every heartbeat) and a long age means the writer lock is leaked.
+    Returns ``open`` (live get_db() connections), ``write_holders`` and
+    ``waiting``, each entry with its call site and how long it has been seen
+    in a transaction. A holder has changed rows since it was last seen outside
+    a transaction, so it holds the writer lock. A waiting connection is in a
+    transaction without a change: its write failed or is still blocked on the
+    lock, so it is a victim of the holder, not the cause. (A write that
+    changed no rows is counted as waiting.) Ages start at the first sample
+    inside the transaction, so callers sample periodically (the daemon host
+    does, every heartbeat) and a long holder age means the lock is leaked.
     """
     now = time.monotonic() if now is None else now
     holders: list[dict] = []
+    waiting: list[dict] = []
     with _LEGACY_LOCK:
         items = list(_LEGACY_CONNS.items())
     open_count = 0
     for conn, info in items:
         try:
             in_txn = conn.in_transaction
+            changes = conn.total_changes
         except sqlite3.ProgrammingError:
             continue  # closed without close() bookkeeping (e.g. by SQLite)
         open_count += 1
         if not in_txn:
             info[2] = None
+            info[3] = changes
             continue
         if info[2] is None:
             info[2] = now
-        holders.append({
+        entry = {
             "site": info[1],
             "held_s": round(now - info[2], 1),
             "open_s": round(now - info[0], 1),
-        })
+        }
+        (holders if changes > info[3] else waiting).append(entry)
     holders.sort(key=lambda h: h["held_s"], reverse=True)
-    return {"open": open_count, "write_holders": holders}
+    waiting.sort(key=lambda h: h["held_s"], reverse=True)
+    return {"open": open_count, "write_holders": holders, "waiting": waiting}
 
 
 def _describe_write_holders(stats: dict) -> str:
     holders = stats["write_holders"]
+    waiting = len(stats.get("waiting", ()))
+    head = f"legacy_open={stats['open']} write_holders={len(holders)}"
+    tail = f" waiting={waiting}"
     if not holders:
-        return f"legacy_open={stats['open']} write_holders=0"
+        return head + tail
     shown = ", ".join(
         f"{h['site']} held={h['held_s']:.0f}s" for h in holders[:3]
     )
-    return (
-        f"legacy_open={stats['open']} write_holders={len(holders)} ({shown})"
-    )
+    return f"{head} ({shown}){tail}"
 
 
 def _try_load_vec(conn: sqlite3.Connection) -> bool:
@@ -2047,6 +2075,16 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA query_only=ON")
     _track_legacy_connection(conn, _caller_site(2))
     return conn
+
+
+def rollback_quietly(conn: sqlite3.Connection) -> None:
+    """Roll back after a failed write. Python's sqlite3 opened a transaction
+    before the DML, and a failed DML or commit leaves it (with its read
+    snapshot) open until the connection closes."""
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        pass
 
 
 @contextmanager

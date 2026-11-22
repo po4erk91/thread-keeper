@@ -23,7 +23,7 @@ from .config import (
     REDACT_DIALOG_SECRETS,
     SEMANTIC_AVAILABLE,
 )
-from .db import get_db
+from .db import get_db, rollback_quietly
 from .embeddings import _embed, embed_tag
 from .skill_outcomes import classify_pending_outcomes
 
@@ -220,7 +220,7 @@ def _record_ingest_pass(
         conn.commit()
         _last_ingest_event_at = now
     except sqlite3.OperationalError:
-        return
+        rollback_quietly(conn)
 
 
 def _backfill_dialog_fts_if_empty(conn: sqlite3.Connection) -> None:
