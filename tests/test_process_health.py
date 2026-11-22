@@ -272,6 +272,35 @@ def test_cleanup_skips_pid_reused_by_non_threadkeeper(mp_with_cid, monkeypatch):
     assert killed == []
 
 
+_PYTHON = "/opt/homebrew/Frameworks/Python.framework/Versions/3.13/bin/python3"
+
+
+@pytest.mark.parametrize("command", [
+    f"{_PYTHON} -m threadkeeper.server",
+    "/Users/me/My Projects/.venv/bin/python -m threadkeeper.server",
+])
+def test_real_server_command_is_recognized(command):
+    from threadkeeper import process_health
+    assert process_health._is_threadkeeper_server_command(command) is True
+
+
+@pytest.mark.parametrize("command", [
+    # A spawn wrapper: its argv carries the child CLI and that CLI's MCP config.
+    f"{_PYTHON} /repo/threadkeeper/_spawn_wrap.py /db.sqlite tk_1 -- codex exec "
+    "-m gpt-6.1-terra -c mcp_servers.thread-keeper.args=[\"-m\",\"threadkeeper.server\"]",
+    # The agent CLI itself.
+    "codex exec -c mcp_servers.thread-keeper.args=[\"-m\", \"threadkeeper.server\"]",
+    # The Claude Desktop launcher shim.
+    "/Applications/Claude.app/Contents/Helpers/disclaimer --pgroup -- "
+    f"{_PYTHON} -m threadkeeper.server",
+])
+def test_processes_that_only_mention_the_server_are_not_servers(command):
+    """Orphan cleanup SIGTERMs what this predicate accepts. A spawn wrapper
+    whose host died is orphaned, so matching it killed running agents."""
+    from threadkeeper import process_health
+    assert process_health._is_threadkeeper_server_command(command) is False
+
+
 # ─────────────────────────────────────────────────────────────────────
 # MCP tool surface
 # ─────────────────────────────────────────────────────────────────────

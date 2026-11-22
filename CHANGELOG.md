@@ -20,6 +20,15 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: memory cleanup no longer kills running agents.** Orphan cleanup
+  matched any process whose command line contained `threadkeeper.server`. A
+  spawn wrapper carries that text in its agent's MCP config, so once its host
+  exited the wrapper looked like an orphaned server and was stopped, taking
+  the agent with it. The test suite triggered this too: its tool sweep ran
+  `agent_memory_cleanup()` for real against the machine's processes, which
+  killed evolve appliers that were running the suite. Only a process that runs
+  `-m threadkeeper.server` itself now counts, and the sweep calls every tool
+  with `dry_run=True`.
 - **Fixed: a child-death alert shows the CLI's message, not raw JSON.** A
   Claude CLI run ends with a JSON result line, and the alert body was that
   line as is. It now shows the message inside it, for example "You've hit

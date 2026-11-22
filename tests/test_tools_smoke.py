@@ -42,12 +42,22 @@ def _dummy_for(param: inspect.Parameter):
 
 
 def _build_kwargs(fn) -> dict:
+    """Required args get dummies; any `dry_run` is forced on, because a
+    cleanup tool scans and signals the real processes of the machine running
+    the suite, not the test DB."""
     sig = inspect.signature(fn)
     out: dict = {}
     for name, p in sig.parameters.items():
         if p.default is inspect.Parameter.empty:
             out[name] = _dummy_for(p)
+    if "dry_run" in sig.parameters:
+        out["dry_run"] = True
     return out
+
+
+def test_smoke_sweep_never_applies_cleanup(fresh_mp):
+    fn = fresh_mp["mcp"]._tool_manager._tools["agent_memory_cleanup"].fn
+    assert _build_kwargs(fn) == {"dry_run": True}
 
 
 def test_all_tools_registered(fresh_mp):

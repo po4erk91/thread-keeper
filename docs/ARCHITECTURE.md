@@ -66,7 +66,7 @@ threadkeeper/
 ├── egress.py          cross-provider memory egress policy (issue #74)
 ├── nudges.py          counter-driven memory_nudge / skill_hint / auto-review
 ├── review_prompts.py  MEMORY/SKILL/COMBINED/ANTI_CAPTURE for review-forks
-├── process_health.py  orphan-detection (ppid + heartbeat)
+├── process_health.py  orphan-detection (ppid + heartbeat; servers = `-m threadkeeper.server` argv)
 ├── menubar_app.py     macOS NSStatusItem app autoinstall/autolaunch
 ├── assets/macos-agent-status/
 │                     Swift NSStatusItem source bundled in wheel/sdist

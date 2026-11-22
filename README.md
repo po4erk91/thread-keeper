@@ -528,7 +528,10 @@ does not need a git checkout for the widget to build. Active loops are sorted
 first (`running`, then `ready`), so background work stays at the top of the
 panel. `tk-agent-status --cleanup-memory` runs the safe cleanup path used by the
 widget: request server cache trims, apply the RSS guard, and remove orphan MCP
-server processes without killing active spawned child agents. The popover also
+server processes without killing active spawned child agents. A process counts
+as a server only when it runs `-m threadkeeper.server` itself; spawn wrappers
+and agent CLIs that merely carry the module name in their MCP config are
+never matched, even after their host has exited. The popover also
 has a power button that flips `THREADKEEPER_DISABLE_BG_DAEMONS` in
 `~/.threadkeeper/.env` and requests a ThreadKeeper restart, so autonomous loops
 can be paused or re-enabled without opening Settings. The menu-bar

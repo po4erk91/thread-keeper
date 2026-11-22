@@ -55,11 +55,9 @@ def _list_threadkeeper_pids() -> list[dict]:
         return []
     out: list[dict] = []
     for line in (r.stdout or "").splitlines():
-        if not _is_threadkeeper_server_command(line):
-            continue
         # Tokenize: pid ppid rss etime command...
         parts = line.split(None, 4)
-        if len(parts) < 5:
+        if len(parts) < 5 or not _is_threadkeeper_server_command(parts[4]):
             continue
         try:
             pid = int(parts[0])
@@ -88,15 +86,26 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _is_threadkeeper_server_command(command: str | None) -> bool:
-    """True when a ps command line belongs to the real server process."""
-    if not command:
+    """True when a ps command line is the real server: an interpreter whose
+    first `-m` runs `threadkeeper.server`.
+
+    Orphan cleanup signals what this accepts, so the module name appearing
+    anywhere is not enough: a spawn wrapper and an agent CLI carry it inside
+    their MCP config arguments, and a wrapper whose host died is an orphan.
+    A `--` or a script path before the `-m` means another program runs first.
+    The Claude Desktop disclaimer shim (RSS ≈0) is skipped; the real Python
+    that took its place is matched instead."""
+    if not command or SERVER_COMMAND_MARKER not in command:
         return False
-    if SERVER_COMMAND_MARKER not in command:
+    if "/Helpers/disclaimer" in command:
         return False
-    # Skip the disclaimer shim: its command starts with the
-    # /Applications/Claude.app/Contents/Helpers/disclaimer path and holds
-    # RSS ≈0. We want only the real Python that took its place.
-    return "/Helpers/disclaimer" not in command
+    tokens = command.split()
+    for i, token in enumerate(tokens[:-1]):
+        if token == "--" or token.endswith(".py"):
+            return False
+        if token == "-m":
+            return tokens[i + 1] == SERVER_COMMAND_MARKER
+    return False
 
 
 def _current_command_for_pid(pid: int) -> str | None:
