@@ -8,7 +8,7 @@ question. Below is the current work and the history behind it.
 
 ---
 
-## 2026-11-19 roadmap status
+## 2026-11-22 roadmap status
 
 This is the current status of the work below. Earlier dated audits retain the
 findings and plans from those dates.
@@ -113,6 +113,15 @@ and provenance are preserved, and a recovery pre-image is saved.
 
 **Remaining issue-backed work**
 
+- **Check child setup without recording credentials ([#483](https://github.com/po4erk91/thread-keeper/issues/483)).**
+  People troubleshooting a child MCP connection need to know whether a
+  variable arrived. Full environment captures can also record private access
+  tokens and unrelated credentials. Publish a supported recipe that forwards
+  a nonsecret marker and reports only its presence, with an omitted-marker
+  control and no model request. Cover the forwarding path with synthetic
+  tests, keep values out of output and files, and limit guidance changes to
+  sources the project owns. Repository inspection found no runtime
+  environment dump; this is a diagnostic-guidance gap.
 - **Keep approval-only queues on the normal schedule ([#365 follow-up](https://github.com/po4erk91/thread-keeper/issues/365#issuecomment-6876984665)).**
   People who record work without approving implementation can make Evolve
   check GitHub every hour instead of waiting for the configured daily or weekly
@@ -145,8 +154,8 @@ and provenance are preserved, and a recovery pre-image is saved.
   recovery plan because the installed runtime's major/minor version is part
   of the search-vector generation. Keep the remaining design work behind
   `needs-design`, check the staged-generation path from #337, and reconcile
-  the Pillow audit exceptions, which still describe a 0.8-only pin and next
-  require review on 2026-11-21.
+  the Pillow audit exceptions, which still describe a 0.8-only pin. Their
+  recorded review date of 2026-11-21 has passed.
 
 **Host-setting recognition follow-up after [#390](https://github.com/po4erk91/thread-keeper/issues/390)**
 
