@@ -2723,7 +2723,8 @@ heartbeat, lock still held) is recovered too: after
 `THREADKEEPER_HOST_WEDGE_KILL_AFTER_S` (default 600 s) of silence the
 supervisor verifies the pid recorded in `<db dir>/host.pid` still belongs to a
 `threadkeeper.host` process, SIGTERMs it (SIGKILL after a grace period), and
-spawns a fresh host. See `docs/ARCHITECTURE.md` for the full design.
+spawns a fresh host. Silence is measured on the heartbeat of that pid's own
+session, so a working host is never killed for a stale row of an older one. See `docs/ARCHITECTURE.md` for the full design.
 
 ---
 

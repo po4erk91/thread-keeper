@@ -49,6 +49,19 @@ def _seed_heartbeat(age_s: int) -> None:
     conn.commit()
 
 
+def _seed_process_session(pid: int, client: str, heartbeat_age_s: int) -> None:
+    """A presence row for the session a process opened (`s_<pid>_<hex>`)."""
+    from threadkeeper.db import get_db
+    conn = get_db()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO presence (session_id, client, started_at, heartbeat_at, "
+        "last_action) VALUES (?,?,?,?,?)",
+        (f"s_{pid}_beef", client, now - 900, now - heartbeat_age_s, "hb"),
+    )
+    conn.commit()
+
+
 def _dummy(ignore_sigterm: bool = False) -> subprocess.Popen:
     """A live non-child-of-init stand-in for the wedged host. A reaper thread
     waits on it so a delivered signal turns into ProcessLookupError for
@@ -133,6 +146,44 @@ def test_sigterm_ignoring_host_gets_sigkilled(monkeypatch, tmp_path):
         kinds = [r["kind"] for r in get_db().execute(
             "SELECT kind FROM events WHERE kind LIKE 'host_wedged%'")]
         assert "host_wedged_sigkill" in kinds
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_live_host_registered_under_another_client_is_not_killed(
+    monkeypatch, tmp_path
+):
+    host = _reimport(monkeypatch, tmp_path)
+    _seed_heartbeat(age_s=100_000)          # the previous host's stale row
+    proc = _dummy()
+    spawns = _allow_spawn_path(monkeypatch, host)
+    try:
+        _write_pidfile(host, proc.pid, started_age_s=1_000)
+        _seed_process_session(proc.pid, "claude", heartbeat_age_s=5)
+        monkeypatch.setattr(host, "_pid_is_host", lambda pid: pid == proc.pid)
+        assert host._host_alive() is True
+        assert host.ensure_host_running() is False
+        assert proc.poll() is None
+        assert spawns == []
+    finally:
+        proc.kill()
+
+
+def test_session_of_a_longer_pid_with_the_same_digits_is_ignored(
+    monkeypatch, tmp_path
+):
+    host = _reimport(monkeypatch, tmp_path)
+    _seed_heartbeat(age_s=100_000)
+    proc = _dummy()
+    spawns = _allow_spawn_path(monkeypatch, host)
+    try:
+        _write_pidfile(host, proc.pid, started_age_s=100_000)
+        _seed_process_session(int(f"{proc.pid}7"), "claude", heartbeat_age_s=5)
+        monkeypatch.setattr(host, "_pid_is_host", lambda pid: pid == proc.pid)
+        assert host.ensure_host_running() is True
+        assert proc.poll() is not None
+        assert len(spawns) == 1
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -223,3 +274,37 @@ def test_main_writes_then_clears_pidfile(monkeypatch, tmp_path):
     import os
     assert seen["pidfile"] and seen["pidfile"]["pid"] == os.getpid()
     assert host._read_host_pidfile() is None
+
+
+def test_main_registers_its_session_as_daemon_host(monkeypatch, tmp_path):
+    """A loop started by start_daemons() may open the process session before
+    the first heartbeat does; the session must still carry the host label."""
+    import signal as _signal
+    host = _reimport(monkeypatch, tmp_path)
+    from threadkeeper import identity
+    from threadkeeper.db import get_db
+
+    def loop_opens_session_first():
+        identity.ensure_session_started()
+        return []
+
+    monkeypatch.setattr(host, "start_daemons", loop_opens_session_first)
+    monkeypatch.setattr(host, "start_embed_server", lambda: None)
+    real_event = threading.Event
+
+    def preset_event():
+        ev = real_event()
+        ev.set()
+        return ev
+
+    monkeypatch.setattr(host.threading, "Event", preset_event)
+    prev = _signal.getsignal(_signal.SIGTERM)
+    try:
+        assert host.main() == 0
+    finally:
+        _signal.signal(_signal.SIGTERM, prev)
+    row = get_db().execute(
+        "SELECT client FROM presence WHERE session_id=?",
+        (identity._session_id,),
+    ).fetchone()
+    assert row["client"] == "daemon-host"

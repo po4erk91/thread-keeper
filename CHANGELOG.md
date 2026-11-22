@@ -26,6 +26,13 @@ version bumps follow semver per the policy in
   ordinary crash with code -15, no timeout event was written and the
   configured continuation never started. The recorder now keeps the timeout
   code, and a child is not killed until the verdict is saved.
+- **Fixed: a working daemon host is no longer killed as wedged.** The
+  wedge check read only sessions labelled `daemon-host`, but a host whose
+  first background loop opened its session first was labelled with the
+  default client. Its fresh heartbeat was invisible, so the check killed a
+  healthy host every 10 to 17 minutes and could leave a machine without
+  background loops for hours. The check now reads the heartbeat of the pid in
+  `host.pid`, and the host sets its label before it starts any loop.
 - **Fixed: learning loops now see your dialog.** Most transcripts are stored
   `unresolved` because ingest can tie only a few of them to a repository, and
   the extract, shadow and candidate-review loops used the recall filter, so

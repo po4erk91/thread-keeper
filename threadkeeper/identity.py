@@ -89,6 +89,16 @@ def _heartbeat(conn: sqlite3.Connection) -> None:
     )
 
 
+def set_session_client_label(label: str) -> None:
+    """Set the client label of the session this process has not opened yet.
+
+    The first `_ensure_session` caller opens the session, and it is often a
+    background loop that passes no client, so a role that must be recognized
+    by its label sets it here before starting those loops."""
+    global _client_label
+    _client_label = label
+
+
 def _ensure_session(conn: sqlite3.Connection, client: Optional[str] = None) -> str:
     """Initialize the process session once without per-read heartbeat writes."""
     with _session_lock:

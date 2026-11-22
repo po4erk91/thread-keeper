@@ -1365,8 +1365,13 @@ loop against throwaway state long after the run ended:
   escalating to SIGKILL after a grace period, then spawns the replacement.
   A pidfile younger than the wedge threshold is treated as a booting host
   and left alone, which also bounds kill frequency to one per threshold per
-  host generation. Both actions emit `host_wedged_sigterm` /
-  `host_wedged_sigkill` events. `0` disables the kill path (legacy
+  host generation. The heartbeat read is the newest one of the sessions the
+  recorded pid opened (`s_<pid>_<hex>`, exact prefix), falling back to the
+  newest `daemon-host` row only when that pid has none: a host whose session
+  got another client label must still read as alive. `host.main()` also sets
+  the `daemon-host` label before it starts any loop, because the first loop
+  that writes opens the process session. Both actions emit
+  `host_wedged_sigterm` / `host_wedged_sigkill` events. `0` disables the kill path (legacy
   spawn-only). A thin session's `ensure_host_running()` call at session
   start (below) is the primary recovery path.
 - **Always-on host, lazy spawn** — a thin server's `identity._ensure_session`

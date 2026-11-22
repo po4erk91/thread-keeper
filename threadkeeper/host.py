@@ -21,6 +21,8 @@ from .helpers import single_flight_lock
 
 logger = logging.getLogger(__name__)
 
+HOST_CLIENT_LABEL = "daemon-host"
+
 # SIGTERM → wait this long for a wedged host to release the election flock
 # before escalating to SIGKILL (issue #223). Module-level so tests can shrink.
 _WEDGE_TERM_GRACE_S = 10.0
@@ -103,6 +105,8 @@ def main() -> int:
     lock (idempotent spawn)."""
     os.environ["THREADKEEPER_ROLE"] = "host"
     config.reload_settings()  # re-derive PROCESS_ROLE == "host"
+    from . import identity
+    identity.set_session_client_label(HOST_CLIENT_LABEL)
     # Lock exactly `config.HOST_LOCK_PATH` (Task 1's shared host-election
     # path) rather than a separately-named lock, so a future liveness check
     # (Task 5's ensure_host_running()) that inspects HOST_LOCK_PATH observes
@@ -208,7 +212,7 @@ def _heartbeat() -> bool:
     from .db import run_write
     from . import identity
     try:
-        identity.ensure_session_started(client="daemon-host")
+        identity.ensure_session_started(client=HOST_CLIENT_LABEL)
         # Session initialization and recurring heartbeat are intentionally
         # separate: ordinary read tools no longer turn into writers.
         run_write("host-heartbeat", identity._heartbeat, deadline_s=2.0)
@@ -309,20 +313,46 @@ def _host_alive() -> bool:
 
 
 def _host_heartbeat_age() -> float | None:
-    """Seconds since the newest daemon-host heartbeat; None when there is no
-    heartbeat row (fresh install, wiped DB) or the DB is unreadable."""
+    """Seconds since the newest heartbeat of the host recorded in the pidfile,
+    else of any daemon-host session; None when there is no heartbeat row
+    (fresh install, wiped DB) or the DB is unreadable.
+
+    The recorded pid is checked first because its session may carry another
+    client label, and a healthy host must never be read as wedged."""
     from .db import read_db
+    info = _read_host_pidfile()
     try:
         with read_db() as conn:
-            row = conn.execute(
-                "SELECT heartbeat_at FROM presence WHERE client='daemon-host' "
-                "ORDER BY heartbeat_at DESC LIMIT 1"
-            ).fetchone()
+            heartbeat_at = _process_heartbeat_at(conn, info["pid"]) if info else None
+            if heartbeat_at is None:
+                heartbeat_at = _daemon_host_heartbeat_at(conn)
     except Exception:
         return None
-    if not row or row["heartbeat_at"] is None:
+    if heartbeat_at is None:
         return None
-    return max(0.0, time.time() - int(row["heartbeat_at"]))
+    return max(0.0, time.time() - int(heartbeat_at))
+
+
+def _process_heartbeat_at(conn, pid: int) -> int | None:
+    """Newest heartbeat of the sessions opened by `pid` (`s_<pid>_<hex>`).
+
+    Compares the exact prefix: in LIKE, `_` matches any character, so
+    `s_2929_%` would also match a session of pid 29293."""
+    prefix = f"s_{pid}_"
+    row = conn.execute(
+        "SELECT MAX(heartbeat_at) AS heartbeat_at FROM presence "
+        "WHERE substr(session_id, 1, ?) = ?",
+        (len(prefix), prefix),
+    ).fetchone()
+    return row["heartbeat_at"] if row else None
+
+
+def _daemon_host_heartbeat_at(conn) -> int | None:
+    row = conn.execute(
+        "SELECT MAX(heartbeat_at) AS heartbeat_at FROM presence WHERE client=?",
+        (HOST_CLIENT_LABEL,),
+    ).fetchone()
+    return row["heartbeat_at"] if row else None
 
 
 # ── Wedged-host recovery (#223) ──────────────────────────────────────────────
