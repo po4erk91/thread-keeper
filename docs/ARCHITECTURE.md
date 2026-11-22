@@ -1433,6 +1433,10 @@ that saw that PATH without them resolved `gh` to the wrapper itself, which
 re-ran itself until the reviewer's issue dedup check timed out. The wrapper
 now also skips any `gh` on PATH that is a thread-keeper wrapper.
 
+For troubleshooting, use the [offline presence-only child MCP check](CHILD_MCP_DIAGNOSTICS.md).
+It exercises the shared forwarding list with a synthetic marker and an
+omitted-marker control, without recording environment values or starting a model.
+
 A Codex child mirrors Claude's `--strict-mcp-config` isolation. It runs with
 `codex exec --ignore-user-config`, and only two things from the user's
 `~/.codex/config.toml` are passed back with `-c`: the provider/account and

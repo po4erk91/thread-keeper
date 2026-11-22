@@ -5,6 +5,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.30.1 — 2026-11-22
+
+- **Documented: check child setup without recording credentials (#483).**
+  The offline diagnostic recipe compares a synthetic marker with an absent
+  control and reports only presence and a fixed result code. It explains the
+  forwarding list, safe variable additions, and disposable probe cleanup.
+
 ## v0.30.0 — 2026-11-16
 
 - **Added: repair a lesson summary safely (#469).** A reviewer can correct
