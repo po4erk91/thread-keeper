@@ -41,9 +41,9 @@ def _bootstrap(tmp_path, monkeypatch, *, interval="86400", disable_bg="1"):
     for name in [m for m in list(sys.modules) if m.startswith("threadkeeper")]:
         del sys.modules[name]
     import threadkeeper.server  # noqa: F401
-    from threadkeeper import auto_update, db
+    from threadkeeper import auto_update, config, db
 
-    return {"auto_update": auto_update, "db": db}
+    return {"auto_update": auto_update, "config": config, "db": db}
 
 
 def _release_metadata(version="0.9.3", filename="threadkeeper-0.9.3.tar.gz"):
@@ -560,3 +560,53 @@ def test_daemon_does_not_start_when_background_daemons_disabled(tmp_path, monkey
     pkg["auto_update"].start_auto_update_daemon()
 
     assert pkg["auto_update"]._started is False
+
+
+def _restart_calls(monkeypatch, auto_update, *, execv_error=None):
+    calls: list[tuple] = []
+
+    def fake_execv(path, argv):
+        calls.append(("execv", path, list(argv)))
+        if execv_error is not None:
+            raise execv_error
+
+    monkeypatch.setattr(auto_update.os, "execv", fake_execv)
+    monkeypatch.setattr(auto_update.os, "_exit",
+                        lambda code: calls.append(("exit", code)))
+    return calls
+
+
+def test_host_restarts_in_place_after_update(tmp_path, monkeypatch):
+    """The host supervises its own replacement, so after an update it must
+    come back by itself; re-exec also keeps its pid, so children keep their
+    parent."""
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["config"], "PROCESS_ROLE", "host")
+    calls = _restart_calls(monkeypatch, pkg["auto_update"])
+
+    pkg["auto_update"]._restart_process()
+
+    assert calls == [
+        ("execv", sys.executable, [sys.executable, "-m", "threadkeeper.host"]),
+    ]
+
+
+def test_mcp_server_still_exits_after_update(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["config"], "PROCESS_ROLE", "server")
+    calls = _restart_calls(monkeypatch, pkg["auto_update"])
+
+    pkg["auto_update"]._restart_process()
+
+    assert calls == [("exit", 0)]
+
+
+def test_host_exits_when_re_exec_fails(tmp_path, monkeypatch):
+    pkg = _bootstrap(tmp_path, monkeypatch)
+    monkeypatch.setattr(pkg["config"], "PROCESS_ROLE", "host")
+    calls = _restart_calls(monkeypatch, pkg["auto_update"],
+                           execv_error=OSError("exec failed"))
+
+    pkg["auto_update"]._restart_process()
+
+    assert calls[-1] == ("exit", 0)

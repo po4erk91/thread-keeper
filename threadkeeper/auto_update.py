@@ -580,17 +580,49 @@ def _request_and_apply_update() -> str:
     return _update_installed_package()
 
 
+def _host_restart_argv() -> list[str] | None:
+    """argv that restarts the daemon host in place, or None for an MCP server.
+
+    The host supervises its own replacement (memory_guard runs inside it), so
+    a host that only exits leaves the machine without background loops until
+    some new session spawns one. Re-exec keeps the pid, so spawned children
+    keep their parent. An MCP server exits instead: its client restarts it and
+    repeats the protocol handshake."""
+    from . import config as _cfg
+    if _cfg.PROCESS_ROLE != "host":
+        return None
+    return [sys.executable, "-m", "threadkeeper.host"]
+
+
+def _reexec_host(argv: list[str]) -> None:
+    logger.info("auto_update: restarting the daemon host after successful update")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    try:
+        os.execv(argv[0], argv)
+    except OSError:
+        logger.exception("auto_update: host re-exec failed; exiting instead")
+        os._exit(0)
+
+
+def _restart_process() -> None:
+    argv = _host_restart_argv()
+    if argv is None:
+        logger.info("auto_update: exiting MCP process after successful update")
+        os._exit(0)
+    else:
+        _reexec_host(argv)
+
+
 def _schedule_restart() -> None:
     global _restart_scheduled
     if _restart_scheduled:
         return
     _restart_scheduled = True
-
-    def _exit() -> None:
-        logger.info("auto_update: exiting MCP process after successful update")
-        os._exit(0)
-
-    timer = threading.Timer(5.0, _exit)
+    timer = threading.Timer(5.0, _restart_process)
     timer.daemon = True
     timer.start()
 

@@ -1942,7 +1942,7 @@ use it as the fallback on hosts that lack native deferred tool discovery.
 | `THREADKEEPER_OTEL_EXPORT_QUEUE_SIZE` | 256 | bounded per-process span queue (1–2048); oldest queued spans are dropped under pressure |
 | `THREADKEEPER_AUTO_REVIEW` | "" (off) | auto-review on `close_thread` |
 | `THREADKEEPER_AUTO_UPDATE_INTERVAL_S` | 86400 | MCP self-update check interval; 0 disables |
-| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | exit MCP process after an update passes setup/import smoke checks so the host restarts on new code |
+| `THREADKEEPER_AUTO_UPDATE_RESTART` | "1" | after an update passes setup/import smoke checks, exit the MCP process so its client restarts it on new code; the daemon host re-executes itself in place |
 | `THREADKEEPER_AUTO_UPDATE_TIMEOUT_S` | 600 | max seconds for git/pip update commands |
 | `THREADKEEPER_AUTO_UPDATE_SETUP` | `check` | post-update setup mode: `check` runs `thread-keeper-setup --dry-run` and logs pending CLI config rewrites without applying them; `apply` gives standing consent to rewrite MCP/hooks/instruction config after updates; `skip` disables the setup step |
 | `THREADKEEPER_AUTO_UPDATE_VERIFY_PROVENANCE` | true | require PyPI Integrity API provenance before packaged `pip` self-upgrades |

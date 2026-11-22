@@ -20,6 +20,11 @@ version bumps follow semver per the policy in
 
 ## [Unreleased]
 
+- **Fixed: background loops come back right after an auto-update.** The
+  daemon host used to exit after an update, but it is also the process that
+  respawns a missing host, so the loops stopped until some new session
+  started one (32 to 47 minutes in recent days). The host now restarts itself
+  in place with the same pid, so its running child agents keep their parent.
 - **Fixed: a timed-out child is reported as a timeout and continued.** The
   spawn watchdog now records the timeout before it stops the child. Before,
   the child's own exit recorder wrote first, so a one-hour kill looked like an
