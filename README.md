@@ -233,6 +233,10 @@ is `brief()`, `memory://context` is `context()`, and so on. The win is for
 surface memory as attachable / `@`-mentionable context through a mechanical
 channel. The brief resource renders lean and agent-status uses a cached snapshot,
 so an automatic host pull is **side-effect-free**.
+Hosts that subscribe to a memory URI receive one content-free update per
+committed batch. Repeated subscriptions on the same connection are idempotent;
+unsubscribing or disconnecting stops that connection’s updates. Hosts that do
+not subscribe can continue to pull snapshots.
 
 `search` and `dialog_search` also return structured hits and `resource_link`
 blocks. Read a hit's `resource_uri` with `resources/read` to inspect its evidence

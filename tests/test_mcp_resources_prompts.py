@@ -21,6 +21,8 @@ each call is self-contained (no shared event loop needed).
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+import weakref
 
 import pytest
 
@@ -283,6 +285,77 @@ def test_clients_that_do_not_subscribe_keep_pull_only_behavior(fresh_mp):
     # the pre-subscription behavior and expose the committed mutation.
     assert resources._subscriptions.count == 0
     assert tid in _read_resource(fresh_mp, "memory://brief")
+
+
+@pytest.mark.parametrize("version", ["2025-11-25", "2026-07-28"])
+def test_subscription_requests_use_connection_identity_and_cleanup(fresh_mp, monkeypatch, version):
+    from mcp import types
+    from mcp.server.connection import Connection
+    from mcp.server.runner import ServerRunner
+    from threadkeeper.tools import resources
+
+    monkeypatch.setattr(resources, "_SUBSCRIPTION_POLL_SECONDS", 60)
+
+    class Outbound:
+        def __init__(self):
+            self.notifications = []
+
+        async def notify(self, method, params, opts=None):
+            self.notifications.append((method, params))
+
+    async def exercise():
+        first_out, second_out = Outbound(), Outbound()
+        first = Connection.for_loop(first_out, protocol_version_hint=version)
+        second = Connection.for_loop(second_out, protocol_version_hint=version)
+        runners = [ServerRunner(fresh_mp["mcp"]._lowlevel_server, conn, {}) for conn in (first, second)]
+
+        def context(runner, method):
+            dispatch = SimpleNamespace(request_id=1, message_metadata=None)
+            return runner._make_context(dispatch, method, None, None, version)
+
+        async def subscribe(runner, uri):
+            ctx = context(runner, "resources/subscribe")
+            ref = weakref.ref(ctx.session)
+            await resources._subscribe_memory_resource(ctx, types.SubscribeRequestParams(uri=uri))
+            return ref
+
+        brief, other = "memory://brief", "memory://context"
+        proxy = await subscribe(runners[0], brief)
+        assert proxy() is None
+        await subscribe(runners[0], brief)
+        await subscribe(runners[0], other)
+        await subscribe(runners[1], brief)
+        assert resources._subscriptions.count == 3
+
+        _tool(fresh_mp, "open_thread")(question="first subscription event")
+        await resources._subscriptions.poll_once()
+        assert [item[1]["uri"] for item in first_out.notifications].count(brief) == 1
+        assert len(first_out.notifications) == 2
+        assert len(second_out.notifications) == 1
+        assert set(first_out.notifications[0][1]) == {"uri", "_meta"}
+
+        ctx = context(runners[0], "resources/unsubscribe")
+        await resources._unsubscribe_memory_resource(ctx, types.UnsubscribeRequestParams(uri=brief))
+        _tool(fresh_mp, "open_thread")(question="second subscription event")
+        await resources._subscriptions.poll_once()
+        assert [item[1]["uri"] for item in first_out.notifications].count(brief) == 1
+        assert len(first_out.notifications) == 3
+        assert len(second_out.notifications) == 2
+
+        await first.exit_stack.aclose()
+        assert resources._subscriptions.count == 1
+        _tool(fresh_mp, "open_thread")(question="third subscription event")
+        await resources._subscriptions.poll_once()
+        assert len(first_out.notifications) == 3
+        assert len(second_out.notifications) == 3
+        poller = resources._subscriptions._poller
+        await second.exit_stack.aclose()
+        await asyncio.sleep(0)
+        assert resources._subscriptions.count == 0
+        assert resources._subscriptions._poller is None
+        assert poller.done()
+
+    asyncio.run(exercise())
 
 
 # ──────────────────────────────────────────────────────────────────────

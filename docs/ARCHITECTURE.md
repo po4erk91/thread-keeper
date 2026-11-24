@@ -2706,7 +2706,10 @@ the other two for the read/act split they fit naturally:
   references rather than enumerable resource templates (see below).
   Each snapshot advertises `cacheScope: private`, a 30-second TTL, priority,
   `lastModified`, and its rendered byte size. Hosts that send
-  `resources/subscribe` are tracked per URI; a short poller reads only committed
+  `resources/subscribe` are tracked per connection and URI, not per request
+  proxy. Repeated subscriptions are idempotent; unsubscribe removes only that
+  connection and URI, and connection teardown releases its subscriptions and
+  stops the poller when none remain. A short poller reads only committed
   rows from the durable event log, coalesces a burst, and emits an update with
   the URI plus freshness metadata only. The narrow invalidation map is: thread
   mutations → brief/context/dashboard; signals → brief/dashboard; task lifecycle

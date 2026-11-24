@@ -188,6 +188,7 @@ class _MemoryResourceSubscriptions:
         self._subscriptions: list[_ResourceSubscription] = []
         self._last_event_id: int | None = None
         self._poller: asyncio.Task[None] | None = None
+        self._cleanup_key = object()
 
     @staticmethod
     def _latest_event_id() -> int:
@@ -204,16 +205,17 @@ class _MemoryResourceSubscriptions:
     async def subscribe(self, uri: str, session: Any) -> None:
         if uri not in MEMORY_RESOURCE_URIS:
             raise ValueError(f"unknown memory resource: {uri}")
+        if any(item.session is session and item.uri == uri for item in self._subscriptions):
+            return
         latest = self._latest_event_id()
         if not self._subscriptions:
             self._last_event_id = latest
-        self._subscriptions = [
-            item for item in self._subscriptions
-            if not (item.session is session and item.uri == uri)
-        ]
         self._subscriptions.append(
             _ResourceSubscription(session=session, uri=uri, after_event_id=latest)
         )
+        if hasattr(session, "exit_stack") and self._cleanup_key not in session.state:
+            session.state[self._cleanup_key] = True
+            session.exit_stack.callback(self._remove_connection, session)
         if self._poller is None or self._poller.done():
             self._poller = asyncio.create_task(self._poll_loop())
 
@@ -222,8 +224,20 @@ class _MemoryResourceSubscriptions:
             item for item in self._subscriptions
             if not (item.session is session and item.uri == uri)
         ]
-        if not self._subscriptions:
-            self._last_event_id = None
+        self._stop_if_unused()
+
+    def _remove_connection(self, session: Any) -> None:
+        self._subscriptions = [item for item in self._subscriptions if item.session is not session]
+        self._stop_if_unused()
+
+    def _stop_if_unused(self) -> None:
+        if self._subscriptions:
+            return
+        self._last_event_id = None
+        if self._poller is not None:
+            if self._poller is not asyncio.current_task():
+                self._poller.cancel()
+            self._poller = None
 
     async def _poll_loop(self) -> None:
         try:
@@ -272,14 +286,17 @@ class _MemoryResourceSubscriptions:
 
         failed_sessions: set[int] = set()
         for (session_id, uri), (session, changed_at) in pending.items():
+            if not any(item.session is session and item.uri == uri for item in self._subscriptions):
+                continue
             try:
                 params = types.ResourceUpdatedNotificationParams(
                     uri=uri,
                     _meta=_freshness_metadata(uri, changed_at),
                 )
-                await session.send_notification(
-                    types.ResourceUpdatedNotification(params=params)
-                )
+                if hasattr(session, "exit_stack"):
+                    await session.send_resource_updated(uri, meta=params.meta)
+                else:
+                    await session.send_notification(types.ResourceUpdatedNotification(params=params))
             except Exception:
                 # A disconnected client cannot receive future updates. Remove
                 # its subscriptions but never let it block healthy clients.
@@ -290,6 +307,7 @@ class _MemoryResourceSubscriptions:
                 item for item in self._subscriptions
                 if id(item.session) not in failed_sessions
             ]
+            self._stop_if_unused()
 
         for uri in {uri for _, uri in pending}:
             await mcp._subscriptions.publish(ResourceUpdated(uri=uri))
@@ -371,12 +389,12 @@ async def _subscribe_memory_resource(context, params):
     uri_text = str(params.uri)
     if uri_text not in MEMORY_RESOURCE_URIS:
         raise ValueError(f"unknown memory resource: {uri_text}")
-    await _subscriptions.subscribe(uri_text, context.session)
+    await _subscriptions.subscribe(uri_text, context.session._connection)
     return types.EmptyResult()
 
 
 async def _unsubscribe_memory_resource(context, params):
-    await _subscriptions.unsubscribe(str(params.uri), context.session)
+    await _subscriptions.unsubscribe(str(params.uri), context.session._connection)
     return types.EmptyResult()
 
 
