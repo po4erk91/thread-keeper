@@ -5,6 +5,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.30.2 — 2026-11-24
+
+- **Fixed: memory updates stop after unsubscribe or disconnect (#486).**
+  Repeated subscriptions on one connection no longer produce duplicate updates.
+  Other clients and resource subscriptions continue independently.
+
 ## v0.30.1 — 2026-11-22
 
 - **Documented: check child setup without recording credentials (#483).**
