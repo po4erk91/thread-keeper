@@ -83,20 +83,21 @@ def _open_private_fd(path: Path | str, flags: int, file_mode: int) -> int:
     return fd
 
 
+def _verify_existing_file(st: os.stat_result, path: Path | str) -> None:
+    if not stat.S_ISREG(st.st_mode):
+        raise PermissionError(f"refusing non-regular task spool file: {path}")
+    if _posix_owner_checks_available() and st.st_uid != os.getuid():
+        raise PermissionError(f"refusing task spool file not owned by current user: {path}")
+    if os.name == "posix" and st.st_nlink != 1:
+        raise PermissionError(f"refusing linked task spool file: {path}")
+
+
 def _open_existing_checked_fd(path: Path | str, flags: int) -> int:
     p = _as_path(path)
     ensure_task_spool_dir(p.parent)
     fd = os.open(p, flags | _nofollow_flag())
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise PermissionError(f"refusing non-regular task spool file: {p}")
-        if _posix_owner_checks_available() and st.st_uid != os.getuid():
-            raise PermissionError(
-                f"refusing task spool file not owned by current user: {p}"
-            )
-        if os.name == "posix" and st.st_nlink != 1:
-            raise PermissionError(f"refusing linked task spool file: {p}")
+        _verify_existing_file(os.fstat(fd), p)
     except Exception:
         os.close(fd)
         raise
@@ -175,3 +176,35 @@ def open_spool_binary_read(path: Path | str) -> BinaryIO:
     except Exception:
         os.close(fd)
         raise
+
+
+def open_task_log_read(spool_dir: Path | str, name: str) -> BinaryIO:
+    """Open a direct spool child without following links or changing modes."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise ValueError("invalid task log name")
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise OSError("secure task log reads are not supported on this platform")
+    path = _as_path(spool_dir).absolute()
+    if ".." in path.parts:
+        raise PermissionError("refusing task spool parent traversal")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        st = os.fstat(directory)
+        if _posix_owner_checks_available() and st.st_uid != os.getuid():
+            raise PermissionError(f"refusing task spool not owned by current user: {path}")
+        _verify_existing_file(os.stat(name, dir_fd=directory, follow_symlinks=False), name)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(name, flags, dir_fd=directory)
+        try:
+            _verify_existing_file(os.fstat(fd), name)
+            return os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(directory)

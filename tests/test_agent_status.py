@@ -797,7 +797,7 @@ def test_recent_failures_surfaces_dead_child_with_reason(mp_with_cid, monkeypatc
     pkg = mp_with_cid(_FAKE_CID)
     _insert_failed_task(
         pkg,
-        "deadchild",
+        "tk_deadchild",
         "You are the CURATOR for thread-keeper.\n\nCurate memory.",
         "starting run\nCredit balance is too low to run this model\n",
     )
@@ -805,13 +805,13 @@ def test_recent_failures_surfaces_dead_child_with_reason(mp_with_cid, monkeypatc
 
     snap = agent_status_snapshot(refresh=False)
     fails = {f["task_id"]: f for f in snap["recent_failures"]}
-    assert "deadchild" in fails
-    item = fails["deadchild"]
+    assert "tk_deadchild" in fails
+    item = fails["tk_deadchild"]
     assert item["kind"] == "failure"
     assert item["notify"] is True
     assert "credit" in item["summary"].lower()
     # A live failure never leaks into the positive recent_results feed.
-    assert all(r["task_id"] != "deadchild" for r in snap["recent_results"])
+    assert all(r["task_id"] != "tk_deadchild" for r in snap["recent_results"])
 
 
 def test_recent_failures_sanitize_child_log_excerpts(mp_with_cid, monkeypatch):
@@ -822,7 +822,7 @@ def test_recent_failures_sanitize_child_log_excerpts(mp_with_cid, monkeypatch):
     private_path = "/Users/alice/private/error.log"
     _insert_failed_task(
         pkg,
-        "deadchild-sanitized",
+        "tk_deadchild-sanitized",
         "You are the CURATOR for thread-keeper.\n\nCurate memory.",
         "starting run\n"
         f"Connection failed: Authorization: Bearer {bearer} "
@@ -835,7 +835,7 @@ def test_recent_failures_sanitize_child_log_excerpts(mp_with_cid, monkeypatch):
         f["task_id"]: f
         for f in agent_status_snapshot(refresh=False)["recent_failures"]
     }
-    summary = failures["deadchild-sanitized"]["summary"]
+    summary = failures["tk_deadchild-sanitized"]["summary"]
     assert "Connection failed" in summary
     assert "[REDACTED_SECRET]" in summary
     assert "[REDACTED_HOME_PATH]" in summary
@@ -853,7 +853,7 @@ def test_recent_failures_notify_flag_off_when_toggle_disabled(
     pkg = mp_with_cid(_FAKE_CID)  # factory re-imports fresh → reads the env
     _insert_failed_task(
         pkg,
-        "deadchild2",
+        "tk_deadchild2",
         "You are the CURATOR for thread-keeper.\n\nCurate memory.",
         "boom\nspawn_error token_budget_exceeded\n",
     )
@@ -861,8 +861,8 @@ def test_recent_failures_notify_flag_off_when_toggle_disabled(
 
     snap = agent_status_snapshot(refresh=False)
     fails = {f["task_id"]: f for f in snap["recent_failures"]}
-    assert "deadchild2" in fails                 # still listed in the menu
-    assert fails["deadchild2"]["notify"] is False  # but no banner posted
+    assert "tk_deadchild2" in fails                 # still listed in the menu
+    assert fails["tk_deadchild2"]["notify"] is False  # but no banner posted
 
 
 def test_agent_status_tool_default_read_does_not_enforce_lifecycle(

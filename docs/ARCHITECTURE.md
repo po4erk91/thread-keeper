@@ -1653,7 +1653,11 @@ optional 24h spawned-child token and dollar ceilings when
   in `THREADKEEPER_TASK_LOG_DIR` are created with no-follow owner-only opens
   (`0600`), matching the stdin prompt spool. The task spool defaults to
   `~/.threadkeeper/tasks` (`0700`) and configured directories are refused when
-  symlinked or owned by another user.
+  symlinked or owned by another user. `task_logs` validates the task ID and
+  checks the task record before accessing the spool. It walks directories with
+  no-follow, directory-relative opens and checks file ownership, type and link
+  count without creating directories or changing modes. Unsupported platforms
+  fail closed. Project-based task access is tracked separately in #359.
 - Claude prompt argv is capped at 96 KiB. If the prompt exceeds that bound,
   `spawn()` omits the prompt positional argument, writes the prompt to
   `<task>.stdin.txt` with the same owner-only spool helper, and feeds it through

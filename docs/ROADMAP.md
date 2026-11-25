@@ -70,13 +70,6 @@ handoff work.
   Read a bounded byte suffix before decoding and formatting, including for
   long lines and requests for all lines. Keep existing safe file access and
   completion caching, show truncation, and test memory bounds as logs grow.
-- **Confine task-log reads ([#478](https://github.com/po4erk91/thread-keeper/issues/478)).**
-  An agent can supply a task ID that selects an unrelated local log outside
-  the task spool. A disposable synthetic probe confirmed this through the
-  real tool from a read-only child. Resolve logs through registered task
-  records, validate IDs before file access, and keep reads inside the spool
-  even if a parent directory is replaced. Preserve the existing owner and
-  symlink checks, and test allowed reads alongside refused traversal.
 - **Keep task content within its project ([#359 follow-up](https://github.com/po4erk91/thread-keeper/issues/359#issuecomment-6974219317)).**
   A project session can still receive another project's task prompts through
   status tools and the status resource. A child with a saved read-only project
@@ -354,15 +347,9 @@ the launch namespace. Schema v6 preserves existing memory scopes.
 
 ## 2026-10-30 reviewer audit
 
-- **Keep task-log access inside the task spool.** Agents allowed to inspect
-  background tasks can currently pass a relative or absolute filename instead
-  of a task identifier and read an unrelated log. The read also changes the
-  containing directory's permissions. Validate identifiers with the same rule
-  used when creating tasks, check containment and unsafe links before opening
-  a file, and keep directory creation and permission changes out of read-only
-  inspection. Cover valid logs, rejected names, missing logs, links, and
-  unchanged permissions. This is a separate caller-input boundary from the
-  spool-creation protection in #94 and status-summary redaction in #299.
+- **Keep task-log access inside the task spool (done, #478, v0.30.3).**
+  Registered task IDs select only their captured logs; unsafe directory and
+  file links are refused without changing permissions.
 - **Bound memory used to inspect a task's output.** Asking for one final line
   still loads, decodes, and splits the whole log. Read a bounded tail, limit
   response bytes even for one very long line, and disclose truncation. Reuse

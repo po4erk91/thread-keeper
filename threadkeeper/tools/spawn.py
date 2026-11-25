@@ -31,7 +31,7 @@ from ..task_spool import (
     TASK_SPOOL_EXEC_MODE,
     ensure_task_spool_dir,
     open_new_spool_binary,
-    open_spool_binary_read,
+    open_task_log_read,
     write_spool_text,
 )
 from ..tool_schemas import (
@@ -837,10 +837,7 @@ def _spawn_impl(prompt: str, cwd: str = "", append_system: str = "",
     else:
         child_cid = str(_uuid.uuid4())
     task_id = task_id_override.strip() or ("tk_" + secrets.token_hex(3))
-    if not task_id.startswith("tk_") or any(
-        c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
-        for c in task_id
-    ):
+    if not _valid_task_id(task_id):
         return "ERR invalid_task_id"
     # The workspace is never a project checkout, even when a repository (a
     # dotfiles repo in $HOME) happens to enclose the state dir.
@@ -1743,16 +1740,33 @@ def tasks_refresh() -> str:
     return "ok freshness=refreshed"
 
 
+def _valid_task_id(task_id: str) -> bool:
+    return task_id.startswith("tk_") and all(
+        c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+        for c in task_id
+    )
+
+
 @read_tool()
 def task_logs(task_id: str, tail_lines: int = 80) -> str:
     """Read tail of a spawned task's captured stdout/stderr log.
 
-    Only works for tasks spawned with `capture_output=True` (default).
-    Returns the last `tail_lines` lines or 'no_log' if the task ran with
-    capture_output=False or the log file is missing."""
+    Only registered tasks with captured output can be read. Returns the last
+    `tail_lines` lines or 'no_log' if capture was disabled or the file is
+    missing. Unsafe spool paths and files are refused without changing modes."""
+    if not _valid_task_id(task_id):
+        return "ERR invalid_task_id"
+    with read_db() as conn:
+        task = conn.execute(
+            "SELECT capture_output FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+    if task is None:
+        return f"ERR task_not_found={task_id}"
     log_path = TASK_LOG_DIR / f"{task_id}.log"
+    if task["capture_output"] == 0:
+        return f"no_log path={log_path}"
     try:
-        with open_spool_binary_read(log_path) as f:
+        with open_task_log_read(TASK_LOG_DIR, log_path.name) as f:
             data = f.read()
     except FileNotFoundError:
         return f"no_log path={log_path}"
