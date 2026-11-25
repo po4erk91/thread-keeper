@@ -6,7 +6,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "threadkeeper[semantic]==0.30.2",
+        "threadkeeper[semantic]==0.30.3",
         "python",
         "-m",
         "threadkeeper.server"

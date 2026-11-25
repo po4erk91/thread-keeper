@@ -195,12 +195,12 @@ def test_dead_child_fires_notification_with_log_reason(tmp_path, monkeypatch, ca
     github_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
     bearer = "abcdefghijklmnopqrstuvwxyz012345"
     private_path = "/Users/alice/private/error.log"
-    (tmp_path / "tasks" / "child-1.log").write_text(
+    (tmp_path / "tasks" / "tk_child-1.log").write_text(
         "starting…\n"
         f"error: credit balance too low; Authorization: Bearer {bearer}; "
         f"API_KEY=topsecretvalue; token={github_token}; path={private_path}\n"
     )
-    _task(conn, "child-1", rc=1, role="curator", ended_at=int(time.time()))
+    _task(conn, "tk_child-1", rc=1, role="curator", ended_at=int(time.time()))
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
     assert out == "ok fired=1", out
@@ -226,9 +226,9 @@ def test_dead_child_reason_reads_the_cli_result_message(tmp_path, monkeypatch, c
         "result": "You've hit your 5-hour limit · resets 8:10pm (Europe/Warsaw)",
         "usage": {"input_tokens": 0},
     }
-    (tmp_path / "tasks" / "child-rl.log").write_text(
+    (tmp_path / "tasks" / "tk_child-rl.log").write_text(
         '{"type":"system","subtype":"init"}\n' + json.dumps(final) + "\n")
-    _task(conn, "child-rl", rc=1, role="curator", ended_at=int(time.time()))
+    _task(conn, "tk_child-rl", rc=1, role="curator", ended_at=int(time.time()))
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         assert notify.run_notify_pass(force=True) == "ok fired=1"
     assert "hit your 5-hour limit" in caplog.text
@@ -256,9 +256,9 @@ def test_dead_child_returncode_null_with_fatal_log_fires(tmp_path, monkeypatch, 
     notify, db = m["notify"], m["db"]
     conn = db.get_db()
     assert notify.run_notify_pass(force=True) == "seed"
-    (tmp_path / "tasks" / "child-q.log").write_text(
+    (tmp_path / "tasks" / "tk_child-q.log").write_text(
         "booting\nYou have exceeded your monthly quota\n")
-    _task(conn, "child-q", rc=None, role="candidate_reviewer",
+    _task(conn, "tk_child-q", rc=None, role="candidate_reviewer",
           ended_at=int(time.time()))
     with caplog.at_level(logging.WARNING, logger="threadkeeper.notify"):
         out = notify.run_notify_pass(force=True)
@@ -274,9 +274,9 @@ def test_dead_child_returncode_null_clean_log_ignored(tmp_path, monkeypatch):
     notify, db = m["notify"], m["db"]
     conn = db.get_db()
     assert notify.run_notify_pass(force=True) == "seed"
-    (tmp_path / "tasks" / "child-clean.log").write_text(
+    (tmp_path / "tasks" / "tk_child-clean.log").write_text(
         "starting\nall done, wrote 2 notes\n")
-    _task(conn, "child-clean", rc=None, role="curator",
+    _task(conn, "tk_child-clean", rc=None, role="curator",
           ended_at=int(time.time()))
     out = notify.run_notify_pass(force=True)
     assert out == "ok fired=0", out

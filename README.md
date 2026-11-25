@@ -2594,8 +2594,11 @@ the hardened `~/.threadkeeper` perimeter by default; explicit overrides are
 refused when the configured directory is a symlink or is not owned by the
 current user. `spawn()` creates captured headless `.log`, stdin prompt spool,
 and visible `.command` files with no-follow owner-only opens. Git-backed spawns
-also create their isolated worktrees there. `consolidate()` garbage-collects
-task spool files once their task row is no longer retained.
+also create their isolated worktrees there. `task_logs()` accepts only a valid,
+registered task ID and opens its captured log directly inside the configured
+spool. It refuses symlinked path components and unsafe files without creating
+or changing permissions on directories. `consolidate()` garbage-collects task
+spool files once their task row is no longer retained.
 
 Task worktrees use the same retention bounds. Before removing history,
 `consolidate()` saves cleanup eligibility in a separate ownership record.

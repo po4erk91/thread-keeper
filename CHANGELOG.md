@@ -5,6 +5,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 version bumps follow semver per the policy in
 [CONTRIBUTING.md → Releases](CONTRIBUTING.md#releases).
 
+## v0.30.3 — 2026-11-25
+
+- **Fixed: task log reads stay inside the registered task spool (#478).**
+  Invalid or unknown task IDs and unsafe directory or file links are refused
+  without changing permissions. Registered captured logs remain available.
+
 ## v0.30.2 — 2026-11-24
 
 - **Fixed: memory updates stop after unsubscribe or disconnect (#486).**
